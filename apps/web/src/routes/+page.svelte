@@ -1,6 +1,7 @@
 <script lang="ts">
-import { orpc } from "$lib/orpc";
 import { createQuery } from "@tanstack/svelte-query";
+import { orpc } from "$lib/orpc";
+
 const healthCheck = createQuery(() => orpc.healthCheck.queryOptions());
 
 const TITLE_TEXT = `
@@ -21,6 +22,7 @@ const TITLE_TEXT = `
 </script>
 
 <div class="container mx-auto max-w-3xl px-4 py-2">
+	<div class="mb-6 flex justify-end"><a href="/projects" class="rounded-lg border border-neutral-700 px-3 py-2 text-sm hover:bg-neutral-900">Open projects</a></div>
 	<pre class="overflow-x-auto font-mono text-sm">{TITLE_TEXT}</pre>
 	<div class="grid gap-6">
 		<section class="rounded-lg border p-4">

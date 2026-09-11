@@ -1,14 +1,13 @@
 <script lang="ts">
-
-	import UserMenu from './UserMenu.svelte';
-
+import UserMenu from "./UserMenu.svelte";
 </script>
 
 <div>
 	<div class="flex flex-row items-center justify-between px-4 py-2 md:px-6">
 		<nav class="flex gap-4 text-lg">
-			<a href="/" class="hover:text-neutral-400 transition-colors">Home</a>
-			<a href="/dashboard" class="hover:text-neutral-400 transition-colors">Dashboard</a>
+			<a href="/" class="transition-colors hover:text-neutral-400">Home</a>
+			<a href="/projects" class="transition-colors hover:text-neutral-400">Projects</a>
+			<a href="/dashboard" class="transition-colors hover:text-neutral-400">Dashboard</a>
 		</nav>
 		<div class="flex items-center gap-2">
             <UserMenu />
