@@ -1,6 +1,8 @@
 import {
 	daemonEventSchema,
+	type AgentRun as ProtocolAgentRun,
 	type DaemonEvent as ProtocolDaemonEvent,
+	type PermissionRequest as ProtocolPermissionRequest,
 } from "@loom/protocol";
 import { ENV } from "../env";
 
@@ -17,6 +19,8 @@ export type TaskStatus =
 	| "preparing"
 	| "running"
 	| "completed"
+	| "ready_to_merge"
+	| "merge_conflict"
 	| "failed"
 	| "cancelled";
 
@@ -33,7 +37,24 @@ export type Task = {
 	completedAt: string | null;
 };
 
+export type AgentRun = ProtocolAgentRun & {
+	startedAt: string | null;
+	completedAt: string | null;
+};
+export type PermissionRequest = ProtocolPermissionRequest & {
+	createdAt: string;
+	decidedAt: string | null;
+};
 export type DaemonEvent = ProtocolDaemonEvent;
+export type SchedulerTask = {
+	taskId: string;
+	projectId: string;
+	state: string;
+};
+export type SchedulerState = {
+	running: SchedulerTask[];
+	queued: SchedulerTask[];
+};
 
 const tokenKey = "loom.daemon.token";
 
@@ -104,10 +125,7 @@ async function request<T>(path: string, init: RequestInit = {}) {
 }
 
 export const daemon = {
-	listProjects: async () => {
-		await provisionDaemonToken();
-		return request<Project[]>("/api/projects");
-	},
+	listProjects: () => request<Project[]>("/api/projects"),
 	getProject: (id: string) => request<Project>(`/api/projects/${id}`),
 	createProject: (path: string) =>
 		request<Project>("/api/projects", {
@@ -123,6 +141,20 @@ export const daemon = {
 			method: "POST",
 			body: JSON.stringify(input),
 		}),
+	createTaskBatch: (
+		projectId: string,
+		tasks: Array<{ title: string; prompt: string }>,
+	) =>
+		request<{
+			results: Array<{
+				index: number;
+				task: Task | null;
+				error: string | null;
+			}>;
+		}>(`/api/projects/${projectId}/tasks/batch`, {
+			method: "POST",
+			body: JSON.stringify({ tasks }),
+		}),
 	startTask: (id: string) =>
 		request<{ accepted: boolean }>(`/api/tasks/${id}/start`, {
 			method: "POST",
@@ -131,9 +163,22 @@ export const daemon = {
 		request<{ cancelled: boolean }>(`/api/tasks/${id}/cancel`, {
 			method: "POST",
 		}),
+	retryTask: (id: string) =>
+		request<{ id: string }>(`/api/tasks/${id}/retry`, { method: "POST" }),
+	getRuns: (id: string) => request<AgentRun[]>(`/api/tasks/${id}/runs`),
+	getScheduler: () => request<SchedulerState>("/api/scheduler"),
+	getPermissions: () => request<PermissionRequest[]>("/api/permissions"),
+	decidePermission: (id: string, decision: "allow_once" | "allow" | "deny") =>
+		request<PermissionRequest>(`/api/permissions/${id}/decision`, {
+			method: "POST",
+			body: JSON.stringify({ decision }),
+		}),
 	getDiff: (id: string) => request<{ diff: string }>(`/api/tasks/${id}/diff`),
 	mergeTask: (id: string) =>
-		request<{ merged: boolean }>(`/api/tasks/${id}/merge`, { method: "POST" }),
+		request<{
+			merged: boolean;
+			conflict?: { taskId: string; files: string[] };
+		}>(`/api/tasks/${id}/merge`, { method: "POST" }),
 	discardTask: (id: string) =>
 		request<{ discarded: boolean }>(`/api/tasks/${id}/discard`, {
 			method: "POST",
@@ -154,6 +199,22 @@ export function diffStats(diff: string) {
 	return { files, additions, deletions };
 }
 
-export function formatStatus(status: TaskStatus) {
-	return status.charAt(0).toUpperCase() + status.slice(1);
+export function formatStatus(status: string) {
+	return status
+		.replaceAll("_", " ")
+		.replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+export function formatDuration(
+	startedAt: string | null,
+	completedAt: string | null,
+) {
+	if (!startedAt) return "Not started";
+	const end = completedAt ? new Date(completedAt).getTime() : Date.now();
+	const seconds = Math.max(
+		0,
+		Math.floor((end - new Date(startedAt).getTime()) / 1000),
+	);
+	if (seconds < 60) return `${seconds}s`;
+	return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
