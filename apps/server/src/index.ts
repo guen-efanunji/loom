@@ -10,11 +10,17 @@ import { TaskOrchestrator } from "@loom/orchestrator";
 import {
 	createApiError,
 	createProjectInputSchema,
+	createTaskBatchInputSchema,
 	createTaskInputSchema,
 	daemonEventSchema,
+	permissionDecisionInputSchema,
 	taskIdInputSchema,
 } from "@loom/protocol";
-import { WorktreeError, WorktreeManager } from "@loom/worktree";
+import {
+	MergeConflictError,
+	WorktreeError,
+	WorktreeManager,
+} from "@loom/worktree";
 import { OpenAPIHandler } from "@orpc/openapi/fetch";
 import { OpenAPIReferencePlugin } from "@orpc/openapi/plugins";
 import { onError } from "@orpc/server";
@@ -86,6 +92,25 @@ function recordToTask(
 	};
 }
 
+function recordToAgentRun(record: {
+	id: string;
+	taskId: string;
+	sessionId: string | null;
+	status: string;
+	startedAt: Date | null;
+	completedAt: Date | null;
+	errorMessage: string | null;
+	errorCode: string | null;
+	recoveryAction: string | null;
+	retryOfRunId: string | null;
+}) {
+	return {
+		...record,
+		startedAt: record.startedAt?.toISOString() ?? null,
+		completedAt: record.completedAt?.toISOString() ?? null,
+	};
+}
+
 function recordToWorkspace(
 	record:
 		| {
@@ -117,6 +142,19 @@ function errorResponse(
 	} else if (error instanceof ProjectValidationError) {
 		status = 400;
 		code = "BAD_REQUEST";
+	} else if (error instanceof MergeConflictError) {
+		status = 409;
+		code = "MERGE_CONFLICT";
+		action =
+			"Resolve the listed files in the task worktree and retry the merge";
+		return c.json(
+			{
+				error: createApiError(code, error.message, action, {
+					files: error.files,
+				}),
+			},
+			status,
+		);
 	} else if (error instanceof WorktreeError) {
 		const worktreeError = error as WorktreeError;
 		status = worktreeError.code === "GIT_UNAVAILABLE" ? 503 : 400;
@@ -312,6 +350,39 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			return errorResponse(c, error);
 		}
 	});
+	app.post("/api/projects/:projectId/tasks/batch", async (c) => {
+		try {
+			const projectId = c.req.param("projectId");
+			const input = createTaskBatchInputSchema.parse(await jsonBody(c));
+			if (!(await repos.projects.getById(projectId)))
+				throw new Error("Project not found");
+			const results: Array<{
+				index: number;
+				task: (ReturnType<typeof recordToTask> & { errorMessage: null }) | null;
+				error: string | null;
+			}> = [];
+			for (const [index, item] of input.tasks.entries()) {
+				try {
+					const task = await orchestrator.create({ ...item, projectId });
+					results.push({
+						index,
+						task: { ...task, errorMessage: null },
+						error: null,
+					});
+				} catch (error) {
+					results.push({
+						index,
+						task: null,
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
+			}
+			const status = results.some((result) => result.error) ? 207 : 201;
+			return c.json({ results }, status);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
 	app.get("/api/tasks", async (c) =>
 		c.json((await repos.tasks.list()).map(recordToTask)),
 	);
@@ -320,10 +391,61 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		if (!task) return errorResponse(c, new Error("Task not found"));
 		return c.json(recordToTask(task));
 	});
+	app.get("/api/tasks/:id/runs", async (c) => {
+		try {
+			const runs = await orchestrator.listRuns(c.req.param("id"));
+			return c.json(runs.map(recordToAgentRun));
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.get("/api/scheduler", (c) =>
+		c.json(orchestrator.getScheduler().getState()),
+	);
+	app.get("/api/snapshot", async (c) =>
+		c.json(await orchestrator.getSnapshot()),
+	);
+	app.get("/api/recovery", (c) => c.json(orchestrator.getRecoveryState()));
+	app.get("/api/permissions", async (c) => {
+		try {
+			return c.json(
+				(await orchestrator.listPendingPermissions()).map((request) => ({
+					...request,
+					createdAt: request.createdAt.toISOString(),
+					decidedAt: request.decidedAt?.toISOString() ?? null,
+				})),
+			);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.post("/api/permissions/:id/decision", async (c) => {
+		try {
+			const input = permissionDecisionInputSchema.parse(await jsonBody(c));
+			const request = await orchestrator.decidePermission(
+				c.req.param("id"),
+				input.decision,
+			);
+			return c.json({
+				...request,
+				createdAt: request.createdAt.toISOString(),
+				decidedAt: request.decidedAt?.toISOString() ?? null,
+			});
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.post("/api/tasks/:id/retry", async (c) => {
+		try {
+			return c.json(await orchestrator.retry(c.req.param("id")), 202);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
 	app.post("/api/tasks/:id/start", async (c) => {
 		try {
 			await taskIdInputSchema.parseAsync({ taskId: c.req.param("id") });
-			await orchestrator.start(c.req.param("id"));
+			await orchestrator.enqueueAndWait(c.req.param("id"));
 			return c.json({ accepted: true });
 		} catch (error) {
 			return errorResponse(c, error);
@@ -346,8 +468,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	});
 	app.post("/api/tasks/:id/merge", async (c) => {
 		try {
-			await orchestrator.merge(c.req.param("id"));
-			return c.json({ merged: true });
+			return c.json(await orchestrator.merge(c.req.param("id")));
 		} catch (error) {
 			return errorResponse(c, error);
 		}
@@ -402,6 +523,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		app,
 		config,
 		close: async () => {
+			await orchestrator.getScheduler().shutdown();
 			for (const client of clients) client.close();
 			clients.clear();
 			if (ownsOpenCode) await openCodeManager.stop();
