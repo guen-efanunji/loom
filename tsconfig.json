@@ -1,0 +1,3 @@
+{
+  "extends": "@loom/config/tsconfig.base.json"
+}
