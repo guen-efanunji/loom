@@ -1,12 +1,18 @@
 {
-  "extends": "@loom/config/tsconfig.base.json",
-  "references": [{ "path": "../../packages/api" }],
-  "compilerOptions": {
-    "noEmit": true,
-    "paths": {
-      "@/*": ["./src/*"]
-    },
-    "jsx": "react-jsx",
-    "jsxImportSource": "hono/jsx"
-  }
+	"extends": "@loom/config/tsconfig.base.json",
+	"references": [
+		{ "path": "../../packages/api" },
+		{ "path": "../../packages/opencode" },
+		{ "path": "../../packages/orchestrator" },
+		{ "path": "../../packages/protocol" },
+		{ "path": "../../packages/worktree" }
+	],
+	"compilerOptions": {
+		"noEmit": true,
+		"paths": {
+			"@/*": ["./src/*"]
+		},
+		"jsx": "react-jsx",
+		"jsxImportSource": "hono/jsx"
+	}
 }
