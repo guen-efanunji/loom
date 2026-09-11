@@ -1,7 +1,16 @@
 import { spawn } from "node:child_process";
-import { access, mkdir, realpath, rm, stat } from "node:fs/promises";
+import {
+	access,
+	mkdir,
+	readdir,
+	readFile,
+	realpath,
+	rm,
+	stat,
+	writeFile,
+} from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 
 export type CommandResult = {
 	stdout: string;
@@ -22,6 +31,8 @@ export type RepositoryInfo = {
 	clean: boolean;
 };
 
+export type MergePreflight = RepositoryInfo & { branchExists: boolean };
+
 export type Workspace = {
 	id: string;
 	taskId: string;
@@ -31,12 +42,21 @@ export type Workspace = {
 	branch: string;
 	baseCommit: string;
 	createdAt: string;
+	runId?: string;
+	owner?: "loom";
 };
 
 export type WorktreeInput = {
 	projectPath: string;
 	projectId: string;
 	taskId: string;
+	runId?: string;
+};
+
+export type OrphanWorkspace = {
+	path: string;
+	branch: string | null;
+	reason: "missing_metadata" | "invalid_metadata" | "missing_task";
 };
 
 export class WorktreeError extends Error {
@@ -57,6 +77,16 @@ export class WorktreeError extends Error {
 		this.name = "WorktreeError";
 		this.code = code;
 		this.details = details;
+	}
+}
+
+export class MergeConflictError extends WorktreeError {
+	readonly files: string[];
+
+	constructor(files: string[], message = "Merge conflict detected") {
+		super("COMMAND_FAILED", message, { files: files.join("\n") });
+		this.name = "MergeConflictError";
+		this.files = files;
 	}
 }
 
@@ -128,15 +158,33 @@ export function getWorktreePath(
 	projectId: string,
 	taskId: string,
 	home = homedir(),
+	runId?: string,
 ): string {
 	validateSegment(projectId, "Project ID");
 	validateSegment(taskId, "Task ID");
-	return resolve(home, ".loom", "worktrees", projectId, taskId);
+	if (runId) validateSegment(runId, "Run ID");
+	return resolve(
+		home,
+		".loom",
+		"worktrees",
+		projectId,
+		taskId,
+		...(runId ? [runId] : []),
+	);
 }
 
-export function getWorktreeBranch(taskId: string): string {
+export function getWorktreeBranch(taskId: string, runId?: string): string {
 	validateSegment(taskId, "Task ID");
-	return `loom/${taskId}`;
+	if (runId) validateSegment(runId, "Run ID");
+	return `loom/${taskId}${runId ? `/${runId}` : ""}`;
+}
+
+async function readdirSafe(path: string): Promise<string[]> {
+	try {
+		return await readdir(path);
+	} catch {
+		return [];
+	}
 }
 
 async function isDirectory(path: string): Promise<boolean> {
@@ -199,8 +247,21 @@ export class WorktreeManager {
 
 	async create(input: WorktreeInput): Promise<Workspace> {
 		const repository = await validateRepository(input.projectPath, this.runner);
-		const path = getWorktreePath(input.projectId, input.taskId, this.home);
-		const branch = getWorktreeBranch(input.taskId);
+		if (
+			resolve(input.projectPath) === resolve(this.home, ".loom", "worktrees")
+		) {
+			throw new WorktreeError(
+				"SAFETY_ERROR",
+				"Main workspace cannot be a managed worktree",
+			);
+		}
+		const path = getWorktreePath(
+			input.projectId,
+			input.taskId,
+			this.home,
+			input.runId,
+		);
+		const branch = getWorktreeBranch(input.taskId, input.runId);
 		if (
 			resolve(path) !== path ||
 			!resolve(path).startsWith(resolve(this.home, ".loom", "worktrees") + sep)
@@ -210,10 +271,13 @@ export class WorktreeManager {
 				"Worktree path is outside the managed directory",
 			);
 		}
-		if (await isDirectory(path)) {
+		try {
+			await stat(path);
 			throw new WorktreeError("SAFETY_ERROR", "Worktree path already exists", {
 				path,
 			});
+		} catch (error) {
+			if (error instanceof WorktreeError) throw error;
 		}
 		try {
 			await runGit(
@@ -238,6 +302,17 @@ export class WorktreeManager {
 			["worktree", "add", "-b", branch, path, repository.defaultBranch],
 			repository.path,
 		);
+		await writeFile(
+			join(path, ".loom-worktree.json"),
+			JSON.stringify({
+				owner: "loom",
+				projectId: input.projectId,
+				taskId: input.taskId,
+				runId: input.runId ?? null,
+				branch,
+			}),
+			"utf8",
+		);
 		return {
 			id: input.taskId,
 			taskId: input.taskId,
@@ -247,6 +322,8 @@ export class WorktreeManager {
 			branch,
 			baseCommit: repository.head,
 			createdAt: new Date().toISOString(),
+			runId: input.runId,
+			owner: "loom",
 		};
 	}
 
@@ -265,15 +342,7 @@ export class WorktreeManager {
 
 	async remove(workspace: Workspace): Promise<void> {
 		await this.assertWorkspacePath(workspace);
-		await runGit(
-			this.runner,
-			["worktree", "remove", workspace.path],
-			workspace.projectPath,
-		);
-	}
-
-	async discard(workspace: Workspace): Promise<void> {
-		await this.assertWorkspacePath(workspace);
+		await rm(join(workspace.path, ".loom-worktree.json"), { force: true });
 		await runGit(
 			this.runner,
 			["worktree", "remove", "--force", workspace.path],
@@ -281,19 +350,53 @@ export class WorktreeManager {
 		);
 	}
 
-	async merge(workspace: Workspace): Promise<void> {
+	async discard(workspace: Workspace): Promise<void> {
+		await this.assertWorkspacePath(workspace);
+		await rm(join(workspace.path, ".loom-worktree.json"), { force: true });
+		await runGit(
+			this.runner,
+			["worktree", "remove", "--force", workspace.path],
+			workspace.projectPath,
+		);
+	}
+
+	async preflightMerge(workspace: Workspace): Promise<MergePreflight> {
 		await this.assertWorkspacePath(workspace);
 		const repository = await validateRepository(
 			workspace.projectPath,
 			this.runner,
 		);
-		if (!repository.clean) {
+		let branchExists = true;
+		try {
+			await runGit(
+				this.runner,
+				["show-ref", "--verify", "--quiet", `refs/heads/${workspace.branch}`],
+				repository.path,
+			);
+		} catch {
+			branchExists = false;
+		}
+		return { ...repository, branchExists };
+	}
+
+	async merge(workspace: Workspace, expectedHead?: string): Promise<void> {
+		const repository = await this.preflightMerge(workspace);
+		if (!repository.clean)
 			throw new WorktreeError(
 				"SAFETY_ERROR",
 				"Main workspace must be clean before merge",
 				{ path: repository.path },
 			);
-		}
+		if (!repository.branchExists)
+			throw new WorktreeError("NOT_FOUND", "Workspace branch is missing", {
+				branch: workspace.branch,
+			});
+		if (expectedHead && repository.head !== expectedHead)
+			throw new WorktreeError(
+				"SAFETY_ERROR",
+				"Target HEAD changed before merge",
+				{ expectedHead, actualHead: repository.head },
+			);
 		try {
 			await runGit(
 				this.runner,
@@ -301,12 +404,72 @@ export class WorktreeManager {
 				repository.path,
 			);
 		} catch (error) {
+			const files = await this.conflictFiles(repository.path);
 			try {
 				await runGit(this.runner, ["merge", "--abort"], repository.path);
 			} catch {}
+			if (files.length > 0) throw new MergeConflictError(files);
 			throw error;
 		}
 		await this.remove(workspace);
+	}
+
+	private async conflictFiles(repositoryPath: string): Promise<string[]> {
+		try {
+			const output = await runGit(
+				this.runner,
+				["diff", "--name-only", "--diff-filter=U"],
+				repositoryPath,
+			);
+			return [
+				...new Set(
+					output
+						.split("\n")
+						.map((file) => file.trim())
+						.filter(Boolean),
+				),
+			].sort();
+		} catch {
+			return [];
+		}
+	}
+
+	async findOrphans(
+		projectId: string,
+		taskIds: readonly string[] = [],
+	): Promise<OrphanWorkspace[]> {
+		validateSegment(projectId, "Project ID");
+		const projectRoot = resolve(this.home, ".loom", "worktrees", projectId);
+		const entries = await readdirSafe(projectRoot);
+		const expectedTasks = new Set(taskIds);
+		const orphans: OrphanWorkspace[] = [];
+		for (const entry of entries) {
+			const candidate = resolve(projectRoot, entry);
+			if (!(await isDirectory(candidate))) continue;
+			try {
+				const metadata = JSON.parse(
+					await readFile(join(candidate, ".loom-worktree.json"), "utf8"),
+				) as { owner?: string; taskId?: string; branch?: string };
+				if (
+					metadata.owner !== "loom" ||
+					!metadata.taskId ||
+					(taskIds.length > 0 && !expectedTasks.has(metadata.taskId))
+				) {
+					orphans.push({
+						path: candidate,
+						branch: metadata.branch ?? null,
+						reason: "invalid_metadata",
+					});
+				}
+			} catch {
+				orphans.push({
+					path: candidate,
+					branch: null,
+					reason: "missing_metadata",
+				});
+			}
+		}
+		return orphans;
 	}
 
 	private async assertWorkspacePath(workspace: Workspace): Promise<void> {
@@ -314,6 +477,7 @@ export class WorktreeManager {
 			workspace.projectId,
 			workspace.taskId,
 			this.home,
+			workspace.runId,
 		);
 		let actual: string;
 		try {
@@ -330,6 +494,35 @@ export class WorktreeManager {
 				"SAFETY_ERROR",
 				"Workspace path is outside its owned directory",
 				{ path: workspace.path },
+			);
+		}
+		try {
+			const metadata = JSON.parse(
+				await readFile(join(expected, ".loom-worktree.json"), "utf8"),
+			) as {
+				owner?: string;
+				projectId?: string;
+				taskId?: string;
+				branch?: string;
+			};
+			if (
+				metadata.owner !== "loom" ||
+				metadata.projectId !== workspace.projectId ||
+				metadata.taskId !== workspace.taskId ||
+				metadata.branch !== workspace.branch
+			) {
+				throw new WorktreeError(
+					"SAFETY_ERROR",
+					"Workspace ownership metadata does not match",
+					{ path: expected },
+				);
+			}
+		} catch (error) {
+			if (error instanceof WorktreeError) throw error;
+			throw new WorktreeError(
+				"SAFETY_ERROR",
+				"Workspace ownership metadata is missing or invalid",
+				{ path: expected },
 			);
 		}
 		const repository = await validateRepository(

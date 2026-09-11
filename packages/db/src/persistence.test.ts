@@ -22,9 +22,9 @@ const db = drizzle({
 async function setup() {
 	for (const statement of [
 		"CREATE TABLE projects (id text primary key, name text not null, path text not null unique, default_branch text not null, created_at integer not null)",
-		"CREATE TABLE tasks (id text primary key, project_id text not null references projects(id) on delete cascade, title text not null, prompt text not null, status text not null default 'queued', workspace_id text, session_id text, created_at integer not null, started_at integer, completed_at integer, error_message text)",
+		"CREATE TABLE tasks (id text primary key, project_id text not null references projects(id) on delete cascade, title text not null, prompt text not null, status text not null default 'queued', workspace_id text, session_id text, created_at integer not null, started_at integer, completed_at integer, error_message text, merge_conflict_files text)",
 		"CREATE TABLE workspaces (id text primary key, task_id text not null unique references tasks(id) on delete cascade, project_id text not null references projects(id) on delete cascade, path text not null, branch text not null, base_commit text not null, created_at integer not null)",
-		"CREATE TABLE agent_runs (id text primary key, task_id text not null references tasks(id) on delete cascade, session_id text, status text not null default 'queued', started_at integer, completed_at integer)",
+		"CREATE TABLE agent_runs (id text primary key, task_id text not null references tasks(id) on delete cascade, session_id text, status text not null default 'queued', started_at integer, completed_at integer, error_message text, error_code text, recovery_action text, retry_of_run_id text)",
 	]) {
 		await db.run(statement);
 	}
@@ -41,6 +41,7 @@ test("bootstraps an empty database and is idempotent", async () => {
 		expect(tables.map((table) => table.name)).toEqual([
 			"account",
 			"agent_runs",
+			"permission_requests",
 			"projects",
 			"session",
 			"tasks",

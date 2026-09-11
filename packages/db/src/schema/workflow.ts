@@ -39,6 +39,7 @@ export const tasks = sqliteTable(
 		startedAt: integer("started_at", { mode: "timestamp_ms" }),
 		completedAt: integer("completed_at", { mode: "timestamp_ms" }),
 		errorMessage: text("error_message"),
+		mergeConflictFiles: text("merge_conflict_files"),
 	},
 	(table) => [index("tasks_project_id_idx").on(table.projectId)],
 );
@@ -77,13 +78,46 @@ export const agentRuns = sqliteTable(
 		status: text("status").notNull().default("queued"),
 		startedAt: integer("started_at", { mode: "timestamp_ms" }),
 		completedAt: integer("completed_at", { mode: "timestamp_ms" }),
+		errorMessage: text("error_message"),
+		errorCode: text("error_code"),
+		recoveryAction: text("recovery_action"),
+		retryOfRunId: text("retry_of_run_id"),
 	},
-	(table) => [index("agent_runs_task_id_idx").on(table.taskId)],
+	(table) => [
+		index("agent_runs_task_id_idx").on(table.taskId),
+		index("agent_runs_status_idx").on(table.status),
+	],
+);
+
+export const permissionRequests = sqliteTable(
+	"permission_requests",
+	{
+		id: text("id").primaryKey(),
+		taskId: text("task_id")
+			.notNull()
+			.references(() => tasks.id, { onDelete: "cascade" }),
+		runId: text("run_id")
+			.notNull()
+			.references(() => agentRuns.id, { onDelete: "cascade" }),
+		command: text("command").notNull(),
+		cwd: text("cwd").notNull(),
+		reason: text("reason").notNull(),
+		status: text("status").notNull().default("pending"),
+		createdAt: integer("created_at", { mode: "timestamp_ms" })
+			.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+			.notNull(),
+		decidedAt: integer("decided_at", { mode: "timestamp_ms" }),
+	},
+	(table) => [
+		index("permission_requests_run_id_idx").on(table.runId),
+		index("permission_requests_status_idx").on(table.status),
+	],
 );
 
 export const projectsRelations = relations(projects, ({ many }) => ({
 	tasks: many(tasks),
 	workspaces: many(workspaces),
+	permissionRequests: many(permissionRequests),
 }));
 
 export const tasksRelations = relations(tasks, ({ one, many }) => ({
@@ -96,6 +130,7 @@ export const tasksRelations = relations(tasks, ({ one, many }) => ({
 		references: [workspaces.id],
 	}),
 	runs: many(agentRuns),
+	permissionRequests: many(permissionRequests),
 }));
 
 export const workspacesRelations = relations(workspaces, ({ one }) => ({
@@ -109,9 +144,24 @@ export const workspacesRelations = relations(workspaces, ({ one }) => ({
 	}),
 }));
 
-export const agentRunsRelations = relations(agentRuns, ({ one }) => ({
+export const agentRunsRelations = relations(agentRuns, ({ one, many }) => ({
 	task: one(tasks, {
 		fields: [agentRuns.taskId],
 		references: [tasks.id],
 	}),
+	permissionRequests: many(permissionRequests),
 }));
+
+export const permissionRequestsRelations = relations(
+	permissionRequests,
+	({ one }) => ({
+		task: one(tasks, {
+			fields: [permissionRequests.taskId],
+			references: [tasks.id],
+		}),
+		run: one(agentRuns, {
+			fields: [permissionRequests.runId],
+			references: [agentRuns.id],
+		}),
+	}),
+);

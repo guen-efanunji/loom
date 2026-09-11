@@ -4,7 +4,9 @@ const transitions: Record<TaskStatus, readonly TaskStatus[]> = {
 	queued: ["preparing", "cancelled", "failed"],
 	preparing: ["running", "cancelled", "failed"],
 	running: ["completed", "cancelled", "failed"],
-	completed: [],
+	completed: ["ready_to_merge"],
+	ready_to_merge: ["merge_conflict", "completed"],
+	merge_conflict: ["ready_to_merge", "completed"],
 	failed: [],
 	cancelled: [],
 };

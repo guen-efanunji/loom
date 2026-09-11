@@ -106,6 +106,47 @@ describe("temporary git repository", () => {
 		expect(() => getWorktreeBranch("task-1")).not.toThrow();
 	});
 
+	test("creates two isolated worktrees for different tasks", async () => {
+		root = await mkdtemp(join(tmpdir(), "loom-repository-"));
+		home = await mkdtemp(join(tmpdir(), "loom-home-"));
+		const run = async (args: string[], cwd = root) => {
+			const process = Bun.spawn(["git", ...args], {
+				cwd,
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			return {
+				stdout: await new Response(process.stdout).text(),
+				stderr: await new Response(process.stderr).text(),
+				exitCode: await process.exited,
+			};
+		};
+		await run(["init", "-b", "main"]);
+		await run(["config", "user.name", "Loom"]);
+		await run(["config", "user.email", "loom@example.test"]);
+		await writeFile(join(root, "base.txt"), "base\n");
+		await run(["add", "."]);
+		await run(["commit", "-m", "initial"]);
+		const manager = new WorktreeManager({ home });
+		const first = await manager.create({
+			projectPath: root,
+			projectId: "project-isolation",
+			taskId: "task-a",
+		});
+		const second = await manager.create({
+			projectPath: root,
+			projectId: "project-isolation",
+			taskId: "task-b",
+		});
+		expect(first.path).not.toBe(second.path);
+		expect(first.branch).not.toBe(second.branch);
+		await writeFile(join(first.path, "a.txt"), "a\n");
+		await writeFile(join(second.path, "b.txt"), "b\n");
+		expect((await run(["status", "--porcelain"])).stdout.trim()).toBe("");
+		await manager.discard(first);
+		await manager.discard(second);
+	});
+
 	test("merges committed changes and removes only a clean worktree", async () => {
 		root = await mkdtemp(join(tmpdir(), "loom-repository-"));
 		home = await mkdtemp(join(tmpdir(), "loom-home-"));

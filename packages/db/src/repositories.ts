@@ -1,14 +1,28 @@
 import { randomUUID } from "node:crypto";
 import type { InferInsertModel, InferSelectModel } from "drizzle-orm";
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, inArray } from "drizzle-orm";
 
 import type { Database } from "./index";
-import { agentRuns, projects, tasks, workspaces } from "./schema";
+import {
+	agentRuns,
+	permissionRequests,
+	projects,
+	tasks,
+	workspaces,
+} from "./schema";
 
 export type ProjectRecord = InferSelectModel<typeof projects>;
 export type TaskRecord = InferSelectModel<typeof tasks>;
 export type WorkspaceRecord = InferSelectModel<typeof workspaces>;
 export type AgentRunRecord = InferSelectModel<typeof agentRuns>;
+export type PermissionRequestRecord = InferSelectModel<
+	typeof permissionRequests
+>;
+
+export type MergeConflictRecord = {
+	taskId: string;
+	files: string[];
+};
 
 export type CreateProject = Omit<
 	InferInsertModel<typeof projects>,
@@ -31,6 +45,10 @@ export type CreateWorkspace = Omit<
 export type CreateAgentRun = Omit<InferInsertModel<typeof agentRuns>, "id"> & {
 	id?: string;
 };
+export type CreatePermissionRequest = Omit<
+	InferInsertModel<typeof permissionRequests>,
+	"id" | "createdAt"
+> & { id?: string };
 
 export function projectRepository(db: Database) {
 	return {
@@ -137,6 +155,19 @@ export function agentRunRepository(db: Database) {
 				orderBy: desc(agentRuns.startedAt),
 			});
 		},
+		listUnfinished() {
+			return db
+				.select()
+				.from(agentRuns)
+				.where(
+					inArray(agentRuns.status, [
+						"queued",
+						"running",
+						"waiting_permission",
+					]),
+				)
+				.orderBy(desc(agentRuns.startedAt));
+		},
 		listByTask(taskId: string) {
 			return db
 				.select()
@@ -157,11 +188,61 @@ export function agentRunRepository(db: Database) {
 	};
 }
 
+export function permissionRequestRepository(db: Database) {
+	return {
+		create(input: CreatePermissionRequest): Promise<PermissionRequestRecord> {
+			return db
+				.insert(permissionRequests)
+				.values({ ...input, id: input.id ?? randomUUID() })
+				.returning()
+				.then((rows) => {
+					const request = rows[0];
+					if (!request)
+						throw new Error("Permission request insert returned no row");
+					return request;
+				});
+		},
+		getById(id: string) {
+			return db.query.permissionRequests.findFirst({
+				where: eq(permissionRequests.id, id),
+			});
+		},
+		listPending() {
+			return db
+				.select()
+				.from(permissionRequests)
+				.where(eq(permissionRequests.status, "pending"))
+				.orderBy(permissionRequests.createdAt);
+		},
+		listByRun(runId: string) {
+			return db
+				.select()
+				.from(permissionRequests)
+				.where(eq(permissionRequests.runId, runId))
+				.orderBy(desc(permissionRequests.createdAt));
+		},
+		update(
+			id: string,
+			input: Partial<CreatePermissionRequest> & {
+				status?: string;
+				decidedAt?: Date | null;
+			},
+		) {
+			return db
+				.update(permissionRequests)
+				.set(input)
+				.where(eq(permissionRequests.id, id))
+				.returning();
+		},
+	};
+}
+
 export function repositories(db: Database) {
 	return {
 		projects: projectRepository(db),
 		tasks: taskRepository(db),
 		workspaces: workspaceRepository(db),
 		agentRuns: agentRunRepository(db),
+		permissionRequests: permissionRequestRepository(db),
 	};
 }

@@ -14,6 +14,23 @@ export const createTaskInputSchema = z.object({
 
 export type CreateTaskInput = z.infer<typeof createTaskInputSchema>;
 
+export const createTaskBatchInputSchema = z.object({
+	tasks: z
+		.array(createTaskInputSchema.omit({ projectId: true }))
+		.min(1)
+		.max(100),
+});
+
+export type CreateTaskBatchInput = z.infer<typeof createTaskBatchInputSchema>;
+
+export const permissionDecisionInputSchema = z.object({
+	decision: z.enum(["allow_once", "allow", "deny"]),
+});
+
+export type PermissionDecisionInput = z.infer<
+	typeof permissionDecisionInputSchema
+>;
+
 export const createSessionInputSchema = z.object({
 	cwd: z.string().min(1),
 	title: z.string().trim().min(1),
