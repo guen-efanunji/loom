@@ -42,6 +42,7 @@ describe("OpenCode server manager", () => {
 		const manager = new OpenCodeServerManager({
 			executable: null,
 			discoverer: async () => null,
+			fetcher: async () => new Response(null, { status: 503 }),
 		});
 		await expect(manager.start()).rejects.toMatchObject({
 			code: "NOT_INSTALLED",

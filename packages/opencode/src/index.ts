@@ -16,15 +16,26 @@ export type AgentRunStatus =
 	| "waiting_permission"
 	| "completed"
 	| "failed"
-	| "cancelled";
+	| "cancelled"
+	| "interrupted";
+
+export type RuntimeOutput = {
+	output: string;
+	truncated?: boolean;
+};
 
 export type AgentRuntime = {
 	createSession(input: { cwd: string; title: string }): Promise<{ id: string }>;
 	prompt(input: { sessionId: string; prompt: string }): Promise<void>;
 	status(sessionId: string): Promise<AgentRunStatus>;
+	readOutput?(sessionId: string): Promise<RuntimeOutput | null>;
 	wait(
 		sessionId: string,
-		options?: { timeoutMs?: number; pollIntervalMs?: number },
+		options?: {
+			timeoutMs?: number;
+			pollIntervalMs?: number;
+			onStatus?: (status: AgentRunStatus) => void | Promise<void>;
+		},
 	): Promise<
 		Exclude<AgentRunStatus, "queued" | "running" | "waiting_permission">
 	>;
@@ -81,6 +92,7 @@ const statusSchema = z.object({
 		"completed",
 		"failed",
 		"cancelled",
+		"interrupted",
 	]),
 });
 
@@ -306,7 +318,11 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 
 	async wait(
 		sessionId: string,
-		options: { timeoutMs?: number; pollIntervalMs?: number } = {},
+		options: {
+			timeoutMs?: number;
+			pollIntervalMs?: number;
+			onStatus?: (status: AgentRunStatus) => void | Promise<void>;
+		} = {},
 	): Promise<
 		Exclude<AgentRunStatus, "queued" | "running" | "waiting_permission">
 	> {
@@ -315,10 +331,12 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 		const deadline = Date.now() + timeoutMs;
 		while (Date.now() <= deadline) {
 			const status = await this.status(sessionId);
+			await options.onStatus?.(status);
 			if (
 				status === "completed" ||
 				status === "failed" ||
-				status === "cancelled"
+				status === "cancelled" ||
+				status === "interrupted"
 			)
 				return status;
 			await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
@@ -333,6 +351,17 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 		await this.request(`/session/${encodeURIComponent(sessionId)}/abort`, {
 			method: "POST",
 		});
+	}
+
+	async readOutput(sessionId: string): Promise<RuntimeOutput | null> {
+		const response = await this.request(
+			`/session/${encodeURIComponent(sessionId)}/output`,
+			{ method: "GET" },
+		);
+		if (response === undefined) return null;
+		return z
+			.object({ output: z.string(), truncated: z.boolean().optional() })
+			.parse(response);
 	}
 
 	async getDiff(sessionId: string): Promise<unknown> {
@@ -351,6 +380,7 @@ export class MockAgentRuntime implements AgentRuntime {
 			prompts: string[];
 			aborted: boolean;
 			status: AgentRunStatus;
+			output: string;
 		}
 	>();
 	private nextId = 0;
@@ -365,6 +395,7 @@ export class MockAgentRuntime implements AgentRuntime {
 			prompts: [],
 			aborted: false,
 			status: "queued",
+			output: "",
 		});
 		return { id };
 	}
@@ -374,7 +405,15 @@ export class MockAgentRuntime implements AgentRuntime {
 		if (!session)
 			throw new OpenCodeError("HTTP_ERROR", "Mock session was not found");
 		session.prompts.push(input.prompt);
+		session.output = input.prompt;
 		session.status = "completed";
+	}
+
+	async readOutput(sessionId: string): Promise<RuntimeOutput | null> {
+		const session = this.sessions.get(sessionId);
+		if (!session)
+			throw new OpenCodeError("HTTP_ERROR", "Mock session was not found");
+		return { output: session.output };
 	}
 
 	async status(sessionId: string): Promise<AgentRunStatus> {
@@ -390,7 +429,12 @@ export class MockAgentRuntime implements AgentRuntime {
 		Exclude<AgentRunStatus, "queued" | "running" | "waiting_permission">
 	> {
 		const status = await this.status(sessionId);
-		if (status === "completed" || status === "failed" || status === "cancelled")
+		if (
+			status === "completed" ||
+			status === "failed" ||
+			status === "cancelled" ||
+			status === "interrupted"
+		)
 			return status;
 		throw new OpenCodeError("HEALTH_TIMEOUT", "Mock agent did not finish");
 	}
