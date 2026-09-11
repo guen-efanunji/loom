@@ -1,3 +1,3 @@
 {
-  "extends": "@loom/config/tsconfig.base.json"
+	"extends": "@loom/config/tsconfig.base.json"
 }

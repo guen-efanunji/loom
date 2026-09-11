@@ -1,51 +1,55 @@
 {
-  "name": "loom",
-  "private": true,
-  "workspaces": {
-    "packages": [
-      "apps/*",
-      "packages/*"
-    ],
-    "catalog": {
-      "zod": "^4.5.4",
-      "typescript": "^6.0.3",
-      "@types/bun": "^1.4.2",
-      "varlock": "1.18.0",
-      "libsql": "0.5.29",
-      "@orpc/server": "^1.15.0",
-      "@orpc/openapi": "^1.15.0",
-      "@orpc/zod": "^1.15.0",
-      "better-auth": "1.7.3",
-      "@orpc/client": "^1.15.0"
-    }
-  },
-  "type": "module",
-  "scripts": {
-    "dev": "turbo run dev",
-    "build": "turbo run build",
-    "check-types": "turbo run check-types",
-    "postinstall": "tsc -b packages/api && varlock codegen --path ./apps/web/ && varlock codegen --path ./apps/server/ && varlock codegen --path ./packages/db/",
-    "dev:types": "tsc -b packages/api --watch",
-    "dev:web": "turbo run dev -F web --",
-    "dev:server": "turbo run dev -F server --",
-    "db:push": "turbo run db:push -F @loom/db --",
-    "db:studio": "turbo run db:studio -F @loom/db --",
-    "db:generate": "turbo run db:generate -F @loom/db --",
-    "db:migrate": "turbo run db:migrate -F @loom/db --",
-    "db:local": "turbo run db:local -F @loom/db --",
-    "env:generate": "varlock codegen --path ./apps/web/ && varlock codegen --path ./apps/server/ && varlock codegen --path ./packages/db/",
-    "check": "biome check --write ."
-  },
-  "dependencies": {
-    "zod": "catalog:"
-  },
-  "devDependencies": {
-    "@biomejs/biome": "^2.5.12",
-    "@loom/config": "workspace:*",
-    "@types/bun": "catalog:",
-    "turbo": "^2.10.12",
-    "typescript": "catalog:",
-    "varlock": "catalog:"
-  },
-  "packageManager": "bun@1.3.13"
+	"name": "loom",
+	"private": true,
+	"workspaces": {
+		"packages": [
+			"apps/*",
+			"packages/*"
+		],
+		"catalog": {
+			"zod": "^4.5.4",
+			"typescript": "^6.0.3",
+			"@types/bun": "^1.4.2",
+			"varlock": "1.18.0",
+			"libsql": "0.5.29",
+			"@orpc/server": "^1.15.0",
+			"@orpc/openapi": "^1.15.0",
+			"@orpc/zod": "^1.15.0",
+			"better-auth": "1.7.3",
+			"@orpc/client": "^1.15.0"
+		}
+	},
+	"type": "module",
+	"scripts": {
+		"dev": "turbo run dev",
+		"build": "turbo run build",
+		"check-types": "turbo run check-types",
+		"postinstall": "tsc -b packages/api && varlock codegen --path ./apps/web/ && varlock codegen --path ./apps/server/ && varlock codegen --path ./packages/db/",
+		"dev:types": "tsc -b packages/api --watch",
+		"dev:web": "turbo run dev -F web --",
+		"dev:server": "turbo run dev -F server --",
+		"loom": "bun run --cwd apps/cli src/index.ts",
+		"loom:build": "turbo run build -F @loom/cli",
+		"loom:test": "bun run --cwd apps/cli test",
+		"loom:doctor": "bun run --cwd apps/cli src/index.ts doctor",
+		"db:push": "turbo run db:push -F @loom/db --",
+		"db:studio": "turbo run db:studio -F @loom/db --",
+		"db:generate": "turbo run db:generate -F @loom/db --",
+		"db:migrate": "turbo run db:migrate -F @loom/db --",
+		"db:local": "turbo run db:local -F @loom/db --",
+		"env:generate": "varlock codegen --path ./apps/web/ && varlock codegen --path ./apps/server/ && varlock codegen --path ./packages/db/",
+		"check": "biome check --write ."
+	},
+	"dependencies": {
+		"zod": "catalog:"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.5.12",
+		"@loom/config": "workspace:*",
+		"@types/bun": "catalog:",
+		"turbo": "^2.10.12",
+		"typescript": "catalog:",
+		"varlock": "catalog:"
+	},
+	"packageManager": "bun@1.3.13"
 }

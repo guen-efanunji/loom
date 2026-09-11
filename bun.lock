@@ -16,12 +16,31 @@
         "varlock": "catalog:",
       },
     },
+    "apps/cli": {
+      "name": "@loom/cli",
+      "version": "0.0.0",
+      "bin": {
+        "loom": "dist/index.js",
+      },
+      "dependencies": {
+        "@loom/opencode": "workspace:*",
+      },
+      "devDependencies": {
+        "@loom/config": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "apps/server": {
       "name": "server",
       "dependencies": {
         "@loom/api": "workspace:*",
         "@loom/auth": "workspace:*",
         "@loom/db": "workspace:*",
+        "@loom/opencode": "workspace:*",
+        "@loom/orchestrator": "workspace:*",
+        "@loom/protocol": "workspace:*",
+        "@loom/worktree": "workspace:*",
         "@orpc/openapi": "catalog:",
         "@orpc/server": "catalog:",
         "@orpc/zod": "catalog:",
@@ -43,6 +62,7 @@
       "version": "0.0.1",
       "dependencies": {
         "@loom/api": "workspace:*",
+        "@loom/protocol": "workspace:*",
         "@orpc/client": "catalog:",
         "@orpc/server": "catalog:",
         "@orpc/tanstack-query": "^1.15.0",
@@ -119,6 +139,54 @@
         "drizzle-kit": "^0.31.10",
         "typescript": "catalog:",
         "varlock": "catalog:",
+      },
+    },
+    "packages/opencode": {
+      "name": "@loom/opencode",
+      "version": "0.0.0",
+      "dependencies": {
+        "zod": "catalog:",
+      },
+      "devDependencies": {
+        "@loom/config": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
+    "packages/orchestrator": {
+      "name": "@loom/orchestrator",
+      "version": "0.0.0",
+      "dependencies": {
+        "@loom/db": "workspace:*",
+        "@loom/opencode": "workspace:*",
+        "@loom/protocol": "workspace:*",
+        "@loom/worktree": "workspace:*",
+      },
+      "devDependencies": {
+        "@loom/config": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
+    "packages/protocol": {
+      "name": "@loom/protocol",
+      "version": "0.0.0",
+      "dependencies": {
+        "zod": "catalog:",
+      },
+      "devDependencies": {
+        "@loom/config": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
+    "packages/worktree": {
+      "name": "@loom/worktree",
+      "version": "0.0.0",
+      "devDependencies": {
+        "@loom/config": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
       },
     },
   },
@@ -271,9 +339,19 @@
 
     "@loom/auth": ["@loom/auth@workspace:packages/auth"],
 
+    "@loom/cli": ["@loom/cli@workspace:apps/cli"],
+
     "@loom/config": ["@loom/config@workspace:packages/config"],
 
     "@loom/db": ["@loom/db@workspace:packages/db"],
+
+    "@loom/opencode": ["@loom/opencode@workspace:packages/opencode"],
+
+    "@loom/orchestrator": ["@loom/orchestrator@workspace:packages/orchestrator"],
+
+    "@loom/protocol": ["@loom/protocol@workspace:packages/protocol"],
+
+    "@loom/worktree": ["@loom/worktree@workspace:packages/worktree"],
 
     "@lucide/svelte": ["@lucide/svelte@1.45.0", "", { "peerDependencies": { "svelte": "^5" } }, "sha512-SBqLvcYGEDz82Lwz7meR4qM+SGeDKRU/RBo8BhAhARNUzIXTrykbFLabW9X1Fokp01Yw2kOFx/AsLUUIxj0NLA=="],
 
