@@ -224,7 +224,7 @@ export async function validateRepository(
 		if (
 			!(error instanceof WorktreeError) ||
 			error.code !== "COMMAND_FAILED" ||
-			!error.details.stderr.includes("ambiguous argument 'HEAD'")
+				!(error.details.stderr ?? "").includes("ambiguous argument 'HEAD'")
 		)
 			throw error;
 	}

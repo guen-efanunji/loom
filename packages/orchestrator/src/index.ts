@@ -115,6 +115,14 @@ export type EventPublisher = {
 	publish(event: DaemonEvent): Promise<void> | void;
 };
 
+export type TaskLifecycleHooks = {
+ canRun(taskId: string): Promise<boolean>;
+ prepare(task: TaskRecord, workspace: WorktreeWorkspace): Promise<string>;
+ complete(task: TaskRecord, workspace: WorktreeWorkspace): Promise<void>;
+ settled(taskId: string): Promise<void>;
+ guard(taskId: string, action: "retry" | "merge" | "discard"): Promise<void>;
+};
+
 export type OrchestratorDependencies = {
 	tasks: TaskRepository;
 	projects: ProjectRepository;
@@ -150,6 +158,8 @@ export type RecoveryState = {
 
 export class TaskOrchestrator {
 	private readonly active = new Set<string>();
+	private lifecycle?: TaskLifecycleHooks;
+	setLifecycle(hooks: TaskLifecycleHooks) { this.lifecycle = hooks; }
 	private readonly tasksById = new Map<string, TaskRecord>();
 	private readonly now: () => Date;
 	private readonly id: () => string;
@@ -175,6 +185,7 @@ export class TaskOrchestrator {
 			getProjectId: async (taskId) =>
 				(await this.requireTask(taskId)).projectId,
 			run: (taskId) => this.run(taskId),
+			canRun: taskId => this.lifecycle?.canRun(taskId) ?? Promise.resolve(true),
 			onChanged: (state) =>
 				this.publish({
 					type: "scheduler.changed",
@@ -344,6 +355,7 @@ export class TaskOrchestrator {
 	}
 
 	async retry(taskId: string): Promise<{ id: string }> {
+		await this.lifecycle?.guard(taskId, "retry");
 		const record = await this.requireTask(taskId);
 		if (!["failed", "cancelled"].includes(record.status))
 			throw new Error(`Task cannot retry from ${record.status}`);
@@ -373,7 +385,7 @@ export class TaskOrchestrator {
 		});
 		if (!run) throw new Error("Agent run repository is unavailable");
 		await this.publishRun(run, {});
-		await this.start(taskId);
+		await this.enqueue(taskId);
 		return { id: run.id };
 	}
 
@@ -462,6 +474,7 @@ export class TaskOrchestrator {
 		const record = await this.requireTask(taskId);
 		if (record.status !== "queued")
 			throw new Error(`Task cannot start from ${record.status}`);
+		if (this.lifecycle && !(await this.lifecycle.canRun(taskId))) throw new Error("Task cannot start while dependencies or epic approval are pending");
 		this.active.add(taskId);
 		let agentRunId: string | undefined;
 		try {
@@ -472,6 +485,7 @@ export class TaskOrchestrator {
 				projectPath: project.path,
 				projectId: project.id,
 				taskId: record.id,
+				runId: this.id(),
 			});
 			await this.dependencies.workspaces.create({
 				id: workspace.id,
@@ -481,6 +495,8 @@ export class TaskOrchestrator {
 				branch: workspace.branch,
 				baseCommit: workspace.baseCommit,
 			});
+			const preparedPrompt = await this.lifecycle?.prepare(record, workspace) ?? record.prompt;
+			if ((await this.requireTask(taskId)).status === "cancelled") throw new Error("Task cancelled during preparation");
 			const session = await this.dependencies.runtime.createSession({
 				cwd: workspace.path,
 				title: record.title,
@@ -534,7 +550,7 @@ export class TaskOrchestrator {
 			record.status = "running";
 			await this.dependencies.runtime.prompt({
 				sessionId: session.id,
-				prompt: record.prompt,
+				prompt: preparedPrompt,
 			});
 			const terminalStatus = await this.dependencies.runtime.wait(session.id, {
 				timeoutMs: this.dependencies.runTimeoutMs,
@@ -558,6 +574,7 @@ export class TaskOrchestrator {
 			if (terminalStatus !== "completed") {
 				throw new Error(`Agent run ended with status: ${terminalStatus}`);
 			}
+			await this.lifecycle?.complete(record, workspace);
 			if (agentRunId) {
 				const rows = await this.dependencies.agentRuns?.update(agentRunId, {
 					status: "completed",
@@ -610,6 +627,7 @@ export class TaskOrchestrator {
 			throw error;
 		} finally {
 			this.active.delete(taskId);
+			await this.lifecycle?.settled(taskId);
 		}
 	}
 
@@ -665,6 +683,7 @@ export class TaskOrchestrator {
 		| { merged: true; head: string }
 		| { merged: false; conflict: { taskId: string; files: string[] } }
 	> {
+		await this.lifecycle?.guard(taskId, "merge");
 		const operation = this.mergeQueue.then(() => this.mergeNow(taskId));
 		this.mergeQueue = operation.then(
 			() => undefined,
@@ -731,6 +750,7 @@ export class TaskOrchestrator {
 	}
 
 	async discard(taskId: string): Promise<void> {
+		await this.lifecycle?.guard(taskId, "discard");
 		const record = await this.requireTask(taskId);
 		const workspace = await this.requireWorkspace(record);
 		await this.dependencies.worktree.discard(
@@ -909,3 +929,6 @@ function toWorktreeWorkspace(
 		owner: "loom",
 	};
 }
+export * from "./graph";
+export * from "./planner";
+export * from "./context";

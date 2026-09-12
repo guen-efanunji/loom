@@ -43,6 +43,7 @@ type SchedulerOptions = {
 	config?: Partial<SchedulerConfig>;
 	getProjectId: (taskId: string) => Promise<string>;
 	run: (taskId: string) => Promise<void>;
+	canRun?: (taskId: string) => Promise<boolean>;
 	onChanged?: (state: {
 		running: number;
 		queued: number;
@@ -63,6 +64,7 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
 	const tasks = new Map<string, SchedulerTask>();
 	const queue: string[] = [];
 	const dispatching = new Set<string>();
+	const pending = new Set<string>();
 	const waiters = new Map<string, Array<(state: SchedulerState) => void>>();
 	let shuttingDown = false;
 	let dispatchPromise: Promise<void> | undefined;
@@ -81,18 +83,19 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
 		dispatchPromise = (async () => {
 			let changedState = false;
 			while (queue.length > 0) {
-				const running = [...tasks.values()].filter(
-					(task) => task.state === "running",
-				);
+				const running = [...tasks.values()].filter((task) => task.state === "running");
 				if (running.length >= config.maxConcurrentAgents) break;
-				const nextIndex = queue.findIndex((taskId) => {
-					const task = tasks.get(taskId);
-					if (task?.state !== "queued") return false;
-					return (
-						running.filter((item) => item.projectId === task.projectId).length <
-						config.maxConcurrentAgentsPerProject
-					);
-				});
+                let nextIndex = -1;
+                for (let i = 0; i < queue.length; i++) {
+                    const candidate = queue[i]!;
+                    const task = tasks.get(candidate);
+                    if (task?.state !== "queued") continue;
+                    if (running.filter(item => item.projectId === task.projectId).length >= config.maxConcurrentAgentsPerProject) continue;
+                    if (options.canRun && !(await options.canRun(candidate))) continue;
+                    // Readiness is asynchronous: cancellation may have removed this candidate.
+                    if (task.state !== "queued" || !queue.includes(candidate)) continue;
+                    nextIndex = queue.indexOf(candidate); break;
+                }
 				if (nextIndex < 0) break;
 				const taskId = queue.splice(nextIndex, 1)[0];
 				if (!taskId) break;
@@ -140,8 +143,10 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
 		},
 		async enqueue(taskId) {
 			if (shuttingDown) throw new Error("Scheduler is shut down");
-			if (tasks.has(taskId)) return;
+			if (pending.has(taskId) || dispatching.has(taskId) || ["queued", "running"].includes(tasks.get(taskId)?.state ?? "")) return;
+			pending.add(taskId);
 			const projectId = await options.getProjectId(taskId);
+			pending.delete(taskId);
 			tasks.set(taskId, { taskId, projectId, state: "queued" });
 			queue.push(taskId);
 			await changed();
@@ -166,6 +171,8 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
 				task.state = "cancelled";
 				const index = queue.indexOf(taskId);
 				if (index >= 0) queue.splice(index, 1);
+				for (const resolve of waiters.get(taskId) ?? []) resolve("cancelled");
+				waiters.delete(taskId);
 				await changed();
 				return;
 			}
@@ -180,6 +187,8 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
 			for (const taskId of queue.splice(0)) {
 				const task = tasks.get(taskId);
 				if (task) task.state = "cancelled";
+				for (const resolve of waiters.get(taskId) ?? []) resolve("cancelled");
+				waiters.delete(taskId);
 			}
 			await changed();
 		},

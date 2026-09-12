@@ -27,7 +27,7 @@ export type RuntimeOutput = {
 };
 
 export type AgentRuntime = {
-	createSession(input: { cwd: string; title: string }): Promise<{ id: string }>;
+	createSession(input: { cwd: string; title: string; readOnly?: boolean }): Promise<{ id: string }>;
 	prompt(input: { sessionId: string; prompt: string }): Promise<void>;
 	status(sessionId: string): Promise<AgentRunStatus>;
 	readOutput?(sessionId: string): Promise<RuntimeOutput | null>;
@@ -295,6 +295,7 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 	async createSession(input: {
 		cwd: string;
 		title: string;
+		readOnly?: boolean;
 	}): Promise<{ id: string }> {
 		const response = await this.request("/session", {
 			method: "POST",
@@ -302,7 +303,7 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 				"content-type": "application/json",
 				"x-opencode-directory": encodeURIComponent(input.cwd),
 			},
-			body: JSON.stringify({ title: input.title }),
+			body: JSON.stringify({ title: input.title, ...(input.readOnly ? { permission: [{ permission: "*", pattern: "*", action: "deny" }] } : {}) }),
 		});
 		const session = parseJson(sessionSchema, response, "session");
 		this.directories.set(session.id, input.cwd);
@@ -427,6 +428,7 @@ export class MockAgentRuntime implements AgentRuntime {
 	async createSession(input: {
 		cwd: string;
 		title: string;
+		readOnly?: boolean;
 	}): Promise<{ id: string }> {
 		const id = `mock-session-${++this.nextId}`;
 		this.sessions.set(id, {
