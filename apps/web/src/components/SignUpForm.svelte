@@ -1,4 +1,6 @@
 <script lang="ts">
+import { Input } from "$lib/components/ui/input";
+import { Button } from "$lib/components/ui/button";
 import { createForm } from "@tanstack/svelte-form";
 import { z } from "zod";
 import { goto } from "$app/navigation";
@@ -57,7 +59,7 @@ type SubmitState = Pick<typeof form.state, "canSubmit" | "isSubmitting">;
 			{#snippet children(field)}
 				<div class="space-y-1">
 					<label for={field.name}>Name</label>
-					<input
+					<Input
 						id={field.name}
 						name={field.name}
 						class="w-full border"
@@ -81,7 +83,7 @@ type SubmitState = Pick<typeof form.state, "canSubmit" | "isSubmitting">;
 			{#snippet children(field)}
 				<div class="space-y-1">
 					<label for={field.name}>Email</label>
-					<input
+					<Input
 						id={field.name}
 						name={field.name}
 						type="email"
@@ -106,7 +108,7 @@ type SubmitState = Pick<typeof form.state, "canSubmit" | "isSubmitting">;
 			{#snippet children(field)}
 				<div class="space-y-1">
 					<label for={field.name}>Password</label>
-					<input
+					<Input
 						id={field.name}
 						name={field.name}
 						type="password"
@@ -129,16 +131,16 @@ type SubmitState = Pick<typeof form.state, "canSubmit" | "isSubmitting">;
 
 		<form.Subscribe selector={(state: typeof form.state): SubmitState => ({ canSubmit: state.canSubmit, isSubmitting: state.isSubmitting })}>
 			{#snippet children(state: SubmitState)}
-				<button type="submit" class="w-full" disabled={!state.canSubmit || state.isSubmitting}>
+				<Button type="submit" class="w-full" disabled={!state.canSubmit || state.isSubmitting}>
 					{state.isSubmitting ? 'Submitting...' : 'Sign Up'}
-				</button>
+				</Button>
 			{/snippet}
 		</form.Subscribe>
 	</form>
 
 	<div class="mt-4 text-center">
-		<button type="button" class="text-indigo-600 hover:text-indigo-800" onclick={switchToSignIn}>
+		<Button type="button" class="text-indigo-600 hover:text-indigo-800" onclick={switchToSignIn}>
 			Already have an account? Sign In
-		</button>
+		</Button>
 	</div>
 </div>
