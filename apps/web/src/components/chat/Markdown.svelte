@@ -1,9 +1,12 @@
 <script lang="ts">
 import DOMPurify from "dompurify";
+import hljs from "highlight.js/lib/common";
+import "highlight.js/styles/github-dark.css";
 import { marked } from "marked";
 import { browser } from "$app/environment";
 
 let { text }: { text: string } = $props();
+let ref = $state<HTMLDivElement>();
 const html = $derived(
 	browser
 		? DOMPurify.sanitize(marked.parse(text, { async: false, breaks: true }), {
@@ -11,8 +14,20 @@ const html = $derived(
 			})
 		: "",
 );
+$effect(() => {
+	html;
+	const node = ref;
+	if (!node) return;
+	for (const block of node.querySelectorAll("pre code")) {
+		if (block instanceof HTMLElement && !block.dataset.highlighted) {
+			try {
+				hljs.highlightElement(block);
+			} catch {}
+		}
+	}
+});
 </script>
-<div class="markdown min-w-0 break-words">{@html html}</div>
+<div bind:this={ref} class="markdown min-w-0 break-words">{@html html}</div>
 <style>
 .markdown { font-size: .875rem; line-height: 1.8; }
 .markdown :global(p) { margin: .65em 0; }

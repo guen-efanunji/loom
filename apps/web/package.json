@@ -24,6 +24,7 @@
 		"@varlock/vite-integration": "1.5.1",
 		"better-auth": "catalog:",
 		"dompurify": "^3.4.15",
+		"highlight.js": "^11.12.0",
 		"marked": "^18.0.12",
 		"svelte-sonner": "^1.2.1",
 		"varlock": "catalog:",

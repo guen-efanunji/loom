@@ -15,6 +15,7 @@ import {
 	Settings,
 	ShieldCheck,
 	Sparkles,
+	Trash2,
 	X,
 } from "@lucide/svelte";
 import { onMount, tick } from "svelte";
@@ -29,6 +30,7 @@ import {
 	chat,
 	type FileDiff,
 } from "$lib/chat";
+import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
 import { Badge } from "$lib/components/ui/badge";
 import { Button } from "$lib/components/ui/button";
 import * as Dialog from "$lib/components/ui/dialog";
@@ -38,8 +40,10 @@ import * as Tabs from "$lib/components/ui/tabs";
 import { daemon, type Project, type Task } from "$lib/daemon";
 import AddProjectForm from "./AddProjectForm.svelte";
 import Composer from "./chat/Composer.svelte";
-import Message from "./chat/Message.svelte";
 import QuestionCard from "./chat/QuestionCard.svelte";
+import Turn from "./chat/Turn.svelte";
+import KanbanBoard from "./KanbanBoard.svelte";
+import ProgressBoard from "./ProgressBoard.svelte";
 
 let projects = $state<Project[]>([]);
 let sessions = $state<ChatSession[]>([]);
@@ -61,6 +65,15 @@ let addProjectOpen = $state(false);
 let aboutOpen = $state(false);
 let renameOpen = $state(false);
 let renameTitle = $state("");
+let renameTarget = $state("");
+let deleteTarget = $state<ChatSession | null>(null);
+let deleteSessionOpen = $state(false);
+type ViewMode = "chat" | "kanban" | "progress";
+function initialView(): ViewMode {
+	const view = page.url.searchParams.get("view");
+	return view === "kanban" || view === "progress" ? view : "chat";
+}
+let viewMode = $state<ViewMode>(initialView());
 let draft = $state("");
 let model = $state("");
 let agent = $state("build");
@@ -94,6 +107,22 @@ const messages = $derived([
 	...(conversation?.messages ?? []),
 	...(optimistic ? [optimistic] : []),
 ]);
+type TurnGroup = { key: string; role: string; messages: ChatMessage[] };
+const turns = $derived.by(() => {
+	const groups: TurnGroup[] = [];
+	for (const message of messages) {
+		const last = groups[groups.length - 1];
+		if (message.info.role === "assistant" && last && last.role === "assistant")
+			last.messages.push(message);
+		else
+			groups.push({
+				key: message.info.id,
+				role: message.info.role,
+				messages: [message],
+			});
+	}
+	return groups;
+});
 const busy = $derived(
 	sending ||
 		!!optimistic ||
@@ -152,7 +181,8 @@ async function refreshSession(id: string) {
 	connected = true;
 	const project = projects.find(
 		(p) =>
-			p.id === result.session.projectId || p.path.replace(/\/$/, "") === result.session.directory.replace(/\/$/, ""),
+			p.id === result.session.projectId ||
+			p.path.replace(/\/$/, "") === result.session.directory.replace(/\/$/, ""),
 	);
 	if (project) selectedProjectId = project.id;
 	sessions = [
@@ -193,7 +223,7 @@ async function selectSession(id: string) {
 		if (!id.startsWith("ses_")) {
 			const task = await daemon.getTask(id);
 			if (task.sessionId) {
-				await goto(`/?session=${encodeURIComponent(task.sessionId)}`, {
+				await goto(homeUrl(task.sessionId), {
 					replaceState: true,
 				});
 				return;
@@ -207,6 +237,7 @@ async function selectSession(id: string) {
 		)?.info;
 		if (recent?.providerID && recent.modelID)
 			model = `${recent.providerID}/${recent.modelID}`;
+		else model = preferredModel(selectedProjectId);
 		if (recent?.agent) agent = recent.agent;
 	} catch (reason) {
 		if (id === sessionId) report(reason);
@@ -219,13 +250,45 @@ $effect(() => {
 	if (ready && id !== sessionId) void selectSession(id);
 });
 $effect(() => {
+	const mode = viewMode;
+	const url = new URL(window.location.href);
+	if (mode === "chat") url.searchParams.delete("view");
+	else url.searchParams.set("view", mode);
+	window.history.replaceState({}, "", url);
+	if (mode !== "chat" && ready) void refreshBoard();
+});
+function modelKey(projectId: string) {
+	return `loom.model.${projectId}`;
+}
+function preferredModel(projectId: string) {
+	if (!projectId || typeof localStorage === "undefined") return "";
+	return localStorage.getItem(modelKey(projectId)) ?? "";
+}
+$effect(() => {
+	const value = model;
+	const projectId = selectedProjectId;
+	if (!ready || !projectId || typeof localStorage === "undefined") return;
+	if (value) localStorage.setItem(modelKey(projectId), value);
+	else localStorage.removeItem(modelKey(projectId));
+});
+$effect(() => {
 	const projectId = selectedProjectId;
 	if (!projectId) return;
 	const request = ++projectRequest;
 	chat
 		.catalog(projectId)
 		.then((result) => {
-			if (!disposed && request === projectRequest) catalog = result;
+			if (disposed || request !== projectRequest) return;
+			catalog = result;
+			if (
+				!sessionId &&
+				model &&
+				result.models.length &&
+				!result.models.some(
+					(item) => `${item.providerID}/${item.modelID}` === model,
+				)
+			)
+				model = "";
 		})
 		.catch((reason) => {
 			if (!disposed && request === projectRequest) report(reason);
@@ -249,6 +312,7 @@ onMount(() => {
 		try {
 			await refreshProjects();
 			legacyTasks = await daemon.listTasks();
+			model = preferredModel(selectedProjectId);
 			ready = true;
 			await selectSession(page.url.searchParams.get("session") ?? "");
 		} catch (reason) {
@@ -264,15 +328,23 @@ onMount(() => {
 		clearTimeout(timer);
 	};
 });
+function homeUrl(session = "") {
+	const params = new URLSearchParams();
+	if (session) params.set("session", session);
+	if (viewMode !== "chat") params.set("view", viewMode);
+	const query = params.toString();
+	return `/${query ? `?${query}` : ""}`;
+}
 async function openSession(id: string) {
 	draft = "";
 	if (window.innerWidth < 768) sidebarOpen = false;
-	await goto(`/?session=${encodeURIComponent(id)}`);
+	await goto(homeUrl(id));
 }
 async function newSession(projectId = selectedProjectId) {
 	selectedProjectId = projectId;
 	draft = "";
-	await goto("/");
+	model = preferredModel(projectId);
+	await goto(homeUrl());
 	if (sessionId) await selectSession("");
 }
 async function send(input: Parameters<typeof chat.send>[1]) {
@@ -296,7 +368,7 @@ async function send(input: Parameters<typeof chat.send>[1]) {
 				questions: [],
 			};
 			sessions = [{ ...created, projectId: selectedProjectId }, ...sessions];
-			await goto(`/?session=${encodeURIComponent(id)}`, { replaceState: true });
+			await goto(homeUrl(id), { replaceState: true });
 		}
 		await chat.send(id, input);
 		optimistic = {
@@ -344,13 +416,47 @@ async function retryConnection() {
 		report(reason);
 	}
 }
+function openRename(id: string, title: string) {
+	renameTarget = id;
+	renameTitle = title;
+	renameOpen = true;
+}
 async function rename() {
+	if (!renameTarget || !renameTitle.trim()) return;
 	try {
-		await chat.rename(sessionId, renameTitle);
+		await chat.rename(renameTarget, renameTitle.trim());
 		renameOpen = false;
-		await refreshSession(sessionId);
+		if (renameTarget === sessionId) await refreshSession(sessionId);
+		else await refreshProjects();
+		toast.success("Session renamed");
 	} catch (reason) {
 		toast.error(reason instanceof Error ? reason.message : "Rename failed");
+	}
+}
+async function removeSession() {
+	if (!deleteTarget) return;
+	try {
+		await chat.remove(deleteTarget.id);
+		sessions = sessions.filter((s) => s.id !== deleteTarget?.id);
+		toast.success("Session deleted");
+		if (deleteTarget.id === sessionId) {
+			deleteSessionOpen = false;
+			deleteTarget = null;
+			await goto(homeUrl());
+			await selectSession("");
+			return;
+		}
+		deleteSessionOpen = false;
+		deleteTarget = null;
+	} catch (reason) {
+		toast.error(reason instanceof Error ? reason.message : "Delete failed");
+	}
+}
+async function refreshBoard() {
+	try {
+		legacyTasks = await daemon.listTasks();
+	} catch (reason) {
+		report(reason);
 	}
 }
 async function showFiles(path = "") {
@@ -418,13 +524,34 @@ async function answer(requestId: string, answers: string[][]) {
     <aside class="fixed inset-y-0 left-0 z-40 flex w-[280px] shrink-0 flex-col border-r bg-sidebar md:relative" aria-label="Workspace sidebar">
       <div class="flex h-14 items-center justify-between px-4"><a href="/" class="flex items-center gap-2 text-sm font-semibold tracking-wide"><span class="flex size-6 items-center justify-center rounded-md bg-primary text-primary-foreground">L</span> loom</a><Button variant="ghost" size="icon" aria-label="Collapse sidebar" onclick={() => sidebarOpen = false}><PanelLeft size={16} /></Button></div>
       <div class="space-y-2 px-3 pb-3"><Button variant="outline" class="w-full justify-start bg-background/50" onclick={() => newSession()}><MessageSquarePlus size={16} />New session<span class="ml-auto text-muted-foreground">+</span></Button><div class="flex items-center gap-1"><Button variant="ghost" size="sm" class="flex-1 justify-start text-muted-foreground" onclick={() => searchOpen = !searchOpen}><Search size={15} />Search sessions</Button><Button variant="ghost" size="icon" title="Add project" aria-label="Add project" onclick={() => addProjectOpen = true}><FolderPlus size={16} /></Button></div>{#if searchOpen}<Input aria-label="Search sessions" placeholder="Find a conversation…" bind:value={search} />{/if}</div>
-      <nav class="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
+      <nav class="nice-scroll min-h-0 flex-1 overflow-y-auto px-3 pb-4">
         <p class="px-2 py-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Recent chats</p>
-        {#each filteredSessions.slice(0, 6) as session}<Button variant="ghost" class={`mb-0.5 h-8 w-full justify-start text-xs ${session.id === sessionId ? "bg-accent text-accent-foreground" : "text-muted-foreground"}`} onclick={() => openSession(session.id)}><span class="truncate">{session.title}</span></Button>{/each}
+        {#each filteredSessions.slice(0, 6) as session}
+          {@const active = session.id === sessionId}
+          <div class={`group mb-0.5 flex h-8 items-center rounded-md pr-1 ${active ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-accent/50"}`}>
+            {#if active}<span class="ml-1 h-4 w-0.5 shrink-0 rounded-full bg-primary" aria-hidden="true"></span>{/if}
+            <Button variant="ghost" class="h-8 min-w-0 flex-1 justify-start bg-transparent px-2 text-xs hover:bg-transparent" onclick={() => openSession(session.id)}><span class="truncate">{session.title}</span></Button>
+            <span class="hidden shrink-0 group-hover:flex">
+              <Button variant="ghost" size="icon" class="size-6" title="Rename session" aria-label={`Rename ${session.title}`} onclick={() => openRename(session.id, session.title)}><Pencil size={12} /></Button>
+              <Button variant="ghost" size="icon" class="size-6 text-destructive" title="Delete session" aria-label={`Delete ${session.title}`} onclick={() => { deleteTarget = session; deleteSessionOpen = true; }}><Trash2 size={12} /></Button>
+            </span>
+          </div>
+        {/each}
         {#if !filteredSessions.length}<p class="px-2 py-2 text-xs text-muted-foreground">{search ? "No matching conversations." : "Your conversations will appear here."}</p>{/if}
         {#each projects as project}
-          <section class="mt-5"><div class="flex items-center"><Button variant="ghost" size="icon" class="size-6" aria-label={`Toggle ${project.name}`} aria-expanded={!collapsed.includes(project.id)} onclick={() => collapsed = collapsed.includes(project.id) ? collapsed.filter((id) => id !== project.id) : [...collapsed, project.id]}><ChevronDown size={13} class={collapsed.includes(project.id) ? "-rotate-90" : ""} /></Button><Button variant="ghost" class="h-8 min-w-0 flex-1 justify-start px-1 text-xs font-medium" onclick={() => newSession(project.id)}><Folder size={14} class="text-teal-400" /><span class="truncate">{project.name}</span></Button><Button href={`/project/${project.id}`} variant="ghost" size="icon" class="size-6" aria-label={`Settings for ${project.name}`} title="Project tasks and settings"><Settings size={12} /></Button></div>
-            {#if !collapsed.includes(project.id)}<div class="ml-3 border-l pl-3">{#each filteredSessions.filter((s) => s.projectId === project.id) as session}<Button variant="ghost" class={`h-8 w-full justify-start px-2 text-xs ${session.id === sessionId ? "bg-accent" : "text-muted-foreground"}`} onclick={() => openSession(session.id)}><span class="truncate">{session.title}</span></Button>{/each}{#if !sessions.some((s) => s.projectId === project.id)}<p class="py-2 text-xs text-muted-foreground">No chats yet.</p>{/if}</div>{/if}
+          {@const selected = project.id === selectedProjectId}
+          <section class="mt-5"><div class={`flex items-center rounded-md ${selected ? "bg-accent/40" : ""}`}><Button variant="ghost" size="icon" class="size-6" aria-label={`Toggle ${project.name}`} aria-expanded={!collapsed.includes(project.id)} onclick={() => collapsed = collapsed.includes(project.id) ? collapsed.filter((id) => id !== project.id) : [...collapsed, project.id]}><ChevronDown size={13} class={collapsed.includes(project.id) ? "-rotate-90" : ""} /></Button><Button variant="ghost" class="h-8 min-w-0 flex-1 justify-start bg-transparent px-1 text-xs font-medium hover:bg-transparent" onclick={() => newSession(project.id)}><Folder size={14} class="text-teal-400" /><span class="truncate">{project.name}</span></Button><Button href={`/project/${project.id}`} variant="ghost" size="icon" class="size-6" aria-label={`Settings for ${project.name}`} title="Project tasks and settings"><Settings size={12} /></Button></div>
+            {#if !collapsed.includes(project.id)}<div class="ml-3 border-l pl-3">{#each filteredSessions.filter((s) => s.projectId === project.id) as session}
+              {@const active = session.id === sessionId}
+              <div class={`group flex h-8 items-center rounded-md pr-1 ${active ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-accent/50"}`}>
+                {#if active}<span class="ml-1 h-4 w-0.5 shrink-0 rounded-full bg-primary" aria-hidden="true"></span>{/if}
+                <Button variant="ghost" class="h-8 min-w-0 flex-1 justify-start bg-transparent px-2 text-xs hover:bg-transparent" onclick={() => openSession(session.id)}><span class="truncate">{session.title}</span></Button>
+                <span class="hidden shrink-0 group-hover:flex">
+                  <Button variant="ghost" size="icon" class="size-6" title="Rename session" aria-label={`Rename ${session.title}`} onclick={() => openRename(session.id, session.title)}><Pencil size={12} /></Button>
+                  <Button variant="ghost" size="icon" class="size-6 text-destructive" title="Delete session" aria-label={`Delete ${session.title}`} onclick={() => { deleteTarget = session; deleteSessionOpen = true; }}><Trash2 size={12} /></Button>
+                </span>
+              </div>
+            {/each}{#if !sessions.some((s) => s.projectId === project.id)}<p class="py-2 text-xs text-muted-foreground">No chats yet.</p>{/if}</div>{/if}
           </section>
         {/each}
         {#if legacyTasks.length}<section class="mt-6"><p class="px-2 py-2 text-[11px] uppercase tracking-wider text-muted-foreground">Task boards</p>{#each projects.filter(p => legacyTasks.some(t => t.projectId === p.id)) as project}<Button href={`/project/${project.id}`} variant="ghost" class="h-8 w-full justify-start text-xs text-muted-foreground">{project.name}<Badge variant="outline" class="ml-auto">{legacyTasks.filter(t => t.projectId === project.id).length}</Badge></Button>{/each}</section>{/if}
@@ -436,14 +563,28 @@ async function answer(requestId: string, answers: string[][]) {
   <main class="flex min-w-0 flex-1 flex-col">
     <header class="flex h-14 shrink-0 items-center gap-3 border-b px-4">
       {#if !sidebarOpen}<Button variant="ghost" size="icon" aria-label="Open sidebar" onclick={() => sidebarOpen = true}><PanelLeft size={16} /></Button>{/if}
-      <div class="min-w-0 flex-1"><p class="truncate text-sm font-medium">{conversation?.session.title ?? "New session"}</p>{#if selectedProject}<p class="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground"><span class="truncate">{selectedProject.name}</span><GitBranch size={11} />{selectedProject.defaultBranch}</p>{/if}</div>
-      {#if sessionId}<Button variant="ghost" size="icon" title="Rename session" aria-label="Rename session" onclick={() => { renameTitle = conversation?.session.title ?? ""; renameOpen = true; }}><Pencil size={15} /></Button><Button variant="outline" size="sm" onclick={() => showFiles()}><FileCode size={14} /><span class="hidden sm:inline">Changes</span></Button>{/if}
+      <div class="min-w-0 flex-1"><p class="truncate text-sm font-medium">{viewMode === "chat" ? (conversation?.session.title ?? "New session") : `${viewMode === "kanban" ? "Tasks" : "Progress"} · ${selectedProject?.name ?? "No project"}`}</p>{#if selectedProject}<p class="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground"><span class="truncate">{selectedProject.name}</span><GitBranch size={11} />{selectedProject.defaultBranch}</p>{/if}</div>
+      <Tabs.Root bind:value={viewMode} aria-label="Workspace mode"><Tabs.List class="h-8"><Tabs.Trigger value="chat" class="h-6 px-3 text-xs">Chat</Tabs.Trigger><Tabs.Trigger value="kanban" class="h-6 px-3 text-xs">Kanban</Tabs.Trigger><Tabs.Trigger value="progress" class="h-6 px-3 text-xs">Progress</Tabs.Trigger></Tabs.List></Tabs.Root>
+      {#if sessionId && viewMode === "chat"}<Button variant="ghost" size="icon" title="Rename session" aria-label="Rename session" onclick={() => openRename(sessionId, conversation?.session.title ?? "")}><Pencil size={15} /></Button><Button variant="outline" size="sm" onclick={() => showFiles()}><FileCode size={14} /><span class="hidden sm:inline">Changes</span></Button>{/if}
     </header>
-    <div bind:this={scroller} onscroll={(event) => { const node = event.currentTarget; follow = node.scrollHeight - node.scrollTop - node.clientHeight < 100; }} class="min-h-0 flex-1 overflow-y-auto">
+    {#if viewMode === "kanban"}
+      <div class="min-h-0 flex-1 overflow-y-auto px-5 py-5">
+        {#if !selectedProjectId}
+          <p class="py-12 text-center text-sm text-muted-foreground">Add a project to see its task board.</p>
+        {:else}
+          <KanbanBoard projectId={selectedProjectId} tasks={legacyTasks.filter((task) => task.projectId === selectedProjectId)} onChanged={refreshBoard} />
+        {/if}
+      </div>
+    {:else if viewMode === "progress"}
+      <div class="min-h-0 flex-1 overflow-y-auto px-5 py-5">
+        <ProgressBoard tasks={selectedProjectId ? legacyTasks.filter((task) => task.projectId === selectedProjectId) : legacyTasks} onChanged={refreshBoard} />
+      </div>
+    {:else}
+    <div bind:this={scroller} onscroll={(event) => { const node = event.currentTarget; follow = node.scrollHeight - node.scrollTop - node.clientHeight < 100; }} class="nice-scroll min-h-0 flex-1 overflow-y-auto">
       <div class={`mx-auto flex min-h-full w-full max-w-3xl flex-col px-5 ${sessionId ? "py-8" : "justify-center py-12"}`}>
         {#if loading || sessionLoading}<div role="status" class="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground"><LoaderCircle size={17} class="animate-spin" />Loading {loading ? "workspace" : "conversation"}…</div>
         {:else if !sessionId}<div class="mb-8 text-center"><div class="mx-auto mb-5 flex size-10 items-center justify-center rounded-xl border bg-card"><Sparkles size={20} class="text-teal-300" /></div><h1 class="text-2xl font-medium tracking-tight sm:text-3xl">What are we working on?</h1><p class="mt-3 text-sm text-muted-foreground">A little context. A clear idea. Let's build something.</p></div>{/if}
-        {#if sessionId}<div class="space-y-8" aria-live="polite" aria-relevant="additions text">{#each messages as message (message.info.id)}<Message {message} onfile={showFiles} />{/each}</div>
+        {#if sessionId}<div class="space-y-8" aria-live="polite" aria-relevant="additions text">{#each turns as turn (turn.key)}<Turn messages={turn.messages} {sessionId} projectId={selectedProjectId} onfile={showFiles} />{/each}</div>
           {#if busy}<div role="status" class="mt-5 flex items-center gap-2 text-xs text-muted-foreground"><LoaderCircle size={14} class="animate-spin" />{conversation?.permissions.length ? "Waiting for permission" : conversation?.questions.length ? "Waiting for your answer" : conversation?.status.message || "OpenCode is working…"}</div>{/if}
           {#each conversation?.permissions ?? [] as request}<div class="mt-5 space-y-3 rounded-xl border border-amber-500/30 bg-card p-4"><p class="flex items-center gap-2 text-sm font-medium"><ShieldCheck size={16} />Permission required: {request.permission}</p><pre class="overflow-auto whitespace-pre-wrap text-xs text-muted-foreground">{request.patterns.join("\n")}</pre><div class="flex flex-wrap gap-2"><Button size="sm" onclick={() => permission(request.id, "once")}>Allow once</Button><Button variant="outline" size="sm" onclick={() => permission(request.id, "always")}>Always allow</Button><Button variant="ghost" size="sm" onclick={() => permission(request.id, "reject")}>Deny</Button></div></div>{/each}
           {#each conversation?.questions ?? [] as question}<div class="mt-5"><QuestionCard {question} onanswer={(answers) => answer(question.id, answers)} /></div>{/each}
@@ -456,11 +597,24 @@ async function answer(requestId: string, answers: string[][]) {
         {/if}
       </div>
     </div>
-    {#if sessionId}<div class="shrink-0 border-t bg-background px-5 py-4"><div class="mx-auto max-w-3xl"><Composer projectId={selectedProjectId} {catalog} {busy} disabled={!conversation || sessionLoading} onsend={send} onstop={stop} bind:draft bind:model bind:agent /></div></div>{/if}
+    {#if sessionId && viewMode === "chat"}<div class="shrink-0 border-t bg-background px-5 py-4"><div class="mx-auto max-w-3xl"><Composer projectId={selectedProjectId} {catalog} {busy} disabled={!conversation || sessionLoading} onsend={send} onstop={stop} bind:draft bind:model bind:agent /></div></div>{/if}
+    {/if}
   </main>
 </div>
 <Dialog.Root bind:open={addProjectOpen}><Dialog.Content><Dialog.Header><Dialog.Title>Add project</Dialog.Title><Dialog.Description>Connect a local Git repository to OpenCode.</Dialog.Description></Dialog.Header><AddProjectForm oncreated={() => { addProjectOpen = false; void retryConnection(); }} /></Dialog.Content></Dialog.Root>
 <Dialog.Root bind:open={renameOpen}><Dialog.Content><Dialog.Header><Dialog.Title>Rename session</Dialog.Title><Dialog.Description>Choose a title you can find in the sidebar.</Dialog.Description></Dialog.Header><form class="space-y-4" onsubmit={(event) => { event.preventDefault(); void rename(); }}><Input aria-label="Session title" bind:value={renameTitle} maxlength={200} /><Dialog.Footer><Button type="submit" disabled={!renameTitle.trim()}>Save title</Button></Dialog.Footer></form></Dialog.Content></Dialog.Root>
+<AlertDialog.Root bind:open={deleteSessionOpen}>
+	<AlertDialog.Content>
+		<AlertDialog.Header>
+			<AlertDialog.Title>Delete session?</AlertDialog.Title>
+			<AlertDialog.Description>“{deleteTarget?.title}” and its OpenCode history will be removed permanently.</AlertDialog.Description>
+		</AlertDialog.Header>
+		<AlertDialog.Footer>
+			<AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
+			<AlertDialog.Action onclick={() => void removeSession()}>Delete session</AlertDialog.Action>
+		</AlertDialog.Footer>
+	</AlertDialog.Content>
+</AlertDialog.Root>
 <Dialog.Root bind:open={aboutOpen}><Dialog.Content><Dialog.Header><Dialog.Title>About Loom</Dialog.Title><Dialog.Description>Your local workspace for conversations with OpenCode.</Dialog.Description></Dialog.Header><p class="text-sm leading-6 text-muted-foreground">Chats are saved in OpenCode. Use @ to attach project files or agents. The Changes panel shows file edits; task worktrees are available from the sidebar.</p><Badge variant="outline">{connected ? "OpenCode connected" : "Connection unavailable"}</Badge></Dialog.Content></Dialog.Root>
 <Dialog.Root bind:open={fileOpen}><Dialog.Content class="flex max-h-[85svh] flex-col overflow-hidden sm:max-w-5xl"><Dialog.Header><Dialog.Title class="truncate pr-8">{fileName || "Session changes"}</Dialog.Title><Dialog.Description>{fileName ? "Inspect file content and changes made in this session." : `${diffs.length} changed files in this session.`}</Dialog.Description></Dialog.Header>
   {#if fileLoading}<p class="py-6 text-sm text-muted-foreground">Loading file…</p>{:else if fileError}<p role="alert" class="text-sm text-destructive">{fileError}</p>{:else if !fileName}<div class="min-h-0 overflow-auto">{#each diffs as diff}<Button variant="ghost" class="h-auto w-full justify-start py-3" onclick={() => showFiles(diff.file)}><FileCode size={15} /><span class="min-w-0 flex-1 truncate text-left">{diff.file}</span><span class="text-xs text-emerald-400">+{diff.additions}</span><span class="text-xs text-red-400">−{diff.deletions}</span></Button>{/each}{#if !diffs.length}<p class="py-8 text-center text-sm text-muted-foreground">No file changes in this session yet.</p>{/if}</div>
