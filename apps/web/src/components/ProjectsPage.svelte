@@ -152,7 +152,7 @@ async function refreshSession(id: string) {
 	connected = true;
 	const project = projects.find(
 		(p) =>
-			p.path.replace(/\/$/, "") === result.session.directory.replace(/\/$/, ""),
+			p.id === result.session.projectId || p.path.replace(/\/$/, "") === result.session.directory.replace(/\/$/, ""),
 	);
 	if (project) selectedProjectId = project.id;
 	sessions = [
@@ -427,7 +427,7 @@ async function answer(requestId: string, answers: string[][]) {
             {#if !collapsed.includes(project.id)}<div class="ml-3 border-l pl-3">{#each filteredSessions.filter((s) => s.projectId === project.id) as session}<Button variant="ghost" class={`h-8 w-full justify-start px-2 text-xs ${session.id === sessionId ? "bg-accent" : "text-muted-foreground"}`} onclick={() => openSession(session.id)}><span class="truncate">{session.title}</span></Button>{/each}{#if !sessions.some((s) => s.projectId === project.id)}<p class="py-2 text-xs text-muted-foreground">No chats yet.</p>{/if}</div>{/if}
           </section>
         {/each}
-        {#if legacyTasks.length}<section class="mt-6"><p class="px-2 py-2 text-[11px] uppercase tracking-wider text-muted-foreground">Tasks</p>{#each legacyTasks.filter((t) => t.title.toLowerCase().includes(search.toLowerCase())) as task}<Button href={`/task/${task.id}`} variant="ghost" class="h-8 w-full justify-start text-xs text-muted-foreground"><span class="truncate">{task.title}</span><span class={`ml-auto size-1.5 shrink-0 rounded-full ${task.status === "failed" ? "bg-destructive" : "bg-muted-foreground"}`}></span></Button>{/each}</section>{/if}
+        {#if legacyTasks.length}<section class="mt-6"><p class="px-2 py-2 text-[11px] uppercase tracking-wider text-muted-foreground">Task boards</p>{#each projects.filter(p => legacyTasks.some(t => t.projectId === p.id)) as project}<Button href={`/project/${project.id}`} variant="ghost" class="h-8 w-full justify-start text-xs text-muted-foreground">{project.name}<Badge variant="outline" class="ml-auto">{legacyTasks.filter(t => t.projectId === project.id).length}</Badge></Button>{/each}</section>{/if}
       </nav>
       <div class="flex items-center gap-1 border-t p-3"><Button href="/settings" variant="ghost" size="icon" title="Settings" aria-label="Settings"><Settings size={16} /></Button><Button variant="ghost" size="icon" title="About Loom" aria-label="About Loom" onclick={() => aboutOpen = true}><CircleHelp size={16} /></Button><Button variant="ghost" size="sm" class="ml-auto text-xs text-muted-foreground" onclick={retryConnection} title="Refresh connection"><span class={`size-1.5 rounded-full ${connected ? "bg-emerald-400" : "bg-amber-400"}`}></span>{connected ? "Connected" : "Reconnect"}</Button></div>
     </aside>

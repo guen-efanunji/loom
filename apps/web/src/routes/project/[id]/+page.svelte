@@ -1,135 +1,38 @@
 <script lang="ts">
-import { Textarea } from "$lib/components/ui/textarea";
-import TaskBoard from "$lib/components/TaskBoard.svelte";
-import { Input } from "$lib/components/ui/input";
-import { Button } from "$lib/components/ui/button";
 import { onMount } from "svelte";
 import { page } from "$app/state";
-import {
-	type DaemonEvent,
-	daemon,
-	formatDuration,
-	formatStatus,
-	type Project,
-	parseDaemonEvent,
-	provisionDaemonToken,
-	type SchedulerState,
-	type Task,
-	websocketProtocols,
-	websocketUrl,
-} from "$lib/daemon";
+import TaskBoard from "$lib/components/TaskBoard.svelte";
+import { Button } from "$lib/components/ui/button";
+import { Input } from "$lib/components/ui/input";
+import { Textarea } from "$lib/components/ui/textarea";
+import { daemon, type Epic, type Project, type Task } from "$lib/daemon";
 
 let project = $state<Project | null>(null);
 let tasks = $state<Task[]>([]);
-let scheduler = $state<SchedulerState>({ running: [], queued: [] });
+let epics = $state<Epic[]>([]);
 let loading = $state(true);
-let stale = $state(false);
-let unavailable = $state(false);
 let error = $state("");
 let title = $state("");
 let prompt = $state("");
-let batch = $state("");
 let submitting = $state(false);
-let action = $state("");
-let socket: WebSocket | undefined;
-let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 const id = $derived(page.params.id ?? "");
 const projectTasks = $derived(tasks.filter((task) => task.projectId === id));
-
 async function refresh() {
 	try {
-		const [data, allTasks, state] = await Promise.all([
+		[project, tasks, epics] = await Promise.all([
 			daemon.getProject(id),
 			daemon.listTasks(),
-			daemon.getScheduler(),
+			daemon.listEpics(id),
 		]);
-		project = data;
-		tasks = allTasks;
-		scheduler = state;
-		stale = false;
-		unavailable = false;
 		error = "";
-	} catch (reason: unknown) {
-		if (!project) unavailable = true;
-		stale = Boolean(project);
-		error =
-			reason instanceof Error ? reason.message : "Unable to refresh project";
+	} catch (reason) {
+		error = reason instanceof Error ? reason.message : "Unable to load project";
 	} finally {
 		loading = false;
 	}
 }
-
-function applyEvent(event: DaemonEvent) {
-	if (event.type === "scheduler.changed")
-		scheduler = { running: scheduler.running, queued: scheduler.queued };
-	if (event.type === "task.created" && event.task.projectId === id)
-		tasks = [...tasks, event.task];
-	if (event.type === "task.updated" || event.type === "task.created")
-		tasks = tasks.map((task) =>
-			task.id === event.task.id ? event.task : task,
-		);
-	if (
-		event.type === "task.started" ||
-		event.type === "task.completed" ||
-		event.type === "task.failed" ||
-		event.type === "task.cancelled"
-	)
-		refresh();
-	if (event.type === "task.discarded")
-		tasks = tasks.filter((task) => task.id !== event.taskId);
-}
-
-let disposed = false;
-
-function connect() {
-	if (disposed) return;
-	provisionDaemonToken()
-		.then(() => {
-			if (disposed) return;
-			socket = new WebSocket(websocketUrl(), websocketProtocols());
-			socket.onopen = () => refresh();
-			socket.onmessage = (message) => {
-				try {
-					applyEvent(parseDaemonEvent(JSON.parse(message.data)));
-				} catch {}
-			};
-			socket.onclose = () => {
-				if (!disposed) reconnectTimer = setTimeout(connect, 2000);
-			};
-		})
-		.catch(() => {
-			unavailable = true;
-			if (!disposed) reconnectTimer = setTimeout(connect, 2000);
-		});
-}
-
-onMount(() => {
-	refresh();
-	connect();
-	return () => {
-		disposed = true;
-		if (reconnectTimer) clearTimeout(reconnectTimer);
-		socket?.close();
-	};
-});
-
-async function runTask(task: Task) {
-	action = task.id;
-	try {
-		await daemon.startTask(task.id);
-		await refresh();
-	} catch (reason: unknown) {
-		error = reason instanceof Error ? reason.message : "Unable to run task";
-	} finally {
-		action = "";
-	}
-}
-
-async function createSingle() {
-	if (!title.trim() || !prompt.trim()) {
-		error = "Title and prompt are required";
-		return;
-	}
+async function createTask() {
+	if (!title.trim() || !prompt.trim()) return;
 	submitting = true;
 	try {
 		await daemon.createTask({
@@ -140,47 +43,24 @@ async function createSingle() {
 		title = "";
 		prompt = "";
 		await refresh();
-	} catch (reason: unknown) {
+	} catch (reason) {
 		error = reason instanceof Error ? reason.message : "Unable to create task";
 	} finally {
 		submitting = false;
 	}
 }
-
-async function createBatch() {
-	const tasksToCreate = batch
-		.split("\n\n")
-		.map((item) => {
-			const [taskTitle, ...lines] = item.split("\n");
-			return {
-				title: taskTitle?.trim() ?? "",
-				prompt: lines.join("\n").trim(),
-			};
-		})
-		.filter((item) => item.title && item.prompt);
-	if (!tasksToCreate.length) {
-		error = "Add one title and prompt per block, separated by a blank line";
-		return;
-	}
-	submitting = true;
+async function runTask(task: Task) {
 	try {
-		await daemon.createTaskBatch(id, tasksToCreate);
-		batch = "";
+		await daemon.startTask(task.id);
 		await refresh();
-	} catch (reason: unknown) {
-		error = reason instanceof Error ? reason.message : "Unable to create batch";
-	} finally {
-		submitting = false;
+	} catch (reason) {
+		error = reason instanceof Error ? reason.message : "Unable to start task";
 	}
 }
+onMount(() => {
+	refresh();
+	const timer = setInterval(refresh, 3000);
+	return () => clearInterval(timer);
+});
 </script>
-
-<div class="mx-auto max-w-6xl px-4 py-8 sm:px-6">
-	{#if loading}<p class="text-neutral-400">Loading project...</p>{:else if unavailable}<div class="rounded-xl border border-red-900 bg-red-950/40 p-5 text-red-200"><p>{error || "Loom daemon is unavailable"}</p><Button type="submit" class="mt-4 rounded-lg border border-red-800 px-3 py-2" onclick={refresh}>Retry</Button></div>{:else if project}
-		<a href="/" class="text-sm text-neutral-500 hover:text-neutral-200">← Projects</a>
-		<div class="mt-8 flex flex-wrap items-start justify-between gap-4"><div><h1 class="text-3xl font-semibold">{project.name}</h1><p class="mt-2 break-all text-sm text-neutral-500">{project.path}</p></div><span class="rounded-full bg-neutral-800 px-3 py-1 text-sm text-neutral-300">{project.defaultBranch}</span></div>
-		{#if stale}<p class="mt-4 rounded-lg border border-amber-800 bg-amber-950/40 p-3 text-sm text-amber-200">Showing stale state. Reconnecting to Loom...</p>{/if}
-		<div class="mt-6 grid gap-3 sm:grid-cols-2"><div class="rounded-xl border border-neutral-800 bg-neutral-900 p-4"><p class="text-sm text-neutral-500">Running</p><p class="mt-1 text-2xl font-semibold">{scheduler.running.length}</p></div><div class="rounded-xl border border-neutral-800 bg-neutral-900 p-4"><p class="text-sm text-neutral-500">Queued</p><p class="mt-1 text-2xl font-semibold">{scheduler.queued.length}</p></div></div>
-		<div class="mt-8 grid gap-6 lg:grid-cols-[1fr_380px]"><section class="rounded-xl border border-neutral-800 bg-neutral-900 p-5"><div class="mb-4 flex items-center justify-between"><h2 class="font-medium">Task board</h2><Button type="submit" class="text-sm text-neutral-400 hover:text-white" onclick={refresh}>Refresh</Button></div><TaskBoard tasks={projectTasks} onRun={runTask} />{#if projectTasks.length === 0}<p class="text-sm text-neutral-500">No tasks yet.</p>{:else}<div class="grid gap-3">{#each projectTasks as task}<article class="rounded-lg border border-neutral-800 p-4"><div class="flex items-start justify-between gap-3"><div class="min-w-0"><a href={`/task/${task.id}`} class="font-medium hover:text-blue-300">{task.title}</a><p class="mt-2 line-clamp-2 text-sm text-neutral-400">{task.prompt}</p></div><span class="shrink-0 text-xs text-neutral-500">{formatStatus(task.status)}</span></div><div class="mt-3 grid gap-1 text-xs text-neutral-500 sm:grid-cols-3"><span>Duration: {formatDuration(task.startedAt, task.completedAt)}</span><span>Run: {task.sessionId ?? "Pending"}</span><span>Workspace: {task.workspaceId ?? "Pending"}</span></div><div class="mt-4 flex flex-wrap gap-2">{#if ["queued", "preparing"].includes(task.status)}<Button type="submit" disabled={action === task.id} class="rounded border border-blue-800 px-3 py-1 text-xs text-blue-200 disabled:opacity-50" onclick={() => runTask(task)}>Run</Button>{/if}<a href={`/task/${task.id}`} class="rounded border border-neutral-700 px-3 py-1 text-xs text-neutral-300">Review</a></div></article>{/each}</div>{/if}</section><div class="space-y-6"><form class="space-y-4 rounded-xl border border-neutral-800 bg-neutral-900 p-5" onsubmit={(event) => { event.preventDefault(); createSingle(); }}><h2 class="font-medium">New task</h2><Input aria-label="Task title" bind:value={title} placeholder="Title" class="w-full rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-2" maxlength={200} /><Textarea aria-label="Task prompt" bind:value={prompt} placeholder="Prompt" rows={5} class="w-full rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-2"></Textarea><Button type="submit" disabled={submitting} class="rounded-lg bg-white px-4 py-2 text-sm text-black disabled:opacity-50">Create task</Button></form><form class="space-y-4 rounded-xl border border-neutral-800 bg-neutral-900 p-5" onsubmit={(event) => { event.preventDefault(); createBatch(); }}><h2 class="font-medium">Batch tasks</h2><p class="text-xs text-neutral-500">Each block uses the first line as the title and the remaining lines as the prompt.</p><Textarea aria-label="Batch tasks" bind:value={batch} placeholder="Frontend dashboard\nBuild the dashboard...\n\nBackend API\nBuild the API..." rows={8} class="w-full rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-2"></Textarea><Button type="submit" disabled={submitting} class="rounded-lg border border-neutral-600 px-4 py-2 text-sm disabled:opacity-50">Create batch</Button></form></div></div>
-	{:else}<div class="rounded-xl border border-red-900 bg-red-950/40 p-5 text-red-200">{error || "Project not found"}</div>{/if}
-</div>
+<main class="mx-auto max-w-[1500px] px-4 py-8 sm:px-6"><a href="/" class="text-sm text-neutral-500 hover:text-neutral-200">← Projects</a>{#if loading}<p class="mt-8 text-neutral-400">Loading project...</p>{:else if project}<header class="mt-6 flex flex-wrap items-start justify-between gap-4"><div><h1 class="text-3xl font-semibold">{project.name}</h1><p class="mt-2 text-sm text-neutral-500">{project.path}</p></div><div class="flex gap-2"><span class="rounded-full bg-neutral-800 px-3 py-2 text-sm">{project.defaultBranch}</span><a class="rounded-md bg-white px-4 py-2 text-sm font-medium text-black" href={`/epic/new?project=${project.id}`}>New work</a></div></header>{#if error}<p class="mt-4 rounded-lg border border-red-900 bg-red-950/40 p-3 text-sm text-red-200">{error}</p>{/if}<section class="mt-8"><div class="mb-3 flex items-center justify-between"><h2 class="text-lg font-medium">Epics</h2><Button variant="ghost" onclick={refresh}>Refresh</Button></div>{#if epics.length}<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{#each epics as epic}<a href={`/epic/${epic.id}`} class="rounded-xl border border-neutral-800 bg-neutral-900 p-4 hover:border-neutral-600"><div class="flex justify-between gap-3"><h3 class="font-medium">{epic.title}</h3><span class="text-xs uppercase text-neutral-500">{epic.status}</span></div><p class="mt-2 line-clamp-2 text-sm text-neutral-500">{epic.prompt}</p></a>{/each}</div>{:else}<p class="text-sm text-neutral-500">No Epic yet. Use New work to ask the planner.</p>{/if}</section><section class="mt-8 overflow-x-auto rounded-xl border border-neutral-800 bg-neutral-900 p-5"><h2 class="mb-4 text-lg font-medium">Task board</h2><TaskBoard tasks={projectTasks} onRun={runTask} /></section><form class="mt-8 max-w-xl space-y-3 rounded-xl border border-neutral-800 bg-neutral-900 p-5" onsubmit={event => { event.preventDefault(); createTask(); }}><h2 class="font-medium">Quick task</h2><Input bind:value={title} placeholder="Task title" maxlength={200} /><Textarea bind:value={prompt} rows={4} placeholder="Implementation prompt"></Textarea><Button type="submit" disabled={submitting}>Create task</Button></form>{:else}<p class="mt-8 text-red-300">{error || "Project not found"}</p>{/if}</main>
