@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { access } from "node:fs/promises";
-import { delimiter } from "node:path";
+import { delimiter, join } from "node:path";
 import { z } from "zod";
 
 type Fetcher = (input: string, init?: RequestInit) => Promise<Response>;
@@ -129,7 +129,7 @@ export async function discoverExecutable(
 	}
 	const path = env.PATH?.split(delimiter) ?? [];
 	for (const directory of path) {
-		const candidate = `${directory}/opencode`;
+		const candidate = join(directory, process.platform === "win32" ? "opencode.exe" : "opencode");
 		try {
 			await fileAccess(candidate);
 			return candidate;

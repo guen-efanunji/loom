@@ -2,8 +2,8 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createClient } from "@libsql/client";
-import { drizzle } from "drizzle-orm/libsql";
+import { Database } from "bun:sqlite";
+import { drizzle } from "drizzle-orm/bun-sqlite";
 
 import { createDb, databaseSchemaStatements } from "./index";
 import {
@@ -15,7 +15,7 @@ import {
 import * as schema from "./schema";
 
 const db = drizzle({
-	client: createClient({ url: ":memory:" }),
+	client: new Database(":memory:"),
 	schema,
 });
 

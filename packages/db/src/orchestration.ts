@@ -68,10 +68,10 @@ export function orchestrationRepository(db: Database) {
 			},
 			context: string,
 		) {
-			await db.transaction(async (tx) => {
-				const current = await tx.query.epics.findFirst({
+			db.transaction((tx) => {
+				const current = tx.query.epics.findFirst({
 					where: eq(epics.id, epicId),
-				});
+				}).sync();
 				if (current?.status !== "ready" || current.approvedAt)
 					throw new Error("Plan cannot start from its current state");
 				if (
@@ -88,20 +88,20 @@ export function orchestrationRepository(db: Database) {
 				};
 				for (const task of plan.tasks) {
 					const id = taskIdFor(task.key);
-					await tx
+					tx
 						.insert(tasks)
-						.values({ id, projectId, title: task.title, prompt: task.prompt });
-					await tx
+						.values({ id, projectId, title: task.title, prompt: task.prompt }).run();
+					tx
 						.insert(epicTasks)
-						.values({ taskId: id, epicId, key: task.key });
+						.values({ taskId: id, epicId, key: task.key }).run();
 				}
 				for (const task of plan.tasks)
 					for (const dep of task.dependsOn)
-						await tx.insert(taskDependencies).values({
+						tx.insert(taskDependencies).values({
 							taskId: taskIdFor(task.key),
 							dependsOnTaskId: taskIdFor(dep),
-						});
-				await tx
+						}).run();
+				tx
 					.update(epics)
 					.set({
 						status: "running",
@@ -110,13 +110,13 @@ export function orchestrationRepository(db: Database) {
 						approvedAt: new Date(),
 						errorMessage: null,
 					})
-					.where(eq(epics.id, epicId));
-				await tx.insert(auditEvents).values({
+					.where(eq(epics.id, epicId)).run();
+				tx.insert(auditEvents).values({
 					id: randomUUID(),
 					epicId,
 					type: "plan.approved",
 					detail: JSON.stringify(plan),
-				});
+				}).run();
 			});
 		},
 		artifacts: (taskIds: string[]) =>
@@ -132,12 +132,12 @@ export function orchestrationRepository(db: Database) {
 			taskId: string,
 			artifacts: Array<{ type: string; path: string; summary: string }>,
 		) {
-			await db.transaction(async (tx) => {
-				await tx.delete(taskArtifacts).where(eq(taskArtifacts.taskId, taskId));
+			db.transaction((tx) => {
+				tx.delete(taskArtifacts).where(eq(taskArtifacts.taskId, taskId)).run();
 				for (const artifact of artifacts)
-					await tx
+					tx
 						.insert(taskArtifacts)
-						.values({ ...artifact, taskId, id: randomUUID() });
+						.values({ ...artifact, taskId, id: randomUUID() }).run();
 			});
 		},
 		createPlannerRun: (input: InferInsertModel<typeof plannerRuns>) =>

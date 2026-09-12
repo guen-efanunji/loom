@@ -154,6 +154,10 @@ function validateSegment(value: string, label: string): void {
 	}
 }
 
+function worktreeRoot(home: string) {
+	return resolve(home === homedir() && process.env.LOOM_HOME ? process.env.LOOM_HOME : join(home, ".loom"), "worktrees");
+}
+
 export function getWorktreePath(
 	projectId: string,
 	taskId: string,
@@ -164,9 +168,7 @@ export function getWorktreePath(
 	validateSegment(taskId, "Task ID");
 	if (runId) validateSegment(runId, "Run ID");
 	return resolve(
-		home,
-		".loom",
-		"worktrees",
+		worktreeRoot(home),
 		projectId,
 		taskId,
 		...(runId ? [runId] : []),
@@ -258,7 +260,7 @@ export class WorktreeManager {
 	async create(input: WorktreeInput): Promise<Workspace> {
 		const repository = await validateRepository(input.projectPath, this.runner);
 		if (
-			resolve(input.projectPath) === resolve(this.home, ".loom", "worktrees")
+			resolve(input.projectPath) === worktreeRoot(this.home)
 		) {
 			throw new WorktreeError(
 				"SAFETY_ERROR",
@@ -274,7 +276,7 @@ export class WorktreeManager {
 		const branch = getWorktreeBranch(input.taskId, input.runId);
 		if (
 			resolve(path) !== path ||
-			!resolve(path).startsWith(resolve(this.home, ".loom", "worktrees") + sep)
+			!resolve(path).startsWith(worktreeRoot(this.home) + sep)
 		) {
 			throw new WorktreeError(
 				"SAFETY_ERROR",
@@ -451,7 +453,7 @@ export class WorktreeManager {
 		taskIds: readonly string[] = [],
 	): Promise<OrphanWorkspace[]> {
 		validateSegment(projectId, "Project ID");
-		const projectRoot = resolve(this.home, ".loom", "worktrees", projectId);
+		const projectRoot = resolve(worktreeRoot(this.home), projectId);
 		const entries = await readdirSafe(projectRoot);
 		const expectedTasks = new Set(taskIds);
 		const orphans: OrphanWorkspace[] = [];
@@ -560,7 +562,7 @@ export async function removeManagedDirectory(
 	path: string,
 	home = homedir(),
 ): Promise<void> {
-	const root = resolve(home, ".loom", "worktrees");
+	const root = worktreeRoot(home);
 	const candidate = resolve(path);
 	if (candidate === root || !candidate.startsWith(`${root}${sep}`)) {
 		throw new WorktreeError(

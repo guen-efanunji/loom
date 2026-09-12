@@ -1,4 +1,4 @@
-import Database from "libsql";
+import { Database } from "bun:sqlite";
 
 const schemaStatements = [
 	"PRAGMA foreign_keys = ON",

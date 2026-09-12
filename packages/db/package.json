@@ -23,9 +23,7 @@
 		"test": "bun test"
 	},
 	"dependencies": {
-		"@libsql/client": "0.18.0",
 		"drizzle-orm": "^0.45.2",
-		"libsql": "catalog:",
 		"zod": "catalog:"
 	},
 	"devDependencies": {

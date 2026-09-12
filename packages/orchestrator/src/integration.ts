@@ -37,7 +37,9 @@ export async function runChecks(
 	for (const name of ["install", "lint", "test", "build"] as const) {
 		const command = context.commands[name]?.trim();
 		if (!command) continue;
-		const result = await runCommand("/bin/sh", ["-c", command], cwd, 600000);
+		const result = process.platform === "win32"
+			? await runCommand(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", command], cwd, 600000)
+			: await runCommand("/bin/sh", ["-c", command], cwd, 600000);
 		checks.push({ name, command, ...result });
 		await onCheck?.(checks);
 		if (name === "install" && result.exitCode !== 0) break;
