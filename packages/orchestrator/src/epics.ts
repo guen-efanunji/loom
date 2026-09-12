@@ -466,7 +466,7 @@ export class EpicService {
 				if (!member) return;
 				if (action !== "retry")
 					throw new Error(
-						"Epic task workspaces are retained for integration; use the Epic review",
+						`Epic tasks cannot be ${action === "remove" ? "deleted" : "changed"} directly; use the Epic review`,
 					);
 				if (
 					this.busy.has(member.epicId) ||

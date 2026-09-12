@@ -77,6 +77,7 @@ function recordToTask(
 				title: string;
 				prompt: string;
 				status: string;
+				position: number | null;
 				workspaceId: string | null;
 				sessionId: string | null;
 				createdAt: Date;
@@ -565,6 +566,42 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	app.post("/api/tasks/:id/retry", async (c) => {
 		try {
 			return c.json(await orchestrator.retry(c.req.param("id")), 202);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.patch("/api/tasks/:id", async (c) => {
+		try {
+			const input = z
+				.object({
+					title: z.string().trim().min(1).max(200).optional(),
+					prompt: z.string().trim().min(1).max(20000).optional(),
+				})
+				.parse(await jsonBody(c));
+			const task = await orchestrator.renameTask(c.req.param("id"), input);
+			return c.json(task);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.delete("/api/tasks/:id", async (c) => {
+		try {
+			await orchestrator.removeTask(c.req.param("id"));
+			return c.body(null, 204);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.post("/api/projects/:projectId/tasks/reorder", async (c) => {
+		try {
+			const input = z
+				.object({ orderedIds: z.array(z.string().min(1)).max(500) })
+				.parse(await jsonBody(c));
+			await orchestrator.reorderTasks(
+				c.req.param("projectId"),
+				input.orderedIds,
+			);
+			return c.json({ reordered: true });
 		} catch (error) {
 			return errorResponse(c, error);
 		}

@@ -12,7 +12,7 @@ const schemaStatements = [
 	"CREATE INDEX IF NOT EXISTS verification_identifier_idx ON verification (identifier)",
 	"CREATE TABLE IF NOT EXISTS projects (id text PRIMARY KEY NOT NULL, name text NOT NULL, path text NOT NULL, default_branch text NOT NULL, created_at integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL)",
 	"CREATE UNIQUE INDEX IF NOT EXISTS projects_path_uidx ON projects (path)",
-	"CREATE TABLE IF NOT EXISTS tasks (id text PRIMARY KEY NOT NULL, project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE, title text NOT NULL, prompt text NOT NULL, status text DEFAULT 'queued' NOT NULL, workspace_id text, session_id text, created_at integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL, started_at integer, completed_at integer, error_message text, merge_conflict_files text)",
+	"CREATE TABLE IF NOT EXISTS tasks (id text PRIMARY KEY NOT NULL, project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE, title text NOT NULL, prompt text NOT NULL, status text DEFAULT 'queued' NOT NULL, workspace_id text, session_id text, created_at integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL, started_at integer, completed_at integer, error_message text, merge_conflict_files text, position integer)",
 	"CREATE INDEX IF NOT EXISTS tasks_project_id_idx ON tasks (project_id)",
 	"CREATE TABLE IF NOT EXISTS workspaces (id text PRIMARY KEY NOT NULL, task_id text NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE, path text NOT NULL, branch text NOT NULL, base_commit text NOT NULL, created_at integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL)",
 	"CREATE UNIQUE INDEX IF NOT EXISTS workspaces_task_id_uidx ON workspaces (task_id)",
@@ -39,7 +39,7 @@ export function bootstrapDatabase(path: string): void {
 	try {
 		database.exec("BEGIN");
 		for (const statement of schemaStatements) database.exec(statement);
-		for (const column of ["merge_conflict_files text"]) {
+		for (const column of ["merge_conflict_files text", "position integer"]) {
 			try {
 				database.exec(`ALTER TABLE tasks ADD COLUMN ${column}`);
 			} catch (error) {

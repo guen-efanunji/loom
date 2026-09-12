@@ -46,6 +46,9 @@ function dependencies(runtime: AgentRuntime = new MockAgentRuntime()) {
 			tasks.set(id, updated);
 			return [updated];
 		}),
+		delete: mock(async (id: string) => {
+			tasks.delete(id);
+		}),
 	};
 	const worktree: Pick<
 		WorktreeManager,
@@ -289,4 +292,83 @@ test("reconciles interrupted tasks as failed with retained error", async () => {
 	const stored = await setup.taskRepository.getById(task.id);
 	expect(stored?.status).toBe("failed");
 	expect(stored?.errorMessage).toContain("restarting");
+});
+
+test("renames a queued task and publishes an update", async () => {
+	const setup = dependencies();
+	const task = await setup.orchestrator.create({
+		projectId: "project-1",
+		title: "Old",
+		prompt: "Old prompt",
+	});
+	const renamed = await setup.orchestrator.renameTask(task.id, {
+		title: "New",
+		prompt: "New prompt",
+	});
+	expect(renamed.title).toBe("New");
+	expect(renamed.prompt).toBe("New prompt");
+	expect((await setup.taskRepository.getById(task.id))?.title).toBe("New");
+	expect(setup.events.at(-1)?.type).toBe("task.updated");
+	await expect(setup.orchestrator.renameTask(task.id, {})).rejects.toThrow(
+		"Nothing to update",
+	);
+});
+
+test("rejects prompt changes once a task is running", async () => {
+	const setup = dependencies();
+	const task = await setup.orchestrator.create({
+		projectId: "project-1",
+		title: "Build",
+		prompt: "Build it",
+	});
+	await setup.taskRepository.update(task.id, { status: "running" });
+	await expect(
+		setup.orchestrator.renameTask(task.id, { prompt: "Changed" }),
+	).rejects.toThrow("cannot change");
+	const renamed = await setup.orchestrator.renameTask(task.id, {
+		title: "Renamed",
+	});
+	expect(renamed.title).toBe("Renamed");
+});
+
+test("removes a queued task and publishes discard", async () => {
+	const setup = dependencies();
+	const task = await setup.orchestrator.create({
+		projectId: "project-1",
+		title: "Temporary",
+		prompt: "Remove me",
+	});
+	await setup.orchestrator.removeTask(task.id);
+	expect(await setup.taskRepository.getById(task.id)).toBeUndefined();
+	expect(setup.events.at(-1)).toEqual({
+		type: "task.discarded",
+		taskId: task.id,
+	});
+});
+
+test("reorders project tasks and rejects mismatched lists", async () => {
+	const setup = dependencies();
+	for (const id of ["task-a", "task-b", "task-c"]) {
+		await setup.taskRepository.create({
+			id,
+			projectId: "project-1",
+			title: id,
+			prompt: id,
+			status: "queued",
+		} as TaskRecord);
+	}
+	await setup.orchestrator.reorderTasks("project-1", [
+		"task-c",
+		"task-a",
+		"task-b",
+	]);
+	expect((await setup.taskRepository.getById("task-c"))?.position).toBe(0);
+	expect((await setup.taskRepository.getById("task-a"))?.position).toBe(1);
+	expect((await setup.taskRepository.getById("task-b"))?.position).toBe(2);
+	await expect(
+		setup.orchestrator.reorderTasks("project-1", ["task-a"]),
+	).rejects.toThrow("must match");
+	await expect(
+		setup.orchestrator.reorderTasks("project-1", ["task-a", "task-b", "nope"]),
+	).rejects.toThrow("must match");
 });

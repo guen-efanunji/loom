@@ -32,6 +32,7 @@ export type TaskRepository = {
 	getById(id: string): Promise<TaskRecord | undefined>;
 	list?(): Promise<TaskRecord[]>;
 	update(id: string, input: Partial<CreateTask>): Promise<TaskRecord[]>;
+	delete(id: string): Promise<unknown>;
 };
 
 export type ProjectRepository = {
@@ -120,7 +121,10 @@ export type TaskLifecycleHooks = {
 	prepare(task: TaskRecord, workspace: WorktreeWorkspace): Promise<string>;
 	complete(task: TaskRecord, workspace: WorktreeWorkspace): Promise<void>;
 	settled(taskId: string): Promise<void>;
-	guard(taskId: string, action: "retry" | "merge" | "discard"): Promise<void>;
+	guard(
+		taskId: string,
+		action: "retry" | "merge" | "discard" | "rename" | "remove",
+	): Promise<void>;
 };
 
 export type OrchestratorDependencies = {
@@ -330,12 +334,18 @@ export class TaskOrchestrator {
 	async create(input: CreateTaskInput): Promise<Task> {
 		const project = await this.dependencies.projects.getById(input.projectId);
 		if (!project) throw new Error(`Project not found: ${input.projectId}`);
+		const existing = (await this.dependencies.tasks.list?.()) ?? [];
+		const position =
+			existing
+				.filter((task) => task.projectId === input.projectId)
+				.reduce((max, task) => Math.max(max, task.position ?? -1), -1) + 1;
 		const record = await this.dependencies.tasks.create({
 			id: this.id(),
 			projectId: input.projectId,
 			title: input.title,
 			prompt: input.prompt,
 			status: "queued",
+			position,
 			workspaceId: null,
 			sessionId: null,
 			startedAt: null,
@@ -384,6 +394,79 @@ export class TaskOrchestrator {
 		await this.publishRun(run, {});
 		await this.scheduler.enqueue(taskId, true);
 		return { id: run.id };
+	}
+
+	async renameTask(
+		taskId: string,
+		input: { title?: string; prompt?: string },
+	): Promise<Task> {
+		await this.lifecycle?.guard(taskId, "rename");
+		const record = await this.requireTask(taskId);
+		const title = input.title?.trim() ?? "";
+		const prompt = input.prompt?.trim() ?? "";
+		if (!title && !prompt) throw new Error("Nothing to update");
+		if (title && title.length > 200)
+			throw new Error("Title must be at most 200 characters");
+		if (prompt && !["queued", "failed", "cancelled"].includes(record.status))
+			throw new Error(
+				`Task prompt cannot change while the task is ${record.status}`,
+			);
+		const rows = await this.dependencies.tasks.update(taskId, {
+			...(title ? { title } : {}),
+			...(prompt ? { prompt } : {}),
+		});
+		const updated = rows[0] ?? {
+			...record,
+			...(title ? { title } : {}),
+			...(prompt ? { prompt } : {}),
+		};
+		this.tasksById.set(taskId, updated);
+		const task = toTask(updated);
+		await this.publish({ type: "task.updated", task });
+		return task;
+	}
+
+	async removeTask(taskId: string): Promise<void> {
+		await this.lifecycle?.guard(taskId, "remove");
+		const record = await this.requireTask(taskId);
+		if (
+			["queued", "preparing", "running"].includes(record.status) &&
+			canTransitionTaskStatus(record.status as TaskStatus, "cancelled")
+		)
+			await this.cancel(taskId);
+		else await this.scheduler.cancel(taskId);
+		const workspace = record.workspaceId
+			? await this.dependencies.workspaces.getById(record.workspaceId)
+			: await this.dependencies.workspaces.getByTaskId(taskId);
+		if (workspace) {
+			await this.safeDiscard(workspace, taskId);
+			if (this.dependencies.workspaces.delete)
+				await this.dependencies.workspaces.delete(workspace.id);
+		}
+		await this.dependencies.tasks.delete(taskId);
+		this.tasksById.delete(taskId);
+		await this.publish({ type: "task.discarded", taskId });
+	}
+
+	async reorderTasks(projectId: string, orderedIds: string[]): Promise<void> {
+		const all = (await this.dependencies.tasks.list?.()) ?? [];
+		const projectIds = new Set(
+			all.filter((task) => task.projectId === projectId).map((task) => task.id),
+		);
+		if (
+			orderedIds.length !== projectIds.size ||
+			!orderedIds.every((id) => projectIds.has(id))
+		)
+			throw new Error("Ordered tasks must match the project task list");
+		await Promise.all(
+			orderedIds.map((id, position) =>
+				this.dependencies.tasks.update(id, { position }),
+			),
+		);
+		for (const [index, id] of orderedIds.entries()) {
+			const cached = this.tasksById.get(id);
+			if (cached) this.tasksById.set(id, { ...cached, position: index });
+		}
 	}
 
 	async requestPermission(input: {
@@ -918,6 +1001,7 @@ function toTask(record: TaskRecord): Task {
 		title: record.title,
 		prompt: record.prompt,
 		status: record.status as Task["status"],
+		position: record.position ?? null,
 		workspaceId: record.workspaceId,
 		sessionId: record.sessionId,
 		createdAt: record.createdAt.toISOString(),

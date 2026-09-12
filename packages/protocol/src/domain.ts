@@ -36,6 +36,7 @@ export const taskSchema = z.object({
 	title: z.string().min(1),
 	prompt: z.string().min(1),
 	status: taskStatusSchema,
+	position: z.number().int().nullable().default(null),
 	workspaceId: z.string().min(1).nullable(),
 	sessionId: z.string().min(1).nullable(),
 	createdAt: z.iso.datetime(),

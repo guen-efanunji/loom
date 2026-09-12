@@ -1,7 +1,7 @@
 <script lang="ts">
-import { Button } from "$lib/components/ui/button";
 import { onMount } from "svelte";
 import { page } from "$app/state";
+import { Button } from "$lib/components/ui/button";
 import {
 	type AgentRun,
 	type DaemonEvent,
@@ -73,7 +73,11 @@ function applyEvent(event: DaemonEvent) {
 		(event.type === "task.updated" && event.task.id === id) ||
 		(event.type === "task.created" && event.task.id === id)
 	)
-		task = { ...task, ...event.task };
+		task = {
+			...task,
+			...event.task,
+			position: event.task.position ?? task?.position ?? null,
+		};
 	if (event.type === "agent.run.created" && event.run.taskId === id)
 		runs = [...runs, event.run];
 	if (event.type === "agent.run.updated" && event.run.taskId === id)

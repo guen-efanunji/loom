@@ -175,6 +175,81 @@ describe("server API", () => {
 		}
 	});
 
+	test("renames, reorders, and deletes tasks", async () => {
+		const setup = await createTestSetup();
+		const headers = {
+			Authorization: "Bearer test-token",
+			"Content-Type": "application/json",
+		};
+		const create = async (title: string) => {
+			const response = await setup.daemon.app.request("/api/tasks", {
+				method: "POST",
+				headers,
+				body: JSON.stringify({
+					projectId: setup.project.id,
+					title,
+					prompt: title,
+				}),
+			});
+			expect(response.status).toBe(201);
+			return (await response.json()) as { id: string; position: number | null };
+		};
+		try {
+			const first = await create("First");
+			const second = await create("Second");
+			expect(second.position).toBe((first.position ?? -1) + 1);
+			const renamed = await setup.daemon.app.request(`/api/tasks/${first.id}`, {
+				method: "PATCH",
+				headers,
+				body: JSON.stringify({ title: "Renamed" }),
+			});
+			expect(renamed.status).toBe(200);
+			expect(((await renamed.json()) as { title: string }).title).toBe(
+				"Renamed",
+			);
+			const empty = await setup.daemon.app.request(`/api/tasks/${first.id}`, {
+				method: "PATCH",
+				headers,
+				body: JSON.stringify({}),
+			});
+			expect(empty.status).toBe(500);
+			const reordered = await setup.daemon.app.request(
+				`/api/projects/${setup.project.id}/tasks/reorder`,
+				{
+					method: "POST",
+					headers,
+					body: JSON.stringify({ orderedIds: [second.id, first.id] }),
+				},
+			);
+			expect(reordered.status).toBe(200);
+			const mismatch = await setup.daemon.app.request(
+				`/api/projects/${setup.project.id}/tasks/reorder`,
+				{
+					method: "POST",
+					headers,
+					body: JSON.stringify({ orderedIds: [first.id] }),
+				},
+			);
+			expect(mismatch.status).toBe(500);
+			const deleted = await setup.daemon.app.request(`/api/tasks/${first.id}`, {
+				method: "DELETE",
+				headers,
+			});
+			expect(deleted.status).toBe(204);
+			expect(
+				(
+					await setup.daemon.app.request(`/api/tasks/${first.id}`, {
+						headers,
+					})
+				).status,
+			).toBe(404);
+		} finally {
+			await setup.daemon.close();
+			await rm(setup.root, { recursive: true, force: true });
+			await rm(setup.home, { recursive: true, force: true });
+		}
+	});
+
 	test("creates and cancels a queued task", async () => {
 		const setup = await createTestSetup();
 		const headers = {

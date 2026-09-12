@@ -53,6 +53,7 @@ export type Task = {
 	title: string;
 	prompt: string;
 	status: TaskStatus;
+	position: number | null;
 	workspaceId: string | null;
 	sessionId: string | null;
 	createdAt: string;
@@ -243,6 +244,18 @@ export const daemon = {
 		}),
 	retryTask: (id: string) =>
 		request<{ id: string }>(`/api/tasks/${id}/retry`, { method: "POST" }),
+	renameTask: (id: string, input: { title?: string; prompt?: string }) =>
+		request<Task>(`/api/tasks/${id}`, {
+			method: "PATCH",
+			body: JSON.stringify(input),
+		}),
+	deleteTask: (id: string) =>
+		request<void>(`/api/tasks/${id}`, { method: "DELETE" }),
+	reorderTasks: (projectId: string, orderedIds: string[]) =>
+		request<{ reordered: boolean }>(
+			`/api/projects/${projectId}/tasks/reorder`,
+			{ method: "POST", body: JSON.stringify({ orderedIds }) },
+		),
 	getRuns: (id: string) => request<AgentRun[]>(`/api/tasks/${id}/runs`),
 	getOutput: (id: string) =>
 		request<{ output: string; truncated: boolean }>(`/api/tasks/${id}/output`),
