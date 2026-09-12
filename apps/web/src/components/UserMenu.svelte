@@ -1,4 +1,5 @@
 <script lang="ts">
+import { Button } from "$lib/components/ui/button";
 import { goto } from "$app/navigation";
 import { authClient } from "$lib/auth-client";
 
@@ -16,10 +17,6 @@ async function handleSignOut() {
 		},
 	});
 }
-
-function goToLogin() {
-	goto("/login");
-}
 </script>
 
 <div class="relative">
@@ -31,21 +28,12 @@ function goToLogin() {
 			<span class="text-sm text-neutral-300 hidden sm:inline" title={user.email}>
 				{user.name || user.email?.split('@')[0] || 'User'}
 			</span>
-			<button
+			<Button type="submit"
 				onclick={handleSignOut}
 				class="rounded px-3 py-1 text-sm bg-red-600 hover:bg-red-700 text-white transition-colors"
 			>
 				Sign Out
-			</button>
-		</div>
-	{:else}
-		<div class="flex items-center gap-2">
-			<button
-				onclick={goToLogin}
-				class="rounded px-3 py-1 text-sm bg-indigo-600 hover:bg-indigo-700 text-white transition-colors"
-			>
-				Sign In
-			</button>
+			</Button>
 		</div>
 	{/if}
 </div>
