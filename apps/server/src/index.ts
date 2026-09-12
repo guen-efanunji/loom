@@ -531,7 +531,9 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	};
 }
 
-const daemon = await createApp({ startOpenCode: import.meta.main });
+const daemon = await createApp({
+	startOpenCode: import.meta.main || process.env.LOOM_DAEMON === "true",
+});
 export const app = daemon.app;
 export const apiHandler = new OpenAPIHandler(appRouter, {
 	plugins: [
@@ -542,7 +544,7 @@ export const apiHandler = new OpenAPIHandler(appRouter, {
 });
 export const rpcHandler = new RPCHandler(appRouter);
 
-if (import.meta.main) {
+if (import.meta.main || process.env.LOOM_DAEMON === "true") {
 	const server = Bun.serve({
 		fetch: app.fetch,
 		port: daemon.config.port,
@@ -556,5 +558,3 @@ if (import.meta.main) {
 	process.once("SIGINT", shutdown);
 	process.once("SIGTERM", shutdown);
 }
-
-export default app;
