@@ -434,6 +434,16 @@ export class TaskOrchestrator {
 		return this.dependencies.agentRuns.listByTask(taskId);
 	}
 
+	async output(
+		taskId: string,
+	): Promise<{ output: string; truncated: boolean }> {
+		const task = await this.requireTask(taskId);
+		if (!task.sessionId || !this.dependencies.runtime.readOutput)
+			return { output: "", truncated: false };
+		const result = await this.dependencies.runtime.readOutput(task.sessionId);
+		return { output: result?.output ?? "", truncated: result?.truncated ?? false };
+	}
+
 	async start(taskId: string): Promise<void> {
 		if (this.active.size > 0) throw new Error("Another task is already active");
 		await this.run(taskId);

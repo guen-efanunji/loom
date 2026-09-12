@@ -399,6 +399,13 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			return errorResponse(c, error);
 		}
 	});
+	app.get("/api/tasks/:id/output", async (c) => {
+		try {
+			return c.json(await orchestrator.output(c.req.param("id")));
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
 	app.get("/api/scheduler", (c) =>
 		c.json(orchestrator.getScheduler().getState()),
 	);
@@ -445,7 +452,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	app.post("/api/tasks/:id/start", async (c) => {
 		try {
 			await taskIdInputSchema.parseAsync({ taskId: c.req.param("id") });
-			await orchestrator.enqueueAndWait(c.req.param("id"));
+			await orchestrator.enqueue(c.req.param("id"));
 			return c.json({ accepted: true });
 		} catch (error) {
 			return errorResponse(c, error);

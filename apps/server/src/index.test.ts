@@ -235,11 +235,19 @@ describe("server API", () => {
 					})
 				).status,
 			).toBe(200);
-			const completed = await setup.daemon.app.request(
-				`/api/tasks/${task.id}`,
-				{ headers },
-			);
-			const completedTask = (await completed.json()) as { status: string };
+			// Start acknowledges enqueueing; completion is asynchronous.
+			let completedTask: { status: string } = { status: "queued" };
+			const deadline = Date.now() + 5_000;
+			while (Date.now() < deadline) {
+				const response = await setup.daemon.app.request(
+					`/api/tasks/${task.id}`,
+					{ headers },
+				);
+				completedTask = (await response.json()) as { status: string };
+				if (["completed", "failed", "cancelled"].includes(completedTask.status))
+					break;
+				await Bun.sleep(20);
+			}
 			expect(completedTask.status).toBe("completed");
 			const diff = await setup.daemon.app.request(
 				`/api/tasks/${task.id}/diff`,
