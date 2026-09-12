@@ -31,6 +31,7 @@ import { createBunWebSocket } from "hono/bun";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { z } from "zod";
+import { createChatRoutes } from "./chat";
 import { type DaemonConfig, loadDaemonConfig } from "./config";
 import { createContext } from "./context";
 import {
@@ -305,6 +306,8 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			},
 		})),
 	);
+
+	app.route("/api/chat", createChatRoutes({ projects: repos.projects }));
 
 	app.post("/api/projects", async (c) => {
 		try {
