@@ -37,6 +37,22 @@ describe("temporary git repository", () => {
 		home = "";
 	});
 
+	test("accepts an empty Git repository", async () => {
+		root = await mkdtemp(join(tmpdir(), "loom-empty-repository-"));
+		const process = Bun.spawn(["git", "init", "-b", "main"], {
+			cwd: root,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		expect(await process.exited).toBe(0);
+
+		const info = await validateRepository(root);
+		expect(info.path).toBe(root);
+		expect(info.defaultBranch).toBe("main");
+		expect(info.head).toBe("");
+		expect(info.clean).toBe(true);
+	});
+
 	test("validates, creates, diffs, and discards an isolated worktree", async () => {
 		root = await mkdtemp(join(tmpdir(), "loom-repository-"));
 		home = await mkdtemp(join(tmpdir(), "loom-home-"));

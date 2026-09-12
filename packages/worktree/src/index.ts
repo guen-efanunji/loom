@@ -217,7 +217,17 @@ export async function validateRepository(
 			{ path },
 		);
 	}
-	const head = await runGit(runner, ["rev-parse", "HEAD"], path);
+	let head = "";
+	try {
+		head = await runGit(runner, ["rev-parse", "HEAD"], path);
+	} catch (error) {
+		if (
+			!(error instanceof WorktreeError) ||
+			error.code !== "COMMAND_FAILED" ||
+			!error.details.stderr.includes("ambiguous argument 'HEAD'")
+		)
+			throw error;
+	}
 	const status = await runGit(runner, ["status", "--porcelain"], path);
 	let defaultBranch = "";
 	try {
@@ -299,7 +309,9 @@ export class WorktreeManager {
 		await mkdir(dirname(path), { recursive: true });
 		await runGit(
 			this.runner,
-			["worktree", "add", "-b", branch, path, repository.defaultBranch],
+			repository.head
+				? ["worktree", "add", "-b", branch, path, repository.defaultBranch]
+				: ["worktree", "add", "--orphan", "-b", branch, path],
 			repository.path,
 		);
 		await writeFile(
