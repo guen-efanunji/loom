@@ -222,6 +222,11 @@ export function createChatRoutes(options: {
 		);
 		return c.json({ aborted: true });
 	});
+	app.delete("/sessions/:id", async (c) => {
+		const current = await session(c.req.param("id"));
+		await request(`/session/${current.id}`, current.directory, {}, "DELETE");
+		return c.body(null, 204);
+	});
 	app.post("/sessions/:id/rename", async (c) => {
 		const current = await session(c.req.param("id"));
 		const input = z

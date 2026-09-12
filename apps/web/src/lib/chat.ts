@@ -96,6 +96,10 @@ export const chat = {
 	abort: (id: string) => post(`/sessions/${encodeURIComponent(id)}/abort`),
 	rename: (id: string, title: string) =>
 		post(`/sessions/${encodeURIComponent(id)}/rename`, { title }),
+	remove: (id: string) =>
+		request<void>(`${root}/sessions/${encodeURIComponent(id)}`, {
+			method: "DELETE",
+		}),
 	diff: (id: string) =>
 		request<FileDiff[]>(`${root}/sessions/${encodeURIComponent(id)}/diff`),
 	catalog: (projectId: string) =>
