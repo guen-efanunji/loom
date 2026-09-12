@@ -36,6 +36,7 @@ export type Task = {
 	startedAt: string | null;
 	completedAt: string | null;
 };
+export type Epic = { id: string; projectId: string; title: string; prompt: string; status: string; plan: { tasks: Array<{ key: string; title: string; prompt: string; dependsOn: string[] }> } | null };
 
 export type AgentRun = ProtocolAgentRun & {
 	startedAt: string | null;
@@ -155,6 +156,13 @@ export const daemon = {
 			method: "POST",
 			body: JSON.stringify({ tasks }),
 		}),
+	listEpics: (projectId: string) => request<Epic[]>(`/api/projects/${projectId}/epics`),
+	getEpic: (id: string) => request<Epic & { tasks: Array<{ key: string; task: Task | null }> }>(`/api/epics/${id}`),
+	createEpic: (input: { projectId: string; title: string; goal: string }) => request<Epic>("/api/epics", { method: "POST", body: JSON.stringify(input) }),
+	updateEpicPlan: (id: string, plan: Epic["plan"]) => request<{ plan: NonNullable<Epic["plan"]> }>(`/api/epics/${id}/plan`, { method: "PUT", body: JSON.stringify(plan) }),
+	startEpic: (id: string) => request<{ started: boolean; taskIds: string[] }>(`/api/epics/${id}/start`, { method: "POST" }),
+	integrateEpic: (id: string) => request<{ id: string; status: string }>(`/api/epics/${id}/integrate`, { method: "POST" }),
+	addArtifact: (id: string, input: { type: string; path: string; summary: string }) => request(`/api/tasks/${id}/artifacts`, { method: "POST", body: JSON.stringify(input) }),
 	startTask: (id: string) =>
 		request<{ accepted: boolean }>(`/api/tasks/${id}/start`, {
 			method: "POST",
