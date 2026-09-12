@@ -108,3 +108,56 @@ describe("mock runtime", () => {
 		});
 	});
 });
+
+describe("documented session lifecycle", () => {
+	test("waits through busy and pending user messages before accepting a completed assistant", async () => {
+		let phase = 0;
+		const runtime = new OpenCodeHttpRuntime({
+			fetcher: async (url) => {
+				const path = new URL(String(url)).pathname;
+				if (path === "/session/status")
+					return Response.json(
+						phase === 0 ? { ses_test: { type: "busy" } } : {},
+					);
+				if (path.endsWith("/message"))
+					return Response.json([
+						{
+							info:
+								phase === 1
+									? { role: "user", time: {} }
+									: { role: "assistant", time: { completed: 123 } },
+							parts: [],
+						},
+					]);
+				throw new Error(`Unexpected endpoint: ${path}`);
+			},
+		});
+		expect(await runtime.status("ses_test")).toBe("running");
+		phase = 1;
+		expect(await runtime.status("ses_test")).toBe("running");
+		phase = 2;
+		expect(await runtime.status("ses_test")).toBe("completed");
+	});
+	test("returns assistant text from message parts and detects provider errors", async () => {
+		const runtime = new OpenCodeHttpRuntime({
+			fetcher: async (url) => {
+				if (String(url).endsWith("/session/status")) return Response.json({});
+				return Response.json([
+					{
+						info: { role: "user", time: {} },
+						parts: [{ type: "text", text: "prompt" }],
+					},
+					{
+						info: { role: "assistant", time: {}, error: { name: "APIError" } },
+						parts: [
+							{ type: "text", text: "answer" },
+							{ type: "tool", text: "hidden" },
+						],
+					},
+				]);
+			},
+		});
+		expect(await runtime.readOutput("ses_test")).toEqual({ output: "answer" });
+		expect(await runtime.status("ses_test")).toBe("failed");
+	});
+});

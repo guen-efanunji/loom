@@ -3,6 +3,8 @@ import { access } from "node:fs/promises";
 import { delimiter } from "node:path";
 import { z } from "zod";
 
+type Fetcher = (input: string, init?: RequestInit) => Promise<Response>;
+
 export type OpenCodeManager = {
 	discover(): Promise<boolean>;
 	start(): Promise<void>;
@@ -84,17 +86,6 @@ const healthSchema = z.object({
 	version: z.string(),
 });
 const sessionSchema = z.object({ id: z.string().min(1) });
-const statusSchema = z.object({
-	status: z.enum([
-		"queued",
-		"running",
-		"waiting_permission",
-		"completed",
-		"failed",
-		"cancelled",
-		"interrupted",
-	]),
-});
 
 function parseJson<T>(
 	schema: z.ZodType<T>,
@@ -152,7 +143,7 @@ export class OpenCodeServerManager implements OpenCodeManager {
 	private readonly baseUrl: string;
 	private readonly healthTimeoutMs: number;
 	private readonly pollIntervalMs: number;
-	private readonly fetcher: typeof fetch;
+	private readonly fetcher: Fetcher;
 	private readonly processRunner: ProcessRunner;
 	private readonly discoverer: () => Promise<string | null>;
 	private process: ProcessHandle | null = null;
@@ -163,7 +154,7 @@ export class OpenCodeServerManager implements OpenCodeManager {
 			baseUrl?: string;
 			healthTimeoutMs?: number;
 			pollIntervalMs?: number;
-			fetcher?: typeof fetch;
+			fetcher?: Fetcher;
 			processRunner?: ProcessRunner;
 			discoverer?: () => Promise<string | null>;
 		} = {},
@@ -251,9 +242,11 @@ export class OpenCodeServerManager implements OpenCodeManager {
 
 export class OpenCodeHttpRuntime implements AgentRuntime {
 	private readonly baseUrl: string;
-	private readonly fetcher: typeof fetch;
+	private readonly fetcher: Fetcher;
+	private readonly directories = new Map<string, string>();
+	private readonly cancelled = new Set<string>();
 
-	constructor(options: { baseUrl?: string; fetcher?: typeof fetch } = {}) {
+	constructor(options: { baseUrl?: string; fetcher?: Fetcher } = {}) {
 		this.baseUrl = (options.baseUrl ?? "http://127.0.0.1:4096").replace(
 			/\/$/,
 			"",
@@ -261,10 +254,27 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 		this.fetcher = options.fetcher ?? fetch;
 	}
 
-	private async request(path: string, init: RequestInit): Promise<unknown> {
+	async request<T = unknown>(
+		path: string,
+		init: RequestInit = {},
+		directory?: string,
+	): Promise<T> {
+		const headers = new Headers(init.headers);
+		const sessionId = path.match(/^\/session\/([^/?]+)/)?.[1];
+		const cwd =
+			directory ??
+			(sessionId
+				? this.directories.get(decodeURIComponent(sessionId))
+				: undefined);
+		if (cwd) headers.set("x-opencode-directory", encodeURIComponent(cwd));
+		if (init.body) headers.set("content-type", "application/json");
 		let response: Response;
 		try {
-			response = await this.fetcher(`${this.baseUrl}${path}`, init);
+			response = await this.fetcher(`${this.baseUrl}${path}`, {
+				...init,
+				headers,
+				signal: init.signal ?? AbortSignal.timeout(30_000),
+			});
 		} catch (error) {
 			throw new OpenCodeError("HTTP_ERROR", "Unable to reach OpenCode server", {
 				reason: error instanceof Error ? error.message : String(error),
@@ -279,7 +289,7 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 				},
 			);
 		}
-		return response.status === 204 ? undefined : response.json();
+		return (response.status === 204 ? undefined : await response.json()) as T;
 	}
 
 	async createSession(input: {
@@ -290,14 +300,17 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 			method: "POST",
 			headers: {
 				"content-type": "application/json",
-				"x-opencode-directory": input.cwd,
+				"x-opencode-directory": encodeURIComponent(input.cwd),
 			},
 			body: JSON.stringify({ title: input.title }),
 		});
-		return parseJson(sessionSchema, response, "session");
+		const session = parseJson(sessionSchema, response, "session");
+		this.directories.set(session.id, input.cwd);
+		return session;
 	}
 
 	async prompt(input: { sessionId: string; prompt: string }): Promise<void> {
+		this.cancelled.delete(input.sessionId);
 		await this.request(
 			`/session/${encodeURIComponent(input.sessionId)}/prompt_async`,
 			{
@@ -309,11 +322,28 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 	}
 
 	async status(sessionId: string): Promise<AgentRunStatus> {
-		const response = await this.request(
-			`/session/${encodeURIComponent(sessionId)}/status`,
-			{ method: "GET" },
+		if (this.cancelled.has(sessionId)) return "cancelled";
+		const directory = this.directories.get(sessionId);
+		const statuses = await this.request<Record<string, { type: string }>>(
+			"/session/status",
+			{},
+			directory,
 		);
-		return parseJson(statusSchema, response, "status").status;
+		if (
+			statuses[sessionId]?.type === "busy" ||
+			statuses[sessionId]?.type === "retry"
+		)
+			return "running";
+		const messages = await this.request<
+			Array<{
+				info: { role: string; error?: unknown; time: { completed?: number } };
+			}>
+		>(`/session/${encodeURIComponent(sessionId)}/message`);
+		const last = messages.at(-1)?.info;
+		if (last?.error) return "failed";
+		return last?.role === "assistant" && last.time.completed
+			? "completed"
+			: "running";
 	}
 
 	async wait(
@@ -351,17 +381,26 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 		await this.request(`/session/${encodeURIComponent(sessionId)}/abort`, {
 			method: "POST",
 		});
+		this.cancelled.add(sessionId);
 	}
 
 	async readOutput(sessionId: string): Promise<RuntimeOutput | null> {
-		const response = await this.request(
-			`/session/${encodeURIComponent(sessionId)}/output`,
-			{ method: "GET" },
-		);
-		if (response === undefined) return null;
-		return z
-			.object({ output: z.string(), truncated: z.boolean().optional() })
-			.parse(response);
+		const messages = await this.request<
+			Array<{
+				info: { role: string };
+				parts: Array<{ type: string; text?: string }>;
+			}>
+		>(`/session/${encodeURIComponent(sessionId)}/message`);
+		return {
+			output: messages
+				.filter((message) => message.info.role === "assistant")
+				.flatMap((message) =>
+					message.parts
+						.filter((part) => part.type === "text")
+						.map((part) => part.text ?? ""),
+				)
+				.join("\n\n"),
+		};
 	}
 
 	async getDiff(sessionId: string): Promise<unknown> {
