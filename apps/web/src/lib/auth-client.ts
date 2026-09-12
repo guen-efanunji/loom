@@ -1,6 +1,5 @@
 import { createAuthClient } from "better-auth/svelte";
-
-import { ENV as env } from "../env";
+import { PUBLIC_SERVER_URL } from "$env/static/public";
 
 function getServerUrl(url: string) {
 	const processEnv = (
@@ -40,5 +39,8 @@ function getServerUrl(url: string) {
 export const authClient = createAuthClient({
 	// better-auth derives its route-matching base from this URL's path, so the
 	// public auth path must equal the server-side mount (/api/auth everywhere)
-	baseURL: new URL("/api/auth", getServerUrl(env.PUBLIC_SERVER_URL)).toString(),
+	baseURL: new URL(
+		"/api/auth",
+		getServerUrl(PUBLIC_SERVER_URL || "/"),
+	).toString(),
 });

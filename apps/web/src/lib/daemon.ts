@@ -4,7 +4,7 @@ import {
 	type DaemonEvent as ProtocolDaemonEvent,
 	type PermissionRequest as ProtocolPermissionRequest,
 } from "@loom/protocol";
-import { ENV } from "../env";
+import { PUBLIC_SERVER_URL } from "$env/static/public";
 
 export type Project = {
 	id: string;
@@ -59,7 +59,7 @@ export type SchedulerState = {
 const tokenKey = "loom.daemon.token";
 
 export function serverUrl() {
-	return ENV.PUBLIC_SERVER_URL.replace(/\/$/, "");
+	return (PUBLIC_SERVER_URL || "/").replace(/\/$/, "");
 }
 
 export function getDaemonToken() {
@@ -73,7 +73,7 @@ export function setDaemonToken(token: string) {
 }
 
 export function websocketUrl() {
-	const url = new URL(`${serverUrl()}/api/events`);
+	const url = new URL(`${serverUrl()}/api/events`, window.location.origin);
 	url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
 	return url.toString();
 }
@@ -105,7 +105,7 @@ export function parseDaemonEvent(value: unknown): DaemonEvent {
 	return daemonEventSchema.parse(value);
 }
 
-async function request<T>(path: string, init: RequestInit = {}) {
+export async function request<T>(path: string, init: RequestInit = {}) {
 	await provisionDaemonToken();
 	const headers = new Headers(init.headers);
 	const token = getDaemonToken();

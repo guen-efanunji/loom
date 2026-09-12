@@ -234,7 +234,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			origin: config.corsOrigin,
 			allowMethods: ["GET", "POST", "DELETE", "OPTIONS"],
 			allowHeaders: ["Content-Type", "Authorization"],
-			credentials: false,
+			credentials: true,
 		}),
 	);
 	app.on(["POST", "GET"], "/api/auth/*", async (c) => auth.handler(c.req.raw));
