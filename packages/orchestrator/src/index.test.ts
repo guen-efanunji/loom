@@ -126,6 +126,7 @@ function dependencies(runtime: AgentRuntime = new MockAgentRuntime()) {
 		events,
 		runtime,
 		orchestrator: new TaskOrchestrator({
+			outputLog: { write: async () => {} },
 			projects: projectRepository,
 			tasks: taskRepository,
 			workspaces: workspaceRepository,

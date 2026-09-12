@@ -116,11 +116,11 @@ export type EventPublisher = {
 };
 
 export type TaskLifecycleHooks = {
- canRun(taskId: string): Promise<boolean>;
- prepare(task: TaskRecord, workspace: WorktreeWorkspace): Promise<string>;
- complete(task: TaskRecord, workspace: WorktreeWorkspace): Promise<void>;
- settled(taskId: string): Promise<void>;
- guard(taskId: string, action: "retry" | "merge" | "discard"): Promise<void>;
+	canRun(taskId: string): Promise<boolean>;
+	prepare(task: TaskRecord, workspace: WorktreeWorkspace): Promise<string>;
+	complete(task: TaskRecord, workspace: WorktreeWorkspace): Promise<void>;
+	settled(taskId: string): Promise<void>;
+	guard(taskId: string, action: "retry" | "merge" | "discard"): Promise<void>;
 };
 
 export type OrchestratorDependencies = {
@@ -159,7 +159,9 @@ export type RecoveryState = {
 export class TaskOrchestrator {
 	private readonly active = new Set<string>();
 	private lifecycle?: TaskLifecycleHooks;
-	setLifecycle(hooks: TaskLifecycleHooks) { this.lifecycle = hooks; }
+	setLifecycle(hooks: TaskLifecycleHooks) {
+		this.lifecycle = hooks;
+	}
 	private readonly tasksById = new Map<string, TaskRecord>();
 	private readonly now: () => Date;
 	private readonly id: () => string;
@@ -185,7 +187,8 @@ export class TaskOrchestrator {
 			getProjectId: async (taskId) =>
 				(await this.requireTask(taskId)).projectId,
 			run: (taskId) => this.run(taskId),
-			canRun: taskId => this.lifecycle?.canRun(taskId) ?? Promise.resolve(true),
+			canRun: (taskId) =>
+				this.lifecycle?.canRun(taskId) ?? Promise.resolve(true),
 			onChanged: (state) =>
 				this.publish({
 					type: "scheduler.changed",
@@ -251,7 +254,7 @@ export class TaskOrchestrator {
 				: task
 					? await this.dependencies.workspaces.getByTaskId(task.id)
 					: undefined;
-			let status: "running" | "queued" | "interrupted" =
+			let status: "queued" | "interrupted" =
 				run.status === "queued" ? "queued" : "interrupted";
 			let reason = "No task metadata is available for recovery";
 			if (task && workspace && run.sessionId) {
@@ -263,8 +266,10 @@ export class TaskOrchestrator {
 						runtimeStatus === "running" ||
 						runtimeStatus === "waiting_permission"
 					) {
-						status = "running";
-						reason = "OpenCode session is still active after daemon restart";
+						await this.dependencies.runtime.abort(run.sessionId);
+						status = "interrupted";
+						reason =
+							"Active OpenCode session stopped after daemon restart; workspace preserved for review";
 					} else if (
 						runtimeStatus === "completed" ||
 						runtimeStatus === "failed" ||
@@ -279,15 +284,6 @@ export class TaskOrchestrator {
 				}
 			} else if (task && !workspace) {
 				reason = "Task workspace metadata or directory is unavailable";
-			}
-			if (status === "running" && task) {
-				await this.scheduler.restore({
-					taskId: task.id,
-					projectId: task.projectId,
-					state: "running",
-				});
-				this.active.add(task.id);
-				continue;
 			}
 			if (status === "queued" && task) {
 				await this.scheduler.restore({
@@ -321,10 +317,7 @@ export class TaskOrchestrator {
 		}
 		await this.scheduler.dispatch();
 		for (const task of tasks) {
-			if (
-				(task.status === "preparing" || task.status === "running") &&
-				!runs.some((run) => run.taskId === task.id && run.status === "running")
-			) {
+			if (task.status === "preparing" || task.status === "running") {
 				await this.dependencies.tasks.update(task.id, {
 					status: "failed",
 					completedAt: this.now(),
@@ -355,6 +348,10 @@ export class TaskOrchestrator {
 	}
 
 	async retry(taskId: string): Promise<{ id: string }> {
+		if (this.active.has(taskId))
+			throw new Error(
+				"Task is still stopping; retry when the current run ends",
+			);
 		await this.lifecycle?.guard(taskId, "retry");
 		const record = await this.requireTask(taskId);
 		if (!["failed", "cancelled"].includes(record.status))
@@ -385,7 +382,7 @@ export class TaskOrchestrator {
 		});
 		if (!run) throw new Error("Agent run repository is unavailable");
 		await this.publishRun(run, {});
-		await this.enqueue(taskId);
+		await this.scheduler.enqueue(taskId, true);
 		return { id: run.id };
 	}
 
@@ -453,7 +450,10 @@ export class TaskOrchestrator {
 		if (!task.sessionId || !this.dependencies.runtime.readOutput)
 			return { output: "", truncated: false };
 		const result = await this.dependencies.runtime.readOutput(task.sessionId);
-		return { output: result?.output ?? "", truncated: result?.truncated ?? false };
+		return {
+			output: result?.output ?? "",
+			truncated: result?.truncated ?? false,
+		};
 	}
 
 	async start(taskId: string): Promise<void> {
@@ -467,6 +467,8 @@ export class TaskOrchestrator {
 	}
 
 	async enqueue(taskId: string): Promise<void> {
+		if ((await this.requireTask(taskId)).status !== "queued")
+			throw new Error("Task cannot start from its current status");
 		await this.scheduler.enqueue(taskId);
 	}
 
@@ -474,7 +476,10 @@ export class TaskOrchestrator {
 		const record = await this.requireTask(taskId);
 		if (record.status !== "queued")
 			throw new Error(`Task cannot start from ${record.status}`);
-		if (this.lifecycle && !(await this.lifecycle.canRun(taskId))) throw new Error("Task cannot start while dependencies or epic approval are pending");
+		if (this.lifecycle && !(await this.lifecycle.canRun(taskId)))
+			throw new Error(
+				"Task cannot start while dependencies or epic approval are pending",
+			);
 		this.active.add(taskId);
 		let agentRunId: string | undefined;
 		try {
@@ -495,8 +500,13 @@ export class TaskOrchestrator {
 				branch: workspace.branch,
 				baseCommit: workspace.baseCommit,
 			});
-			const preparedPrompt = await this.lifecycle?.prepare(record, workspace) ?? record.prompt;
-			if ((await this.requireTask(taskId)).status === "cancelled") throw new Error("Task cancelled during preparation");
+			await this.dependencies.tasks.update(taskId, {
+				workspaceId: workspace.id,
+			});
+			const preparedPrompt =
+				(await this.lifecycle?.prepare(record, workspace)) ?? record.prompt;
+			if ((await this.requireTask(taskId)).status === "cancelled")
+				throw new Error("Task cancelled during preparation");
 			const session = await this.dependencies.runtime.createSession({
 				cwd: workspace.path,
 				title: record.title,
@@ -574,6 +584,8 @@ export class TaskOrchestrator {
 			if (terminalStatus !== "completed") {
 				throw new Error(`Agent run ended with status: ${terminalStatus}`);
 			}
+			if ((await this.requireTask(taskId)).status === "cancelled")
+				throw new Error("Task was cancelled");
 			await this.lifecycle?.complete(record, workspace);
 			if (agentRunId) {
 				const rows = await this.dependencies.agentRuns?.update(agentRunId, {
@@ -662,8 +674,9 @@ export class TaskOrchestrator {
 		const workspace = record.workspaceId
 			? await this.dependencies.workspaces.getById(record.workspaceId)
 			: undefined;
-		if (workspace) await this.safeDiscard(workspace, record.id);
-		this.active.delete(taskId);
+		if (workspace && !this.active.has(taskId))
+			await this.safeDiscard(workspace, record.id);
+		await this.lifecycle?.settled(taskId);
 	}
 
 	async diff(taskId: string): Promise<string> {
@@ -924,11 +937,18 @@ function toWorktreeWorkspace(
 		projectPath: project.path,
 		path: record.path,
 		branch: record.branch,
+		runId: record.branch.startsWith(`loom/${record.taskId}/`)
+			? record.branch.slice(`loom/${record.taskId}/`.length)
+			: undefined,
 		baseCommit: record.baseCommit,
 		createdAt: record.createdAt.toISOString(),
 		owner: "loom",
 	};
 }
-export * from "./graph";
-export * from "./planner";
+
+export * from "./commands";
 export * from "./context";
+export * from "./epics";
+export * from "./graph";
+export * from "./integration";
+export * from "./planner";

@@ -55,7 +55,7 @@ test("prevents duplicates and cancellation releases a queued task", async () => 
 	expect(changes.length).toBeGreaterThan(0);
 });
 
-test("releases a running slot immediately after cancellation", async () => {
+test("retains capacity until a cancelled process actually exits", async () => {
 	let release!: () => void;
 	const started: string[] = [];
 	const scheduler = createScheduler({
@@ -72,6 +72,9 @@ test("releases a running slot immediately after cancellation", async () => {
 	await scheduler.enqueue("task-2");
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	await scheduler.cancel("task-1");
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	expect(started).toEqual(["task-1"]);
+	release();
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	expect(started).toEqual(["task-1", "task-2"]);
 	release();
@@ -114,4 +117,28 @@ test("uses the documented defaults and rejects work after shutdown", async () =>
 	});
 	await scheduler.shutdown();
 	await expect(scheduler.enqueue("task-1")).rejects.toThrow("shut down");
+});
+
+test("failed dependency blocks its descendant until explicit successful retry", async () => {
+	const completed = new Set<string>();
+	let fail = true;
+	const started: string[] = [];
+	const scheduler = createScheduler({
+		getProjectId: async () => "project",
+		canRun: async (id) => id !== "dependent" || completed.has("dependency"),
+		run: async (id) => {
+			started.push(id);
+			if (id === "dependency" && fail) throw new Error("failure");
+			completed.add(id);
+		},
+	});
+	await scheduler.enqueue("dependent");
+	await scheduler.enqueue("dependency");
+	expect(await scheduler.wait("dependency")).toBe("failed");
+	expect(started).toEqual(["dependency"]);
+	expect(scheduler.getState().queued).toHaveLength(1);
+	fail = false;
+	await scheduler.enqueue("dependency", true);
+	expect(await scheduler.wait("dependent")).toBe("completed");
+	expect(started).toEqual(["dependency", "dependency", "dependent"]);
 });

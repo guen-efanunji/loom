@@ -33,6 +33,9 @@ export function createChatRoutes(options: {
 		getById(id: string): Promise<{ path: string } | null | undefined>;
 	};
 	runtime?: OpenCodeHttpRuntime;
+	sessionScope?: (
+		sessionId: string,
+	) => Promise<{ directory: string; projectId: string } | undefined>;
 }) {
 	const app = new Hono();
 	const runtime = options.runtime ?? new OpenCodeHttpRuntime();
@@ -57,9 +60,14 @@ export function createChatRoutes(options: {
 	}
 	async function session(sessionId: string) {
 		id.parse(sessionId);
-		const found = await request<Session>(`/session/${sessionId}`);
+		const scope = await options.sessionScope?.(sessionId);
+		const found = await request<Session>(
+			`/session/${sessionId}`,
+			scope?.directory,
+		);
 		const projects = await options.projects.list();
 		if (
+			!(scope && resolve(scope.directory) === resolve(found.directory)) &&
 			!projects.some(
 				(project) => resolve(project.path) === resolve(found.directory),
 			)
@@ -67,7 +75,7 @@ export function createChatRoutes(options: {
 			throw new HTTPException(404, {
 				message: "Session is not in a Loom project",
 			});
-		return found;
+		return { ...found, projectId: scope?.projectId };
 	}
 	async function filePath(root: string, path: string) {
 		const [base, file] = await Promise.all([

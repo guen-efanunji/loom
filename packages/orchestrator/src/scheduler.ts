@@ -23,7 +23,7 @@ export type SchedulerTask = {
 };
 
 export interface Scheduler {
-	enqueue(taskId: string): Promise<void>;
+	enqueue(taskId: string, retry?: boolean): Promise<void>;
 	restore(input: {
 		taskId: string;
 		projectId: string;
@@ -68,6 +68,7 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
 	const waiters = new Map<string, Array<(state: SchedulerState) => void>>();
 	let shuttingDown = false;
 	let dispatchPromise: Promise<void> | undefined;
+	let redispatch = false;
 
 	const changed = async () => {
 		await options.onChanged?.({
@@ -79,23 +80,34 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
 
 	const dispatch = async () => {
 		if (shuttingDown) return;
-		if (dispatchPromise) return dispatchPromise;
+		if (dispatchPromise) {
+			redispatch = true;
+			return dispatchPromise;
+		}
 		dispatchPromise = (async () => {
 			let changedState = false;
 			while (queue.length > 0) {
-				const running = [...tasks.values()].filter((task) => task.state === "running");
+				const running = [...tasks.values()].filter(
+					(task) => task.state === "running" || dispatching.has(task.taskId),
+				);
 				if (running.length >= config.maxConcurrentAgents) break;
-                let nextIndex = -1;
-                for (let i = 0; i < queue.length; i++) {
-                    const candidate = queue[i]!;
-                    const task = tasks.get(candidate);
-                    if (task?.state !== "queued") continue;
-                    if (running.filter(item => item.projectId === task.projectId).length >= config.maxConcurrentAgentsPerProject) continue;
-                    if (options.canRun && !(await options.canRun(candidate))) continue;
-                    // Readiness is asynchronous: cancellation may have removed this candidate.
-                    if (task.state !== "queued" || !queue.includes(candidate)) continue;
-                    nextIndex = queue.indexOf(candidate); break;
-                }
+				let nextIndex = -1;
+				for (let i = 0; i < queue.length; i++) {
+					const candidate = queue[i];
+					if (!candidate) continue;
+					const task = tasks.get(candidate);
+					if (task?.state !== "queued") continue;
+					if (
+						running.filter((item) => item.projectId === task.projectId)
+							.length >= config.maxConcurrentAgentsPerProject
+					)
+						continue;
+					if (options.canRun && !(await options.canRun(candidate))) continue;
+					// Readiness is asynchronous: cancellation may have removed this candidate.
+					if (task.state !== "queued" || !queue.includes(candidate)) continue;
+					nextIndex = queue.indexOf(candidate);
+					break;
+				}
 				if (nextIndex < 0) break;
 				const taskId = queue.splice(nextIndex, 1)[0];
 				if (!taskId) break;
@@ -109,6 +121,12 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
 			if (changedState) await changed();
 		})().finally(() => {
 			dispatchPromise = undefined;
+			if (redispatch) {
+				redispatch = false;
+				queueMicrotask(() => {
+					void dispatch();
+				});
+			}
 		});
 		return dispatchPromise;
 	};
@@ -141,12 +159,27 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
 			});
 			if (input.state === "queued") queue.push(input.taskId);
 		},
-		async enqueue(taskId) {
+		async enqueue(taskId, retry = false) {
 			if (shuttingDown) throw new Error("Scheduler is shut down");
-			if (pending.has(taskId) || dispatching.has(taskId) || ["queued", "running"].includes(tasks.get(taskId)?.state ?? "")) return;
+			if (
+				pending.has(taskId) ||
+				dispatching.has(taskId) ||
+				(tasks.has(taskId) && !retry)
+			)
+				return;
+			if (
+				retry &&
+				["queued", "running"].includes(tasks.get(taskId)?.state ?? "")
+			)
+				return;
 			pending.add(taskId);
-			const projectId = await options.getProjectId(taskId);
-			pending.delete(taskId);
+			let projectId: string;
+			try {
+				projectId = await options.getProjectId(taskId);
+			} finally {
+				pending.delete(taskId);
+			}
+			if (shuttingDown) throw new Error("Scheduler is shut down");
 			tasks.set(taskId, { taskId, projectId, state: "queued" });
 			queue.push(taskId);
 			await changed();

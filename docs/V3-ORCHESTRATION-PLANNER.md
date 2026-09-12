@@ -511,45 +511,45 @@ User harus bisa mengetahui mengapa task tertentu dibuat.
 
 ### M1 — Epic
 
-- [ ] schema
-- [ ] lifecycle
-- [ ] UI
+- [x] schema
+- [x] lifecycle
+- [x] UI
 
 ### M2 — DAG
 
-- [ ] dependencies
-- [ ] graph validation
-- [ ] scheduler integration
+- [x] dependencies
+- [x] graph validation
+- [x] scheduler integration
 
 ### M3 — Planner
 
-- [ ] planner prompt
-- [ ] structured output
-- [ ] editable plan UI
+- [x] planner prompt
+- [x] structured output
+- [x] editable plan UI
 
 ### M4 — Context
 
-- [ ] project context
-- [ ] context builder
-- [ ] conventions support
+- [x] project context
+- [x] context builder
+- [x] conventions support
 
 ### M5 — Artifacts
 
-- [ ] artifact schema
-- [ ] handoff
-- [ ] dependent context
+- [x] artifact schema
+- [x] handoff
+- [x] dependent context
 
 ### M6 — Integration
 
-- [ ] integration workspace
-- [ ] test/build stage
-- [ ] integration result
+- [x] integration workspace
+- [x] test/build stage
+- [x] integration result
 
 ### M7 — AI Resolution
 
-- [ ] conflict resolution agent
-- [ ] approval workflow
-- [ ] guardrails
+- [x] conflict resolution agent
+- [x] approval workflow
+- [x] guardrails
 
 ---
 

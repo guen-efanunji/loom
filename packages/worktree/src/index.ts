@@ -224,7 +224,7 @@ export async function validateRepository(
 		if (
 			!(error instanceof WorktreeError) ||
 			error.code !== "COMMAND_FAILED" ||
-				!(error.details.stderr ?? "").includes("ambiguous argument 'HEAD'")
+			!(error.details.stderr ?? "").includes("ambiguous argument 'HEAD'")
 		)
 			throw error;
 	}
@@ -310,7 +310,7 @@ export class WorktreeManager {
 		await runGit(
 			this.runner,
 			repository.head
-				? ["worktree", "add", "-b", branch, path, repository.defaultBranch]
+				? ["worktree", "add", "-b", branch, path, repository.head]
 				: ["worktree", "add", "--orphan", "-b", branch, path],
 			repository.path,
 		);

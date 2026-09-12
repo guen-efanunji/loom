@@ -298,6 +298,43 @@ describe("server API", () => {
 		}
 	});
 
+	test("maps epic validation and missing-epic errors to JSON responses", async () => {
+		const setup = await createTestSetup();
+		const headers = {
+			Authorization: "Bearer test-token",
+			"Content-Type": "application/json",
+		};
+		try {
+			const invalid = await setup.daemon.app.request("/api/epics", {
+				method: "POST",
+				headers,
+				body: JSON.stringify({ title: "Missing fields" }),
+			});
+			expect(invalid.status).toBe(400);
+			const invalidBody = (await invalid.json()) as {
+				error: { code: string };
+			};
+			expect(invalidBody.error.code).toBe("VALIDATION_ERROR");
+			const missing = await setup.daemon.app.request("/api/epics/missing", {
+				headers,
+			});
+			expect(missing.status).toBe(404);
+			const missingBody = (await missing.json()) as {
+				error: { code: string };
+			};
+			expect(missingBody.error.code).toBe("NOT_FOUND");
+			const start = await setup.daemon.app.request("/api/epics/missing/start", {
+				method: "POST",
+				headers,
+			});
+			expect(start.status).toBe(404);
+		} finally {
+			await setup.daemon.close();
+			await rm(setup.root, { recursive: true, force: true });
+			await rm(setup.home, { recursive: true, force: true });
+		}
+	});
+
 	test("broadcasts events only after websocket token validation when supported", async () => {
 		const setup = await createTestSetup();
 		try {

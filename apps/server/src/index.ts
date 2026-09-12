@@ -1,25 +1,23 @@
-import { randomUUID } from "node:crypto";
 import { appRouter } from "@loom/api/routers/index";
 import type { Database } from "@loom/db";
-import { repositories } from "@loom/db";
-import { orchestrationRepository } from "@loom/db";
+import { orchestrationRepository, repositories } from "@loom/db";
 import {
 	OpenCodeHttpRuntime,
 	type OpenCodeManager,
 	OpenCodeServerManager,
 } from "@loom/opencode";
-import { TaskOrchestrator } from "@loom/orchestrator";
-import { RuntimePlanner, buildProjectContext, ContextBuilder } from "@loom/orchestrator";
-import { validatePlan } from "@loom/orchestrator";
-import { newEpicSchema, taskPlanSchema, artifactInputSchema } from "@loom/protocol";
+import { EpicService, TaskOrchestrator } from "@loom/orchestrator";
 import {
 	createApiError,
 	createProjectInputSchema,
 	createTaskBatchInputSchema,
 	createTaskInputSchema,
 	daemonEventSchema,
+	newEpicSchema,
 	permissionDecisionInputSchema,
+	projectContextSchema,
 	taskIdInputSchema,
+	taskPlanSchema,
 } from "@loom/protocol";
 import {
 	MergeConflictError,
@@ -221,50 +219,26 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		options.openCodeManager ?? new OpenCodeServerManager();
 	const ownsOpenCode = options.startOpenCode ?? true;
 	if (ownsOpenCode) await openCodeManager.start();
+	const worktreeManager = new WorktreeManager();
+	const agentRuntime = new OpenCodeHttpRuntime();
 	const orchestrator =
 		options.orchestrator ??
 		new TaskOrchestrator({
 			...repos,
-			worktree: new WorktreeManager(),
-			runtime: new OpenCodeHttpRuntime(),
+			worktree: worktreeManager,
+			runtime: agentRuntime,
 			events: eventPublisher,
 		});
-	// Dependency readiness is checked at dispatch time, so queued cards stay blocked
-	// until every predecessor has completed.
-	orchestrator.setLifecycle({
-		async canRun(taskId) {
-			const member = await orchestration.membership(taskId);
-			if (!member) return true;
-			const deps = await orchestration.dependencies(taskId);
-			const statuses = await Promise.all(deps.map(async d => (await repos.tasks.getById(d.dependsOnTaskId))?.status));
-			return statuses.every(status => status === "completed" || status === "ready_to_merge");
-		},
-		async prepare(task, _workspace) {
-			const member = await orchestration.membership(task.id);
-			if (!member) return task.prompt;
-			const deps = await orchestration.dependencies(task.id);
-			const depTasks = await Promise.all(deps.map(d => repos.tasks.getById(d.dependsOnTaskId)));
-			const artifacts = await orchestration.artifacts(deps.map(d => d.dependsOnTaskId));
-			return new ContextBuilder().build({ prompt: task.prompt, context: { summary: `Epic task ${member.key}`, commands: {} }, dependencies: depTasks.filter(Boolean).map(d => ({ title: d!.title, status: d!.status })), artifacts: artifacts as never[] });
-		},
-		async complete(task, _workspace) {
-			const member = await orchestration.membership(task.id);
-			if (member) await orchestration.audit(member.epicId, "task.completed", task.id);
-		},
-		async settled(taskId) {
-			const member = await orchestration.membership(taskId);
-			if (!member) return;
-			const members = await orchestration.members(member.epicId);
-			const rows = await Promise.all(members.map(m => repos.tasks.getById(m.taskId)));
-			if (rows.length && rows.every(t => t?.status === "completed" || t?.status === "ready_to_merge")) {
-				await orchestration.update(member.epicId, { status: "ready" });
-			}
-		},
-		async guard(_taskId, action) {
-			if (action === "merge") throw new Error("Epic tasks are merged through the integration review");
-		},
-	});
+	const epics = new EpicService(
+		orchestration,
+		repos,
+		orchestrator,
+		agentRuntime,
+		worktreeManager,
+	);
+	orchestrator.setLifecycle(epics.hooks());
 	await orchestrator.reconcile();
+	await epics.recover();
 	const projectValidation =
 		options.projectValidation ?? createProjectValidationService();
 	const app = new Hono();
@@ -274,7 +248,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		"/*",
 		cors({
 			origin: config.corsOrigin,
-			allowMethods: ["GET", "POST", "DELETE", "OPTIONS"],
+			allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
 			allowHeaders: ["Content-Type", "Authorization"],
 			credentials: true,
 		}),
@@ -348,7 +322,13 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		})),
 	);
 
-	app.route("/api/chat", createChatRoutes({ projects: repos.projects }));
+	app.route(
+		"/api/chat",
+		createChatRoutes({
+			projects: repos.projects,
+			sessionScope: (id) => epics.sessionScope(id),
+		}),
+	);
 
 	app.post("/api/projects", async (c) => {
 		try {
@@ -386,40 +366,90 @@ export async function createApp(options: DaemonAppOptions = {}) {
 
 	app.post("/api/epics", async (c) => {
 		try {
-			const input = newEpicSchema.parse(await jsonBody(c));
-			const project = await repos.projects.getById(input.projectId);
-			if (!project) throw new Error("Project not found");
-			const context = await buildProjectContext(project);
-			const epicId = randomUUID();
-			await orchestration.create({ id: epicId, projectId: project.id, title: input.title, prompt: input.goal, status: "planning", context: JSON.stringify(context), plan: null, errorMessage: null, approvedAt: null });
-			const planner = new RuntimePlanner(new OpenCodeHttpRuntime(), project.path);
-			const plan = await planner.plan({ projectId: project.id, goal: input.goal, context });
-			await orchestration.update(epicId, { plan: JSON.stringify(plan), status: "ready" });
-			await orchestration.audit(epicId, "planner.created", JSON.stringify(plan));
-			return c.json({ id: epicId, projectId: project.id, title: input.title, prompt: input.goal, status: "ready", plan, context }, 201);
-		} catch (error) { return errorResponse(c, error); }
+			return c.json(
+				await epics.create(newEpicSchema.parse(await jsonBody(c))),
+				202,
+			);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
 	});
-	app.get("/api/projects/:projectId/epics", async c => c.json(await orchestration.list(c.req.param("projectId"))));
-	app.get("/api/epics/:id", async c => {
-		const epic = await orchestration.get(c.req.param("id"));
-		if (!epic) return errorResponse(c, new Error("Epic not found"));
-		const members = await orchestration.members(epic.id);
-		const taskRows = await Promise.all(members.map(m => repos.tasks.getById(m.taskId)));
-		return c.json({ ...epic, plan: epic.plan ? JSON.parse(epic.plan) : null, context: epic.context ? JSON.parse(epic.context) : null, tasks: members.map((m, i) => ({ ...m, task: taskRows[i] ? recordToTask(taskRows[i]) : null })), integrations: await orchestration.integrations(epic.id), events: await orchestration.events(epic.id) });
+	app.get("/api/projects/:projectId/epics", async (c) => {
+		try {
+			return c.json(await orchestration.list(c.req.param("projectId")));
+		} catch (error) {
+			return errorResponse(c, error);
+		}
 	});
-	app.put("/api/epics/:id/plan", async c => {
-		try { const plan = validatePlan(taskPlanSchema.parse(await jsonBody(c))); const epic = await orchestration.get(c.req.param("id")); if (!epic || epic.status !== "ready") throw new Error("Epic plan is not editable"); await orchestration.update(epic.id, { plan: JSON.stringify(plan) }); return c.json({ plan }); } catch (error) { return errorResponse(c, error); }
+	app.get("/api/epics/:id", async (c) => {
+		try {
+			return c.json(await epics.detail(c.req.param("id")));
+		} catch (error) {
+			return errorResponse(c, error);
+		}
 	});
-	app.post("/api/epics/:id/start", async c => {
-		try { const epic = await orchestration.get(c.req.param("id")); if (!epic) throw new Error("Epic not found"); const plan = epic.plan ? validatePlan(JSON.parse(epic.plan)) : null; if (!plan) throw new Error("Epic has no plan"); await orchestration.approve(epic.id, epic.projectId, plan, epic.context ?? "{}"); const members = await orchestration.members(epic.id); await Promise.all(members.map(m => orchestrator.enqueue(m.taskId))); return c.json({ started: true, taskIds: members.map(m => m.taskId) }, 202); } catch (error) { return errorResponse(c, error); }
+	app.post("/api/epics/:id/replan", async (c) => {
+		try {
+			await epics.replan(c.req.param("id"));
+			return c.json({ accepted: true }, 202);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
 	});
-	app.post("/api/epics/:id/integrate", async c => {
-		try { const epic = await orchestration.get(c.req.param("id")); if (!epic) throw new Error("Epic not found"); const members = await orchestration.members(epic.id); const completed = (await Promise.all(members.map(m => repos.tasks.getById(m.taskId)))).filter(t => t?.status === "completed"); if (completed.length !== members.length) throw new Error("All Epic tasks must complete before integration"); const runId = randomUUID(); await orchestration.createIntegration({ id: runId, epicId: epic.id, status: "review", workspacePath: null, branch: null, baseCommit: null, head: null, errorMessage: null, checks: "[]", diff: "Review task diffs before merging each branch.", sessionId: null }); await orchestration.audit(epic.id, "integration.started", runId); return c.json({ id: runId, status: "review" }, 201); } catch (error) { return errorResponse(c, error); }
+	app.put("/api/epics/:id/plan", async (c) => {
+		try {
+			const input = z
+				.object({
+					tasks: taskPlanSchema.shape.tasks,
+					context: projectContextSchema.optional(),
+				})
+				.parse(await jsonBody(c));
+			await epics.save(
+				c.req.param("id"),
+				{ tasks: input.tasks },
+				input.context,
+			);
+			return c.json({ saved: true });
+		} catch (error) {
+			return errorResponse(c, error);
+		}
 	});
-	app.post("/api/tasks/:id/artifacts", async c => {
-		try { const task = await repos.tasks.getById(c.req.param("id")); if (!task) throw new Error("Task not found"); const input = artifactInputSchema.parse(await jsonBody(c)); const artifact = { id: randomUUID(), taskId: task.id, ...input }; await orchestration.addArtifact(artifact); const member = await orchestration.membership(task.id); if (member) await orchestration.audit(member.epicId, "artifact.created", JSON.stringify(artifact)); return c.json(artifact, 201); } catch (error) { return errorResponse(c, error); }
+	app.post("/api/epics/:id/start", async (c) => {
+		try {
+			await epics.start(c.req.param("id"));
+			return c.json({ started: true }, 202);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
 	});
-
+	app.post("/api/epics/:id/integrate", async (c) => {
+		try {
+			return c.json(await epics.integrate(c.req.param("id")), 202);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.post("/api/integrations/:id/approve", async (c) => {
+		try {
+			const input = z
+				.object({ head: z.string().regex(/^[a-f0-9]{40,64}$/) })
+				.parse(await jsonBody(c));
+			await epics.approve(c.req.param("id"), input.head);
+			return c.json({ merged: true });
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.post("/api/tasks/:id/artifacts", async (c) => {
+		try {
+			return c.json(
+				await epics.addArtifact(c.req.param("id"), await jsonBody(c)),
+				201,
+			);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
 	app.post("/api/tasks", async (c) => {
 		try {
 			const task = await orchestrator.create(
@@ -464,12 +494,22 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		}
 	});
 	app.get("/api/tasks", async (c) =>
-		c.json((await repos.tasks.list()).map(recordToTask)),
+		c.json(
+			await Promise.all(
+				(await repos.tasks.list()).map(async (task) => ({
+					...recordToTask(task),
+					...(await epics.taskMetadata(task.id)),
+				})),
+			),
+		),
 	);
 	app.get("/api/tasks/:id", async (c) => {
 		const task = await repos.tasks.getById(c.req.param("id"));
 		if (!task) return errorResponse(c, new Error("Task not found"));
-		return c.json(recordToTask(task));
+		return c.json({
+			...recordToTask(task),
+			...(await epics.taskMetadata(task.id)),
+		});
 	});
 	app.get("/api/tasks/:id/runs", async (c) => {
 		try {
