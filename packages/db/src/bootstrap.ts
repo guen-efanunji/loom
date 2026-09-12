@@ -23,6 +23,15 @@ const schemaStatements = [
 	"CREATE TABLE IF NOT EXISTS permission_requests (id text PRIMARY KEY NOT NULL, task_id text NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, run_id text NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE, command text NOT NULL, cwd text NOT NULL, reason text NOT NULL, status text DEFAULT 'pending' NOT NULL, created_at integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL, decided_at integer)",
 	"CREATE INDEX IF NOT EXISTS permission_requests_run_id_idx ON permission_requests (run_id)",
 	"CREATE INDEX IF NOT EXISTS permission_requests_status_idx ON permission_requests (status)",
+	"CREATE TABLE IF NOT EXISTS epics (id text PRIMARY KEY NOT NULL, project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE, title text NOT NULL, prompt text NOT NULL, status text NOT NULL DEFAULT 'planning', plan text, context text, error_message text, approved_at integer, created_at integer NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)))",
+	"CREATE TABLE IF NOT EXISTS epic_tasks (task_id text PRIMARY KEY NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, epic_id text NOT NULL REFERENCES epics(id) ON DELETE CASCADE, key text NOT NULL)",
+	"CREATE UNIQUE INDEX IF NOT EXISTS epic_tasks_key_uidx ON epic_tasks(epic_id, key)",
+	"CREATE TABLE IF NOT EXISTS task_dependencies (task_id text NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, depends_on_task_id text NOT NULL REFERENCES tasks(id) ON DELETE CASCADE)",
+	"CREATE UNIQUE INDEX IF NOT EXISTS task_dependencies_uidx ON task_dependencies(task_id, depends_on_task_id)",
+	"CREATE TABLE IF NOT EXISTS task_artifacts (id text PRIMARY KEY NOT NULL, task_id text NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, type text NOT NULL, path text NOT NULL, summary text NOT NULL)",
+	"CREATE TABLE IF NOT EXISTS planner_runs (id text PRIMARY KEY NOT NULL, epic_id text NOT NULL REFERENCES epics(id) ON DELETE CASCADE, session_id text, status text NOT NULL, error_message text, created_at integer NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)))",
+	"CREATE TABLE IF NOT EXISTS integration_runs (id text PRIMARY KEY NOT NULL, epic_id text NOT NULL REFERENCES epics(id) ON DELETE CASCADE, status text NOT NULL, workspace_path text, branch text, base_commit text, head text, error_message text, checks text NOT NULL DEFAULT '[]', diff text NOT NULL DEFAULT '', session_id text, approved_at integer, created_at integer NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)))",
+	"CREATE TABLE IF NOT EXISTS audit_events (id text PRIMARY KEY NOT NULL, epic_id text NOT NULL REFERENCES epics(id) ON DELETE CASCADE, type text NOT NULL, detail text NOT NULL, created_at integer NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)))",
 ];
 
 export function bootstrapDatabase(path: string): void {
