@@ -359,13 +359,12 @@ describe("server API", () => {
 			expect((await setup.daemon.app.request("/api/bootstrap")).status).toBe(
 				401,
 			);
-			expect(
-				(
-					await setup.daemon.app.request("/api/bootstrap", {
-						headers: { Origin: config.corsOrigin },
-					})
-				).status,
-			).toBe(200);
+			const bootstrap = await setup.daemon.app.request("/api/bootstrap", {
+				headers: { Origin: config.corsOrigin },
+			});
+			expect(bootstrap.status).toBe(200);
+			const { token } = (await bootstrap.json()) as { token?: string };
+			expect(token).toBe("test-token");
 		} finally {
 			await setup.daemon.close();
 			await rm(setup.root, { recursive: true, force: true });
