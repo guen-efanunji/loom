@@ -32,7 +32,10 @@ import { ZodToJsonSchemaConverter } from "@orpc/zod/zod4";
 import { Hono } from "hono";
 import { createBunWebSocket } from "hono/bun";
 import { cors } from "hono/cors";
-import { logger } from "hono/logger";
+import { VERSION, PROTOCOL_VERSION, log, readSettings, saveSettings, releaseChannelSchema, dataDirectory } from "@loom/distribution";
+import { checkForUpdate } from "@loom/distribution/updates";
+import { access, readFile } from "node:fs/promises";
+import { basename, join } from "node:path";
 import { z } from "zod";
 import { createChatRoutes } from "./chat";
 import { type DaemonConfig, loadDaemonConfig } from "./config";
@@ -195,6 +198,9 @@ function errorResponse(
 }
 
 export type DaemonAppOptions = {
+	update?: (channel?: string) => Promise<{ updating: boolean; version: string }>;
+	staticAssets?: Record<string, { body: string; type: string }>;
+	onShutdown?: () => void;
 	config?: DaemonConfig;
 	database?: Database;
 	orchestrator?: TaskOrchestrator;
@@ -212,6 +218,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	const eventPublisher = {
 		publish(event: unknown) {
 			const parsed = daemonEventSchema.parse(event);
+			log("orchestrator", parsed.type, "taskId" in parsed ? { taskId: parsed.taskId } : {});
 			const payload = JSON.stringify(parsed);
 			for (const client of clients) client.send(payload);
 		},
@@ -244,7 +251,24 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		options.projectValidation ?? createProjectValidationService();
 	const app = new Hono();
 
-	app.use("/*", logger());
+	app.use("/*", async (c, next) => {
+		const host = c.req.header("Host");
+		if (host && !["127.0.0.1", "localhost", "[::1]"].includes(host.replace(/:\d+$/, "")))
+			return c.json({ error: { message: "Local host required" } }, 403);
+		const origin = c.req.header("Origin");
+		if (origin && origin !== config.corsOrigin)
+			return c.json({ error: { message: "Origin is not allowed" } }, 403);
+		if (/^\/(rpc|api-reference)(\/|$)/.test(c.req.path) && c.req.header("Authorization") !== `Bearer ${config.token}`)
+			return c.json({ error: { message: "Bearer token is required" } }, 401);
+		if (!["GET", "HEAD", "OPTIONS"].includes(c.req.method) && !["/api/bootstrap", "/api/daemon/stop"].includes(c.req.path)) {
+			const updating = await access(join(dataDirectory(), "cache", "update.lock")).then(() => true, () => false);
+			if (updating) return c.json({ error: { message: "Loom is updating; retry after restart" } }, 409);
+		}
+		c.header("X-Content-Type-Options", "nosniff");
+		c.header("Referrer-Policy", "no-referrer");
+		c.header("Cache-Control", "no-store");
+		await next();
+	});
 	app.use(
 		"/*",
 		cors({
@@ -258,13 +282,13 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	app.get("/health", async (c) => {
 		const database = await checkDbHealth(db);
 		return c.json(
-			{ status: database ? "ok" : "degraded", database },
+			{ status: database ? "ok" : "degraded", database, product: "loom", version: VERSION, protocolVersion: PROTOCOL_VERSION },
 			database ? 200 : 503,
 		);
 	});
-	app.get("/", (c) => c.text("OK"));
+	if (!options.staticAssets) app.get("/", (c) => c.text("OK"));
 
-	app.get("/api/bootstrap", (c) => {
+	app.on(["POST", "GET"], "/api/bootstrap", (c) => {
 		if (c.req.header("Origin") !== config.corsOrigin)
 			return c.json(
 				{
@@ -311,6 +335,47 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			);
 		return next();
 	});
+	app.get("/api/meta", (c) => c.json({ version: VERSION, protocolVersion: PROTOCOL_VERSION }));
+	const updateReady = async () => {
+		const scheduler = orchestrator.getScheduler().getState();
+		if (scheduler.running.length || scheduler.queued.length) throw new Error("Finish or cancel active tasks before updating");
+		const active = db.get<{ count: number }>("SELECT COUNT(*) AS count FROM epics WHERE status IN ('planning','running','integrating')");
+		if (active?.count) throw new Error("Finish active Epic planning and integration before updating");
+		try {
+			const response = await fetch("http://127.0.0.1:4096/session/status", { signal: AbortSignal.timeout(2000) });
+			if (response.ok) {
+				const states = await response.json() as Record<string, { type: string }>;
+				if (Object.values(states).some(s => s.type !== "idle")) throw new Error("Wait for OpenCode chats to finish before updating");
+			}
+		} catch (error) { if (error instanceof Error && error.message.startsWith("Wait for")) throw error; }
+	};
+	app.get("/api/updates/ready", async (c) => {
+		try { await updateReady(); return c.json({ ready: true }); }
+		catch (error) { return c.json({ error: { message: error instanceof Error ? error.message : "Active work prevents update" } }, 409); }
+	});
+	app.get("/api/updates", async (c) => {
+		const settings = await readSettings();
+		const status = settings.updateChecks ? await checkForUpdate(settings.releaseChannel) : { current: VERSION, channel: settings.releaseChannel, checkedAt: null, latest: null, available: false };
+		let lastResult: unknown = null;
+		try { lastResult = JSON.parse(await readFile(join(dataDirectory(), "cache", "update-result.json"), "utf8")); } catch {}
+		return c.json({ ...status, supported: !!options.update, enabled: settings.updateChecks, lastResult });
+	});
+	app.post("/api/updates/check", async (c) => c.json(await checkForUpdate((await readSettings()).releaseChannel, { force: true })));
+	app.post("/api/updates/install", async (c) => {
+		if (!options.update) return c.json({ error: { message: "Updates require an installed standalone binary" } }, 409);
+		try { await updateReady(); return c.json(await options.update(), 202); }
+		catch (error) { return c.json({ error: { message: error instanceof Error ? error.message : "Update failed" } }, 409); }
+	});
+	app.put("/api/updates/settings", async (c) => {
+		const input = z.object({ releaseChannel: releaseChannelSchema, updateChecks: z.boolean() }).parse(await jsonBody(c));
+		await saveSettings({ ...await readSettings(), ...input });
+		return c.json(input);
+	});
+	app.post("/api/daemon/stop", (c) => {
+		if (!options.onShutdown) return c.json({ error: { message: "Use the development terminal to stop this daemon" } }, 409);
+		setTimeout(options.onShutdown, 100);
+		return c.json({ stopping: true });
+	});
 	app.get(
 		"/api/events",
 		upgradeWebSocket(() => ({
@@ -336,7 +401,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			const input = createProjectInputSchema.parse(await jsonBody(c));
 			const repository = await projectValidation.validate(input.path);
 			const project = await repos.projects.create({
-				name: repository.path.split("/").at(-1) || repository.path,
+				name: basename(repository.path) || repository.path,
 				path: repository.path,
 				defaultBranch: repository.defaultBranch,
 			});
@@ -681,7 +746,13 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			return c.newResponse(apiResult.response.body, apiResult.response);
 		return next();
 	});
-	app.notFound((c) => errorResponse(c, new Error("Route not found")));
+	app.notFound((c) => {
+		if (options.staticAssets && ["GET", "HEAD"].includes(c.req.method) && !/^\/(api|rpc|api-reference)(\/|$)/.test(c.req.path)) {
+			const asset = options.staticAssets[c.req.path] ?? (c.req.header("Accept")?.includes("text/html") ? options.staticAssets["/index.html"] : undefined);
+			if (asset) return new Response(c.req.method === "HEAD" ? null : Buffer.from(asset.body, "base64"), { headers: { "Content-Type": asset.type, "X-Content-Type-Options": "nosniff", "Cache-Control": c.req.path.includes("/immutable/") ? "public, max-age=31536000, immutable" : "no-cache", "Content-Security-Policy": "frame-ancestors 'none'; base-uri 'self'; object-src 'none'" } });
+		}
+		return errorResponse(c, new Error("Route not found"));
+	});
 	app.onError((error, c) => errorResponse(c, error));
 	return {
 		app,
@@ -691,14 +762,12 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			for (const client of clients) client.close();
 			clients.clear();
 			if (ownsOpenCode) await openCodeManager.stop();
+			if (!options.database) db.$client.close();
 		},
 	};
 }
 
-const daemon = await createApp({
-	startOpenCode: import.meta.main || process.env.LOOM_DAEMON === "true",
-});
-export const app = daemon.app;
+export { bunWebSocket };
 export const apiHandler = new OpenAPIHandler(appRouter, {
 	plugins: [
 		new OpenAPIReferencePlugin({
@@ -709,12 +778,14 @@ export const apiHandler = new OpenAPIHandler(appRouter, {
 export const rpcHandler = new RPCHandler(appRouter);
 
 if (import.meta.main || process.env.LOOM_DAEMON === "true") {
+	const daemon = await createApp();
 	const server = Bun.serve({
-		fetch: app.fetch,
+		fetch: daemon.app.fetch,
 		port: daemon.config.port,
 		hostname: "127.0.0.1",
 		websocket: bunWebSocket,
 	});
+	log("daemon", "started", { port: daemon.config.port, version: VERSION });
 	const shutdown = async () => {
 		server.stop(true);
 		await daemon.close();

@@ -10,7 +10,7 @@ export type DaemonConfig = {
 };
 
 export function getLoomDirectory(home = homedir()): string {
-	return join(home, ".loom");
+	return process.env.LOOM_HOME && home === homedir() ? process.env.LOOM_HOME : join(home, ".loom");
 }
 
 export function getLoomConfigPath(home = homedir()): string {
@@ -38,8 +38,8 @@ export async function loadDaemonConfig(
 	const token =
 		stored.token ?? environment.LOOM_TOKEN ?? randomBytes(32).toString("hex");
 	const config: DaemonConfig = {
-		port: 4317,
-		corsOrigin: environment.CORS_ORIGIN || "http://localhost:5173",
+		port: Number(environment.LOOM_PORT || stored.port || 4317),
+		corsOrigin: environment.CORS_ORIGIN || `http://127.0.0.1:${environment.LOOM_PORT || stored.port || 4317}`,
 		token,
 	};
 	if (stored.token !== token) {

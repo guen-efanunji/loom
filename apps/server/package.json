@@ -11,6 +11,7 @@
 		"env:generate": "varlock codegen"
 	},
 	"dependencies": {
+		"@loom/distribution": "workspace:*",
 		"@loom/api": "workspace:*",
 		"@loom/auth": "workspace:*",
 		"@loom/db": "workspace:*",
