@@ -7,6 +7,7 @@ import "../app.css";
 import { Sonner } from "$lib/components/ui/sonner/index.js";
 import { queryClient } from "$lib/orpc";
 import { isTrustedDevice } from "$lib/ui-access";
+import UpdateNotice from "$lib/components/update-notice.svelte";
 
 const { children } = $props();
 let unlocked = $state(false);
@@ -28,6 +29,7 @@ onMount(() => {
 		{@render children()}
 	</main>
 {:else if unlocked}
+	<UpdateNotice />
 	<QueryClientProvider client={queryClient}>
 		<div class="h-svh">
 			<main class="h-full overflow-y-auto">

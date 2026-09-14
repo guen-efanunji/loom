@@ -1,5 +1,6 @@
 <script lang="ts">
 import { Input } from "$lib/components/ui/input";
+import UpdateNotice from "$lib/components/update-notice.svelte";
 import { Button } from "$lib/components/ui/button";
 import {
 	DEFAULT_UI_PASSWORD,
@@ -53,4 +54,5 @@ function changePassword() {
 			<Button class="rounded-md border px-3 py-2" type="submit">Change password</Button>
 		</form>
 	</section>
+	<UpdateNotice expanded />
 </div>

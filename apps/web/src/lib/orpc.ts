@@ -4,6 +4,8 @@ import { RPCLink } from "@orpc/client/fetch";
 import { createTanstackQueryUtils } from "@orpc/tanstack-query";
 import { QueryCache, QueryClient } from "@tanstack/svelte-query";
 import { PUBLIC_SERVER_URL } from "$env/static/public";
+import { dev } from "$app/environment";
+import { provisionDaemonToken } from "$lib/daemon";
 
 export const queryClient = new QueryClient({
 	queryCache: new QueryCache({
@@ -49,10 +51,13 @@ function getServerUrl(url: string) {
 	return `http://localhost:3000${normalized}`;
 }
 export const link = new RPCLink({
-	url: `${getServerUrl(PUBLIC_SERVER_URL || "/")}/rpc`,
-	fetch(url, options) {
+	url: `${getServerUrl(dev ? PUBLIC_SERVER_URL || "/" : "/")}/rpc`,
+	async fetch(url, options) {
+		const headers = new Headers(url instanceof Request ? url.headers : undefined);
+		headers.set("Authorization", `Bearer ${await provisionDaemonToken()}`);
 		return fetch(url, {
 			...options,
+			headers,
 			credentials: "include",
 		});
 	},

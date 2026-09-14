@@ -12,6 +12,7 @@ import {
 	type DaemonEvent as ProtocolDaemonEvent,
 	type PermissionRequest as ProtocolPermissionRequest,
 } from "@loom/protocol";
+import { dev } from "$app/environment";
 import { PUBLIC_SERVER_URL } from "$env/static/public";
 export type EpicDetail = ProtocolEpic & {
 	tasks: Array<{
@@ -98,7 +99,7 @@ export type SchedulerState = {
 const tokenKey = "loom.daemon.token";
 
 export function serverUrl() {
-	return (PUBLIC_SERVER_URL || "/").replace(/\/$/, "");
+	return dev ? (PUBLIC_SERVER_URL || "/").replace(/\/$/, "") : "";
 }
 
 export function getDaemonToken() {
@@ -125,6 +126,7 @@ export async function provisionDaemonToken() {
 	const current = getDaemonToken();
 	if (current) return current;
 	const response = await fetch(`${serverUrl()}/api/bootstrap`, {
+		method: "GET",
 		headers: { Accept: "application/json" },
 	});
 	if (!response.ok)
