@@ -1,0 +1,9 @@
+{
+  "name": "@loom/distribution",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./src/index.ts" }, "./updates": { "types": "./dist/updates.d.ts", "default": "./src/updates.ts" } },
+  "scripts": { "build": "tsc -b", "check-types": "tsc -b", "test": "bun test" },
+  "dependencies": { "zod": "catalog:" },
+  "devDependencies": { "@loom/config": "workspace:*", "@types/bun": "catalog:", "typescript": "catalog:" }
+}

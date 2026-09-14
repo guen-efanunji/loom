@@ -1,5 +1,6 @@
 {
 	"name": "loom",
+	"version": "0.1.0",
 	"private": true,
 	"workspaces": {
 		"packages": [
@@ -21,6 +22,8 @@
 	},
 	"type": "module",
 	"scripts": {
+		"release:build": "bun run --cwd apps/web build && bun scripts/build-release.ts",
+		"release:manifest": "bun scripts/release-manifest.ts",
 		"dev": "turbo run dev",
 		"build": "turbo run build",
 		"check-types": "turbo run check-types",

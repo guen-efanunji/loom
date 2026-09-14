@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import {
 	getWorktreeBranch,
@@ -14,7 +14,7 @@ import {
 describe("worktree paths", () => {
 	test("uses the managed path and branch convention", () => {
 		expect(getWorktreePath("project-1", "task-1", "/tmp/home")).toBe(
-			"/tmp/home/.loom/worktrees/project-1/task-1",
+			resolve("/tmp/home/.loom/worktrees/project-1/task-1"),
 		);
 		expect(getWorktreeBranch("task-1")).toBe("loom/task-1");
 	});
