@@ -1,5 +1,6 @@
 {
 	"extends": "@loom/config/tsconfig.base.json",
+	"references": [{ "path": "../../packages/distribution" }, { "path": "../../packages/api" }, { "path": "../../packages/orchestrator" }, { "path": "../../packages/opencode" }, { "path": "../../packages/worktree" }],
 	"compilerOptions": {
 		"noEmit": true
 	}
