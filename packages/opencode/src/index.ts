@@ -5,6 +5,19 @@ import { z } from "zod";
 
 type Fetcher = (input: string, init?: RequestInit) => Promise<Response>;
 
+function authHeaders(headers?: RequestInit["headers"]): Headers {
+	const result = new Headers(headers);
+	const password = process.env.OPENCODE_SERVER_PASSWORD?.trim();
+	if (password && !result.has("authorization")) {
+		const username = process.env.OPENCODE_SERVER_USERNAME?.trim() || "opencode";
+		result.set(
+			"authorization",
+			`Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`,
+		);
+	}
+	return result;
+}
+
 export type OpenCodeManager = {
 	discover(): Promise<boolean>;
 	start(): Promise<void>;
@@ -177,7 +190,9 @@ export class OpenCodeServerManager implements OpenCodeManager {
 
 	async health(): Promise<boolean> {
 		try {
-			const response = await this.fetcher(`${this.baseUrl}/global/health`);
+			const response = await this.fetcher(`${this.baseUrl}/global/health`, {
+				headers: authHeaders(),
+			});
 			if (!response.ok) return false;
 			parseJson(healthSchema, await response.json(), "health");
 			return true;
@@ -259,7 +274,7 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 		init: RequestInit = {},
 		directory?: string,
 	): Promise<T> {
-		const headers = new Headers(init.headers);
+		const headers = authHeaders(init.headers);
 		const sessionId = path.match(/^\/session\/([^/?]+)/)?.[1];
 		const cwd =
 			directory ??
