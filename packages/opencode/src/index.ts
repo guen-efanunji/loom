@@ -273,7 +273,10 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 			response = await this.fetcher(`${this.baseUrl}${path}`, {
 				...init,
 				headers,
-				signal: init.signal ?? AbortSignal.timeout(30_000),
+				// Never let an unavailable OpenCode process block the Loom UI. Long
+				// running agent work is asynchronous; HTTP control calls should fail
+				// quickly and let the client remain usable.
+				signal: init.signal ?? AbortSignal.timeout(5_000),
 			});
 		} catch (error) {
 			throw new OpenCodeError("HTTP_ERROR", "Unable to reach OpenCode server", {
