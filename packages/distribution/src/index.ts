@@ -10,11 +10,14 @@ export const PROTOCOL_VERSION = 1;
 export const REPOSITORY = "MrPinguiiin/loom";
 export const releaseChannelSchema = z.enum(["stable", "beta"]);
 export type ReleaseChannel = z.infer<typeof releaseChannelSchema>;
+export const automationModeSchema = z.enum(["review", "auto-create", "auto-start"]);
+export type AutomationMode = z.infer<typeof automationModeSchema>;
 export const settingsSchema = z.object({
   port: z.number().int().min(1024).max(65535).default(4317),
   token: z.string().min(32),
   releaseChannel: releaseChannelSchema.default("stable"),
   updateChecks: z.boolean().default(true),
+  automationMode: automationModeSchema.default("review"),
 });
 export type Settings = z.infer<typeof settingsSchema>;
 export function dataDirectory() { return process.env.LOOM_HOME || join(homedir(), ".loom"); }

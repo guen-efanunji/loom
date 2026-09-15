@@ -18,6 +18,7 @@
 		"test": "bun test"
 	},
 	"dependencies": {
+		"@loom/automation": "workspace:*",
 		"@loom/db": "workspace:*",
 		"@loom/opencode": "workspace:*",
 		"@loom/protocol": "workspace:*",

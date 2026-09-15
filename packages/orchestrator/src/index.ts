@@ -31,6 +31,7 @@ export type TaskRepository = {
 	create(input: CreateTask): Promise<TaskRecord>;
 	getById(id: string): Promise<TaskRecord | undefined>;
 	list?(): Promise<TaskRecord[]>;
+	listByProject?(projectId: string): Promise<TaskRecord[]>;
 	update(id: string, input: Partial<CreateTask>): Promise<TaskRecord[]>;
 	delete(id: string): Promise<unknown>;
 };
@@ -159,6 +160,13 @@ export type RecoveryState = {
 	}>;
 	interruptedRunIds: string[];
 };
+
+export type DaemonEventInput = {
+	[K in DaemonEvent["type"]]: Omit<
+		Extract<DaemonEvent, { type: K }>,
+		"sequence" | "timestamp"
+	>;
+}[DaemonEvent["type"]];
 
 export class TaskOrchestrator {
 	private readonly active = new Set<string>();
@@ -407,7 +415,12 @@ export class TaskOrchestrator {
 		if (!title && !prompt) throw new Error("Nothing to update");
 		if (title && title.length > 200)
 			throw new Error("Title must be at most 200 characters");
-		if (prompt && !["queued", "failed", "cancelled"].includes(record.status))
+		if (
+			prompt &&
+			!["queued", "ready", "blocked", "failed", "cancelled"].includes(
+				record.status,
+			)
+		)
 			throw new Error(
 				`Task prompt cannot change while the task is ${record.status}`,
 			);
@@ -550,14 +563,15 @@ export class TaskOrchestrator {
 	}
 
 	async enqueue(taskId: string): Promise<void> {
-		if ((await this.requireTask(taskId)).status !== "queued")
+		const status = (await this.requireTask(taskId)).status;
+		if (status !== "queued" && status !== "ready")
 			throw new Error("Task cannot start from its current status");
 		await this.scheduler.enqueue(taskId);
 	}
 
 	private async run(taskId: string): Promise<void> {
 		const record = await this.requireTask(taskId);
-		if (record.status !== "queued")
+		if (record.status !== "queued" && record.status !== "ready")
 			throw new Error(`Task cannot start from ${record.status}`);
 		if (this.lifecycle && !(await this.lifecycle.canRun(taskId)))
 			throw new Error(
@@ -953,6 +967,15 @@ export class TaskOrchestrator {
 		await this.dependencies.events?.publish(event);
 	}
 
+	/** Publishes a service-level event with sequencing handled internally. */
+	async publishDaemonEvent(event: DaemonEventInput): Promise<void> {
+		await this.publish({
+			...event,
+			sequence: ++this.sequence,
+			timestamp: this.now().toISOString(),
+		} as DaemonEvent);
+	}
+
 	private async requireTask(id: string): Promise<TaskRecord> {
 		const task = await this.dependencies.tasks.getById(id);
 		if (!task) throw new Error(`Task not found: ${id}`);
@@ -994,13 +1017,31 @@ function toPermissionRequest(record: PermissionRequestRecord) {
 	};
 }
 
+function parseStringList(value: string | null): string[] {
+	if (!value) return [];
+	try {
+		const parsed: unknown = JSON.parse(value);
+		return Array.isArray(parsed)
+			? parsed.filter((item): item is string => typeof item === "string")
+			: [];
+	} catch {
+		return [];
+	}
+}
+
 function toTask(record: TaskRecord): Task {
 	return {
 		id: record.id,
 		projectId: record.projectId,
+		planId: record.planId ?? null,
 		title: record.title,
 		prompt: record.prompt,
+		description: record.description ?? "",
 		status: record.status as Task["status"],
+		priority: (record.priority as Task["priority"]) ?? "medium",
+		acceptanceCriteria: parseStringList(record.acceptanceCriteria),
+		suggestedFiles: parseStringList(record.suggestedFiles),
+		source: (record.source as Task["source"]) ?? "manual",
 		position: record.position ?? null,
 		workspaceId: record.workspaceId,
 		sessionId: record.sessionId,
@@ -1030,6 +1071,35 @@ function toWorktreeWorkspace(
 	};
 }
 
+/** Combines lifecycle hooks; every hook must pass for canRun, all run otherwise. */
+export function combineHooks(
+	...hooks: Array<TaskLifecycleHooks | undefined>
+): TaskLifecycleHooks {
+	const active = hooks.filter((hook): hook is TaskLifecycleHooks => !!hook);
+	return {
+		async canRun(taskId) {
+			for (const hook of active) if (!(await hook.canRun(taskId))) return false;
+			return true;
+		},
+		async prepare(task, workspace) {
+			let prompt = task.prompt;
+			for (const hook of active)
+				prompt = await hook.prepare({ ...task, prompt }, workspace);
+			return prompt;
+		},
+		async complete(task, workspace) {
+			for (const hook of active) await hook.complete(task, workspace);
+		},
+		async settled(taskId) {
+			for (const hook of active) await hook.settled(taskId);
+		},
+		async guard(taskId, action) {
+			for (const hook of active) await hook.guard(taskId, action);
+		},
+	};
+}
+
+export * from "./automation";
 export * from "./commands";
 export * from "./context";
 export * from "./epics";
