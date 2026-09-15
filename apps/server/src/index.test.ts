@@ -409,6 +409,141 @@ describe("server API", () => {
 		}
 	});
 
+	test("plans flow from draft to started tasks", async () => {
+		const setup = await createTestSetup();
+		const headers = {
+			Authorization: "Bearer test-token",
+			"Content-Type": "application/json",
+		};
+		const call = (path: string, init?: { method?: string; body?: unknown }) =>
+			setup.daemon.app.request(path, {
+				headers,
+				method: init?.method ?? "GET",
+				body: init?.body === undefined ? undefined : JSON.stringify(init.body),
+			});
+		try {
+			const invalid = await call("/api/plans", {
+				method: "POST",
+				body: { projectId: setup.project.id },
+			});
+			expect(invalid.status).toBe(400);
+			const created = await call("/api/plans", {
+				method: "POST",
+				body: {
+					projectId: setup.project.id,
+					sourceMessageId: "msg-1",
+					message: "Build the widget",
+				},
+			});
+			expect(created.status).toBe(202);
+			const { planId } = (await created.json()) as { planId: string };
+			let status = "draft";
+			const deadline = Date.now() + 10000;
+			while (status === "draft" && Date.now() < deadline) {
+				await Bun.sleep(50);
+				const detail = (await (await call(`/api/plans/${planId}`)).json()) as {
+					plan: { status: string };
+				};
+				status = detail.plan.status;
+			}
+			expect(status).toBe("failed");
+			const badEdit = await call(`/api/plans/${planId}`, {
+				method: "PATCH",
+				body: {
+					tasks: [
+						{
+							key: "a",
+							title: "A",
+							description: "Do A.",
+							priority: "high",
+							dependencies: [],
+							acceptanceCriteria: [],
+							suggestedFiles: [],
+						},
+					],
+				},
+			});
+			expect(badEdit.status).toBe(400);
+			expect(
+				((await badEdit.json()) as { error: { code: string } }).error.code,
+			).toBe("BAD_REQUEST");
+			const saved = await call(`/api/plans/${planId}`, {
+				method: "PATCH",
+				body: {
+					title: "Widget",
+					summary: "Build the widget.",
+					tasks: [
+						{
+							key: "a",
+							title: "A",
+							description: "Do A.",
+							priority: "high",
+							dependencies: [],
+							acceptanceCriteria: ["A done"],
+							suggestedFiles: [],
+						},
+					],
+				},
+			});
+			expect(saved.status).toBe(200);
+			const validated = (await (
+				await call(`/api/plans/${planId}/validate`, { method: "POST" })
+			).json()) as { ok: boolean };
+			expect(validated.ok).toBe(true);
+			const early = await call(`/api/plans/${planId}/tasks`, {
+				method: "POST",
+			});
+			expect(early.status).toBe(500);
+			expect(
+				(await call(`/api/plans/${planId}/approve`, { method: "POST" })).status,
+			).toBe(200);
+			const converted = await call(`/api/plans/${planId}/tasks`, {
+				method: "POST",
+			});
+			expect(converted.status).toBe(201);
+			const first = (await converted.json()) as {
+				taskIds: string[];
+				converted: boolean;
+			};
+			expect(first.converted).toBe(true);
+			expect(first.taskIds).toHaveLength(1);
+			const repeated = (await (
+				await call(`/api/plans/${planId}/tasks`, { method: "POST" })
+			).json()) as { taskIds: string[]; converted: boolean };
+			expect(repeated.converted).toBe(false);
+			expect(repeated.taskIds).toEqual(first.taskIds);
+			const started = await call(`/api/plans/${planId}/start`, {
+				method: "POST",
+			});
+			expect(started.status).toBe(202);
+			const detail = (await (await call(`/api/plans/${planId}`)).json()) as {
+				tasks: Array<{ status: string }>;
+				progress: { total: number };
+			};
+			expect(detail.progress.total).toBe(1);
+			expect(
+				(await call(`/api/projects/${setup.project.id}/plans`)).status,
+			).toBe(200);
+			const cancellable = await call("/api/plans", {
+				method: "POST",
+				body: {
+					projectId: setup.project.id,
+					sourceMessageId: "msg-2",
+					message: "Another",
+				},
+			});
+			const other = (await cancellable.json()) as { planId: string };
+			expect(
+				(await call(`/api/plans/${other.planId}/cancel`, { method: "POST" }))
+					.status,
+			).toBe(200);
+		} finally {
+			await setup.daemon.close();
+			await rm(setup.root, { recursive: true, force: true });
+			await rm(setup.home, { recursive: true, force: true });
+		}
+	});
+
 	test("broadcasts events only after websocket token validation when supported", async () => {
 		const setup = await createTestSetup();
 		try {

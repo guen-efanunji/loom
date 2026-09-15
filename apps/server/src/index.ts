@@ -1,13 +1,24 @@
 import { appRouter } from "@loom/api/routers/index";
 import type { Database } from "@loom/db";
-import { orchestrationRepository, repositories } from "@loom/db";
+import {
+	orchestrationRepository,
+	planRepository,
+	repositories,
+} from "@loom/db";
 import {
 	OpenCodeHttpRuntime,
 	type OpenCodeManager,
 	OpenCodeServerManager,
 } from "@loom/opencode";
-import { EpicService, TaskOrchestrator } from "@loom/orchestrator";
 import {
+	AutomationService,
+	combineHooks,
+	EpicService,
+	TaskOrchestrator,
+} from "@loom/orchestrator";
+import {
+	automationPlanTaskSchema,
+	type Task,
 	createApiError,
 	createProjectInputSchema,
 	createTaskBatchInputSchema,
@@ -32,7 +43,7 @@ import { ZodToJsonSchemaConverter } from "@orpc/zod/zod4";
 import { Hono } from "hono";
 import { createBunWebSocket } from "hono/bun";
 import { cors } from "hono/cors";
-import { VERSION, PROTOCOL_VERSION, log, readSettings, saveSettings, releaseChannelSchema, dataDirectory } from "@loom/distribution";
+import { VERSION, PROTOCOL_VERSION, automationModeSchema, log, readSettings, saveSettings, releaseChannelSchema, dataDirectory } from "@loom/distribution";
 import { checkForUpdate } from "@loom/distribution/updates";
 import { access, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
@@ -79,9 +90,15 @@ function recordToTask(
 				projectId: string;
 				title: string;
 				prompt: string;
-				status: string;
-				position: number | null;
-				workspaceId: string | null;
+			status: string;
+			position: number | null;
+			planId: string | null;
+			description: string;
+			priority: string;
+			acceptanceCriteria: string;
+			suggestedFiles: string;
+			source: string;
+			workspaceId: string | null;
 				sessionId: string | null;
 				createdAt: Date;
 				startedAt: Date | null;
@@ -244,9 +261,16 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		agentRuntime,
 		worktreeManager,
 	);
-	orchestrator.setLifecycle(epics.hooks());
+	const automation = new AutomationService(
+		planRepository(db),
+		repos,
+		orchestrator,
+		agentRuntime,
+	);
+	orchestrator.setLifecycle(combineHooks(epics.hooks(), automation.hooks()));
 	await orchestrator.reconcile();
 	await epics.recover();
+	await automation.recover();
 	const projectValidation =
 		options.projectValidation ?? createProjectValidationService();
 	const app = new Hono();
@@ -516,6 +540,105 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			return errorResponse(c, error);
 		}
 	});
+	const planInputSchema = z.object({
+		projectId: z.string().min(1),
+		sourceMessageId: z.string().min(1).max(200),
+		message: z.string().trim().min(1).max(20000),
+	});
+	const planPatchSchema = z.object({
+		title: z.string().trim().min(1).max(200).optional(),
+		summary: z.string().trim().max(5000).optional(),
+		tasks: z.array(automationPlanTaskSchema).min(1).max(30),
+	});
+	app.post("/api/plans", async (c) => {
+		try {
+			const { planId, status } = await automation.createPlan(
+				planInputSchema.parse(await jsonBody(c)),
+			);
+			return c.json({ planId, status }, 202);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.get("/api/projects/:projectId/plans", async (c) => {
+		try {
+			return c.json(await automation.list(c.req.param("projectId")));
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.get("/api/plans/:id", async (c) => {
+		try {
+			return c.json(await automation.detail(c.req.param("id")));
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.patch("/api/plans/:id", async (c) => {
+		try {
+			const input = planPatchSchema.parse(await jsonBody(c));
+			await automation.savePlan(c.req.param("id"), input);
+			return c.json({ saved: true });
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.post("/api/plans/:id/validate", async (c) => {
+		try {
+			return c.json(await automation.validatePlan(c.req.param("id")));
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.post("/api/plans/:id/approve", async (c) => {
+		try {
+			await automation.approve(c.req.param("id"));
+			return c.json({ approved: true });
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.post("/api/plans/:id/tasks", async (c) => {
+		try {
+			return c.json(await automation.convert(c.req.param("id")), 201);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.post("/api/plans/:id/start", async (c) => {
+		try {
+			return c.json(await automation.start(c.req.param("id")), 202);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.post("/api/plans/:id/cancel", async (c) => {
+		try {
+			await automation.cancel(c.req.param("id"));
+			return c.json({ cancelled: true });
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.get("/api/automation/settings", async (c) => {
+		try {
+			const settings = await readSettings();
+			return c.json({ automationMode: settings.automationMode });
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.put("/api/automation/settings", async (c) => {
+		try {
+			const input = z
+				.object({ automationMode: automationModeSchema })
+				.parse(await jsonBody(c));
+			await saveSettings({ ...(await readSettings()), ...input });
+			return c.json(input);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
 	app.post("/api/tasks", async (c) => {
 		try {
 			const task = await orchestrator.create(
@@ -534,7 +657,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 				throw new Error("Project not found");
 			const results: Array<{
 				index: number;
-				task: (ReturnType<typeof recordToTask> & { errorMessage: null }) | null;
+				task: (Task & { errorMessage: null }) | null;
 				error: string | null;
 			}> = [];
 			for (const [index, item] of input.tasks.entries()) {
