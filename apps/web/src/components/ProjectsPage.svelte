@@ -321,6 +321,7 @@ async function poll() {
 		if (sessionId && !sessionLoading && !sending)
 			await refreshSession(sessionId);
 		if (viewMode !== "chat" && ready) await refreshBoard();
+		if (ready) await restorePlanCards();
 	} catch (reason) {
 		connected = false;
 		report(reason);
@@ -333,6 +334,8 @@ onMount(() => {
 	void (async () => {
 		try {
 			await refreshProjects();
+			const sourceProject = page.url.searchParams.get("project");
+			if (sourceProject && projects.some(p => p.id === sourceProject)) selectedProjectId = sourceProject;
 			legacyTasks = await daemon.listTasks();
 			model = preferredModel(selectedProjectId);
 			composerMode = preferredComposerMode(selectedProjectId);
@@ -401,7 +404,7 @@ function parseCommand(text: string): { mode: ComposerMode; brief: string } {
 }
 
 async function sendPlan(brief: string, mode: "plan" | "build") {
-	const card: ChatPlanCard = {
+	const card = $state<ChatPlanCard>({
 		key: `plan-${Date.now()}`,
 		planId: "",
 		projectId: selectedProjectId,
@@ -416,34 +419,22 @@ async function sendPlan(brief: string, mode: "plan" | "build") {
 		converted: false,
 		started: [],
 		error: "",
-	};
+	});
 	planCards = [...planCards, card];
 	try {
 		const created = await daemon.createPlan({
 			projectId: selectedProjectId,
 			sourceMessageId: `chat:${sessionId || "new"}:${Date.now()}`,
 			message: brief,
+			mode,
+			sourceSessionId: sessionId || undefined,
 		});
 		card.planId = created.planId;
 		card.status = "planning";
 		const detail = await pollPlan(card);
 		if (!detail) return;
-		const autoConvert =
-			mode === "build" ||
-			automationMode === "auto-create" ||
-			automationMode === "auto-start";
-		const autoStart = mode === "build" || automationMode === "auto-start";
-		if (autoConvert && detail.plan.status === "validated") {
-			const converted = await daemon.convertPlan(card.planId);
-			card.converted = converted.converted;
-			card.taskIds = converted.taskIds;
-			if (autoStart) {
-				const started = await daemon.startPlan(card.planId);
-				card.started = started.started;
-			}
-			await refreshBoard();
-			await refreshPlanCard(card);
-		}
+		await refreshBoard();
+		await refreshPlanCard(card);
 	} catch (reason) {
 		card.status = "failed";
 		card.error = reason instanceof Error ? reason.message : "Planning failed";
@@ -491,13 +482,39 @@ async function refreshPlanCard(card: ChatPlanCard) {
 		card.status = detail.plan.status;
 		card.title = detail.plan.title;
 		card.summary = detail.plan.summary;
+		card.converted = !!detail.plan.convertedAt;
+		card.taskIds = detail.tasks.map(t => t.id);
+		card.started = detail.tasks.filter(t => ["preparing", "running", "completed"].includes(t.status)).map(t => t.id);
 	} catch (reason) {
 		report(reason);
 	}
 }
 
+let lastPlanRefresh = 0;
+let plansProject = "";
+async function restorePlanCards() {
+	const projectId = selectedProjectId;
+	if (!projectId || (plansProject === projectId && Date.now() - lastPlanRefresh < 3000)) return;
+	plansProject = projectId;
+	lastPlanRefresh = Date.now();
+	const plans = await daemon.listPlans(projectId);
+	if (disposed || selectedProjectId !== projectId) return;
+	for (const plan of plans) {
+		let card = planCards.find(item => item.planId === plan.id);
+		if (!card) {
+			planCards = [...planCards, { key: plan.id, planId: plan.id, projectId, brief: plan.sourceMessage, status: plan.status, title: plan.title, summary: plan.summary, total: 0, independent: 0, dependent: 0, taskIds: [], converted: !!plan.convertedAt, started: [], error: plan.errorMessage || "" }];
+			card = planCards.find(item => item.planId === plan.id);
+		}
+		if (card) {
+			const detail = await daemon.getPlanDetail(plan.id);
+			Object.assign(card, { status: plan.status, title: plan.title, summary: plan.summary, total: detail.draft.length, independent: detail.draft.filter(t => !t.dependencies.length).length, dependent: detail.draft.filter(t => t.dependencies.length).length, converted: !!plan.convertedAt, taskIds: detail.tasks.map(t => t.id), error: plan.errorMessage || "" });
+		}
+	}
+}
+
 async function planCardConvert(card: ChatPlanCard, start: boolean) {
 	try {
+		if (card.status === "validated") await daemon.approvePlan(card.planId);
 		const converted = await daemon.convertPlan(card.planId);
 		card.converted = converted.converted;
 		card.taskIds = converted.taskIds;

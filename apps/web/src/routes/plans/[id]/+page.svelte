@@ -11,7 +11,8 @@ import {
 	daemon,
 	formatStatus,
 	type PlanTaskDraft,
-	type Task,
+		type Task,
+		request,
 } from "$lib/daemon";
 
 let detail = $state<AutomationPlanDetail | null>(null);
@@ -27,6 +28,7 @@ let refreshing = false;
 const id = $derived(page.params.id ?? "");
 const editable = $derived(
 	detail !== null &&
+		!detail.plan.convertedAt && !detail.plan.cancelledAt &&
 		["draft", "validated", "failed"].includes(detail.plan.status),
 );
 const approved = $derived(
@@ -41,7 +43,7 @@ async function refresh() {
 		const next = await daemon.getPlanDetail(id);
 		if (disposed) return;
 		detail = next;
-		if (!initialized) {
+		if (!initialized && next.plan.status !== "draft") {
 			draft = structuredClone(next.draft);
 			title = next.plan.title;
 			summary = next.plan.summary;
@@ -119,6 +121,7 @@ onMount(() => {
 		<Button variant="outline" onclick={refresh}>Refresh</Button>
 	{:else}
 		<a href={`/project/${detail.plan.projectId}`} class="text-sm text-muted-foreground">← Project board</a>
+		{#if detail.plan.sourceMessage}<details class="my-4 rounded-lg border p-4"><summary class="cursor-pointer text-sm">View original brief</summary><p class="mt-3 whitespace-pre-wrap text-sm text-muted-foreground">{detail.plan.sourceMessage}</p><Button class="mt-3" variant="outline" href={`/?project=${detail.plan.projectId}${detail.plan.sourceSessionId ? `&session=${encodeURIComponent(detail.plan.sourceSessionId)}` : ""}`}>View original chat</Button></details>{/if}
 		<header class="my-6 flex flex-wrap items-center justify-between gap-4">
 			<div>
 				<h1 class="text-3xl font-semibold">{detail.plan.title}</h1>
@@ -130,6 +133,8 @@ onMount(() => {
 			</div>
 		</header>
 		{#if detail.plan.errorMessage}<p class="mb-4 rounded-lg border border-amber-800 p-3 text-sm text-amber-200">{detail.plan.errorMessage}</p>{/if}
+		{#if detail.plan.status === "failed" && !detail.plan.convertedAt}<Button disabled={!!busy} onclick={() => action("regenerate", async () => { await request(`/api/plans/${id}/retry`, { method: "POST" }); initialized = false; })}>Regenerate plan</Button>{/if}
+		{#if !detail.plan.cancelledAt && detail.plan.status !== "completed"}<Button variant="outline" disabled={!!busy} onclick={() => action("cancel", () => daemon.cancelPlan(id))}>Cancel plan</Button>{/if}
 		{#if detail.plan.status === "draft" && !detail.draft.length}<p class="rounded-xl border p-6">OpenCode is preparing the plan. This page updates automatically.</p>{/if}
 		{#if editable}
 			<section class="space-y-4 rounded-xl border bg-card p-5">
@@ -189,7 +194,7 @@ onMount(() => {
 				<Button variant="outline" onclick={add} disabled={!!busy}>Add task</Button>
 				<div class="flex flex-wrap items-center gap-3">
 					<Button variant="outline" disabled={!!busy} onclick={() => action("save", save)}>Save plan</Button>
-					<Button disabled={!!busy} onclick={() => action("approve", () => daemon.approvePlan(id))}>{busy === "approve" ? "Approving…" : "Approve plan"}</Button>
+					<Button disabled={!!busy || !draft.length} onclick={() => action("approve", async () => { await save(); await daemon.approvePlan(id); })}>{busy === "approve" ? "Approving…" : "Approve plan"}</Button>
 					<span class="text-sm text-muted-foreground">{saved}</span>
 				</div>
 			</section>

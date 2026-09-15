@@ -62,6 +62,10 @@ export type AutomationPlan = {
 	id: string;
 	projectId: string;
 	sourceMessageId: string;
+	sourceMessage: string;
+	sourceSessionId: string | null;
+	startedAt: string | null;
+	cancelledAt: string | null;
 	title: string;
 	summary: string;
 	status:
@@ -299,6 +303,8 @@ export const daemon = {
 		projectId: string;
 		sourceMessageId: string;
 		message: string;
+		mode?: "plan" | "build";
+		sourceSessionId?: string;
 	}) =>
 		request<{ planId: string; status: string }>("/api/plans", {
 			method: "POST",
