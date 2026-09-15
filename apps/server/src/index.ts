@@ -274,13 +274,14 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	const projectValidation =
 		options.projectValidation ?? createProjectValidationService();
 	const app = new Hono();
+	const allowedOrigins = new Set(config.corsOrigin.split(",").map((origin) => origin.trim()).filter(Boolean));
 
 	app.use("/*", async (c, next) => {
 		const host = c.req.header("Host");
 		if (host && !["127.0.0.1", "localhost", "[::1]"].includes(host.replace(/:\d+$/, "")))
 			return c.json({ error: { message: "Local host required" } }, 403);
 		const origin = c.req.header("Origin");
-		if (origin && origin !== config.corsOrigin)
+		if (origin && !allowedOrigins.has(origin))
 			return c.json({ error: { message: "Origin is not allowed" } }, 403);
 		if (/^\/(rpc|api-reference)(\/|$)/.test(c.req.path) && c.req.header("Authorization") !== `Bearer ${config.token}`)
 			return c.json({ error: { message: "Bearer token is required" } }, 401);
@@ -296,7 +297,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	app.use(
 		"/*",
 		cors({
-			origin: config.corsOrigin,
+			origin: (origin) => !origin || allowedOrigins.has(origin) ? origin : undefined,
 			allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
 			allowHeaders: ["Content-Type", "Authorization"],
 			credentials: true,
@@ -313,7 +314,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	if (!options.staticAssets) app.get("/", (c) => c.text("OK"));
 
 	app.on(["POST", "GET"], "/api/bootstrap", (c) => {
-		if (c.req.header("Origin") !== config.corsOrigin)
+		if (!allowedOrigins.has(c.req.header("Origin") ?? ""))
 			return c.json(
 				{
 					error: createApiError(
