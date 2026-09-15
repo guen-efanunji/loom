@@ -20,7 +20,7 @@ import {
 } from "@lucide/svelte";
 import { onMount, tick } from "svelte";
 import { toast } from "svelte-sonner";
-import { goto } from "$app/navigation";
+import { goto, replaceState } from "$app/navigation";
 import { page } from "$app/state";
 import {
 	type Catalog,
@@ -275,7 +275,7 @@ $effect(() => {
 	const url = new URL(window.location.href);
 	if (mode === "chat") url.searchParams.delete("view");
 	else url.searchParams.set("view", mode);
-	window.history.replaceState({}, "", url);
+	replaceState(url, {});
 	if (mode !== "chat" && ready) void refreshBoard();
 });
 function modelKey(projectId: string) {
