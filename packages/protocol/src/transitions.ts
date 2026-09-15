@@ -2,6 +2,8 @@ import type { TaskStatus } from "./domain";
 
 const transitions: Record<TaskStatus, readonly TaskStatus[]> = {
 	queued: ["preparing", "cancelled", "failed"],
+	ready: ["preparing", "cancelled", "failed"],
+	blocked: ["ready", "cancelled", "failed"],
 	preparing: ["running", "cancelled", "failed"],
 	running: ["completed", "cancelled", "failed"],
 	completed: ["ready_to_merge"],

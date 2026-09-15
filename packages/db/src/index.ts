@@ -35,6 +35,7 @@ export function createDb(env: DatabaseConfig = {}) {
 
 export type Database = ReturnType<typeof createDb>;
 
+export * from "./automation";
 export * from "./bootstrap";
 export * from "./orchestration";
 export * from "./repositories";

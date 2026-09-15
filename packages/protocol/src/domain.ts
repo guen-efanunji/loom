@@ -12,6 +12,8 @@ export type Project = z.infer<typeof projectSchema>;
 
 export const taskStatusSchema = z.enum([
 	"queued",
+	"ready",
+	"blocked",
 	"preparing",
 	"running",
 	"completed",
@@ -33,9 +35,15 @@ export type MergeConflict = z.infer<typeof mergeConflictSchema>;
 export const taskSchema = z.object({
 	id: z.string().min(1),
 	projectId: z.string().min(1),
+	planId: z.string().min(1).nullable().default(null),
 	title: z.string().min(1),
 	prompt: z.string().min(1),
+	description: z.string().default(""),
 	status: taskStatusSchema,
+	priority: z.enum(["low", "medium", "high"]).default("medium"),
+	acceptanceCriteria: z.array(z.string()).default([]),
+	suggestedFiles: z.array(z.string()).default([]),
+	source: z.enum(["manual", "planner"]).default("manual"),
 	position: z.number().int().nullable().default(null),
 	workspaceId: z.string().min(1).nullable(),
 	sessionId: z.string().min(1).nullable(),

@@ -1,3 +1,4 @@
+export * from "./automation";
 export * from "./domain";
 export * from "./errors";
 export * from "./events";

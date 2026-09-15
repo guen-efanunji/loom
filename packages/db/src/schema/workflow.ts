@@ -32,6 +32,12 @@ export const tasks = sqliteTable(
 		prompt: text("prompt").notNull(),
 		status: text("status").notNull().default("queued"),
 		position: integer("position"),
+		planId: text("plan_id"),
+		description: text("description").notNull().default(""),
+		priority: text("priority").notNull().default("medium"),
+		acceptanceCriteria: text("acceptance_criteria").notNull().default("[]"),
+		suggestedFiles: text("suggested_files").notNull().default("[]"),
+		source: text("source").notNull().default("manual"),
 		workspaceId: text("workspace_id"),
 		sessionId: text("session_id"),
 		createdAt: integer("created_at", { mode: "timestamp_ms" })

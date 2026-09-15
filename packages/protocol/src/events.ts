@@ -149,6 +149,47 @@ export const daemonEventSchema = z.discriminatedUnion("type", [
 		type: z.literal("task.discarded"),
 		taskId: z.string().min(1),
 	}),
+	z.object({
+		type: z.literal("task.ready"),
+		taskId: z.string().min(1),
+	}),
+	z.object({
+		type: z.literal("task.unblocked"),
+		taskId: z.string().min(1),
+		unblockedBy: z.string().min(1),
+	}),
+	z.object({
+		type: z.literal("plan.created"),
+		planId: z.string().min(1),
+	}),
+	z.object({
+		type: z.literal("plan.validated"),
+		planId: z.string().min(1),
+	}),
+	z.object({
+		type: z.literal("plan.validation_failed"),
+		planId: z.string().min(1),
+		message: z.string().min(1),
+	}),
+	z.object({
+		type: z.literal("plan.approved"),
+		planId: z.string().min(1),
+	}),
+	z.object({
+		type: z.literal("plan.converted"),
+		planId: z.string().min(1),
+		taskIds: z.array(z.string().min(1)),
+	}),
+	z.object({
+		type: z.literal("plan.started"),
+		planId: z.string().min(1),
+		taskIds: z.array(z.string().min(1)),
+	}),
+	z.object({
+		type: z.literal("plan.tasksCreated"),
+		planId: z.string().min(1),
+		taskIds: z.array(z.string().min(1)),
+	}),
 ]);
 
 export type DaemonEvent = z.infer<typeof daemonEventSchema>;

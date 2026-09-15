@@ -154,6 +154,21 @@
         "typescript": "catalog:",
       },
     },
+    "packages/automation": {
+      "name": "@loom/automation",
+      "version": "0.0.0",
+      "dependencies": {
+        "@loom/db": "workspace:*",
+        "@loom/opencode": "workspace:*",
+        "@loom/protocol": "workspace:*",
+        "zod": "catalog:",
+      },
+      "devDependencies": {
+        "@loom/config": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "packages/config": {
       "name": "@loom/config",
       "version": "0.0.0",
@@ -199,6 +214,7 @@
       "name": "@loom/orchestrator",
       "version": "0.0.0",
       "dependencies": {
+        "@loom/automation": "workspace:*",
         "@loom/db": "workspace:*",
         "@loom/opencode": "workspace:*",
         "@loom/protocol": "workspace:*",
@@ -388,6 +404,8 @@
     "@loom/api": ["@loom/api@workspace:packages/api"],
 
     "@loom/auth": ["@loom/auth@workspace:packages/auth"],
+
+    "@loom/automation": ["@loom/automation@workspace:packages/automation"],
 
     "@loom/cli": ["@loom/cli@workspace:apps/cli"],
 
