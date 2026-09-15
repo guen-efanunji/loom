@@ -15,6 +15,7 @@ import type {
 import type { AgentRuntime } from "@loom/opencode";
 import type { AutomationPlanTask, PlanStatus } from "@loom/protocol";
 import type { TaskLifecycleHooks, TaskOrchestrator } from "./index";
+import { git, snapshotWorkspace } from "./commands";
 
 type Repos = ReturnType<typeof repositories>;
 
@@ -50,6 +51,7 @@ function parseList(value: string | null | undefined): string[] {
 
 export class AutomationService {
 	private busy = new Map<string, Promise<unknown>>();
+	private sessions = new Map<string, string>();
 	constructor(
 		private readonly store: PlanRepository,
 		private readonly repos: Repos,
@@ -62,6 +64,7 @@ export class AutomationService {
 		const job = Promise.resolve()
 			.then(work)
 			.catch(async (error) => {
+				if ((await this.store.get(id))?.cancelledAt) return;
 				const message = error instanceof Error ? error.message : String(error);
 				await this.store.update(id, {
 					status: "failed",
@@ -75,6 +78,7 @@ export class AutomationService {
 			})
 			.finally(() => {
 				this.busy.delete(id);
+				this.sessions.delete(id);
 			});
 		this.busy.set(id, job);
 	}
@@ -87,6 +91,8 @@ export class AutomationService {
 		projectId: string;
 		sourceMessageId: string;
 		message: string;
+		sourceSessionId?: string;
+		automationMode?: "review" | "auto-create" | "auto-start";
 	}): Promise<{ planId: string; status: PlanStatus }> {
 		const project = await this.requireProject(input.projectId);
 		const message = input.message.trim();
@@ -96,6 +102,9 @@ export class AutomationService {
 			id,
 			projectId: project.id,
 			sourceMessageId: input.sourceMessageId,
+			sourceMessage: message,
+			sourceSessionId: input.sourceSessionId,
+			automationMode: input.automationMode,
 			title: message.split("\n")[0]?.slice(0, 80) || "Untitled plan",
 			summary: "",
 		});
@@ -110,12 +119,16 @@ export class AutomationService {
 		message: string,
 	) {
 		const context = await buildAutomationContext(project.path, project.name);
-		const planner = new RuntimePlanner(this.runtime, project.path);
+		const planner = new RuntimePlanner(this.runtime, project.path, "Loom planner", async sessionId => {
+			this.sessions.set(planId, sessionId);
+			if ((await this.requirePlan(planId)).cancelledAt) throw new Error("Plan cancelled");
+		});
 		const result = await planner.createPlan({
 			projectId: project.id,
 			message,
 			context,
 		});
+		if ((await this.requirePlan(planId)).cancelledAt) return;
 		await this.store.replaceTasks(planId, convertPlanTasks(result.tasks));
 		await this.store.update(planId, {
 			title: result.title,
@@ -124,6 +137,15 @@ export class AutomationService {
 			errorMessage: null,
 		});
 		await this.tasks.publishDaemonEvent({ type: "plan.validated", planId });
+		const plan = await this.requirePlan(planId);
+		if (plan.automationMode !== "review") {
+			await this.store.update(planId, { status: "approved", approvedAt: new Date() });
+			await this.tasks.publishDaemonEvent({ type: "plan.approved", planId });
+			const conversion = await this.store.convert(planId, project.id, convertPlanTasks(result.tasks));
+			await this.tasks.publishDaemonEvent({ type: "plan.converted", planId, taskIds: conversion.taskIds });
+			await this.tasks.publishDaemonEvent({ type: "plan.tasksCreated", planId, taskIds: conversion.taskIds });
+			if (plan.automationMode === "auto-start") await this.start(planId);
+		}
 	}
 
 	async savePlan(
@@ -137,7 +159,7 @@ export class AutomationService {
 		if (this.busy.has(planId))
 			throw new Error("Plan operation is already active");
 		const plan = await this.requirePlan(planId);
-		if (!["draft", "validated", "failed"].includes(plan.status))
+		if (plan.convertedAt || plan.cancelledAt || !["draft", "validated", "failed"].includes(plan.status))
 			throw new Error("Plan is not editable");
 		const validation = validateAutomationPlan({
 			title: input.title ?? plan.title,
@@ -188,6 +210,8 @@ export class AutomationService {
 			throw new Error("Plan must be validated before approval");
 		if (plan.approvedAt || plan.convertedAt)
 			throw new Error("Plan was already approved");
+		const validation = await this.validatePlan(planId);
+		if (!validation.ok) throw new Error(`Plan invalid: ${validation.issues.map(i => i.message).join("; ")}`);
 		await this.store.update(planId, {
 			status: "approved",
 			approvedAt: new Date(),
@@ -239,6 +263,9 @@ export class AutomationService {
 	async start(planId: string): Promise<{ started: string[] }> {
 		const plan = await this.requirePlan(planId);
 		if (!plan.convertedAt) throw new Error("Convert the plan first");
+		if (plan.cancelledAt) throw new Error("Plan was cancelled");
+		if (plan.status === "completed") return { started: [] };
+		await this.store.update(planId, { status: "executing", startedAt: plan.startedAt ?? new Date() });
 		const rows = await projectTasks(this.repos, plan.projectId);
 		const ready = rows.filter(
 			(row) => row.planId === planId && row.status === "ready",
@@ -248,8 +275,8 @@ export class AutomationService {
 			try {
 				await this.tasks.enqueue(row.id);
 				started.push(row.id);
-			} catch {
-				// Already scheduled or blocked; the scheduler gate decides.
+			} catch (error) {
+				if (!this.tasks.getScheduler().getState().running.some(t => t.taskId === row.id) && !this.tasks.getScheduler().getState().queued.some(t => t.taskId === row.id)) throw error;
 			}
 		}
 		await this.tasks.publishDaemonEvent({
@@ -262,12 +289,28 @@ export class AutomationService {
 
 	async cancel(planId: string): Promise<void> {
 		const plan = await this.requirePlan(planId);
-		if (!["draft", "validated", "approved"].includes(plan.status))
-			throw new Error("Only unexecuted plans can be cancelled");
+		if (plan.status === "completed") throw new Error("Completed plans cannot be cancelled");
 		await this.store.update(planId, {
 			status: "failed",
+			cancelledAt: new Date(),
 			errorMessage: "Cancelled by user",
 		});
+		const sessionId = this.sessions.get(planId);
+		if (sessionId) await this.runtime.abort(sessionId);
+		for (const row of (await projectTasks(this.repos, plan.projectId)).filter(t => t.planId === planId))
+			if (["ready", "blocked", "queued", "preparing", "running"].includes(row.status)) {
+				if (["preparing", "running", "queued"].includes(row.status)) await this.tasks.cancel(row.id).catch(() => {});
+				else await this.repos.tasks.update(row.id, { status: "cancelled" });
+			}
+	}
+
+	async retryPlan(planId: string) {
+		const plan = await this.requirePlan(planId);
+		if (plan.convertedAt || plan.status !== "failed" || !plan.sourceMessage) throw new Error("Only failed, unconverted plans with a saved brief can regenerate");
+		if (this.busy.has(planId)) throw new Error("Plan operation is already active");
+		const project = await this.requireProject(plan.projectId);
+		await this.store.update(planId, { status: "draft", cancelledAt: null, errorMessage: null });
+		this.launch(planId, () => this.generate(planId, project, plan.sourceMessage));
 	}
 
 	async detail(planId: string) {
@@ -322,6 +365,7 @@ export class AutomationService {
 			canRun: async (taskId) => {
 				const task = await this.repos.tasks.getById(taskId);
 				if (!task?.planId) return true;
+				if ((await this.store.get(task.planId))?.cancelledAt) return false;
 				if (task.status !== "ready") return false;
 				for (const dep of await this.store.dependencies(taskId))
 					if (
@@ -331,17 +375,30 @@ export class AutomationService {
 						return false;
 				return true;
 			},
-			prepare: async (task) => {
+			prepare: async (task, workspace) => {
 				if (!task.planId) return task.prompt;
+				await this.store.update(task.planId, { status: "executing" });
+				for (const dependency of await this.store.dependencies(task.id)) {
+					const upstream = await this.repos.workspaces.getByTaskId(dependency.dependsOnTaskId);
+					if (!upstream) throw new Error("Dependency workspace not found; cannot inherit its changes");
+					await git(workspace.path, "merge", "--no-edit", "--no-ff", "--", upstream.branch);
+				}
 				const files = parseList(task.suggestedFiles);
 				if (!files.length) return task.prompt;
 				return `${task.prompt}\n\nSuggested files: ${files.join(", ")}`;
 			},
-			complete: async () => {},
+			complete: async (task, workspace) => {
+				if (task.planId) await snapshotWorkspace(workspace.path, `Complete task: ${task.title}`);
+			},
 			settled: (taskId) => this.unlockDependents(taskId),
 			guard: async (taskId, action) => {
 				const task = await this.repos.tasks.getById(taskId);
 				if (!task?.planId) return;
+				if (action === "retry") {
+					if ((await this.store.get(task.planId))?.cancelledAt) throw new Error("Plan was cancelled");
+					for (const dep of await this.store.dependencies(taskId))
+						if ((await this.repos.tasks.getById(dep.dependsOnTaskId))?.status !== "completed") throw new Error("Retry dependencies first");
+				}
 				if (action === "remove") {
 					if (LOCKED_TASK.has(task.status ?? ""))
 						throw new Error(
@@ -360,6 +417,8 @@ export class AutomationService {
 	private async unlockDependents(taskId: string): Promise<void> {
 		const task = await this.repos.tasks.getById(taskId);
 		if (!task?.planId) return;
+		const plan = await this.requirePlan(task.planId);
+		if (plan.cancelledAt) return;
 		if (!TERMINAL_TASK.has(task.status ?? "")) return;
 		if (task.status !== "completed") return;
 		for (const link of await this.store.dependents(taskId)) {
@@ -381,7 +440,7 @@ export class AutomationService {
 				unblockedBy: taskId,
 			});
 			try {
-				await this.tasks.enqueue(dependent.id);
+				if (plan.startedAt) await this.tasks.enqueue(dependent.id);
 			} catch {
 				// Already scheduled; the scheduler gate decides.
 			}
@@ -398,6 +457,15 @@ export class AutomationService {
 
 	async recover(): Promise<void> {
 		for (const plan of await this.store.all()) {
+			if (plan.status === "draft") {
+				await this.store.update(plan.id, { status: "failed", errorMessage: "Planner interrupted by daemon restart. Regenerate from the saved brief." });
+				continue;
+			}
+			if (plan.cancelledAt) continue;
+			if (plan.convertedAt && !plan.startedAt && plan.status === "executing") {
+				await this.store.update(plan.id, { status: "approved" });
+				continue;
+			}
 			if (plan.status !== "executing") continue;
 			const rows = (await projectTasks(this.repos, plan.projectId)).filter(
 				(row) => row.planId === plan.id,

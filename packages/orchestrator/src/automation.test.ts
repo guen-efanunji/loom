@@ -178,13 +178,12 @@ test("rejects invalid edits, premature actions, and failed dependencies stay blo
 			(event) => event.type === "task.ready" && event.taskId === top.id,
 		),
 	).toBe(false);
-	await expect(automation.cancel(planId)).rejects.toThrow("Only unexecuted");
 	await repos.tasks.update(base.id, { status: "running" });
 	await expect(tasks.removeTask(base.id)).rejects.toThrow("deleted");
 	await repos.tasks.update(base.id, { status: "ready" });
 	await expect(tasks.removeTask(base.id)).rejects.toThrow("dependent");
 	expect(converted.taskIds).toHaveLength(2);
-	expect((await store.get(planId))?.status).toBe("executing");
+	expect((await store.get(planId))?.status).toBe("approved");
 });
 
 test("cancels unexecuted plans and combines hooks", async () => {

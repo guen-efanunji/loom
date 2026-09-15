@@ -544,6 +544,8 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		projectId: z.string().min(1),
 		sourceMessageId: z.string().min(1).max(200),
 		message: z.string().trim().min(1).max(20000),
+		sourceSessionId: z.string().min(1).max(200).optional(),
+		mode: z.enum(["plan", "build"]).default("plan"),
 	});
 	const planPatchSchema = z.object({
 		title: z.string().trim().min(1).max(200).optional(),
@@ -552,8 +554,10 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	});
 	app.post("/api/plans", async (c) => {
 		try {
+			const input = planInputSchema.parse(await jsonBody(c));
+			const settings = await readSettings();
 			const { planId, status } = await automation.createPlan(
-				planInputSchema.parse(await jsonBody(c)),
+				{ ...input, automationMode: input.mode === "build" && settings.automationMode === "review" ? "auto-create" : settings.automationMode },
 			);
 			return c.json({ planId, status }, 202);
 		} catch (error) {
@@ -619,6 +623,10 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		} catch (error) {
 			return errorResponse(c, error);
 		}
+	});
+	app.post("/api/plans/:id/retry", async (c) => {
+		try { await automation.retryPlan(c.req.param("id")); return c.json({ accepted: true }, 202); }
+		catch (error) { return errorResponse(c, error); }
 	});
 	app.get("/api/automation/settings", async (c) => {
 		try {

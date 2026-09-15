@@ -12,6 +12,7 @@ export function convertPlanTask(task: AutomationPlanTask): ConvertedPlanTask {
 		acceptanceCriteria: [...task.acceptanceCriteria],
 		suggestedFiles: [...task.suggestedFiles],
 		dependsOn: [...task.dependencies],
+		parallelGroup: task.parallelGroup ?? null,
 	};
 }
 

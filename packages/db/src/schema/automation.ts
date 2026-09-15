@@ -18,6 +18,11 @@ export const plans = sqliteTable("plans", {
 		.notNull()
 		.references(() => projects.id, { onDelete: "cascade" }),
 	sourceMessageId: text("source_message_id").notNull().default(""),
+	sourceMessage: text("source_message").notNull().default(""),
+	sourceSessionId: text("source_session_id"),
+	automationMode: text("automation_mode").notNull().default("review"),
+	startedAt: integer("started_at", { mode: "timestamp_ms" }),
+	cancelledAt: integer("cancelled_at", { mode: "timestamp_ms" }),
 	title: text("title").notNull(),
 	summary: text("summary").notNull().default(""),
 	status: text("status").notNull().default("draft"),

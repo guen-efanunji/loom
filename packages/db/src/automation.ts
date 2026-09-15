@@ -8,6 +8,11 @@ export type PlanRecord = {
 	id: string;
 	projectId: string;
 	sourceMessageId: string;
+	sourceMessage: string;
+	sourceSessionId: string | null;
+	automationMode: string;
+	startedAt: Date | null;
+	cancelledAt: Date | null;
 	title: string;
 	summary: string;
 	status: string;
@@ -39,6 +44,7 @@ export type ConvertedPlanTask = {
 	acceptanceCriteria: string[];
 	suggestedFiles: string[];
 	dependsOn: string[];
+	parallelGroup?: string | null;
 };
 
 function parseList(value: string | null): string[] {
@@ -79,6 +85,9 @@ export function planRepository(db: Database) {
 			id?: string;
 			projectId: string;
 			sourceMessageId: string;
+			sourceMessage?: string;
+			sourceSessionId?: string;
+			automationMode?: string;
 			title: string;
 			summary?: string;
 		}): Promise<PlanRecord> {
@@ -88,6 +97,9 @@ export function planRepository(db: Database) {
 					id: input.id ?? randomUUID(),
 					projectId: input.projectId,
 					sourceMessageId: input.sourceMessageId,
+					sourceMessage: input.sourceMessage ?? "",
+					sourceSessionId: input.sourceSessionId ?? null,
+					automationMode: input.automationMode ?? "review",
 					title: input.title,
 					summary: input.summary ?? "",
 					status: "draft",
@@ -119,9 +131,10 @@ export function planRepository(db: Database) {
 			planId: string,
 			tasks: ConvertedPlanTask[],
 		): Promise<PlanTaskRecord[]> {
-			await db.delete(planTasks).where(eq(planTasks.planId, planId));
+			return db.transaction((tx) => {
+			tx.delete(planTasks).where(eq(planTasks.planId, planId)).run();
 			if (!tasks.length) return [];
-			const rows = await db
+			const rows = tx
 				.insert(planTasks)
 				.values(
 					tasks.map((task) => ({
@@ -134,10 +147,12 @@ export function planRepository(db: Database) {
 						dependencies: JSON.stringify(task.dependsOn),
 						acceptanceCriteria: JSON.stringify(task.acceptanceCriteria),
 						suggestedFiles: JSON.stringify(task.suggestedFiles),
+						parallelGroup: task.parallelGroup ?? null,
 					})),
 				)
-				.returning();
+				.returning().all();
 			return rows.map(toPlanTask);
+			});
 		},
 		async planTasks(planId: string): Promise<PlanTaskRecord[]> {
 			const rows = await db
@@ -224,7 +239,7 @@ export function planRepository(db: Database) {
 							.run();
 				const now = new Date();
 				tx.update(plans)
-					.set({ status: "executing", convertedAt: now, errorMessage: null })
+					.set({ status: "approved", convertedAt: now, errorMessage: null })
 					.where(eq(plans.id, planId))
 					.run();
 				result = {

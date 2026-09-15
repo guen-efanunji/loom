@@ -3,6 +3,7 @@ import { type PlannerResult, plannerResultSchema } from "@loom/protocol";
 export type PlanValidationIssue = {
 	code:
 		| "duplicate-key"
+		| "duplicate-dependency"
 		| "invalid-key"
 		| "missing-dependency"
 		| "self-dependency"
@@ -76,6 +77,8 @@ export function validateAutomationPlan(input: unknown): PlanValidation {
 				message: `Duplicate task key: ${task.key}`,
 			});
 		seen.add(task.key);
+		if (new Set(task.dependencies).size !== task.dependencies.length)
+			issues.push({ code: "duplicate-dependency", message: `Task ${task.key} repeats a dependency` });
 		if (!task.acceptanceCriteria.length)
 			issues.push({
 				code: "missing-acceptance-criteria",

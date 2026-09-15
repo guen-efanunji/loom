@@ -386,7 +386,7 @@ export class TaskOrchestrator {
 				await this.dependencies.workspaces.delete(workspace.id);
 		}
 		await this.dependencies.tasks.update(taskId, {
-			status: "queued",
+			status: record.planId ? "ready" : "queued",
 			workspaceId: null,
 			sessionId: null,
 			startedAt: null,
