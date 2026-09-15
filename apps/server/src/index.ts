@@ -243,7 +243,18 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	const openCodeManager =
 		options.openCodeManager ?? new OpenCodeServerManager();
 	const ownsOpenCode = options.startOpenCode ?? true;
-	if (ownsOpenCode) await openCodeManager.start();
+	if (ownsOpenCode) {
+		try {
+			await openCodeManager.start();
+		} catch (error) {
+			// Keep the daemon/API available when OpenCode is not installed or
+			// cannot start yet. Chat requests will report the actionable runtime
+			// error while project management and health remain usable.
+			log("opencode", "unavailable", {
+				error: error instanceof Error ? error.message : String(error),
+			}, "warn");
+		}
+	}
 	const worktreeManager = new WorktreeManager();
 	const agentRuntime = new OpenCodeHttpRuntime();
 	const orchestrator =
