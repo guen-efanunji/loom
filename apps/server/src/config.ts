@@ -41,9 +41,14 @@ export async function loadDaemonConfig(
 		port: Number(environment.LOOM_PORT || stored.port || 4317),
 		// Vite serves the development client on localhost:5173 by default. Keep
 		// the daemon origin available as well for the bundled UI and 127.0.0.1.
-		corsOrigin:
-			environment.CORS_ORIGIN ||
-			`http://localhost:5173,http://127.0.0.1:5173,http://127.0.0.1:${environment.LOOM_PORT || stored.port || 4317}`,
+		corsOrigin: [
+			environment.CORS_ORIGIN,
+			"http://localhost:5173",
+			"http://127.0.0.1:5173",
+			`http://127.0.0.1:${environment.LOOM_PORT || stored.port || 4317}`,
+		]
+			.filter(Boolean)
+			.join(","),
 		token,
 	};
 	if (stored.token !== token) {
