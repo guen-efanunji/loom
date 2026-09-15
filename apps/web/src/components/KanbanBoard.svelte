@@ -20,6 +20,7 @@ let {
 
 const columns = [
 	{ key: "queued", label: "Backlog" },
+	{ key: "ready", label: "Ready" },
 	{ key: "running", label: "In progress" },
 	{ key: "review", label: "Review" },
 	{ key: "done", label: "Done" },
@@ -28,8 +29,8 @@ const columns = [
 
 function column(task: Task) {
 	if (task.integrated) return "done";
-	if (task.status === "queued")
-		return task.blockedBy?.length ? "queued" : "queued";
+	if (task.status === "queued" || task.status === "blocked") return "queued";
+	if (task.status === "ready") return "ready";
 	if (["preparing", "running"].includes(task.status)) return "running";
 	if (
 		["ready_to_merge", "merge_conflict"].includes(task.status) ||
@@ -231,7 +232,7 @@ async function doCancel(task: Task) {
 		<p class="text-sm text-muted-foreground">{tasks.length} tasks · drag cards to reorder</p>
 		<Button size="sm" onclick={() => { addTitle = ""; addPrompt = ""; addOpen = true; }} disabled={busy}><Plus size={15} />Add task</Button>
 	</div>
-	<div class="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-x-auto md:grid-cols-3 xl:grid-cols-5">
+	<div class="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-x-auto md:grid-cols-3 xl:grid-cols-6">
 		{#each columns as item}
 			{@const cards = ordered.filter((task) => column(task) === item.key)}
 			<section
@@ -275,11 +276,17 @@ async function doCancel(task: Task) {
 								<Button variant="ghost" size="icon" class="size-7 shrink-0 text-destructive" title="Delete task" aria-label={`Delete ${task.title}`} onclick={() => (deleteTask = task)}><Trash2 size={13} /></Button>
 							</div>
 							<p class="line-clamp-2 text-xs text-muted-foreground">{task.prompt}</p>
-							{#if task.blockedBy?.length && task.status === "queued"}
+							<div class="flex flex-wrap items-center gap-1">
+								{#if task.source === "planner"}<Badge variant="outline" class="text-[10px]">AI Planned</Badge>{/if}
+								{#if task.status === "blocked"}<Badge variant="secondary" class="text-[10px] text-amber-300">Blocked</Badge>{/if}
+								{#if task.acceptanceCriteria.length}<span class="text-[10px] text-muted-foreground">✓ {task.acceptanceCriteria.length} checks</span>{/if}
+							</div>
+							{#if task.blockedBy?.length && ["queued", "blocked"].includes(task.status)}
 								<p class="text-xs text-amber-300">Waiting for: {task.blockedBy.join(", ")}</p>
 							{/if}
+							{#if task.planId}<a class="text-[11px] text-muted-foreground hover:underline" href={`/plans/${task.planId}`}>Generated from plan →</a>{/if}
 							<div class="flex flex-wrap gap-1">
-								{#if task.status === "queued"}<Button size="sm" variant="outline" disabled={busy} onclick={() => doRun(task)}>Run</Button>{/if}
+								{#if ["queued", "ready"].includes(task.status)}<Button size="sm" variant="outline" disabled={busy} onclick={() => doRun(task)}>Run</Button>{/if}
 								{#if ["failed", "cancelled"].includes(task.status)}<Button size="sm" variant="outline" disabled={busy} onclick={() => doRetry(task)}>Retry</Button>{/if}
 								{#if ["queued", "preparing", "running"].includes(task.status)}<Button size="sm" variant="ghost" disabled={busy} onclick={() => doCancel(task)}>Cancel</Button>{/if}
 								<Button size="sm" variant="ghost" href={`/task/${task.id}`}>Open</Button>

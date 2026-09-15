@@ -18,11 +18,29 @@ import {
 
 let {
 	tasks = [],
+	projectId = "",
 	onChanged,
 }: {
 	tasks?: Task[];
+	projectId?: string;
 	onChanged?: () => unknown;
 } = $props();
+
+type PlanProgress = {
+	id: string;
+	title: string;
+	status: string;
+	progress: {
+		total: number;
+		done: number;
+		running: number;
+		ready: number;
+		blocked: number;
+		failed: number;
+		percent: number;
+	};
+};
+let plans = $state<PlanProgress[]>([]);
 
 let runs = $state<Record<string, AgentRun[]>>({});
 let outputs = $state<Record<string, string>>({});
@@ -68,7 +86,7 @@ function statusVariant(status: string) {
 async function load() {
 	try {
 		const watched = [...active.slice(0, 8), ...finished.slice(0, 6)];
-		const [runEntries, outputEntries, pending] = await Promise.all([
+		const [runEntries, outputEntries, pending, planList] = await Promise.all([
 			Promise.all(
 				watched.map(
 					async (task) => [task.id, await daemon.getRuns(task.id)] as const,
@@ -84,11 +102,13 @@ async function load() {
 				}),
 			),
 			daemon.getPermissions(),
+			projectId ? daemon.listPlans(projectId).catch(() => []) : [],
 		]);
 		if (disposed) return;
 		runs = Object.fromEntries(runEntries);
 		outputs = Object.fromEntries(outputEntries);
 		permissions = pending;
+		plans = planList;
 		await onChanged?.();
 	} catch (reason) {
 		if (!disposed)
@@ -139,6 +159,26 @@ onDestroy(() => {
 	{#if loading}
 		<div role="status" class="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground"><LoaderCircle size={17} class="animate-spin" />Loading progress…</div>
 	{:else}
+			{#if plans.length}
+			<section aria-label="Plan progress">
+				<h2 class="mb-3 text-sm font-medium">Plans</h2>
+				<div class="space-y-2">
+					{#each plans as plan}
+						<a href={`/plans/${plan.id}`} class="block rounded-xl border bg-card p-4 hover:border-muted-foreground">
+							<div class="flex flex-wrap items-center gap-2">
+								<p class="min-w-0 flex-1 truncate text-sm font-medium">{plan.title}</p>
+								<Badge variant="outline">{plan.status}</Badge>
+								<span class="text-xs text-muted-foreground">{plan.progress.done} / {plan.progress.total} done · {plan.progress.percent}%</span>
+							</div>
+							<div class="mt-3 h-1.5 overflow-hidden rounded-full bg-muted" role="progressbar" aria-valuenow={plan.progress.percent} aria-valuemin={0} aria-valuemax={100} aria-label={`${plan.title} progress`}>
+								<div class="h-full rounded-full bg-emerald-400" style={`width: ${plan.progress.percent}%`}></div>
+							</div>
+							<p class="mt-2 text-xs text-muted-foreground">{plan.progress.running} running · {plan.progress.ready} ready · {plan.progress.blocked} blocked · {plan.progress.failed} failed</p>
+						</a>
+					{/each}
+				</div>
+			</section>
+		{/if}
 		{#if permissions.length}
 			<section aria-label="Waiting for you">
 				<h2 class="mb-3 flex items-center gap-2 text-sm font-medium"><TriangleAlert size={15} class="text-amber-400" />Waiting for you<Badge variant="secondary">{permissions.length}</Badge></h2>

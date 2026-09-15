@@ -37,6 +37,8 @@ export type Project = {
 
 export type TaskStatus =
 	| "queued"
+	| "ready"
+	| "blocked"
 	| "preparing"
 	| "running"
 	| "completed"
@@ -45,15 +47,72 @@ export type TaskStatus =
 	| "failed"
 	| "cancelled";
 
+export type PlanTaskDraft = {
+	key: string;
+	title: string;
+	description: string;
+	priority: "low" | "medium" | "high";
+	dependencies: string[];
+	acceptanceCriteria: string[];
+	suggestedFiles: string[];
+	parallelGroup?: string;
+};
+
+export type AutomationPlan = {
+	id: string;
+	projectId: string;
+	sourceMessageId: string;
+	title: string;
+	summary: string;
+	status:
+		| "draft"
+		| "validated"
+		| "approved"
+		| "executing"
+		| "completed"
+		| "failed";
+	convertedAt: string | null;
+	approvedAt: string | null;
+	errorMessage: string | null;
+	createdAt: string;
+};
+
+export type AutomationPlanDetail = {
+	plan: AutomationPlan;
+	draft: Array<
+		PlanTaskDraft & {
+			id: string;
+			planId: string;
+		}
+	>;
+	tasks: Array<Task & { blockedBy: string[] }>;
+	validation: { ok: boolean; issues: Array<{ code: string; message: string }> };
+	progress: {
+		total: number;
+		done: number;
+		running: number;
+		ready: number;
+		blocked: number;
+		failed: number;
+		percent: number;
+	};
+};
+
 export type Task = {
 	epicId?: string | null;
 	blockedBy?: string[];
 	integrated?: boolean;
 	id: string;
 	projectId: string;
+	planId: string | null;
 	title: string;
 	prompt: string;
+	description: string;
 	status: TaskStatus;
+	priority: "low" | "medium" | "high";
+	acceptanceCriteria: string[];
+	suggestedFiles: string[];
+	source: "manual" | "planner";
 	position: number | null;
 	workspaceId: string | null;
 	sessionId: string | null;
@@ -235,6 +294,62 @@ export const daemon = {
 		request(`/api/tasks/${id}/artifacts`, {
 			method: "POST",
 			body: JSON.stringify(input),
+		}),
+	createPlan: (input: {
+		projectId: string;
+		sourceMessageId: string;
+		message: string;
+	}) =>
+		request<{ planId: string; status: string }>("/api/plans", {
+			method: "POST",
+			body: JSON.stringify(input),
+		}),
+	listPlans: (projectId: string) =>
+		request<
+			Array<AutomationPlan & { progress: AutomationPlanDetail["progress"] }>
+		>(`/api/projects/${projectId}/plans`),
+	getPlanDetail: (id: string) =>
+		request<AutomationPlanDetail>(`/api/plans/${id}`),
+	savePlan: (
+		id: string,
+		input: { title?: string; summary?: string; tasks: PlanTaskDraft[] },
+	) =>
+		request<{ saved: boolean }>(`/api/plans/${id}`, {
+			method: "PATCH",
+			body: JSON.stringify(input),
+		}),
+	validatePlan: (id: string) =>
+		request<{
+			ok: boolean;
+			issues: Array<{ code: string; message: string }>;
+		}>(`/api/plans/${id}/validate`, { method: "POST" }),
+	approvePlan: (id: string) =>
+		request<{ approved: boolean }>(`/api/plans/${id}/approve`, {
+			method: "POST",
+		}),
+	convertPlan: (id: string) =>
+		request<{ taskIds: string[]; converted: boolean }>(
+			`/api/plans/${id}/tasks`,
+			{ method: "POST" },
+		),
+	startPlan: (id: string) =>
+		request<{ started: string[] }>(`/api/plans/${id}/start`, {
+			method: "POST",
+		}),
+	cancelPlan: (id: string) =>
+		request<{ cancelled: boolean }>(`/api/plans/${id}/cancel`, {
+			method: "POST",
+		}),
+	getAutomationSettings: () =>
+		request<{ automationMode: "review" | "auto-create" | "auto-start" }>(
+			"/api/automation/settings",
+		),
+	saveAutomationSettings: (
+		automationMode: "review" | "auto-create" | "auto-start",
+	) =>
+		request<{ automationMode: string }>("/api/automation/settings", {
+			method: "PUT",
+			body: JSON.stringify({ automationMode }),
 		}),
 	startTask: (id: string) =>
 		request<{ accepted: boolean }>(`/api/tasks/${id}/start`, {
