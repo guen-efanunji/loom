@@ -91,20 +91,39 @@ export function planRepository(db: Database) {
 			title: string;
 			summary?: string;
 		}): Promise<PlanRecord> {
-			const [plan] = await db
-				.insert(plans)
-				.values({
-					id: input.id ?? randomUUID(),
-					projectId: input.projectId,
-					sourceMessageId: input.sourceMessageId,
-					sourceMessage: input.sourceMessage ?? "",
-					sourceSessionId: input.sourceSessionId ?? null,
-					automationMode: input.automationMode ?? "review",
-					title: input.title,
-					summary: input.summary ?? "",
-					status: "draft",
-				})
-				.returning();
+			const values = {
+				id: input.id ?? randomUUID(),
+				projectId: input.projectId,
+				sourceMessageId: input.sourceMessageId,
+				sourceMessage: input.sourceMessage ?? "",
+				sourceSessionId: input.sourceSessionId ?? null,
+				automationMode: input.automationMode ?? "review",
+				title: input.title,
+				summary: input.summary ?? "",
+				status: "draft" as const,
+			};
+			let inserted: PlanRecord[];
+			try {
+				inserted = await db.insert(plans).values(values).returning();
+			} catch (error) {
+				// Older local databases may predate planner metadata. Migrate lazily
+				// so API calls remain usable even when a cached package was loaded.
+				if (!(error instanceof Error) || !error.message.includes("no column named")) throw error;
+				for (const column of [
+					"source_message text NOT NULL DEFAULT ''",
+					"source_session_id text",
+					"automation_mode text NOT NULL DEFAULT 'review'",
+					"started_at integer",
+					"cancelled_at integer",
+				]) {
+					try { await db.run(`ALTER TABLE plans ADD COLUMN ${column}`); }
+					catch (migrationError) {
+						if (!(migrationError instanceof Error) || !migrationError.message.includes("duplicate column")) throw migrationError;
+					}
+				}
+				inserted = await db.insert(plans).values(values).returning();
+			}
+			const [plan] = inserted;
 			if (!plan) throw new Error("Plan insert returned no row");
 			return plan as PlanRecord;
 		},
