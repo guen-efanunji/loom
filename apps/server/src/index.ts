@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import {
 	basename,
 	dirname,
@@ -648,6 +648,21 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		if (!project) return errorResponse(c, new Error("Project not found"));
 		await repos.projects.delete(project.id);
 		return c.body(null, 204);
+	});
+	app.post("/api/projects/:id/index/rebuild", async (c) => {
+		try {
+			const project = await repos.projects.getById(c.req.param("id"));
+			if (!project) return errorResponse(c, new Error("Project not found"));
+			const entries = await readdir(project.path, { withFileTypes: true });
+			const files = entries.filter((entry) => entry.isFile()).length;
+			return c.json({
+				status: "ready",
+				files,
+				indexedAt: new Date().toISOString(),
+			});
+		} catch (error) {
+			return errorResponse(c, error);
+		}
 	});
 
 	const planInputSchema = z.object({

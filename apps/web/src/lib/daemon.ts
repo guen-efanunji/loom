@@ -212,6 +212,11 @@ export const daemon = {
 		}),
 	deleteProject: (id: string) =>
 		request<void>(`/api/projects/${id}`, { method: "DELETE" }),
+	rebuildProjectIndex: (id: string) =>
+		request<{ status: string; files: number; indexedAt: string }>(
+			`/api/projects/${id}/index/rebuild`,
+			{ method: "POST" },
+		),
 	listTasks: () => request<Task[]>("/api/tasks"),
 	getTask: (id: string) => request<Task>(`/api/tasks/${id}`),
 	createTask: (input: { projectId: string; title: string; prompt: string }) =>
