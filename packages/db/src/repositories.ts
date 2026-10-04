@@ -68,6 +68,13 @@ export function projectRepository(db: Database) {
 		list() {
 			return db.select().from(projects).orderBy(desc(projects.createdAt));
 		},
+		update(id: string, input: Partial<CreateProject>) {
+			return db
+				.update(projects)
+				.set(input)
+				.where(eq(projects.id, id))
+				.returning();
+		},
 		delete(id: string) {
 			return db.delete(projects).where(eq(projects.id, id));
 		},

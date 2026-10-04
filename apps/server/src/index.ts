@@ -14,7 +14,6 @@ import {
 	type DesignMessageRecord,
 	type DesignNodeRecord,
 	designRepository,
-
 	planRepository,
 	repositories,
 } from "@loom/db";
@@ -616,6 +615,30 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		try {
 			await projectValidation.validate(project.path);
 			return c.json(recordToProject(project));
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.patch("/api/projects/:id", async (c) => {
+		try {
+			const project = await repos.projects.getById(c.req.param("id"));
+			if (!project) return errorResponse(c, new Error("Project not found"));
+			const input = z
+				.object({
+					name: z.string().trim().min(1).max(120).optional(),
+					path: z.string().trim().min(1).optional(),
+				})
+				.refine((value) => value.name !== undefined || value.path !== undefined)
+				.parse(await jsonBody(c));
+			const path = input.path
+				? (await projectValidation.validate(input.path)).path
+				: project.path;
+			const [updated] = await repos.projects.update(c.req.param("id"), {
+				...(input.name ? { name: input.name } : {}),
+				path,
+			});
+			if (!updated) throw new Error("Project not found");
+			return c.json(recordToProject(updated));
 		} catch (error) {
 			return errorResponse(c, error);
 		}

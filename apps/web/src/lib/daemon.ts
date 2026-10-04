@@ -12,8 +12,8 @@ import {
 	type DaemonEvent as ProtocolDaemonEvent,
 	type PermissionRequest as ProtocolPermissionRequest,
 } from "@loom/protocol";
-import { dev } from "$app/environment";
 import { PUBLIC_SERVER_URL } from "$app/env/public";
+import { dev } from "$app/environment";
 export type Project = {
 	id: string;
 	name: string;
@@ -200,6 +200,11 @@ export async function request<T>(path: string, init: RequestInit = {}) {
 export const daemon = {
 	listProjects: () => request<Project[]>("/api/projects"),
 	getProject: (id: string) => request<Project>(`/api/projects/${id}`),
+	updateProject: (id: string, input: { name?: string; path?: string }) =>
+		request<Project>(`/api/projects/${id}`, {
+			method: "PATCH",
+			body: JSON.stringify(input),
+		}),
 	createProject: (path: string) =>
 		request<Project>("/api/projects", {
 			method: "POST",
