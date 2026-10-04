@@ -212,6 +212,53 @@ export const daemon = {
 		}),
 	deleteProject: (id: string) =>
 		request<void>(`/api/projects/${id}`, { method: "DELETE" }),
+	listProviders: () =>
+		request<
+			Array<{
+				id: string;
+				providerId: string;
+				name: string;
+				command: string;
+				install: string | null;
+				auth: string;
+				authCommand: string[] | null;
+				installed: boolean;
+				version: string | null;
+				status: string;
+				authenticated: boolean;
+				capabilities: string[];
+			}>
+		>("/api/providers"),
+	authProvider: (id: string) =>
+		request<{
+			launched: boolean;
+			connected?: boolean;
+			configured?: boolean;
+			command?: string[];
+			authCommand?: string[] | null;
+		}>(`/api/providers/${id}/auth`, { method: "POST" }),
+	connectProvider: (id: string) =>
+		request<{
+			launched: boolean;
+			connected: boolean;
+			configured?: boolean;
+			command?: string[];
+		}>(`/api/providers/${id}/connect`, { method: "POST" }),
+	disconnectProvider: (id: string) =>
+		request(`/api/providers/${id}/disconnect`, { method: "POST" }),
+	refreshProvider: (id: string) =>
+		request(`/api/providers/${id}/refresh`, { method: "POST" }),
+	listModels: () =>
+		request<
+			Array<{
+				id: string;
+				providerId: string;
+				connectionId: string;
+				name: string;
+				displayName: string;
+				capabilities: string[];
+			}>
+		>("/api/models"),
 	rebuildProjectIndex: (id: string) =>
 		request<{ status: string; files: number; indexedAt: string }>(
 			`/api/projects/${id}/index/rebuild`,

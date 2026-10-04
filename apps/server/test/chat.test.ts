@@ -59,9 +59,50 @@ function setup() {
 		list: async () => [{ id: "project", path: "/tmp" }],
 		getById: async (id: string) => (id === "project" ? { path: "/tmp" } : null),
 	};
-	return { app: createChatRoutes({ projects, runtime }), requests };
+	const request = <T>(
+		path: string,
+		options: { directory?: string; body?: unknown; method?: string } = {},
+	) =>
+		runtime.request<T>(
+			path,
+			{
+				method: options.method ?? (options.body ? "POST" : "GET"),
+				...(options.body ? { body: JSON.stringify(options.body) } : {}),
+			},
+			options.directory,
+		);
+	return { app: createChatRoutes({ projects, request }), requests };
 }
 describe("chat gateway", () => {
+	test("accepts a provider-neutral request gateway", async () => {
+		const calls: Array<{
+			path: string;
+			options?: { directory?: string; body?: unknown; method?: string };
+		}> = [];
+		const app = createChatRoutes({
+			projects: {
+				list: async () => [],
+				getById: async (id: string) =>
+					id === "project" ? { path: "/tmp" } : null,
+			},
+			request: async <T>(
+				path: string,
+				options?: { directory?: string; body?: unknown; method?: string },
+			) => {
+				calls.push({ path, options });
+				return [] as T;
+			},
+		});
+		const response = await app.request("/files?projectId=project&query=src");
+		expect(response.status).toBe(200);
+		expect(calls).toEqual([
+			{
+				path: "/find/file?query=src&limit=100&dirs=false",
+				options: { directory: "/tmp", body: undefined, method: "GET" },
+			},
+		]);
+	});
+
 	test("reads recorded edit patches when session snapshots are disabled", async () => {
 		const { app } = setup();
 		const response = await app.request("/sessions/ses_test/diff");

@@ -17,6 +17,7 @@
 		"@loom/auth": "workspace:*",
 		"@loom/db": "workspace:*",
 		"@loom/opencode": "workspace:*",
+		"@loom/providers": "workspace:*",
 		"@loom/orchestrator": "workspace:*",
 		"@loom/protocol": "workspace:*",
 		"@loom/worktree": "workspace:*",

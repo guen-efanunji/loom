@@ -1,11 +1,15 @@
 {
-	"name": "@loom/orchestrator",
+	"name": "@loom/providers",
 	"version": "0.0.0",
 	"type": "module",
 	"exports": {
 		".": {
 			"types": "./dist/src/index.d.ts",
 			"default": "./src/index.ts"
+		},
+		"./core": {
+			"types": "./dist/src/core/index.d.ts",
+			"default": "./src/core/index.ts"
 		},
 		"./*": {
 			"types": "./dist/src/*.d.ts",
@@ -18,12 +22,7 @@
 		"test": "bun test"
 	},
 	"dependencies": {
-		"@loom/automation": "workspace:*",
-		"@loom/db": "workspace:*",
-		"@loom/opencode": "workspace:*",
-		"@loom/providers": "workspace:*",
-		"@loom/protocol": "workspace:*",
-		"@loom/worktree": "workspace:*"
+		"@loom/opencode": "workspace:*"
 	},
 	"devDependencies": {
 		"@loom/config": "workspace:*",

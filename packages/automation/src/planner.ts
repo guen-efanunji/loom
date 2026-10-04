@@ -1,5 +1,5 @@
-import type { AgentModel, AgentRuntime } from "@loom/opencode";
 import type { PlannerResult } from "@loom/protocol";
+import type { AgentRuntime, RuntimeModel } from "@loom/providers/core";
 import type { ProjectContext } from "./context-builder";
 import { buildPlannerPrompt, PLANNER_REPAIR_PROMPT } from "./prompt";
 import { validateAutomationPlan } from "./validator";
@@ -9,7 +9,7 @@ export interface Planner {
 		projectId: string;
 		message: string;
 		context: ProjectContext;
-		model?: AgentModel;
+		model?: RuntimeModel;
 	}): Promise<PlannerResult>;
 }
 
@@ -33,7 +33,7 @@ export class RuntimePlanner implements Planner {
 		projectId: string;
 		message: string;
 		context: ProjectContext;
-		model?: AgentModel;
+		model?: RuntimeModel;
 	}): Promise<PlannerResult> {
 		const session = await this.runtime.createSession({
 			cwd: this.cwd,
@@ -88,7 +88,19 @@ export class RuntimePlanner implements Planner {
 	}
 
 	private async validateResult(sessionId: string) {
-		try { return validateAutomationPlan(await this.readResult(sessionId)); }
-		catch (error) { return { ok: false, plan: null, issues: [{ message: error instanceof Error ? error.message : "Invalid planner output" }] }; }
+		try {
+			return validateAutomationPlan(await this.readResult(sessionId));
+		} catch (error) {
+			return {
+				ok: false,
+				plan: null,
+				issues: [
+					{
+						message:
+							error instanceof Error ? error.message : "Invalid planner output",
+					},
+				],
+			};
+		}
 	}
 }

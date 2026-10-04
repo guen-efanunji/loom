@@ -43,6 +43,7 @@
         "@loom/opencode": "workspace:*",
         "@loom/orchestrator": "workspace:*",
         "@loom/protocol": "workspace:*",
+        "@loom/providers": "workspace:*",
         "@loom/worktree": "workspace:*",
         "@orpc/openapi": "catalog:",
         "@orpc/server": "catalog:",
@@ -161,6 +162,7 @@
         "@loom/db": "workspace:*",
         "@loom/opencode": "workspace:*",
         "@loom/protocol": "workspace:*",
+        "@loom/providers": "workspace:*",
         "zod": "catalog:",
       },
       "devDependencies": {
@@ -218,6 +220,7 @@
         "@loom/db": "workspace:*",
         "@loom/opencode": "workspace:*",
         "@loom/protocol": "workspace:*",
+        "@loom/providers": "workspace:*",
         "@loom/worktree": "workspace:*",
       },
       "devDependencies": {
@@ -231,6 +234,18 @@
       "version": "0.0.0",
       "dependencies": {
         "zod": "catalog:",
+      },
+      "devDependencies": {
+        "@loom/config": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
+    "packages/providers": {
+      "name": "@loom/providers",
+      "version": "0.0.0",
+      "dependencies": {
+        "@loom/opencode": "workspace:*",
       },
       "devDependencies": {
         "@loom/config": "workspace:*",
@@ -420,6 +435,8 @@
     "@loom/orchestrator": ["@loom/orchestrator@workspace:packages/orchestrator"],
 
     "@loom/protocol": ["@loom/protocol@workspace:packages/protocol"],
+
+    "@loom/providers": ["@loom/providers@workspace:packages/providers"],
 
     "@loom/site": ["@loom/site@workspace:apps/site"],
 

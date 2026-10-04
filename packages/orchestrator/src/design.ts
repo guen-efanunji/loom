@@ -7,8 +7,8 @@ import type {
 	ProjectRecord,
 	repositories,
 } from "@loom/db";
-import type { AgentModel, AgentRuntime } from "@loom/opencode";
 import type { DesignPatch, DesignViewport } from "@loom/protocol";
+import type { AgentRuntime, RuntimeModel } from "@loom/providers/core";
 import {
 	buildDesignPrompt,
 	buildRefinePrompt,
@@ -36,7 +36,7 @@ function viewportOf(value: string): DesignViewport {
 	return value === "mobile" ? "mobile" : "desktop";
 }
 
-function modelLabel(model?: AgentModel): string | null {
+function modelLabel(model?: RuntimeModel): string | null {
 	return model ? `${model.providerID}/${model.modelID}` : null;
 }
 
@@ -141,7 +141,7 @@ export class DesignService {
 		projectId: string;
 		brief: string;
 		viewport?: DesignViewport;
-		model?: AgentModel;
+		model?: RuntimeModel;
 	}): Promise<{ nodeId: string; status: string }> {
 		const project = await this.requireProject(input.projectId);
 		const brief = input.brief.trim();
@@ -220,7 +220,7 @@ export class DesignService {
 	 */
 	private async storedModel(
 		node: DesignNodeRecord,
-	): Promise<AgentModel | undefined> {
+	): Promise<RuntimeModel | undefined> {
 		const messages = await this.store.listMessages(node.projectId);
 		for (let index = messages.length - 1; index >= 0; index -= 1) {
 			const message = messages[index];
@@ -238,7 +238,7 @@ export class DesignService {
 	private async generate(
 		nodeId: string,
 		project: ProjectRecord,
-		model?: AgentModel,
+		model?: RuntimeModel,
 	) {
 		const node = await this.requireNode(nodeId);
 		await this.store.updateNode(nodeId, {
@@ -266,7 +266,7 @@ export class DesignService {
 		project: ProjectRecord,
 		sessionId: string,
 		prompt: string,
-		model?: AgentModel,
+		model?: RuntimeModel,
 	) {
 		const startedAt = Date.now();
 		await this.runtime.prompt({ sessionId, prompt, model });
@@ -303,7 +303,7 @@ export class DesignService {
 
 	async refine(
 		nodeId: string,
-		input: { message: string; model?: AgentModel },
+		input: { message: string; model?: RuntimeModel },
 	): Promise<{ nodeId: string; status: string }> {
 		const parent = await this.requireNode(nodeId);
 		if (this.busy.has(nodeId))
@@ -342,7 +342,7 @@ export class DesignService {
 
 	async retry(
 		nodeId: string,
-		model?: AgentModel,
+		model?: RuntimeModel,
 	): Promise<{ nodeId: string; status: string }> {
 		const node = await this.requireNode(nodeId);
 		const project = await this.requireProject(node.projectId);

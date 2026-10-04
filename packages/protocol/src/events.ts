@@ -190,6 +190,34 @@ export const daemonEventSchema = z.discriminatedUnion("type", [
 		planId: z.string().min(1),
 		taskIds: z.array(z.string().min(1)),
 	}),
+	z.object({
+		type: z.literal("provider.detected"),
+		providerId: z.string().min(1),
+		connection: z.record(z.string(), z.unknown()),
+	}),
+	z.object({
+		type: z.literal("provider.connected"),
+		providerId: z.string().min(1),
+		connection: z.record(z.string(), z.unknown()),
+	}),
+	z.object({
+		type: z.literal("provider.disconnected"),
+		providerId: z.string().min(1),
+	}),
+	z.object({
+		type: z.literal("provider.authRequired"),
+		providerId: z.string().min(1),
+	}),
+	z.object({
+		type: z.literal("provider.modelsUpdated"),
+		providerId: z.string().min(1),
+		models: z.array(z.record(z.string(), z.unknown())),
+	}),
+	z.object({
+		type: z.literal("provider.error"),
+		providerId: z.string().min(1),
+		message: z.string().min(1),
+	}),
 ]);
 
 export type DaemonEvent = z.infer<typeof daemonEventSchema>;

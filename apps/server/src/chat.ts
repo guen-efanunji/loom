@@ -1,6 +1,6 @@
 import { realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
-import { OpenCodeHttpRuntime } from "@loom/opencode";
+import type { ProviderManager } from "@loom/providers";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
@@ -26,30 +26,40 @@ type Session = {
 	time: { updated: number; archived?: number };
 };
 
-// Mounted after the daemon's bearer authentication. Never expose an arbitrary upstream proxy.
+export type ChatRequestOptions = {
+	directory?: string;
+	body?: unknown;
+	method?: string;
+};
+
+export type ChatRequestGateway = <T>(
+	path: string,
+	options?: ChatRequestOptions,
+) => Promise<T>;
+
 export function createChatRoutes(options: {
 	projects: {
 		list(): Promise<Array<{ id: string; path: string }>>;
 		getById(id: string): Promise<{ path: string } | null | undefined>;
 	};
-	runtime?: OpenCodeHttpRuntime;
+	request: ChatRequestGateway;
+	providerManager?: ProviderManager;
 	sessionScope?: (
 		sessionId: string,
 	) => Promise<{ directory: string; projectId: string } | undefined>;
 }) {
 	const app = new Hono();
-	const runtime = options.runtime ?? new OpenCodeHttpRuntime();
 	const request = <T>(
 		path: string,
 		directory?: string,
 		body?: unknown,
 		method = body ? "POST" : "GET",
 	) =>
-		runtime.request<T>(
-			path,
-			{ method, ...(body ? { body: JSON.stringify(body) } : {}) },
+		options.request<T>(path, {
 			directory,
-		);
+			body,
+			method,
+		});
 	async function directory(projectId?: string) {
 		const project = projectId
 			? await options.projects.getById(projectId)
@@ -133,15 +143,35 @@ export function createChatRoutes(options: {
 			>("/agent", root),
 			request<Array<{ name: string; description?: string }>>("/command", root),
 		]);
+		const normalizedModels =
+			options.providerManager?.catalog.listAvailable().map((model) => ({
+				providerID: model.providerId,
+				modelID: String(model.metadata?.modelId ?? model.name),
+				name: model.displayName,
+				provider: model.providerId,
+				providerId: model.providerId,
+				connectionId: model.connectionId,
+				capabilities: model.capabilities,
+			})) ?? [];
 		return c.json({
-			models: providers.providers.flatMap((p) =>
-				Object.entries(p.models).map(([key, m]) => ({
-					providerID: p.id,
-					modelID: key,
-					name: m.name || key,
-					provider: p.name,
-				})),
-			),
+			models: [
+				...providers.providers.flatMap((p) =>
+					Object.entries(p.models).map(([key, m]) => ({
+						providerID: p.id,
+						modelID: key,
+						name: m.name || key,
+						provider: p.name,
+					})),
+				),
+				...normalizedModels.filter(
+					(model) =>
+						!providers.providers.some(
+							(provider) =>
+								provider.id === model.providerID &&
+								model.providerID === "opencode",
+						),
+				),
+			],
 			defaults: providers.default,
 			agents: agents.filter((a) => !a.hidden),
 			commands,

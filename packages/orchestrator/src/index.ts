@@ -6,7 +6,6 @@ import type {
 	TaskRecord,
 	WorkspaceRecord,
 } from "@loom/db";
-import type { AgentRuntime } from "@loom/opencode";
 import {
 	type CreateTaskInput,
 	canTransitionTaskStatus,
@@ -15,6 +14,7 @@ import {
 	type Task,
 	type TaskStatus,
 } from "@loom/protocol";
+import type { AgentRuntime } from "@loom/providers/core";
 import {
 	MergeConflictError,
 	type WorktreeManager,
@@ -585,9 +585,7 @@ export class TaskOrchestrator {
 		if (record.status !== "queued" && record.status !== "ready")
 			throw new Error(`Task cannot start from ${record.status}`);
 		if (this.lifecycle && !(await this.lifecycle.canRun(taskId)))
-			throw new Error(
-				"Task cannot start while dependencies are pending",
-			);
+			throw new Error("Task cannot start while dependencies are pending");
 		this.active.add(taskId);
 		let agentRunId: string | undefined;
 		try {

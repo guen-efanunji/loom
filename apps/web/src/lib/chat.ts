@@ -64,6 +64,9 @@ export type Model = {
 	modelID: string;
 	name: string;
 	provider: string;
+	providerId?: string;
+	connectionId?: string;
+	capabilities?: string[];
 };
 export type Catalog = {
 	models: Model[];

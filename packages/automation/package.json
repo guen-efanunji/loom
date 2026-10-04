@@ -20,6 +20,7 @@
 	"dependencies": {
 		"@loom/db": "workspace:*",
 		"@loom/opencode": "workspace:*",
+		"@loom/providers": "workspace:*",
 		"@loom/protocol": "workspace:*",
 		"zod": "catalog:"
 	},

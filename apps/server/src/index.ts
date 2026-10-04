@@ -29,7 +29,6 @@ import {
 } from "@loom/distribution";
 import { checkForUpdate } from "@loom/distribution/updates";
 import {
-	type AgentRuntime,
 	OpenCodeHttpRuntime,
 	type OpenCodeManager,
 	OpenCodeServerManager,
@@ -57,6 +56,11 @@ import {
 	taskIdInputSchema,
 } from "@loom/protocol";
 import {
+	createDefaultProviderRegistry,
+	ProviderManager,
+} from "@loom/providers";
+import type { AgentRuntime } from "@loom/providers/core";
+import {
 	MergeConflictError,
 	WorktreeError,
 	WorktreeManager,
@@ -70,7 +74,7 @@ import { Hono } from "hono";
 import { createBunWebSocket } from "hono/bun";
 import { cors } from "hono/cors";
 import { z } from "zod";
-import { createChatRoutes } from "./chat";
+import { type ChatRequestGateway, createChatRoutes } from "./chat";
 import { type DaemonConfig, loadDaemonConfig } from "./config";
 import { createContext } from "./context";
 import {
@@ -267,6 +271,7 @@ export type DaemonAppOptions = {
 	orchestrator?: TaskOrchestrator;
 	openCodeManager?: OpenCodeManager;
 	startOpenCode?: boolean;
+	agentRuntime?: AgentRuntime;
 	projectValidation?: ReturnType<typeof createProjectValidationService>;
 	plannerRuntime?: AgentRuntime;
 	designRuntime?: AgentRuntime;
@@ -291,6 +296,42 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	};
 	const openCodeManager =
 		options.openCodeManager ?? new OpenCodeServerManager();
+	const openCodeRuntime = new OpenCodeHttpRuntime();
+	const providerManager = new ProviderManager({
+		registry: createDefaultProviderRegistry(openCodeManager, openCodeRuntime),
+		onEvent: (event) => {
+			log("provider", event.type, event);
+			if (event.type === "provider.modelsUpdated")
+				eventPublisher.publish({
+					type: event.type,
+					providerId: event.providerId,
+					models: event.models,
+				});
+			else if (
+				event.type === "provider.detected" ||
+				event.type === "provider.connected"
+			)
+				eventPublisher.publish({
+					type: event.type,
+					providerId: event.providerId,
+					connection: event.connection,
+				});
+			else if (
+				event.type === "provider.disconnected" ||
+				event.type === "provider.authRequired"
+			)
+				eventPublisher.publish({
+					type: event.type,
+					providerId: event.providerId,
+				});
+			else
+				eventPublisher.publish({
+					type: event.type,
+					providerId: event.providerId,
+					message: event.message,
+				});
+		},
+	});
 	const ownsOpenCode = options.startOpenCode ?? true;
 	if (ownsOpenCode) {
 		// Start OpenCode in the background so the daemon can bind its API
@@ -308,7 +349,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		);
 	}
 	const worktreeManager = new WorktreeManager();
-	const agentRuntime = new OpenCodeHttpRuntime();
+	const agentRuntime = options.agentRuntime ?? providerManager.getRuntime();
 	const orchestrator =
 		options.orchestrator ??
 		new TaskOrchestrator({
@@ -584,11 +625,25 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		})),
 	);
 
+	const openCodeChatRequest: ChatRequestGateway = <T>(
+		path: string,
+		options: Parameters<ChatRequestGateway>[1] = {},
+	) =>
+		openCodeRuntime.request<T>(
+			path,
+			{
+				method: options.method ?? (options.body ? "POST" : "GET"),
+				...(options.body ? { body: JSON.stringify(options.body) } : {}),
+			},
+			options.directory,
+		);
 	app.route(
 		"/api/chat",
 		createChatRoutes({
 			projects: repos.projects,
+			request: openCodeChatRequest,
 			sessionScope: (id) => orchestrator.sessionScope(id),
+			providerManager,
 		}),
 	);
 
@@ -648,6 +703,72 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		if (!project) return errorResponse(c, new Error("Project not found"));
 		await repos.projects.delete(project.id);
 		return c.body(null, 204);
+	});
+	app.get("/api/providers", async (c) => {
+		await providerManager.refreshAll();
+		return c.json(
+			providerManager.list().map((connection) => {
+				const adapter = providerManager.registry.require(connection.providerId);
+				return {
+					...connection,
+					command: adapter.definition.executable,
+					install: adapter.definition.homepage ?? null,
+					auth: adapter.definition.authStrategy,
+					authCommand: connection.authCommand,
+					installed:
+						connection.status !== "disconnected" ||
+						Boolean(connection.executablePath),
+					version: connection.version,
+				};
+			}),
+		);
+	});
+	app.get("/api/providers/:id", async (c) => {
+		const connection = await providerManager.refresh(c.req.param("id"));
+		return c.json({
+			connection,
+			models: providerManager.getModels(connection.providerId),
+		});
+	});
+	app.post("/api/providers/:id/connect", async (c) => {
+		const connection = await providerManager.connect(c.req.param("id"));
+		return c.json({
+			...connection,
+			launched: connection.status === "connected",
+			connected: connection.status === "connected",
+			configured: connection.authenticated,
+		});
+	});
+	app.post("/api/providers/:id/disconnect", async (c) => {
+		await providerManager.disconnect(c.req.param("id"));
+		return c.json({ disconnected: true });
+	});
+	app.post("/api/providers/:id/refresh", async (c) =>
+		c.json(await providerManager.refresh(c.req.param("id"))),
+	);
+	app.get("/api/providers/:id/models", (c) =>
+		c.json(providerManager.getModels(c.req.param("id"))),
+	);
+	app.post("/api/providers/:id/models/refresh", async (c) =>
+		c.json(await providerManager.refreshModels(c.req.param("id"))),
+	);
+	app.get("/api/models", (c) =>
+		c.json(providerManager.catalog.listAvailable()),
+	);
+	app.get("/api/runtime", (c) =>
+		c.json({
+			id: "opencode",
+			capabilities: { task: true, planner: true, design: true, chat: true },
+		}),
+	);
+	app.post("/api/providers/:id/auth", async (c) => {
+		const connection = await providerManager.connect(c.req.param("id"));
+		return c.json({
+			...connection,
+			launched: connection.status === "connected",
+			connected: connection.status === "connected",
+			configured: connection.authenticated,
+		});
 	});
 	app.post("/api/projects/:id/index/rebuild", async (c) => {
 		try {

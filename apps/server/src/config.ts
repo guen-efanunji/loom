@@ -10,7 +10,9 @@ export type DaemonConfig = {
 };
 
 export function getLoomDirectory(home = homedir()): string {
-	return process.env.LOOM_HOME && home === homedir() ? process.env.LOOM_HOME : join(home, ".loom");
+	return process.env.LOOM_HOME && home === homedir()
+		? process.env.LOOM_HOME
+		: join(home, ".loom");
 }
 
 export function getLoomConfigPath(home = homedir()): string {

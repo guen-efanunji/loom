@@ -45,8 +45,16 @@ export type AgentModel = {
 };
 
 export type AgentRuntime = {
-	createSession(input: { cwd: string; title: string; readOnly?: boolean }): Promise<{ id: string }>;
-	prompt(input: { sessionId: string; prompt: string; model?: AgentModel }): Promise<void>;
+	createSession(input: {
+		cwd: string;
+		title: string;
+		readOnly?: boolean;
+	}): Promise<{ id: string }>;
+	prompt(input: {
+		sessionId: string;
+		prompt: string;
+		model?: AgentModel;
+	}): Promise<void>;
 	status(sessionId: string): Promise<AgentRunStatus>;
 	readOutput?(sessionId: string): Promise<RuntimeOutput | null>;
 	wait(
@@ -147,7 +155,10 @@ export async function discoverExecutable(
 	}
 	const path = env.PATH?.split(delimiter) ?? [];
 	for (const directory of path) {
-		const candidate = join(directory, process.platform === "win32" ? "opencode.exe" : "opencode");
+		const candidate = join(
+			directory,
+			process.platform === "win32" ? "opencode.exe" : "opencode",
+		);
 		try {
 			await fileAccess(candidate);
 			return candidate;
@@ -197,6 +208,7 @@ export class OpenCodeServerManager implements OpenCodeManager {
 		try {
 			const response = await this.fetcher(`${this.baseUrl}/global/health`, {
 				headers: authHeaders(),
+				signal: AbortSignal.timeout(3_000),
 			});
 			if (!response.ok) return false;
 			parseJson(healthSchema, await response.json(), "health");
@@ -327,7 +339,12 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 				"content-type": "application/json",
 				"x-opencode-directory": encodeURIComponent(input.cwd),
 			},
-			body: JSON.stringify({ title: input.title, ...(input.readOnly ? { permission: [{ permission: "*", pattern: "*", action: "deny" }] } : {}) }),
+			body: JSON.stringify({
+				title: input.title,
+				...(input.readOnly
+					? { permission: [{ permission: "*", pattern: "*", action: "deny" }] }
+					: {}),
+			}),
 		});
 		const session = parseJson(sessionSchema, response, "session");
 		this.directories.set(session.id, input.cwd);
