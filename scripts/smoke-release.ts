@@ -32,7 +32,7 @@ try {
   assert(token?.length >= 32, "Same-origin browser cannot bootstrap");
   const headers = { Authorization: `Bearer ${token}` };
   assert((await fetch(`${url}/api/projects`, { headers })).ok, "Authenticated API failed");
-  assert((await fetch(`${url}/epic/example?session=example`, { headers: { Accept: "text/html" } })).ok, "Deep-link fallback missing");
+  assert((await fetch(`${url}/project/example?session=example`, { headers: { Accept: "text/html" } })).ok, "Deep-link fallback missing");
   await fetch(`${url}/api/daemon/stop`, { method: "POST", headers });
   assert(await child.exited === 0, "Daemon did not stop cleanly");
   console.log(`PASS ${platform}: standalone startup without PATH/runtime, embedded UI, deep links, auth, origin, host, and shutdown`);

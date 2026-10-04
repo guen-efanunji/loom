@@ -14,7 +14,7 @@ import {
 	type DesignMessageRecord,
 	type DesignNodeRecord,
 	designRepository,
-	orchestrationRepository,
+
 	planRepository,
 	repositories,
 } from "@loom/db";
@@ -40,7 +40,6 @@ import {
 	combineHooks,
 	DesignService,
 	deriveDesignTitle,
-	EpicService,
 	TaskOrchestrator,
 } from "@loom/orchestrator";
 import {
@@ -53,13 +52,10 @@ import {
 	createTaskInputSchema,
 	daemonEventSchema,
 	designPatchSchema,
-	newEpicSchema,
 	permissionDecisionInputSchema,
-	projectContextSchema,
 	refineDesignSchema,
 	type Task,
 	taskIdInputSchema,
-	taskPlanSchema,
 } from "@loom/protocol";
 import {
 	MergeConflictError,
@@ -282,7 +278,6 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	const clients = new Set<{ send(data: string): void; close(): void }>();
 	const db = options.database ?? getDb();
 	const repos = repositories(db);
-	const orchestration = orchestrationRepository(db);
 	const eventPublisher = {
 		publish(event: unknown) {
 			const parsed = daemonEventSchema.parse(event);
@@ -323,13 +318,6 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			runtime: agentRuntime,
 			events: eventPublisher,
 		});
-	const epics = new EpicService(
-		orchestration,
-		repos,
-		orchestrator,
-		agentRuntime,
-		worktreeManager,
-	);
 	const automation = new AutomationService(
 		planRepository(db),
 		repos,
@@ -341,9 +329,8 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		repos,
 		options.designRuntime ?? agentRuntime,
 	);
-	orchestrator.setLifecycle(combineHooks(epics.hooks(), automation.hooks()));
+	orchestrator.setLifecycle(combineHooks(automation.hooks()));
 	await orchestrator.reconcile();
-	await epics.recover();
 	await automation.recover();
 	await designs.recover();
 	const projectValidation =
@@ -472,13 +459,6 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		const scheduler = orchestrator.getScheduler().getState();
 		if (scheduler.running.length || scheduler.queued.length)
 			throw new Error("Finish or cancel active tasks before updating");
-		const active = db.get<{ count: number }>(
-			"SELECT COUNT(*) AS count FROM epics WHERE status IN ('planning','running','integrating')",
-		);
-		if (active?.count)
-			throw new Error(
-				"Finish active Epic planning and integration before updating",
-			);
 		try {
 			const response = await fetch("http://127.0.0.1:4096/session/status", {
 				signal: AbortSignal.timeout(2000),
@@ -609,7 +589,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		"/api/chat",
 		createChatRoutes({
 			projects: repos.projects,
-			sessionScope: (id) => epics.sessionScope(id),
+			sessionScope: (id) => orchestrator.sessionScope(id),
 		}),
 	);
 
@@ -647,92 +627,6 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		return c.body(null, 204);
 	});
 
-	app.post("/api/epics", async (c) => {
-		try {
-			return c.json(
-				await epics.create(newEpicSchema.parse(await jsonBody(c))),
-				202,
-			);
-		} catch (error) {
-			return errorResponse(c, error);
-		}
-	});
-	app.get("/api/projects/:projectId/epics", async (c) => {
-		try {
-			return c.json(await orchestration.list(c.req.param("projectId")));
-		} catch (error) {
-			return errorResponse(c, error);
-		}
-	});
-	app.get("/api/epics/:id", async (c) => {
-		try {
-			return c.json(await epics.detail(c.req.param("id")));
-		} catch (error) {
-			return errorResponse(c, error);
-		}
-	});
-	app.post("/api/epics/:id/replan", async (c) => {
-		try {
-			await epics.replan(c.req.param("id"));
-			return c.json({ accepted: true }, 202);
-		} catch (error) {
-			return errorResponse(c, error);
-		}
-	});
-	app.put("/api/epics/:id/plan", async (c) => {
-		try {
-			const input = z
-				.object({
-					tasks: taskPlanSchema.shape.tasks,
-					context: projectContextSchema.optional(),
-				})
-				.parse(await jsonBody(c));
-			await epics.save(
-				c.req.param("id"),
-				{ tasks: input.tasks },
-				input.context,
-			);
-			return c.json({ saved: true });
-		} catch (error) {
-			return errorResponse(c, error);
-		}
-	});
-	app.post("/api/epics/:id/start", async (c) => {
-		try {
-			await epics.start(c.req.param("id"));
-			return c.json({ started: true }, 202);
-		} catch (error) {
-			return errorResponse(c, error);
-		}
-	});
-	app.post("/api/epics/:id/integrate", async (c) => {
-		try {
-			return c.json(await epics.integrate(c.req.param("id")), 202);
-		} catch (error) {
-			return errorResponse(c, error);
-		}
-	});
-	app.post("/api/integrations/:id/approve", async (c) => {
-		try {
-			const input = z
-				.object({ head: z.string().regex(/^[a-f0-9]{40,64}$/) })
-				.parse(await jsonBody(c));
-			await epics.approve(c.req.param("id"), input.head);
-			return c.json({ merged: true });
-		} catch (error) {
-			return errorResponse(c, error);
-		}
-	});
-	app.post("/api/tasks/:id/artifacts", async (c) => {
-		try {
-			return c.json(
-				await epics.addArtifact(c.req.param("id"), await jsonBody(c)),
-				201,
-			);
-		} catch (error) {
-			return errorResponse(c, error);
-		}
-	});
 	const planInputSchema = z.object({
 		projectId: z.string().min(1),
 		sourceMessageId: z.string().min(1).max(200),
@@ -1033,7 +927,6 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			await Promise.all(
 				(await repos.tasks.list()).map(async (task) => ({
 					...recordToTask(task),
-					...(await epics.taskMetadata(task.id)),
 				})),
 			),
 		),
@@ -1043,7 +936,6 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		if (!task) return errorResponse(c, new Error("Task not found"));
 		return c.json({
 			...recordToTask(task),
-			...(await epics.taskMetadata(task.id)),
 		});
 	});
 	app.get("/api/tasks/:id/runs", async (c) => {

@@ -5,6 +5,7 @@
 	"scripts": {
 		"build": "tsc -b ../../packages/api && tsdown",
 		"check-types": "tsc -b ../../packages/api && tsc --noEmit",
+		"test": "bun test",
 		"compile": "bun build --compile --no-compile-autoload-dotenv --minify --sourcemap --bytecode ./src/index.ts --outfile server",
 		"dev": "LOOM_DAEMON=true bun run src/index.ts",
 		"start": "bun run dist/index.mjs",

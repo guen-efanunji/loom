@@ -2,11 +2,11 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildAutomationContext } from "./context-builder";
-import { convertPlanTasks } from "./converter";
-import { RuntimePlanner } from "./planner";
-import { buildPlannerPrompt } from "./prompt";
-import { validateAutomationPlan } from "./validator";
+import { buildAutomationContext } from "../src/context-builder";
+import { convertPlanTasks } from "../src/converter";
+import { RuntimePlanner } from "../src/planner";
+import { buildPlannerPrompt } from "../src/prompt";
+import { validateAutomationPlan } from "../src/validator";
 
 const task = (overrides: Record<string, unknown> = {}) => ({
 	key: "hero",

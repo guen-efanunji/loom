@@ -3,15 +3,37 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      runHeavyStages:
+        description: Run tests, builds, release checks, and installer smoke tests
+        type: boolean
+        default: true
 permissions:
   contents: read
 concurrency:
   group: checks-${{ github.ref }}
   cancel-in-progress: true
+env:
+  PUBLIC_SERVER_URL: http://127.0.0.1:4317
 jobs:
   check:
+    name: Type checks
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+      - run: bun install --frozen-lockfile
+      - run: bun run --cwd apps/web check
+  heavy:
+    name: Tests and release validation
+    if: github.event_name == 'workflow_dispatch' && inputs.runHeavyStages
+    needs: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2

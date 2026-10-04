@@ -62,7 +62,6 @@ export async function snapshotWorkspace(cwd: string, message: string) {
 		"--",
 		".",
 		":(exclude).loom-worktree.json",
-		":(exclude).loom/artifacts.json",
 	);
 	const staged = await git(cwd, "diff", "--cached", "--name-only");
 	// A conflict resolution can have an empty tree diff while still needing a merge commit.

@@ -14,7 +14,7 @@ import type {
 	Workspace as WorktreeWorkspace,
 } from "@loom/worktree";
 
-import { TaskOrchestrator } from "./index";
+import { TaskOrchestrator } from "../src/index";
 
 const date = new Date("2026-01-01T00:00:00.000Z");
 

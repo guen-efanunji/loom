@@ -27,7 +27,6 @@ let {
 	draft = $bindable(""),
 	model = $bindable(""),
 	agent = $bindable("build"),
-	mode = $bindable("chat"),
 }: {
 	projectId: string;
 	catalog: Catalog;
@@ -39,13 +38,11 @@ let {
 		agents: string[];
 		agent?: string;
 		model?: { providerID: string; modelID: string };
-		mode: "chat" | "plan" | "build";
 	}) => Promise<boolean>;
 	onstop: () => void;
 	draft?: string;
 	model?: string;
 	agent?: string;
-	mode?: "chat" | "plan" | "build";
 } = $props();
 let textarea = $state<HTMLTextAreaElement | null>(null);
 let files = $state<string[]>([]);
@@ -146,7 +143,6 @@ async function send() {
 			files,
 			agents,
 			agent,
-			mode,
 			model: selectedModel
 				? {
 						providerID: selectedModel.providerID,
@@ -222,7 +218,7 @@ function keydown(event: KeyboardEvent) {
       <Popover.Root bind:open={modelOpen}><Popover.Trigger class="flex max-w-44 items-center gap-1 rounded-md px-2 py-1.5 text-xs hover:bg-accent" aria-label="Select model"><span class="truncate">{selectedModel?.name ?? "Default model"}</span><ChevronDown size={12} /></Popover.Trigger>
         <Popover.Content class="w-80 p-0" align="end"><Command.Root><Command.Input placeholder="Search models…" /><Command.List><Command.Empty>No configured models found.</Command.Empty><Command.Group heading="Models"><Command.Item value="default" onSelect={() => { model = ""; modelOpen = false; }}>Default model</Command.Item>{#each catalog.models as item}<Command.Item value={`${item.providerID}/${item.modelID} ${item.name}`} onSelect={() => { model = `${item.providerID}/${item.modelID}`; modelOpen = false; }}><div><p>{item.name}</p><p class="text-xs text-muted-foreground">{item.provider}</p></div></Command.Item>{/each}</Command.Group></Command.List></Command.Root></Popover.Content>
       </Popover.Root>
-      <Select.Root type="single" bind:value={mode}><Select.Trigger class="h-8 w-auto border-0 text-xs shadow-none" aria-label="Select composer mode">{mode === "chat" ? "Chat" : mode === "plan" ? "Plan" : "Build"}</Select.Trigger><Select.Content><Select.Item value="chat">Chat · normal conversation</Select.Item><Select.Item value="plan">Plan · brief to Kanban plan</Select.Item><Select.Item value="build">Build · plan, create, and start</Select.Item></Select.Content></Select.Root>
+
       <Select.Root type="single" bind:value={agent}><Select.Trigger class="h-8 w-auto border-0 text-xs shadow-none" aria-label="Select agent">{agent}</Select.Trigger><Select.Content>{#each catalog.agents.filter((a) => a.mode !== "subagent") as item}<Select.Item value={item.name}>{item.name}</Select.Item>{/each}</Select.Content></Select.Root>
       {#if busy}<Button type="button" size="icon" variant="secondary" aria-label="Stop response" title="Stop response" onclick={onstop}><Square size={14} /></Button>{:else}<Button type="submit" size="icon" class="rounded-full" aria-label="Send message" title="Send message" disabled={disabled || sending || (!draft.trim() && !files.length)}>{#if sending}<LoaderCircle size={16} class="animate-spin" />{:else}<ArrowUp size={17} />{/if}</Button>{/if}
     </div>

@@ -28,7 +28,7 @@ const screenshots = {
 	plan: {
 		src: "plan.png",
 		label: "A plan you can actually review",
-		alt: "Loom Epic plan editor showing tasks, dependencies, and project commands",
+		alt: "Loom plan editor showing tasks, dependencies, and project commands",
 		text: "Edit the task breakdown, dependencies, and validation commands before any agent starts.",
 	},
 	review: {
@@ -49,7 +49,7 @@ const features = [
 	{
 		icon: Layers,
 		title: "The right order, built in.",
-		text: "Epic plans make dependencies explicit. Dependent tasks wait for the work they need and receive its context.",
+		text: "Plans make dependencies explicit. Dependent tasks wait for the work they need and receive its context.",
 		tag: "Dependency-aware planning",
 	},
 	{
@@ -82,7 +82,7 @@ const features = [
     <div class="screenshot-caption"><strong>{shot.label}</strong><p>{shot.text}</p><span>Captured in Loom</span></div>
   </section>
   <section id="features" class="features section-width"><div class="section-heading"><div><p class="eyebrow">BUILT FOR WORK THAT HAS MOVING PARTS</p><h2>Give the agents space.<br/><span>Keep yourself in control.</span></h2></div><a class="text-link" href={sitePath("/docs/parallel-tasks/")}>How parallel work works <ArrowUpRight size={16}/></a></div><div class="feature-grid">{#each features as feature}<article class="feature-card glass"><div class="feature-icon"><feature.icon size={22} strokeWidth={1.5}/></div><p class="feature-tag">{feature.tag}</p><h3>{feature.title}</h3><p>{feature.text}</p></article>{/each}</div></section>
-  <section class="workflow section-width"><div><p class="eyebrow">ONE IDEA. THREE DELIBERATE STEPS.</p><h2>A little structure.<br/><span>A lot less juggling.</span></h2><p class="section-intro">Start with a repository and a goal. Stay as involved as the work requires.</p><Button href={sitePath("/docs/getting-started/")} variant="outline">Your first project <ArrowRight size={15}/></Button></div><ol class="workflow-steps"><li><span>01</span><div><h3>Make the plan yours.</h3><p>Create an Epic. Review the proposed tasks, adjust dependencies, and approve the commands that will validate the result.</p></div></li><li><span>02</span><div><h3>Let independent work move.</h3><p>Agents work in isolated branches. Follow the Kanban board, read the chat, and respond when an agent needs permission.</p></div></li><li><span>03</span><div><h3>Bring it home, thoughtfully.</h3><p>Inspect the combined changes and check results. Approve the integration when you are happy with what you see.</p></div></li></ol></section>
+  <section class="workflow section-width"><div><p class="eyebrow">ONE IDEA. THREE DELIBERATE STEPS.</p><h2>A little structure.<br/><span>A lot less juggling.</span></h2><p class="section-intro">Start with a repository and a goal. Stay as involved as the work requires.</p><Button href={sitePath("/docs/getting-started/")} variant="outline">Your first project <ArrowRight size={15}/></Button></div><ol class="workflow-steps"><li><span>01</span><div><h3>Make the plan yours.</h3><p>Create a plan. Review the proposed tasks, adjust dependencies, and approve the commands that will validate the result.</p></div></li><li><span>02</span><div><h3>Let independent work move.</h3><p>Agents work in isolated branches. Follow the Kanban board, read the chat, and respond when an agent needs permission.</p></div></li><li><span>03</span><div><h3>Bring it home, thoughtfully.</h3><p>Inspect the task changes and check results. Merge each task when you are happy with what you see.</p></div></li></ol></section>
   <section class="local-note section-width glass"><span class="local-icon"><ShieldCheck size={33} strokeWidth={1.3}/></span><div><p class="eyebrow">LOCAL BY DEFAULT</p><h3>Your repositories stay on your machine.</h3><p>Loom stores its workspace data locally. OpenCode sends the context needed for a task to your configured model provider. You choose that provider.</p></div><a class="text-link" href={sitePath("/docs/privacy/")}>Read the privacy details <ArrowUpRight size={15}/></a></section>
   <section id="install" class="install-section section-width"><div><p class="eyebrow">A SMALL START FOR YOUR NEXT BIG THING</p><h2>One command.<br/><span>Your own workspace.</span></h2><p>Install Loom, then open it with <code>loom</code>. Git and a configured OpenCode installation are the only prerequisites.</p><a class="text-link" href={sitePath("/docs/installation/")}>Full installation guide <ArrowUpRight size={16}/></a></div><div class="install-panel glass"><InstallCommand/><div class="install-foot"><span><Check size={13}/> Runtime included</span><span><Check size={13}/> Verified downloads</span></div><p class="release-note">Installers use published <a href={`${repository}/releases`}>GitHub Releases</a>. Availability and platform requirements are listed in the docs.</p></div></section>
   <section class="faq section-width"><div><p class="eyebrow">BEFORE YOU GET STARTED</p><h2>A few useful details.</h2></div><div>{#each [

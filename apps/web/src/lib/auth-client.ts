@@ -1,5 +1,5 @@
 import { createAuthClient } from "better-auth/svelte";
-import { PUBLIC_SERVER_URL } from "$env/static/public";
+import { PUBLIC_SERVER_URL } from "$app/env/public";
 
 function getServerUrl(url: string) {
 	const processEnv = (

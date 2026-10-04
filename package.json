@@ -27,6 +27,7 @@
 		"dev": "turbo run dev",
 		"build": "turbo run build",
 		"check-types": "turbo run check-types",
+		"test": "bun scripts/test.ts",
 		"postinstall": "tsc -b packages/api && varlock codegen --path ./apps/web/ && varlock codegen --path ./apps/server/ && varlock codegen --path ./packages/db/",
 		"dev:types": "tsc -b packages/api --watch",
 		"dev:web": "turbo run dev -F web --",

@@ -1,16 +1,10 @@
 import type {
 	AgentModelRef,
-	AuditEvent,
 	DesignMessage,
 	DesignNode,
 	DesignPatch,
 	DesignThread,
 	DesignViewport,
-	IntegrationRun,
-	PlannerRun,
-	ProjectContext,
-	Epic as ProtocolEpic,
-	TaskArtifact,
 } from "@loom/protocol";
 import {
 	daemonEventSchema,
@@ -19,20 +13,7 @@ import {
 	type PermissionRequest as ProtocolPermissionRequest,
 } from "@loom/protocol";
 import { dev } from "$app/environment";
-import { PUBLIC_SERVER_URL } from "$env/static/public";
-export type EpicDetail = ProtocolEpic & {
-	tasks: Array<{
-		key: string;
-		taskId: string;
-		task: Task | null;
-		blockedBy: string[];
-	}>;
-	integrations: IntegrationRun[];
-	events: AuditEvent[];
-	plannerRuns: PlannerRun[];
-	artifacts: TaskArtifact[];
-};
-
+import { PUBLIC_SERVER_URL } from "$app/env/public";
 export type Project = {
 	id: string;
 	name: string;
@@ -109,9 +90,7 @@ export type AutomationPlanDetail = {
 };
 
 export type Task = {
-	epicId?: string | null;
 	blockedBy?: string[];
-	integrated?: boolean;
 	id: string;
 	projectId: string;
 	planId: string | null;
@@ -130,22 +109,6 @@ export type Task = {
 	startedAt: string | null;
 	completedAt: string | null;
 };
-export type Epic = {
-	id: string;
-	projectId: string;
-	title: string;
-	prompt: string;
-	status: string;
-	plan: {
-		tasks: Array<{
-			key: string;
-			title: string;
-			prompt: string;
-			dependsOn: string[];
-		}>;
-	} | null;
-};
-
 export type AgentRun = ProtocolAgentRun & {
 	startedAt: string | null;
 	completedAt: string | null;
@@ -264,46 +227,6 @@ export const daemon = {
 		}>(`/api/projects/${projectId}/tasks/batch`, {
 			method: "POST",
 			body: JSON.stringify({ tasks }),
-		}),
-	listEpics: (projectId: string) =>
-		request<Epic[]>(`/api/projects/${projectId}/epics`),
-	createEpic: (input: { projectId: string; title: string; goal: string }) =>
-		request<Epic>("/api/epics", {
-			method: "POST",
-			body: JSON.stringify(input),
-		}),
-	getEpicDetail: (id: string) => request<EpicDetail>(`/api/epics/${id}`),
-	saveEpicPlan: (
-		id: string,
-		plan: NonNullable<Epic["plan"]>,
-		context: ProjectContext,
-	) =>
-		request(`/api/epics/${id}/plan`, {
-			method: "PUT",
-			body: JSON.stringify({ ...plan, context }),
-		}),
-	replanEpic: (id: string) =>
-		request(`/api/epics/${id}/replan`, { method: "POST" }),
-	approveIntegration: (id: string, head: string) =>
-		request(`/api/integrations/${id}/approve`, {
-			method: "POST",
-			body: JSON.stringify({ head }),
-		}),
-	startEpic: (id: string) =>
-		request<{ started: boolean }>(`/api/epics/${id}/start`, {
-			method: "POST",
-		}),
-	integrateEpic: (id: string) =>
-		request<{ id: string; status: string }>(`/api/epics/${id}/integrate`, {
-			method: "POST",
-		}),
-	addArtifact: (
-		id: string,
-		input: { type: string; path: string; summary: string },
-	) =>
-		request(`/api/tasks/${id}/artifacts`, {
-			method: "POST",
-			body: JSON.stringify(input),
 		}),
 	createPlan: (input: {
 		projectId: string;

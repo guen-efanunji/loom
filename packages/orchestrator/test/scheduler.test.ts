@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { createScheduler, defaultSchedulerConfig } from "./scheduler";
+import { createScheduler, defaultSchedulerConfig } from "../src/scheduler";
 
 test("uses FIFO scheduling with global and project limits", async () => {
 	const releases = new Map<string, () => void>();

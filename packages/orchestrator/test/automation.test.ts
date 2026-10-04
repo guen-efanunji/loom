@@ -6,9 +6,9 @@ import { createDb, planRepository, repositories } from "@loom/db";
 import { MockAgentRuntime } from "@loom/opencode";
 import type { DaemonEvent } from "@loom/protocol";
 import { WorktreeManager } from "@loom/worktree";
-import { AutomationService } from "./automation";
-import { git } from "./commands";
-import { combineHooks, TaskOrchestrator } from "./index";
+import { AutomationService } from "../src/automation";
+import { git } from "../src/commands";
+import { combineHooks, TaskOrchestrator } from "../src/index";
 
 const roots: string[] = [];
 afterEach(async () => {

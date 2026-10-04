@@ -5,15 +5,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 
-import { planRepository } from "./automation";
-import { createDb, databaseSchemaStatements } from "./index";
+import { planRepository } from "../src/automation";
+import { createDb, databaseSchemaStatements } from "../src/index";
 import {
 	agentRunRepository,
 	projectRepository,
 	taskRepository,
 	workspaceRepository,
-} from "./repositories";
-import * as schema from "./schema";
+} from "../src/repositories";
+import * as schema from "../src/schema";
 
 const db = drizzle({
 	client: new Database(":memory:"),
@@ -47,19 +47,13 @@ test("bootstraps an empty database and is idempotent", async () => {
 		expect(tables.map((table) => table.name)).toEqual([
 			"account",
 			"agent_runs",
-			"audit_events",
 			"design_messages",
 			"design_nodes",
-			"epic_tasks",
-			"epics",
-			"integration_runs",
 			"permission_requests",
 			"plan_tasks",
-			"planner_runs",
 			"plans",
 			"projects",
 			"session",
-			"task_artifacts",
 			"task_dependencies",
 			"tasks",
 			"user",

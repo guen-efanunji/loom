@@ -539,6 +539,17 @@ export class TaskOrchestrator {
 		return this.dependencies.agentRuns.listByTask(taskId);
 	}
 
+	async sessionScope(sessionId: string) {
+		const task = (await this.dependencies.tasks.list?.())?.find(
+			(item) => item.sessionId === sessionId,
+		);
+		if (!task) return undefined;
+		const workspace = await this.dependencies.workspaces.getByTaskId(task.id);
+		return workspace
+			? { directory: workspace.path, projectId: task.projectId }
+			: undefined;
+	}
+
 	async output(
 		taskId: string,
 	): Promise<{ output: string; truncated: boolean }> {
@@ -575,7 +586,7 @@ export class TaskOrchestrator {
 			throw new Error(`Task cannot start from ${record.status}`);
 		if (this.lifecycle && !(await this.lifecycle.canRun(taskId)))
 			throw new Error(
-				"Task cannot start while dependencies or epic approval are pending",
+				"Task cannot start while dependencies are pending",
 			);
 		this.active.add(taskId);
 		let agentRunId: string | undefined;
@@ -1101,9 +1112,4 @@ export function combineHooks(
 
 export * from "./automation";
 export * from "./commands";
-export * from "./context";
 export * from "./design";
-export * from "./epics";
-export * from "./graph";
-export * from "./integration";
-export * from "./planner";

@@ -41,7 +41,6 @@ import * as Tabs from "$lib/components/ui/tabs";
 import { daemon, type Project, type Task } from "$lib/daemon";
 import AddProjectForm from "./AddProjectForm.svelte";
 import Composer from "./chat/Composer.svelte";
-import PlanCard from "./chat/PlanCard.svelte";
 import QuestionCard from "./chat/QuestionCard.svelte";
 import Turn from "./chat/Turn.svelte";
 import DesignCanvas from "./DesignCanvas.svelte";
@@ -82,25 +81,6 @@ let viewMode = $state<ViewMode>(initialView());
 let draft = $state("");
 let model = $state("");
 let agent = $state("build");
-type ComposerMode = "chat" | "plan" | "build";
-let composerMode = $state<ComposerMode>("chat");
-type ChatPlanCard = {
-	key: string;
-	planId: string;
-	projectId: string;
-	brief: string;
-	status: string;
-	title: string;
-	summary: string;
-	total: number;
-	independent: number;
-	dependent: number;
-	taskIds: string[];
-	converted: boolean;
-	started: string[];
-	error: string;
-};
-let planCards = $state<ChatPlanCard[]>([]);
 let automationMode = $state<"review" | "auto-create" | "auto-start">("review");
 let catalog = $state<Catalog>({
 	models: [],
@@ -349,7 +329,6 @@ async function poll() {
 		if (sessionId && !sessionLoading && !sending)
 			await refreshSession(sessionId);
 		if (viewMode !== "chat" && ready) await refreshBoard();
-		if (ready) await restorePlanCards();
 	} catch (reason) {
 		connected = false;
 		report(reason);
@@ -367,7 +346,6 @@ onMount(() => {
 				selectedProjectId = sourceProject;
 			legacyTasks = await daemon.listTasks();
 			model = preferredModel(selectedProjectId);
-			composerMode = preferredComposerMode(selectedProjectId);
 			try {
 				automationMode = (await daemon.getAutomationSettings()).automationMode;
 			} catch {
@@ -401,244 +379,14 @@ async function openSession(id: string) {
 	await goto(homeUrl(id));
 }
 async function newSession(projectId = selectedProjectId) {
-	const switchingProject = projectId !== selectedProjectId;
-	if (switchingProject) planCards = [];
 	selectedProjectId = projectId;
-	planCards = planCards.filter((card) => card.projectId === projectId);
 	draft = "";
 	model = preferredModel(projectId);
-	composerMode = preferredComposerMode(projectId);
 	await goto(homeUrl());
 	if (sessionId) await selectSession("");
 }
-function modeKey(projectId: string) {
-	return `loom.chatmode.${projectId}`;
-}
-function preferredComposerMode(projectId: string): ComposerMode {
-	if (!projectId || typeof localStorage === "undefined") return "chat";
-	const value = localStorage.getItem(modeKey(projectId));
-	return value === "plan" || value === "build" ? value : "chat";
-}
-$effect(() => {
-	const value = composerMode;
-	const projectId = selectedProjectId;
-	if (!ready || !projectId || typeof localStorage === "undefined") return;
-	localStorage.setItem(modeKey(projectId), value);
-});
-function parseCommand(text: string): { mode: ComposerMode; brief: string } {
-	const match = text.match(/^\/(plan|build)\b\s*/);
-	if (match)
-		return {
-			mode: match[1] as ComposerMode,
-			brief: text.slice(match[0].length).trim(),
-		};
-	return { mode: composerMode, brief: text.trim() };
-}
-
-async function sendPlan(brief: string, mode: "plan" | "build") {
-	const card = $state<ChatPlanCard>({
-		key: `plan-${Date.now()}`,
-		planId: "",
-		projectId: selectedProjectId,
-		brief,
-		status: "creating",
-		title: "",
-		summary: "",
-		total: 0,
-		independent: 0,
-		dependent: 0,
-		taskIds: [],
-		converted: false,
-		started: [],
-		error: "",
-	});
-	planCards = [...planCards, card];
-	const slash = model.indexOf("/");
-	const plannerModel =
-		slash > 0
-			? {
-					providerID: model.slice(0, slash),
-					modelID: model.slice(slash + 1),
-				}
-			: undefined;
-	if (plannerModel && typeof localStorage !== "undefined")
-		localStorage.setItem("loom.planner.model", JSON.stringify(plannerModel));
-	try {
-		const created = await daemon.createPlan({
-			projectId: selectedProjectId,
-			sourceMessageId: `chat:${sessionId || "new"}:${Date.now()}`,
-			message: brief,
-			mode,
-			sourceSessionId: sessionId || undefined,
-			...(plannerModel ? { model: plannerModel } : {}),
-		});
-		card.planId = created.planId;
-		card.status = "planning";
-		const detail = await pollPlan(card);
-		if (!detail) return;
-		await refreshBoard();
-		await refreshPlanCard(card);
-	} catch (reason) {
-		card.status = "failed";
-		card.error = reason instanceof Error ? reason.message : "Planning failed";
-	}
-}
-
-async function pollPlan(
-	card: ChatPlanCard,
-): Promise<import("$lib/daemon").AutomationPlanDetail | null> {
-	const deadline = Date.now() + 12 * 60 * 1000;
-	for (;;) {
-		if (disposed) return null;
-		try {
-			const detail = await daemon.getPlanDetail(card.planId);
-			card.status = detail.plan.status;
-			card.title = detail.plan.title;
-			card.summary = detail.plan.summary;
-			card.total = detail.draft.length;
-			card.independent = detail.draft.filter(
-				(task) => !task.dependencies.length,
-			).length;
-			card.dependent = card.total - card.independent;
-			if (detail.plan.status === "failed") {
-				card.error = detail.plan.errorMessage ?? "Planning failed";
-				return null;
-			}
-			if (detail.plan.status !== "draft") return detail;
-		} catch (reason) {
-			card.status = "failed";
-			card.error =
-				reason instanceof Error ? reason.message : "Unable to load plan";
-			return null;
-		}
-		if (Date.now() > deadline) {
-			card.error = "Planning timed out";
-			return null;
-		}
-		await new Promise((resolve) => setTimeout(resolve, 3000));
-	}
-}
-
-async function refreshPlanCard(card: ChatPlanCard) {
-	try {
-		const detail = await daemon.getPlanDetail(card.planId);
-		card.status = detail.plan.status;
-		card.title = detail.plan.title;
-		card.summary = detail.plan.summary;
-		card.converted = !!detail.plan.convertedAt;
-		card.taskIds = detail.tasks.map((t) => t.id);
-		card.started = detail.tasks
-			.filter((t) => ["preparing", "running", "completed"].includes(t.status))
-			.map((t) => t.id);
-	} catch (reason) {
-		report(reason);
-	}
-}
-
-let lastPlanRefresh = 0;
-let plansProject = "";
-async function restorePlanCards() {
-	const projectId = selectedProjectId;
-	if (
-		!projectId ||
-		(plansProject === projectId && Date.now() - lastPlanRefresh < 3000)
-	)
-		return;
-	if (plansProject !== projectId)
-		planCards = planCards.filter((card) => card.projectId === projectId);
-	plansProject = projectId;
-	lastPlanRefresh = Date.now();
-	const plans = await daemon.listPlans(projectId);
-	if (disposed || selectedProjectId !== projectId) return;
-	for (const plan of plans) {
-		// Failed plans are noise: they are never restored into a fresh chat.
-		if (
-			plan.status === "failed" &&
-			!planCards.some((item) => item.planId === plan.id)
-		)
-			continue;
-		let card = planCards.find((item) => item.planId === plan.id);
-		if (!card) {
-			planCards = [
-				...planCards,
-				{
-					key: plan.id,
-					planId: plan.id,
-					projectId,
-					brief: plan.sourceMessage,
-					status: plan.status,
-					title: plan.title,
-					summary: plan.summary,
-					total: 0,
-					independent: 0,
-					dependent: 0,
-					taskIds: [],
-					converted: !!plan.convertedAt,
-					started: [],
-					error: plan.errorMessage || "",
-				},
-			];
-			card = planCards.find((item) => item.planId === plan.id);
-		}
-		if (card) {
-			const detail = await daemon.getPlanDetail(plan.id);
-			Object.assign(card, {
-				status: plan.status,
-				title: plan.title,
-				summary: plan.summary,
-				total: detail.draft.length,
-				independent: detail.draft.filter((t) => !t.dependencies.length).length,
-				dependent: detail.draft.filter((t) => t.dependencies.length).length,
-				converted: !!plan.convertedAt,
-				taskIds: detail.tasks.map((t) => t.id),
-				error: plan.errorMessage || "",
-			});
-		}
-	}
-}
-
-async function planCardConvert(card: ChatPlanCard, start: boolean) {
-	try {
-		if (card.status === "validated") await daemon.approvePlan(card.planId);
-		const converted = await daemon.convertPlan(card.planId);
-		card.converted = converted.converted;
-		card.taskIds = converted.taskIds;
-		if (start) {
-			const started = await daemon.startPlan(card.planId);
-			card.started = started.started;
-		}
-		await refreshBoard();
-		await refreshPlanCard(card);
-		toast.success(start ? "Plan started" : "Tasks added to Kanban");
-	} catch (reason) {
-		toast.error(reason instanceof Error ? reason.message : "Operation failed");
-	}
-}
-
-async function deletePlanCard(card: ChatPlanCard) {
-	try {
-		await daemon.deletePlan(card.planId);
-		planCards = planCards.filter((item) => item.key !== card.key);
-		plansProject = "";
-		lastPlanRefresh = 0;
-		toast.success("Plan deleted");
-	} catch (reason) {
-		toast.error(reason instanceof Error ? reason.message : "Delete failed");
-	}
-}
-
 async function send(input: Parameters<typeof chat.send>[1]) {
 	if (!selectedProjectId || sending) return false;
-	const { mode, brief } = parseCommand(input.text);
-	if (mode !== "chat") {
-		if (!brief) {
-			report("Write a brief after /plan or /build.");
-			return false;
-		}
-		composerMode = mode;
-		void sendPlan(brief, mode);
-		return true;
-	}
 	sending = true;
 	error = "";
 	try {
@@ -884,16 +632,17 @@ async function answer(requestId: string, answers: string[][]) {
           {#each conversation?.permissions ?? [] as request}<div class="mt-5 space-y-3 rounded-xl border border-amber-500/30 bg-card p-4"><p class="flex items-center gap-2 text-sm font-medium"><ShieldCheck size={16} />Permission required: {request.permission}</p><pre class="overflow-auto whitespace-pre-wrap text-xs text-muted-foreground">{request.patterns.join("\n")}</pre><div class="flex flex-wrap gap-2"><Button size="sm" onclick={() => permission(request.id, "once")}>Allow once</Button><Button variant="outline" size="sm" onclick={() => permission(request.id, "always")}>Always allow</Button><Button variant="ghost" size="sm" onclick={() => permission(request.id, "reject")}>Deny</Button></div></div>{/each}
           {#each conversation?.questions ?? [] as question}<div class="mt-5"><QuestionCard {question} onanswer={(answers) => answer(question.id, answers)} /></div>{/each}
         {/if}
-        {#each planCards.filter((card) => card.projectId === selectedProjectId) as card (card.key)}<PlanCard {card} onreview={(item) => goto(`/plans/${item.planId}`)} onconvert={(item, start) => void planCardConvert(item, start)} ondelete={(item) => void deletePlanCard(item)} />{/each}
+
         {#if error}<div role="alert" class="my-4 flex items-start gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm"><p class="min-w-0 flex-1 break-words text-destructive">{error}</p><Button variant="ghost" size="sm" onclick={retryConnection}><RefreshCw size={13} />Retry</Button><Button variant="ghost" size="icon" class="size-7" aria-label="Dismiss error" onclick={() => error = ""}><X size={13} /></Button></div>{/if}
         {#if !sessionId && !loading}
           {#if !projects.length}<div class="mb-5 text-center"><p class="mb-3 text-sm text-muted-foreground">Add a local Git project to start chatting with OpenCode.</p><Button onclick={() => addProjectOpen = true}><FolderPlus size={16} />Add project</Button></div>{:else}<div class="mb-3"><Select.Root type="single" bind:value={selectedProjectId}><Select.Trigger class="w-auto min-w-40 border-0 bg-transparent shadow-none" aria-label="Choose project"><Folder size={14} />{selectedProject?.name ?? "Choose project"}</Select.Trigger><Select.Content>{#each projects as project}<Select.Item value={project.id}>{project.name}</Select.Item>{/each}</Select.Content></Select.Root></div>{/if}
-          <Composer projectId={selectedProjectId} {catalog} {busy} disabled={!selectedProjectId || loading} onsend={send} onstop={stop} bind:draft bind:model bind:agent bind:mode={composerMode} />
+           <Composer projectId={selectedProjectId} {catalog} {busy} disabled={!selectedProjectId || loading} onsend={send} onstop={stop} bind:draft bind:model bind:agent />
+
           <div class="mt-5 flex flex-wrap justify-center gap-2">{#each prompts as prompt}<Button variant="outline" size="sm" class="rounded-full text-xs text-muted-foreground" onclick={() => draft = prompt.text}>{prompt.label}</Button>{/each}</div>
         {/if}
       </div>
     </div>
-    {#if sessionId && viewMode === "chat"}<div class="shrink-0 border-t bg-background px-5 py-4"><div class="mx-auto max-w-3xl"><Composer projectId={selectedProjectId} {catalog} {busy} disabled={!conversation || sessionLoading} onsend={send} onstop={stop} bind:draft bind:model bind:agent bind:mode={composerMode} /></div></div>{/if}
+    {#if sessionId && viewMode === "chat"}<div class="shrink-0 border-t bg-background px-5 py-4"><div class="mx-auto max-w-3xl"><Composer projectId={selectedProjectId} {catalog} {busy} disabled={!conversation || sessionLoading} onsend={send} onstop={stop} bind:draft bind:model bind:agent /></div></div>{/if}
     {/if}
   </main>
 </div>

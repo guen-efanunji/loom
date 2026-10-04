@@ -5,7 +5,7 @@ import {
 	DesignOutputError,
 	deriveDesignTitle,
 	extractDesignHtml,
-} from "./design-prompt";
+} from "../src/design-prompt";
 
 const DOCUMENT =
 	'<!DOCTYPE html>\n<html lang="en">\n<head><meta charset="utf-8"><title>Demo</title></head>\n<body><h1>Demo</h1></body>\n</html>';

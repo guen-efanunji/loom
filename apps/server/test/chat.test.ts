@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { OpenCodeHttpRuntime } from "@loom/opencode";
-import { createChatRoutes } from "./chat";
+import { createChatRoutes } from "../src/chat";
 
 function setup() {
 	const requests: Request[] = [];

@@ -10,8 +10,8 @@ import type {
 	RuntimeOutput,
 } from "@loom/opencode";
 import type { DesignMessage, DesignNode } from "@loom/protocol";
-import type { DaemonConfig } from "./config";
-import { createApp } from "./index";
+import type { DaemonConfig } from "../src/config";
+import { createApp } from "../src/index";
 
 const config: DaemonConfig = {
 	port: 4317,
