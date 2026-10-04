@@ -1,5 +1,11 @@
 import type {
+	AgentModelRef,
 	AuditEvent,
+	DesignMessage,
+	DesignNode,
+	DesignPatch,
+	DesignThread,
+	DesignViewport,
 	IntegrationRun,
 	PlannerRun,
 	ProjectContext,
@@ -410,7 +416,49 @@ export const daemon = {
 		request<{ discarded: boolean }>(`/api/tasks/${id}/discard`, {
 			method: "POST",
 		}),
+	createDesign: (input: {
+		projectId: string;
+		brief: string;
+		viewport?: DesignViewport;
+		model?: AgentModelRef;
+	}) =>
+		request<{ nodeId: string; status: string }>("/api/designs", {
+			method: "POST",
+			body: JSON.stringify(input),
+		}),
+	listDesigns: (projectId: string) =>
+		request<DesignThread>(`/api/projects/${projectId}/designs`),
+	getDesign: (id: string) => request<DesignNode>(`/api/designs/${id}`),
+	patchDesign: (id: string, patch: DesignPatch) =>
+		request<DesignNode>(`/api/designs/${id}`, {
+			method: "PATCH",
+			body: JSON.stringify(patch),
+		}),
+	refineDesign: (
+		id: string,
+		input: { message: string; model?: AgentModelRef },
+	) =>
+		request<{ nodeId: string; status: string }>(`/api/designs/${id}/refine`, {
+			method: "POST",
+			body: JSON.stringify(input),
+		}),
+	retryDesign: (id: string, model?: AgentModelRef) =>
+		request<{ nodeId: string; status: string }>(`/api/designs/${id}/retry`, {
+			method: "POST",
+			body: JSON.stringify(model ? { model } : {}),
+		}),
+	publishDesign: (id: string, path?: string) =>
+		request<{ published: boolean; path: string }>(
+			`/api/designs/${id}/publish`,
+			{ method: "POST", body: JSON.stringify(path ? { path } : {}) },
+		),
+	deleteDesign: (id: string) =>
+		request<void>(`/api/designs/${id}`, { method: "DELETE" }),
+	clearDesigns: (projectId: string) =>
+		request<void>(`/api/projects/${projectId}/designs`, { method: "DELETE" }),
 };
+
+export type { DesignMessage, DesignNode, DesignThread, DesignViewport };
 
 export function diffStats(diff: string) {
 	const files = [...diff.matchAll(/^diff --git a\/(.+?) b\/(.+)$/gm)].map(

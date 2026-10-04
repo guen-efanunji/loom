@@ -55,6 +55,7 @@ export type Database = ReturnType<typeof createDb>;
 
 export * from "./automation";
 export * from "./bootstrap";
+export * from "./design";
 export * from "./orchestration";
 export * from "./repositories";
 export * from "./schema";

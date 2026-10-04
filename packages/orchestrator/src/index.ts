@@ -1102,6 +1102,7 @@ export function combineHooks(
 export * from "./automation";
 export * from "./commands";
 export * from "./context";
+export * from "./design";
 export * from "./epics";
 export * from "./graph";
 export * from "./integration";

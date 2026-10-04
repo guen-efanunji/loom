@@ -1,10 +1,34 @@
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import {
+	basename,
+	dirname,
+	isAbsolute,
+	join,
+	relative,
+	resolve,
+	sep,
+} from "node:path";
 import { appRouter } from "@loom/api/routers/index";
 import type { Database } from "@loom/db";
 import {
+	type DesignMessageRecord,
+	type DesignNodeRecord,
+	designRepository,
 	orchestrationRepository,
 	planRepository,
 	repositories,
 } from "@loom/db";
+import {
+	automationModeSchema,
+	dataDirectory,
+	log,
+	PROTOCOL_VERSION,
+	readSettings,
+	releaseChannelSchema,
+	saveSettings,
+	VERSION,
+} from "@loom/distribution";
+import { checkForUpdate } from "@loom/distribution/updates";
 import {
 	type AgentRuntime,
 	OpenCodeHttpRuntime,
@@ -14,20 +38,26 @@ import {
 import {
 	AutomationService,
 	combineHooks,
+	DesignService,
+	deriveDesignTitle,
 	EpicService,
 	TaskOrchestrator,
 } from "@loom/orchestrator";
 import {
+	agentModelRefSchema,
 	automationPlanTaskSchema,
-	type Task,
 	createApiError,
+	createDesignSchema,
 	createProjectInputSchema,
 	createTaskBatchInputSchema,
 	createTaskInputSchema,
 	daemonEventSchema,
+	designPatchSchema,
 	newEpicSchema,
 	permissionDecisionInputSchema,
 	projectContextSchema,
+	refineDesignSchema,
+	type Task,
 	taskIdInputSchema,
 	taskPlanSchema,
 } from "@loom/protocol";
@@ -44,10 +74,6 @@ import { ZodToJsonSchemaConverter } from "@orpc/zod/zod4";
 import { Hono } from "hono";
 import { createBunWebSocket } from "hono/bun";
 import { cors } from "hono/cors";
-import { VERSION, PROTOCOL_VERSION, automationModeSchema, log, readSettings, saveSettings, releaseChannelSchema, dataDirectory } from "@loom/distribution";
-import { checkForUpdate } from "@loom/distribution/updates";
-import { access, readFile } from "node:fs/promises";
-import { basename, join } from "node:path";
 import { z } from "zod";
 import { createChatRoutes } from "./chat";
 import { type DaemonConfig, loadDaemonConfig } from "./config";
@@ -91,15 +117,15 @@ function recordToTask(
 				projectId: string;
 				title: string;
 				prompt: string;
-			status: string;
-			position: number | null;
-			planId: string | null;
-			description: string;
-			priority: string;
-			acceptanceCriteria: string;
-			suggestedFiles: string;
-			source: string;
-			workspaceId: string | null;
+				status: string;
+				position: number | null;
+				planId: string | null;
+				description: string;
+				priority: string;
+				acceptanceCriteria: string;
+				suggestedFiles: string;
+				source: string;
+				workspaceId: string | null;
 				sessionId: string | null;
 				createdAt: Date;
 				startedAt: Date | null;
@@ -134,6 +160,26 @@ function recordToAgentRun(record: {
 		...record,
 		startedAt: record.startedAt?.toISOString() ?? null,
 		completedAt: record.completedAt?.toISOString() ?? null,
+	};
+}
+
+function recordToDesignNode(record: DesignNodeRecord) {
+	return {
+		...record,
+		status: record.status as "queued" | "generating" | "ready" | "failed",
+		viewport:
+			record.viewport === "mobile" ? ("mobile" as const) : ("desktop" as const),
+		createdAt: record.createdAt.toISOString(),
+		updatedAt: record.updatedAt.toISOString(),
+	};
+}
+
+function recordToDesignMessage(record: DesignMessageRecord) {
+	return {
+		...record,
+		role:
+			record.role === "assistant" ? ("assistant" as const) : ("user" as const),
+		createdAt: record.createdAt.toISOString(),
 	};
 }
 
@@ -216,7 +262,9 @@ function errorResponse(
 }
 
 export type DaemonAppOptions = {
-	update?: (channel?: string) => Promise<{ updating: boolean; version: string }>;
+	update?: (
+		channel?: string,
+	) => Promise<{ updating: boolean; version: string }>;
 	staticAssets?: Record<string, { body: string; type: string }>;
 	onShutdown?: () => void;
 	config?: DaemonConfig;
@@ -226,6 +274,7 @@ export type DaemonAppOptions = {
 	startOpenCode?: boolean;
 	projectValidation?: ReturnType<typeof createProjectValidationService>;
 	plannerRuntime?: AgentRuntime;
+	designRuntime?: AgentRuntime;
 };
 
 export async function createApp(options: DaemonAppOptions = {}) {
@@ -237,7 +286,11 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	const eventPublisher = {
 		publish(event: unknown) {
 			const parsed = daemonEventSchema.parse(event);
-			log("orchestrator", parsed.type, "taskId" in parsed ? { taskId: parsed.taskId } : {});
+			log(
+				"orchestrator",
+				parsed.type,
+				"taskId" in parsed ? { taskId: parsed.taskId } : {},
+			);
 			const payload = JSON.stringify(parsed);
 			for (const client of clients) client.send(payload);
 		},
@@ -250,9 +303,14 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		// immediately. A missing or slow provider must not leave the client in
 		// an endless reconnect loop.
 		void openCodeManager.start().catch((error) =>
-			log("opencode", "unavailable", {
-				error: error instanceof Error ? error.message : String(error),
-			}, "warn"),
+			log(
+				"opencode",
+				"unavailable",
+				{
+					error: error instanceof Error ? error.message : String(error),
+				},
+				"warn",
+			),
 		);
 	}
 	const worktreeManager = new WorktreeManager();
@@ -278,27 +336,56 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		orchestrator,
 		options.plannerRuntime ?? agentRuntime,
 	);
+	const designs = new DesignService(
+		designRepository(db),
+		repos,
+		options.designRuntime ?? agentRuntime,
+	);
 	orchestrator.setLifecycle(combineHooks(epics.hooks(), automation.hooks()));
 	await orchestrator.reconcile();
 	await epics.recover();
 	await automation.recover();
+	await designs.recover();
 	const projectValidation =
 		options.projectValidation ?? createProjectValidationService();
 	const app = new Hono();
-	const allowedOrigins = new Set(config.corsOrigin.split(",").map((origin) => origin.trim()).filter(Boolean));
+	const allowedOrigins = new Set(
+		config.corsOrigin
+			.split(",")
+			.map((origin) => origin.trim())
+			.filter(Boolean),
+	);
 
 	app.use("/*", async (c, next) => {
 		const host = c.req.header("Host");
-		if (host && !["127.0.0.1", "localhost", "[::1]"].includes(host.replace(/:\d+$/, "")))
+		if (
+			host &&
+			!["127.0.0.1", "localhost", "[::1]"].includes(host.replace(/:\d+$/, ""))
+		)
 			return c.json({ error: { message: "Local host required" } }, 403);
 		const origin = c.req.header("Origin");
 		if (origin && !allowedOrigins.has(origin))
 			return c.json({ error: { message: "Origin is not allowed" } }, 403);
-		if (/^\/(rpc|api-reference)(\/|$)/.test(c.req.path) && c.req.header("Authorization") !== `Bearer ${config.token}`)
+		if (
+			/^\/(rpc|api-reference)(\/|$)/.test(c.req.path) &&
+			c.req.header("Authorization") !== `Bearer ${config.token}`
+		)
 			return c.json({ error: { message: "Bearer token is required" } }, 401);
-		if (!["GET", "HEAD", "OPTIONS"].includes(c.req.method) && !["/api/bootstrap", "/api/daemon/stop"].includes(c.req.path)) {
-			const updating = await access(join(dataDirectory(), "cache", "update.lock")).then(() => true, () => false);
-			if (updating) return c.json({ error: { message: "Loom is updating; retry after restart" } }, 409);
+		if (
+			!["GET", "HEAD", "OPTIONS"].includes(c.req.method) &&
+			!["/api/bootstrap", "/api/daemon/stop"].includes(c.req.path)
+		) {
+			const updating = await access(
+				join(dataDirectory(), "cache", "update.lock"),
+			).then(
+				() => true,
+				() => false,
+			);
+			if (updating)
+				return c.json(
+					{ error: { message: "Loom is updating; retry after restart" } },
+					409,
+				);
 		}
 		c.header("X-Content-Type-Options", "nosniff");
 		c.header("Referrer-Policy", "no-referrer");
@@ -308,7 +395,8 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	app.use(
 		"/*",
 		cors({
-			origin: (origin) => !origin || allowedOrigins.has(origin) ? origin : undefined,
+			origin: (origin) =>
+				!origin || allowedOrigins.has(origin) ? origin : undefined,
 			allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
 			allowHeaders: ["Content-Type", "Authorization"],
 			credentials: true,
@@ -318,7 +406,13 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	app.get("/health", async (c) => {
 		const database = await checkDbHealth(db);
 		return c.json(
-			{ status: database ? "ok" : "degraded", database, product: "loom", version: VERSION, protocolVersion: PROTOCOL_VERSION },
+			{
+				status: database ? "ok" : "degraded",
+				database,
+				product: "loom",
+				version: VERSION,
+				protocolVersion: PROTOCOL_VERSION,
+			},
 			database ? 200 : 503,
 		);
 	});
@@ -371,44 +465,131 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			);
 		return next();
 	});
-	app.get("/api/meta", (c) => c.json({ version: VERSION, protocolVersion: PROTOCOL_VERSION }));
+	app.get("/api/meta", (c) =>
+		c.json({ version: VERSION, protocolVersion: PROTOCOL_VERSION }),
+	);
 	const updateReady = async () => {
 		const scheduler = orchestrator.getScheduler().getState();
-		if (scheduler.running.length || scheduler.queued.length) throw new Error("Finish or cancel active tasks before updating");
-		const active = db.get<{ count: number }>("SELECT COUNT(*) AS count FROM epics WHERE status IN ('planning','running','integrating')");
-		if (active?.count) throw new Error("Finish active Epic planning and integration before updating");
+		if (scheduler.running.length || scheduler.queued.length)
+			throw new Error("Finish or cancel active tasks before updating");
+		const active = db.get<{ count: number }>(
+			"SELECT COUNT(*) AS count FROM epics WHERE status IN ('planning','running','integrating')",
+		);
+		if (active?.count)
+			throw new Error(
+				"Finish active Epic planning and integration before updating",
+			);
 		try {
-			const response = await fetch("http://127.0.0.1:4096/session/status", { signal: AbortSignal.timeout(2000) });
+			const response = await fetch("http://127.0.0.1:4096/session/status", {
+				signal: AbortSignal.timeout(2000),
+			});
 			if (response.ok) {
-				const states = await response.json() as Record<string, { type: string }>;
-				if (Object.values(states).some(s => s.type !== "idle")) throw new Error("Wait for OpenCode chats to finish before updating");
+				const states = (await response.json()) as Record<
+					string,
+					{ type: string }
+				>;
+				if (Object.values(states).some((s) => s.type !== "idle"))
+					throw new Error("Wait for OpenCode chats to finish before updating");
 			}
-		} catch (error) { if (error instanceof Error && error.message.startsWith("Wait for")) throw error; }
+		} catch (error) {
+			if (error instanceof Error && error.message.startsWith("Wait for"))
+				throw error;
+		}
 	};
 	app.get("/api/updates/ready", async (c) => {
-		try { await updateReady(); return c.json({ ready: true }); }
-		catch (error) { return c.json({ error: { message: error instanceof Error ? error.message : "Active work prevents update" } }, 409); }
+		try {
+			await updateReady();
+			return c.json({ ready: true });
+		} catch (error) {
+			return c.json(
+				{
+					error: {
+						message:
+							error instanceof Error
+								? error.message
+								: "Active work prevents update",
+					},
+				},
+				409,
+			);
+		}
 	});
 	app.get("/api/updates", async (c) => {
 		const settings = await readSettings();
-		const status = settings.updateChecks ? await checkForUpdate(settings.releaseChannel) : { current: VERSION, channel: settings.releaseChannel, checkedAt: null, latest: null, available: false };
+		const status = settings.updateChecks
+			? await checkForUpdate(settings.releaseChannel)
+			: {
+					current: VERSION,
+					channel: settings.releaseChannel,
+					checkedAt: null,
+					latest: null,
+					available: false,
+				};
 		let lastResult: unknown = null;
-		try { lastResult = JSON.parse(await readFile(join(dataDirectory(), "cache", "update-result.json"), "utf8")); } catch {}
-		return c.json({ ...status, supported: !!options.update, enabled: settings.updateChecks, lastResult });
+		try {
+			lastResult = JSON.parse(
+				await readFile(
+					join(dataDirectory(), "cache", "update-result.json"),
+					"utf8",
+				),
+			);
+		} catch {}
+		return c.json({
+			...status,
+			supported: !!options.update,
+			enabled: settings.updateChecks,
+			lastResult,
+		});
 	});
-	app.post("/api/updates/check", async (c) => c.json(await checkForUpdate((await readSettings()).releaseChannel, { force: true })));
+	app.post("/api/updates/check", async (c) =>
+		c.json(
+			await checkForUpdate((await readSettings()).releaseChannel, {
+				force: true,
+			}),
+		),
+	);
 	app.post("/api/updates/install", async (c) => {
-		if (!options.update) return c.json({ error: { message: "Updates require an installed standalone binary" } }, 409);
-		try { await updateReady(); return c.json(await options.update(), 202); }
-		catch (error) { return c.json({ error: { message: error instanceof Error ? error.message : "Update failed" } }, 409); }
+		if (!options.update)
+			return c.json(
+				{
+					error: { message: "Updates require an installed standalone binary" },
+				},
+				409,
+			);
+		try {
+			await updateReady();
+			return c.json(await options.update(), 202);
+		} catch (error) {
+			return c.json(
+				{
+					error: {
+						message: error instanceof Error ? error.message : "Update failed",
+					},
+				},
+				409,
+			);
+		}
 	});
 	app.put("/api/updates/settings", async (c) => {
-		const input = z.object({ releaseChannel: releaseChannelSchema, updateChecks: z.boolean() }).parse(await jsonBody(c));
-		await saveSettings({ ...await readSettings(), ...input });
+		const input = z
+			.object({
+				releaseChannel: releaseChannelSchema,
+				updateChecks: z.boolean(),
+			})
+			.parse(await jsonBody(c));
+		await saveSettings({ ...(await readSettings()), ...input });
 		return c.json(input);
 	});
 	app.post("/api/daemon/stop", (c) => {
-		if (!options.onShutdown) return c.json({ error: { message: "Use the development terminal to stop this daemon" } }, 409);
+		if (!options.onShutdown)
+			return c.json(
+				{
+					error: {
+						message: "Use the development terminal to stop this daemon",
+					},
+				},
+				409,
+			);
 		setTimeout(options.onShutdown, 100);
 		return c.json({ stopping: true });
 	});
@@ -571,9 +752,13 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		try {
 			const input = planInputSchema.parse(await jsonBody(c));
 			const settings = await readSettings();
-			const { planId, status } = await automation.createPlan(
-				{ ...input, automationMode: input.mode === "build" && settings.automationMode === "review" ? "auto-create" : settings.automationMode },
-			);
+			const { planId, status } = await automation.createPlan({
+				...input,
+				automationMode:
+					input.mode === "build" && settings.automationMode === "review"
+						? "auto-create"
+						: settings.automationMode,
+			});
 			return c.json({ planId, status }, 202);
 		} catch (error) {
 			return errorResponse(c, error);
@@ -649,12 +834,137 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	});
 	app.post("/api/plans/:id/retry", async (c) => {
 		try {
-			const input = z.object({
-				model: z.object({ providerID: z.string().min(1), modelID: z.string().min(1) }).optional(),
-			}).parse(await jsonBody(c).catch(() => ({})));
+			const input = z
+				.object({
+					model: z
+						.object({
+							providerID: z.string().min(1),
+							modelID: z.string().min(1),
+						})
+						.optional(),
+				})
+				.parse(await jsonBody(c).catch(() => ({})));
 			await automation.retryPlan(c.req.param("id"), input.model);
 			return c.json({ accepted: true }, 202);
-		} catch (error) { return errorResponse(c, error); }
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+
+	const designPublishSchema = z.object({
+		path: z.string().trim().min(1).max(300).optional(),
+	});
+	const designRetrySchema = z.object({
+		model: agentModelRefSchema.optional(),
+	});
+	app.post("/api/designs", async (c) => {
+		try {
+			const input = createDesignSchema.parse(await jsonBody(c));
+			return c.json(await designs.create(input), 202);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.get("/api/projects/:projectId/designs", async (c) => {
+		try {
+			const thread = await designs.list(c.req.param("projectId"));
+			return c.json({
+				nodes: thread.nodes.map(recordToDesignNode),
+				messages: thread.messages.map(recordToDesignMessage),
+			});
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.get("/api/designs/:id", async (c) => {
+		try {
+			return c.json(
+				recordToDesignNode(await designs.detail(c.req.param("id"))),
+			);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.patch("/api/designs/:id", async (c) => {
+		try {
+			const input = designPatchSchema.parse(await jsonBody(c));
+			return c.json(
+				recordToDesignNode(await designs.save(c.req.param("id"), input)),
+			);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.post("/api/designs/:id/refine", async (c) => {
+		try {
+			const input = refineDesignSchema.parse(await jsonBody(c));
+			return c.json(await designs.refine(c.req.param("id"), input), 202);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.post("/api/designs/:id/retry", async (c) => {
+		try {
+			const body = designRetrySchema.parse(await jsonBody(c).catch(() => ({})));
+			return c.json(await designs.retry(c.req.param("id"), body.model), 202);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.post("/api/designs/:id/publish", async (c) => {
+		try {
+			const node = await designs.detail(c.req.param("id"));
+			if (node.status !== "ready" || !node.html.trim())
+				throw new Error("Only completed designs can be published");
+			const project = await repos.projects.getById(node.projectId);
+			if (!project) return errorResponse(c, new Error("Project not found"));
+			const input = designPublishSchema.parse(
+				await jsonBody(c).catch(() => ({})),
+			);
+			const slug =
+				deriveDesignTitle(node.brief)
+					.toLowerCase()
+					.replace(/[^a-z0-9]+/g, "-")
+					.replace(/^-+|-+$/g, "")
+					.slice(0, 60) || "design";
+			const requested = (input.path ?? `designs/${slug}.html`).replace(
+				/^\/+/,
+				"",
+			);
+			if (!/\.html?$/i.test(requested))
+				throw new Error("Publish path must end in .html");
+			const root = resolve(project.path);
+			const target = resolve(root, requested);
+			const inside = relative(root, target);
+			if (
+				!inside ||
+				isAbsolute(inside) ||
+				inside === ".." ||
+				inside.startsWith(`..${sep}`)
+			)
+				throw new Error("Publish path must stay inside the project");
+			await mkdir(dirname(target), { recursive: true });
+			await writeFile(target, `${node.html}\n`, "utf8");
+			return c.json({ published: true, path: inside.split(sep).join("/") });
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.delete("/api/designs/:id", async (c) => {
+		try {
+			await designs.remove(c.req.param("id"));
+			return c.body(null, 204);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.delete("/api/projects/:projectId/designs", async (c) => {
+		try {
+			await designs.clear(c.req.param("projectId"));
+			return c.body(null, 204);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
 	});
 	app.get("/api/automation/settings", async (c) => {
 		try {
@@ -906,9 +1216,31 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		return next();
 	});
 	app.notFound((c) => {
-		if (options.staticAssets && ["GET", "HEAD"].includes(c.req.method) && !/^\/(api|rpc|api-reference)(\/|$)/.test(c.req.path)) {
-			const asset = options.staticAssets[c.req.path] ?? (c.req.header("Accept")?.includes("text/html") ? options.staticAssets["/index.html"] : undefined);
-			if (asset) return new Response(c.req.method === "HEAD" ? null : Buffer.from(asset.body, "base64"), { headers: { "Content-Type": asset.type, "X-Content-Type-Options": "nosniff", "Cache-Control": c.req.path.includes("/immutable/") ? "public, max-age=31536000, immutable" : "no-cache", "Content-Security-Policy": "frame-ancestors 'none'; base-uri 'self'; object-src 'none'" } });
+		if (
+			options.staticAssets &&
+			["GET", "HEAD"].includes(c.req.method) &&
+			!/^\/(api|rpc|api-reference)(\/|$)/.test(c.req.path)
+		) {
+			const asset =
+				options.staticAssets[c.req.path] ??
+				(c.req.header("Accept")?.includes("text/html")
+					? options.staticAssets["/index.html"]
+					: undefined);
+			if (asset)
+				return new Response(
+					c.req.method === "HEAD" ? null : Buffer.from(asset.body, "base64"),
+					{
+						headers: {
+							"Content-Type": asset.type,
+							"X-Content-Type-Options": "nosniff",
+							"Cache-Control": c.req.path.includes("/immutable/")
+								? "public, max-age=31536000, immutable"
+								: "no-cache",
+							"Content-Security-Policy":
+								"frame-ancestors 'none'; base-uri 'self'; object-src 'none'",
+						},
+					},
+				);
 		}
 		return errorResponse(c, new Error("Route not found"));
 	});

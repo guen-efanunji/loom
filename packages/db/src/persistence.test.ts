@@ -48,6 +48,8 @@ test("bootstraps an empty database and is idempotent", async () => {
 			"account",
 			"agent_runs",
 			"audit_events",
+			"design_messages",
+			"design_nodes",
 			"epic_tasks",
 			"epics",
 			"integration_runs",

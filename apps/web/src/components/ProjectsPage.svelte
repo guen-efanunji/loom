@@ -15,8 +15,8 @@ import {
 	Settings,
 	ShieldCheck,
 	Sparkles,
-	TriangleAlert,
 	Trash2,
+	TriangleAlert,
 	X,
 } from "@lucide/svelte";
 import { onMount, tick } from "svelte";
@@ -44,8 +44,8 @@ import Composer from "./chat/Composer.svelte";
 import PlanCard from "./chat/PlanCard.svelte";
 import QuestionCard from "./chat/QuestionCard.svelte";
 import Turn from "./chat/Turn.svelte";
+import DesignCanvas from "./DesignCanvas.svelte";
 import KanbanBoard from "./KanbanBoard.svelte";
-import ProgressBoard from "./ProgressBoard.svelte";
 
 let projects = $state<Project[]>([]);
 let sessions = $state<ChatSession[]>([]);
@@ -70,10 +70,13 @@ let renameTitle = $state("");
 let renameTarget = $state("");
 let deleteTarget = $state<ChatSession | null>(null);
 let deleteSessionOpen = $state(false);
-type ViewMode = "chat" | "kanban" | "progress";
+type ViewMode = "chat" | "kanban" | "canvas";
 function initialView(): ViewMode {
 	const view = page.url.searchParams.get("view");
-	return view === "kanban" || view === "progress" ? view : "chat";
+	if (view === "kanban") return "kanban";
+	// "progress" was the old task board view; it now opens the design canvas.
+	if (view === "canvas" || view === "progress") return "canvas";
+	return "chat";
 }
 let viewMode = $state<ViewMode>(initialView());
 let draft = $state("");
@@ -360,7 +363,8 @@ onMount(() => {
 		try {
 			await refreshProjects();
 			const sourceProject = page.url.searchParams.get("project");
-			if (sourceProject && projects.some(p => p.id === sourceProject)) selectedProjectId = sourceProject;
+			if (sourceProject && projects.some((p) => p.id === sourceProject))
+				selectedProjectId = sourceProject;
 			legacyTasks = await daemon.listTasks();
 			model = preferredModel(selectedProjectId);
 			composerMode = preferredComposerMode(selectedProjectId);
@@ -397,7 +401,10 @@ async function openSession(id: string) {
 	await goto(homeUrl(id));
 }
 async function newSession(projectId = selectedProjectId) {
+	const switchingProject = projectId !== selectedProjectId;
+	if (switchingProject) planCards = [];
 	selectedProjectId = projectId;
+	planCards = planCards.filter((card) => card.projectId === projectId);
 	draft = "";
 	model = preferredModel(projectId);
 	composerMode = preferredComposerMode(projectId);
@@ -519,8 +526,10 @@ async function refreshPlanCard(card: ChatPlanCard) {
 		card.title = detail.plan.title;
 		card.summary = detail.plan.summary;
 		card.converted = !!detail.plan.convertedAt;
-		card.taskIds = detail.tasks.map(t => t.id);
-		card.started = detail.tasks.filter(t => ["preparing", "running", "completed"].includes(t.status)).map(t => t.id);
+		card.taskIds = detail.tasks.map((t) => t.id);
+		card.started = detail.tasks
+			.filter((t) => ["preparing", "running", "completed"].includes(t.status))
+			.map((t) => t.id);
 	} catch (reason) {
 		report(reason);
 	}
@@ -530,20 +539,60 @@ let lastPlanRefresh = 0;
 let plansProject = "";
 async function restorePlanCards() {
 	const projectId = selectedProjectId;
-	if (!projectId || (plansProject === projectId && Date.now() - lastPlanRefresh < 3000)) return;
+	if (
+		!projectId ||
+		(plansProject === projectId && Date.now() - lastPlanRefresh < 3000)
+	)
+		return;
+	if (plansProject !== projectId)
+		planCards = planCards.filter((card) => card.projectId === projectId);
 	plansProject = projectId;
 	lastPlanRefresh = Date.now();
 	const plans = await daemon.listPlans(projectId);
 	if (disposed || selectedProjectId !== projectId) return;
 	for (const plan of plans) {
-		let card = planCards.find(item => item.planId === plan.id);
+		// Failed plans are noise: they are never restored into a fresh chat.
+		if (
+			plan.status === "failed" &&
+			!planCards.some((item) => item.planId === plan.id)
+		)
+			continue;
+		let card = planCards.find((item) => item.planId === plan.id);
 		if (!card) {
-			planCards = [...planCards, { key: plan.id, planId: plan.id, projectId, brief: plan.sourceMessage, status: plan.status, title: plan.title, summary: plan.summary, total: 0, independent: 0, dependent: 0, taskIds: [], converted: !!plan.convertedAt, started: [], error: plan.errorMessage || "" }];
-			card = planCards.find(item => item.planId === plan.id);
+			planCards = [
+				...planCards,
+				{
+					key: plan.id,
+					planId: plan.id,
+					projectId,
+					brief: plan.sourceMessage,
+					status: plan.status,
+					title: plan.title,
+					summary: plan.summary,
+					total: 0,
+					independent: 0,
+					dependent: 0,
+					taskIds: [],
+					converted: !!plan.convertedAt,
+					started: [],
+					error: plan.errorMessage || "",
+				},
+			];
+			card = planCards.find((item) => item.planId === plan.id);
 		}
 		if (card) {
 			const detail = await daemon.getPlanDetail(plan.id);
-			Object.assign(card, { status: plan.status, title: plan.title, summary: plan.summary, total: detail.draft.length, independent: detail.draft.filter(t => !t.dependencies.length).length, dependent: detail.draft.filter(t => t.dependencies.length).length, converted: !!plan.convertedAt, taskIds: detail.tasks.map(t => t.id), error: plan.errorMessage || "" });
+			Object.assign(card, {
+				status: plan.status,
+				title: plan.title,
+				summary: plan.summary,
+				total: detail.draft.length,
+				independent: detail.draft.filter((t) => !t.dependencies.length).length,
+				dependent: detail.draft.filter((t) => t.dependencies.length).length,
+				converted: !!plan.convertedAt,
+				taskIds: detail.tasks.map((t) => t.id),
+				error: plan.errorMessage || "",
+			});
 		}
 	}
 }
@@ -804,8 +853,8 @@ async function answer(requestId: string, answers: string[][]) {
   <main class="flex min-w-0 flex-1 flex-col">
     <header class="flex h-14 shrink-0 items-center gap-3 border-b px-4">
       {#if !sidebarOpen}<Button variant="ghost" size="icon" aria-label="Open sidebar" onclick={() => sidebarOpen = true}><PanelLeft size={16} /></Button>{/if}
-      <div class="min-w-0 flex-1"><p class="truncate text-sm font-medium">{viewMode === "chat" ? (conversation?.session.title ?? "New session") : `${viewMode === "kanban" ? "Tasks" : "Progress"} · ${selectedProject?.name ?? "No project"}`}</p>{#if selectedProject}<p class="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground"><span class="truncate">{selectedProject.name}</span><GitBranch size={11} />{selectedProject.defaultBranch}</p>{/if}</div>
-      <Tabs.Root bind:value={viewMode} onValueChange={(value) => syncViewParam(value as ViewMode)} aria-label="Workspace mode"><Tabs.List class="h-8"><Tabs.Trigger value="chat" class="h-6 px-3 text-xs">Chat</Tabs.Trigger><Tabs.Trigger value="kanban" class="h-6 px-3 text-xs">Kanban</Tabs.Trigger><Tabs.Trigger value="progress" class="h-6 px-3 text-xs">Progress</Tabs.Trigger></Tabs.List></Tabs.Root>
+      <div class="min-w-0 flex-1"><p class="truncate text-sm font-medium">{viewMode === "chat" ? (conversation?.session.title ?? "New session") : `${viewMode === "kanban" ? "Tasks" : "Design canvas"} · ${selectedProject?.name ?? "No project"}`}</p>{#if selectedProject}<p class="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground"><span class="truncate">{selectedProject.name}</span><GitBranch size={11} />{selectedProject.defaultBranch}</p>{/if}</div>
+      <Tabs.Root bind:value={viewMode} onValueChange={(value) => syncViewParam(value as ViewMode)} aria-label="Workspace mode"><Tabs.List class="h-8"><Tabs.Trigger value="chat" class="h-6 px-3 text-xs">Chat</Tabs.Trigger><Tabs.Trigger value="kanban" class="h-6 px-3 text-xs">Kanban</Tabs.Trigger><Tabs.Trigger value="canvas" class="h-6 px-3 text-xs">Canvas</Tabs.Trigger></Tabs.List></Tabs.Root>
       {#if sessionId && viewMode === "chat"}<Button variant="ghost" size="icon" title="Rename session" aria-label="Rename session" onclick={() => openRename(sessionId, conversation?.session.title ?? "")}><Pencil size={15} /></Button><Button variant="outline" size="sm" onclick={() => showFiles()}><FileCode size={14} /><span class="hidden sm:inline">Changes</span></Button>{/if}
     </header>
     {#if viewMode === "kanban"}
@@ -816,10 +865,14 @@ async function answer(requestId: string, answers: string[][]) {
           <KanbanBoard projectId={selectedProjectId} tasks={legacyTasks.filter((task) => task.projectId === selectedProjectId)} onChanged={refreshBoard} />
         {/if}
       </div>
-    {:else if viewMode === "progress"}
-      <div class="min-h-0 flex-1 overflow-y-auto px-5 py-5">
-          <ProgressBoard projectId={selectedProjectId} tasks={selectedProjectId ? legacyTasks.filter((task) => task.projectId === selectedProjectId) : legacyTasks} onChanged={refreshBoard} />
-      </div>
+    {:else if viewMode === "canvas"}
+      {#if !selectedProjectId}
+        <div class="min-h-0 flex-1 overflow-y-auto px-5 py-5">
+          <p class="py-12 text-center text-sm text-muted-foreground">Add a project to start designing on the canvas.</p>
+        </div>
+      {:else}
+        <DesignCanvas projectId={selectedProjectId} projectName={selectedProject?.name ?? ""} {catalog} />
+      {/if}
     {:else}
     {#if noModels}<div role="alert" class="flex shrink-0 flex-wrap items-center gap-3 border-b border-amber-500/30 bg-amber-500/10 px-5 py-3 text-sm text-amber-200"><TriangleAlert size={16} class="shrink-0 text-amber-300" /><p class="min-w-0 flex-1">Connected, but no models are configured in OpenCode. Add a provider (for example, run <code class="rounded bg-black/30 px-1 py-0.5 text-xs">opencode auth login</code>), then restart the daemon.</p><Button variant="outline" size="sm" onclick={reloadModels}><RefreshCw size={13} />Reload models</Button></div>{/if}
     <div bind:this={scroller} onscroll={(event) => { const node = event.currentTarget; follow = node.scrollHeight - node.scrollTop - node.clientHeight < 100; }} class="nice-scroll min-h-0 flex-1 overflow-y-auto">
