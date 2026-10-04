@@ -747,8 +747,16 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		});
 	});
 	app.post("/api/providers/:id/disconnect", async (c) => {
-		await providerManager.disconnect(c.req.param("id"));
-		return c.json({ disconnected: true });
+		const providerId = providerManager.normalizeProviderId(c.req.param("id"));
+		const connection = await providerManager.disconnect(providerId);
+		return c.json({
+			disconnected: true,
+			connection: connection ?? {
+				id: `${providerId}:local`,
+				providerId,
+				status: "disconnected",
+			},
+		});
 	});
 	app.post("/api/providers/:id/refresh", async (c) =>
 		c.json(await providerManager.refresh(c.req.param("id"))),

@@ -70,6 +70,31 @@ describe("provider core", () => {
 		).toBe("Model");
 	});
 
+	test("accepts provider and local connection IDs for manager operations", async () => {
+		const disconnects: string[] = [];
+		const registry = new ProviderRegistry().register(
+			adapter({
+				disconnect: async () => {
+					disconnects.push("fixture");
+				},
+			}),
+		);
+		const manager = new ProviderManager({ registry });
+
+		await expect(manager.refresh("fixture:local")).resolves.toMatchObject({
+			providerId: "fixture",
+			id: "fixture:local",
+			status: "connected",
+		});
+		expect(manager.getModels("fixture:local")).toEqual([]);
+		await expect(manager.disconnect("fixture:local")).resolves.toMatchObject({
+			providerId: "fixture",
+			id: "fixture:local",
+			status: "disconnected",
+		});
+		expect(disconnects).toEqual(["fixture"]);
+	});
+
 	test("isolates detection failures", async () => {
 		const broken: CliProviderAdapter = {
 			...adapter(),

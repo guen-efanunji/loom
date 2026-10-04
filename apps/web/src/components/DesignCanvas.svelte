@@ -19,6 +19,7 @@ import {
 import { onDestroy, onMount, tick } from "svelte";
 import { toast } from "svelte-sonner";
 import type { Catalog } from "$lib/chat";
+import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
 import { Badge } from "$lib/components/ui/badge";
 import { Button } from "$lib/components/ui/button";
 import * as Dialog from "$lib/components/ui/dialog";
@@ -53,6 +54,8 @@ let panX = $state(48);
 let panY = $state(48);
 let theme = $state<"light" | "dark">("light");
 let previewNode = $state<DesignNode | null>(null);
+let deleteTarget = $state<DesignNode | null>(null);
+let deleteOpen = $state(false);
 let publishing = $state(false);
 let previewOpen = $state(false);
 let sending = $state(false);
@@ -261,10 +264,22 @@ async function retry(node: DesignNode) {
 	}
 }
 
-async function remove(node: DesignNode) {
+function askRemove(node: DesignNode) {
+	deleteTarget = node;
+	deleteOpen = true;
+}
+
+async function remove(node: DesignNode | null = deleteTarget) {
+	if (!node) return;
+	deleteOpen = false;
+	deleteTarget = null;
 	try {
 		await daemon.deleteDesign(node.id);
 		if (selectedId === node.id) selectedId = "";
+		if (previewNode?.id === node.id) {
+			previewNode = null;
+			previewOpen = false;
+		}
 		await load();
 		toast.success("Design removed");
 	} catch (reason) {
@@ -509,7 +524,7 @@ function wheel(event: WheelEvent) {
 										<p class="line-clamp-3 text-[11px] text-destructive">{node.errorMessage ?? "Generation failed"}</p>
 										<div class="flex gap-1">
 											<Button size="sm" variant="outline" class="h-6 text-[11px]" onclick={(event) => { event.stopPropagation(); void retry(node); }}><RefreshCw size={11} />Retry</Button>
-											<Button size="sm" variant="ghost" class="h-6 text-[11px]" onclick={(event) => { event.stopPropagation(); void remove(node); }}><Trash2 size={11} />Delete</Button>
+											<Button size="sm" variant="ghost" class="h-6 text-[11px]" onclick={(event) => { event.stopPropagation(); askRemove(node); }}><Trash2 size={11} />Delete</Button>
 										</div>
 									</div>
 								{:else}
@@ -534,7 +549,7 @@ function wheel(event: WheelEvent) {
 				<div class="absolute top-3 right-3 flex items-center gap-1 rounded-lg border bg-card/90 p-1 shadow backdrop-blur">
 					<Button variant="ghost" size="sm" class="h-7 text-[11px]" onclick={openPreview}><Monitor size={12} />Open preview</Button>
 					{#if selected}<Button variant="ghost" size="icon" class="size-7" aria-label="Retry design" title="Retry design" onclick={() => selected && void retry(selected)}><RefreshCw size={13} /></Button>
-					<Button variant="ghost" size="icon" class="size-7 text-destructive" aria-label="Delete design" title="Delete design" onclick={() => selected && void remove(selected)}><Trash2 size={13} /></Button>{/if}
+					<Button variant="ghost" size="icon" class="size-7 text-destructive" aria-label="Delete design" title="Delete design" onclick={() => selected && askRemove(selected)}><Trash2 size={13} /></Button>{/if}
 				</div>
 			{/if}
 		</div>
@@ -619,3 +634,16 @@ function wheel(event: WheelEvent) {
 		{/if}
 	</Dialog.Content>
 </Dialog.Root>
+
+<AlertDialog.Root bind:open={deleteOpen}>
+	<AlertDialog.Content>
+		<AlertDialog.Header>
+			<AlertDialog.Title>Delete design?</AlertDialog.Title>
+			<AlertDialog.Description>“{deleteTarget?.title}” and its design agent messages will be removed permanently.</AlertDialog.Description>
+		</AlertDialog.Header>
+		<AlertDialog.Footer>
+			<AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
+			<AlertDialog.Action variant="destructive" onclick={() => void remove()}>Delete design</AlertDialog.Action>
+		</AlertDialog.Footer>
+	</AlertDialog.Content>
+</AlertDialog.Root>

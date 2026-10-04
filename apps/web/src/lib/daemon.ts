@@ -245,9 +245,15 @@ export const daemon = {
 			command?: string[];
 		}>(`/api/providers/${id}/connect`, { method: "POST" }),
 	disconnectProvider: (id: string) =>
-		request(`/api/providers/${id}/disconnect`, { method: "POST" }),
+		request<{ disconnected: boolean }>(`/api/providers/${id}/disconnect`, {
+			method: "POST",
+		}),
 	refreshProvider: (id: string) =>
-		request(`/api/providers/${id}/refresh`, { method: "POST" }),
+		request<{
+			id: string;
+			providerId: string;
+			status: string;
+		}>(`/api/providers/${id}/refresh`, { method: "POST" }),
 	listModels: () =>
 		request<
 			Array<{

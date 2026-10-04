@@ -105,8 +105,12 @@ export function designRepository(db: Database) {
 				.where(eq(designNodes.id, id))
 				.returning();
 		},
-		deleteNode(id: string) {
-			return db.delete(designNodes).where(eq(designNodes.id, id));
+		async deleteNode(id: string) {
+			await db
+				.delete(designMessages)
+				.where(eq(designMessages.nodeId, id))
+				.run();
+			await db.delete(designNodes).where(eq(designNodes.id, id)).run();
 		},
 		async addMessage(input: {
 			id?: string;

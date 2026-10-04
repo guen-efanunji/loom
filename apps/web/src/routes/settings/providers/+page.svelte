@@ -46,31 +46,39 @@ async function checkProviders() {
 }
 
 async function connect(provider: Provider) {
-	const result = await daemon.connectProvider(provider.id);
-	if (result.connected) {
+	try {
+		const result = await daemon.connectProvider(provider.id);
 		await checkProviders();
-		toast.success(
-			result.configured === false
-				? `${provider.name} connected; add a model provider to continue`
-				: `${provider.name} is connected`,
+		if (result.connected) {
+			toast.success(
+				result.configured === false
+					? `${provider.name} connected; add a model provider to continue`
+					: `${provider.name} is connected`,
+			);
+			return;
+		}
+		if (result.launched) {
+			toast.success(`${provider.name} connection started`);
+			return;
+		}
+		if (result.command) {
+			const command = Array.isArray(result.command)
+				? result.command.join(" ")
+				: result.command;
+			await copyCommand(command);
+			toast.info(`Run ${command} in a terminal`);
+			return;
+		}
+		if (provider.install)
+			window.open(provider.install, "_blank", "noopener,noreferrer");
+		toast.info(`Install ${provider.name}, then return here and re-check`);
+	} catch (reason) {
+		toast.error(
+			reason instanceof Error
+				? reason.message
+				: `Unable to connect ${provider.name}`,
 		);
-		return;
 	}
-	if (result.launched) {
-		toast.success(`${provider.name} connection started`);
-		return;
-	}
-	if (result.command) {
-		const command = Array.isArray(result.command)
-			? result.command.join(" ")
-			: result.command;
-		await copyCommand(command);
-		toast.info(`Run ${command} in a terminal`);
-		return;
-	}
-	if (provider.install)
-		window.open(provider.install, "_blank", "noopener,noreferrer");
-	toast.info(`Install ${provider.name}, then return here and re-check`);
 }
 
 async function disconnect(provider: Provider) {

@@ -58,12 +58,6 @@ export function buildDesignPrompt(input: {
 	lines.push(
 		"",
 		"Craft requirements:",
-		"- Ship-quality UI, not a wireframe: real copy, realistic data, clear hierarchy, generous spacing, one consistent 8px spacing scale.",
-		"- Accessible contrast, visible :focus states, semantic HTML, labelled form controls, alt/aria text for iconography.",
-		"- Hover / active / disabled states for every interactive element.",
-		"- Keep visible copy in the same language the brief is written in.",
-		"- If the brief implies several screens (for example login and register), render them as separate sections or a tabbed flow inside this one document.",
-		"",
 		OUTPUT_RULES,
 	);
 	return lines.join("\n");

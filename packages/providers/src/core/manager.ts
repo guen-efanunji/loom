@@ -33,12 +33,25 @@ export class ProviderManager {
 		return [...this.connections.values()];
 	}
 
-	get(providerId: string): ProviderConnection | undefined {
+	get(providerIdOrConnectionId: string): ProviderConnection | undefined {
+		const providerId = this.normalizeProviderId(providerIdOrConnectionId);
 		return this.connections.get(connectionId(providerId));
 	}
 
 	getByConnectionId(id: string): ProviderConnection | undefined {
 		return this.connections.get(id);
+	}
+
+	normalizeProviderId(providerIdOrConnectionId: string): string {
+		if (this.registry.get(providerIdOrConnectionId))
+			return providerIdOrConnectionId;
+		const adapter = this.registry
+			.list()
+			.find(
+				(item) => connectionId(item.definition.id) === providerIdOrConnectionId,
+			);
+		if (adapter) return adapter.definition.id;
+		return this.registry.require(providerIdOrConnectionId).definition.id;
 	}
 
 	async refreshAll(): Promise<ProviderConnection[]> {
@@ -58,7 +71,8 @@ export class ProviderManager {
 		});
 	}
 
-	async refresh(providerId: string): Promise<ProviderConnection> {
+	async refresh(providerIdOrConnectionId: string): Promise<ProviderConnection> {
+		const providerId = this.normalizeProviderId(providerIdOrConnectionId);
 		const adapter = this.registry.require(providerId);
 		this.setConnection(providerId, { status: "checking", error: undefined });
 		try {
@@ -97,9 +111,10 @@ export class ProviderManager {
 	}
 
 	async connect(
-		providerId: string,
+		providerIdOrConnectionId: string,
 		input?: { cwd?: string },
 	): Promise<ProviderConnection> {
+		const providerId = this.normalizeProviderId(providerIdOrConnectionId);
 		const adapter = this.registry.require(providerId);
 		this.setConnection(providerId, { status: "checking", error: undefined });
 		try {
@@ -139,21 +154,29 @@ export class ProviderManager {
 		}
 	}
 
-	async disconnect(providerId: string): Promise<void> {
+	async disconnect(
+		providerIdOrConnectionId: string,
+	): Promise<ProviderConnection | undefined> {
+		const providerId = this.normalizeProviderId(providerIdOrConnectionId);
 		const adapter = this.registry.require(providerId);
 		await adapter.disconnect();
 		const current = this.get(providerId);
 		this.catalog.replaceConnection(connectionId(providerId), []);
-		if (current)
-			this.connections.set(current.id, {
+		let disconnected: ProviderConnection | undefined;
+		if (current) {
+			disconnected = {
 				...current,
 				status: "disconnected",
 				authenticated: false,
-			});
+			};
+			this.connections.set(current.id, disconnected);
+		}
 		await this.emit({ type: "provider.disconnected", providerId });
+		return disconnected;
 	}
 
-	async refreshModels(providerId: string): Promise<AgentModel[]> {
+	async refreshModels(providerIdOrConnectionId: string): Promise<AgentModel[]> {
+		const providerId = this.normalizeProviderId(providerIdOrConnectionId);
 		const adapter = this.registry.require(providerId);
 		const connection = this.get(providerId);
 		if (connection?.status !== "connected") {
@@ -167,9 +190,11 @@ export class ProviderManager {
 		return models;
 	}
 
-	getModels(providerId?: string): AgentModel[] {
-		return providerId
-			? this.catalog.listByProvider(providerId)
+	getModels(providerIdOrConnectionId?: string): AgentModel[] {
+		return providerIdOrConnectionId
+			? this.catalog.listByProvider(
+					this.normalizeProviderId(providerIdOrConnectionId),
+				)
 			: this.catalog.listAvailable();
 	}
 

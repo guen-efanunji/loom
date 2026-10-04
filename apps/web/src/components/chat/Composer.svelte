@@ -2,8 +2,10 @@
 import {
 	ArrowUp,
 	Bot,
+	Camera,
 	ChevronDown,
 	File,
+	Image,
 	LoaderCircle,
 	Paperclip,
 	Square,
@@ -46,6 +48,8 @@ let {
 } = $props();
 let textarea = $state<HTMLTextAreaElement | null>(null);
 let files = $state<string[]>([]);
+let attachments = $state<File[]>([]);
+let attachmentInput = $state<HTMLInputElement | null>(null);
 let agents = $state<string[]>([]);
 let modelOpen = $state(false);
 let query = $state<string | null>(null);
@@ -74,6 +78,7 @@ $effect(() => {
 	if (projectId !== previousProject) {
 		previousProject = projectId;
 		files = [];
+		attachments = [];
 		agents = [];
 		query = null;
 	}
@@ -121,6 +126,16 @@ async function choose(item: { value: string; type: string }) {
 	textarea?.focus();
 	textarea?.setSelectionRange(mentionStart, mentionStart);
 }
+function addAttachments(event: Event) {
+	const input = event.currentTarget as HTMLInputElement;
+	attachments = [...attachments, ...Array.from(input.files ?? [])].slice(0, 10);
+	input.value = "";
+}
+
+function removeAttachment(file: File) {
+	attachments = attachments.filter((item) => item !== file);
+}
+
 async function attach() {
 	if (!textarea) return;
 	textarea.focus();
@@ -134,13 +149,13 @@ async function attach() {
 	input();
 }
 async function send() {
-	if (sending || busy || disabled || (!draft.trim() && !files.length)) return;
+	if (sending || busy || disabled || (!draft.trim() && !files.length && !attachments.length)) return;
 	sending = true;
 	query = null;
 	try {
 		const ok = await onsend({
 			text: draft.trim(),
-			files,
+			files: [...files, ...attachments.map((file) => file.name)],
 			agents,
 			agent,
 			model: selectedModel
@@ -153,6 +168,7 @@ async function send() {
 		if (ok) {
 			draft = "";
 			files = [];
+			attachments = [];
 			agents = [];
 		}
 	} finally {
@@ -207,16 +223,18 @@ function keydown(event: KeyboardEvent) {
       </div>
     </div>
   {/if}
-  {#if files.length || agents.length}<div class="flex flex-wrap gap-1 px-3 pt-3">
+  {#if files.length || agents.length || attachments.length}<div class="flex flex-wrap gap-1 px-3 pt-3">
     {#each files as file}<Button variant="secondary" size="sm" class="max-w-full text-xs" onclick={() => files = files.filter((f) => f !== file)} title={`Remove ${file}`} aria-label={`Remove ${file}`}><File size={12} /><span class="truncate">{file}</span><X size={12} /></Button>{/each}
     {#each agents as name}<Button variant="secondary" size="sm" class="text-xs" onclick={() => agents = agents.filter((a) => a !== name)} title={`Remove ${name}`}><Bot size={12} />{name}<X size={12} /></Button>{/each}
+     {#each attachments as file}<Button variant="secondary" size="sm" class="max-w-full text-xs" onclick={() => removeAttachment(file)} title={`Remove ${file.name}`} aria-label={`Remove ${file.name}`}><Image size={12} /><span class="truncate">{file.name}</span><X size={12} /></Button>{/each}
   </div>{/if}
-  <Textarea bind:ref={textarea} bind:value={draft} oninput={input} onclick={input} onkeydown={keydown} aria-label="Message OpenCode" aria-controls={query !== null ? "mention-list" : undefined} aria-activedescendant={query !== null ? `mention-${active}` : undefined} placeholder="Ask anything… @ for files and agents" rows={3} class="max-h-56 min-h-24 resize-none border-0 bg-transparent p-4 text-sm shadow-none focus-visible:ring-0" disabled={disabled || sending} />
+  <input bind:this={attachmentInput} type="file" accept="image/*,.txt,.md,.json,.ts,.tsx,.js,.jsx,.css,.html,.pdf" multiple onchange={addAttachments} class="sr-only" aria-label="Attach files or images" />
+   <Textarea bind:ref={textarea} bind:value={draft} oninput={input} onclick={input} onkeydown={keydown} aria-label="Message agent" aria-controls={query !== null ? "mention-list" : undefined} aria-activedescendant={query !== null ? `mention-${active}` : undefined} placeholder="Ask anything… @ for files and agents" rows={3} class="max-h-56 min-h-24 resize-none border-0 bg-transparent p-4 text-sm shadow-none focus-visible:ring-0" disabled={disabled || sending} />
   <div class="flex flex-wrap items-center justify-between gap-2 px-3 pb-3">
-    <Button variant="ghost" size="icon" title="Attach project file" aria-label="Attach project file" disabled={!projectId || sending} onclick={attach}><Paperclip size={16} /></Button>
+     <div class="flex items-center gap-1"><Button variant="ghost" size="icon" title="Attach files or photos" aria-label="Attach files or photos" disabled={sending} onclick={() => attachmentInput?.click()}><Paperclip size={16} /></Button><Button variant="ghost" size="icon" title="Mention project files or agents" aria-label="Mention project files or agents" disabled={!projectId || sending} onclick={attach}><Camera size={16} /></Button></div>
     <div class="flex min-w-0 items-center gap-1">
       <Popover.Root bind:open={modelOpen}><Popover.Trigger class="flex max-w-44 items-center gap-1 rounded-md px-2 py-1.5 text-xs hover:bg-accent" aria-label="Select model"><span class="truncate">{selectedModel?.name ?? "Default model"}</span><ChevronDown size={12} /></Popover.Trigger>
-        <Popover.Content class="w-80 p-0" align="end"><Command.Root><Command.Input placeholder="Search models…" /><Command.List><Command.Empty>No configured models found.</Command.Empty><Command.Group heading="Models"><Command.Item value="default" onSelect={() => { model = ""; modelOpen = false; }}>Default model</Command.Item>{#each catalog.models as item}<Command.Item value={`${item.providerID}/${item.modelID} ${item.name}`} onSelect={() => { model = `${item.providerID}/${item.modelID}`; modelOpen = false; }}><div><p>{item.name}</p><p class="text-xs text-muted-foreground">{item.provider}</p></div></Command.Item>{/each}</Command.Group></Command.List></Command.Root></Popover.Content>
+        <Popover.Content class="w-80 p-0" align="end"><Command.Root><Command.Input placeholder="Search models…" /><Command.List><Command.Empty>No configured models found.</Command.Empty><Command.Group heading="Models"><Command.Item value="default" onSelect={() => { model = ""; modelOpen = false; }}>Default model</Command.Item>{#each catalog.models as item}<Command.Item value={`${item.providerID}/${item.modelID} ${item.name}`} onSelect={() => { model = `${item.providerID}/${item.modelID}`; modelOpen = false; }}><div><p>{item.name}</p><p class="text-xs text-muted-foreground">{item.provider} · {item.providerId ?? item.providerID}{item.connectionId ? ` · ${item.connectionId}` : ""}</p></div></Command.Item>{/each}</Command.Group></Command.List></Command.Root></Popover.Content>
       </Popover.Root>
 
       <Select.Root type="single" bind:value={agent}><Select.Trigger class="h-8 w-auto border-0 text-xs shadow-none" aria-label="Select agent">{agent}</Select.Trigger><Select.Content>{#each catalog.agents.filter((a) => a.mode !== "subagent") as item}<Select.Item value={item.name}>{item.name}</Select.Item>{/each}</Select.Content></Select.Root>

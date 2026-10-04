@@ -137,6 +137,62 @@ describe("server API", () => {
 		}
 	});
 
+	test("normalizes provider and local connection IDs in provider routes", async () => {
+		const setup = await createTestSetup();
+		try {
+			const headers = { Authorization: "Bearer test-token" };
+			const refresh = await setup.daemon.app.request(
+				"/api/providers/opencode:local/refresh",
+				{ method: "POST", headers },
+			);
+			expect(refresh.status).toBe(200);
+			const refreshed = (await refresh.json()) as {
+				providerId: string;
+				id: string;
+			};
+			expect(refreshed.providerId).toBe("opencode");
+			expect(refreshed.id).toBe("opencode:local");
+
+			const models = await setup.daemon.app.request(
+				"/api/providers/opencode:local/models",
+				{ headers },
+			);
+			expect(models.status).toBe(200);
+			const modelList = (await models.json()) as Array<{
+				providerId: string;
+				connectionId: string;
+			}>;
+			expect(
+				modelList.every(
+					(model) =>
+						model.providerId === "opencode" &&
+						model.connectionId === "opencode:local",
+				),
+			).toBe(true);
+
+			const disconnected = await setup.daemon.app.request(
+				"/api/providers/opencode:local/disconnect",
+				{ method: "POST", headers },
+			);
+			expect(disconnected.status).toBe(200);
+			expect(
+				(await disconnected.json()) as {
+					connection: { providerId: string; id: string; status: string };
+				},
+			).toMatchObject({
+				connection: {
+					providerId: "opencode",
+					id: "opencode:local",
+					status: "disconnected",
+				},
+			});
+		} finally {
+			await setup.daemon.close();
+			await rm(setup.root, { recursive: true, force: true });
+			await rm(setup.home, { recursive: true, force: true });
+		}
+	});
+
 	test("validates project CRUD and task input", async () => {
 		const setup = await createTestSetup();
 		const headers = {

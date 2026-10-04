@@ -43,7 +43,6 @@ import AddProjectForm from "./AddProjectForm.svelte";
 import Composer from "./chat/Composer.svelte";
 import QuestionCard from "./chat/QuestionCard.svelte";
 import Turn from "./chat/Turn.svelte";
-import DesignCanvas from "./DesignCanvas.svelte";
 import KanbanBoard from "./KanbanBoard.svelte";
 
 let projects = $state<Project[]>([]);
@@ -69,13 +68,9 @@ let renameTitle = $state("");
 let renameTarget = $state("");
 let deleteTarget = $state<ChatSession | null>(null);
 let deleteSessionOpen = $state(false);
-type ViewMode = "chat" | "kanban" | "canvas";
+type ViewMode = "chat" | "kanban";
 function initialView(): ViewMode {
-	const view = page.url.searchParams.get("view");
-	if (view === "kanban") return "kanban";
-	// "progress" was the old task board view; it now opens the design canvas.
-	if (view === "canvas" || view === "progress") return "canvas";
-	return "chat";
+	return page.url.searchParams.get("view") === "kanban" ? "kanban" : "chat";
 }
 let viewMode = $state<ViewMode>(initialView());
 let draft = $state("");
@@ -578,7 +573,7 @@ async function answer(requestId: string, answers: string[][]) {
         {#if !filteredSessions.length}<p class="px-2 py-2 text-xs text-muted-foreground">{search ? "No matching conversations." : "Your conversations will appear here."}</p>{/if}
         {#each projects as project}
           {@const selected = project.id === selectedProjectId}
-          <section class="mt-5"><div class={`flex items-center rounded-md ${selected ? "bg-accent/40" : ""}`}><Button variant="ghost" size="icon" class="size-6" aria-label={`Toggle ${project.name}`} aria-expanded={!collapsed.includes(project.id)} onclick={() => collapsed = collapsed.includes(project.id) ? collapsed.filter((id) => id !== project.id) : [...collapsed, project.id]}><ChevronDown size={13} class={collapsed.includes(project.id) ? "-rotate-90" : ""} /></Button><Button variant="ghost" class="h-8 min-w-0 flex-1 justify-start bg-transparent px-1 text-xs font-medium hover:bg-transparent" onclick={() => newSession(project.id)}><Folder size={14} class="text-teal-400" /><span class="truncate">{project.name}</span></Button><Button href={`/project/${project.id}`} variant="ghost" size="icon" class="size-6" aria-label={`Settings for ${project.name}`} title="Project tasks and settings"><Settings size={12} /></Button></div>
+          <section class="mt-5"><div class={`flex items-center rounded-md ${selected ? "bg-accent/40" : ""}`}><Button variant="ghost" size="icon" class="size-6" aria-label={`Toggle ${project.name}`} aria-expanded={!collapsed.includes(project.id)} onclick={() => collapsed = collapsed.includes(project.id) ? collapsed.filter((id) => id !== project.id) : [...collapsed, project.id]}><ChevronDown size={13} class={collapsed.includes(project.id) ? "-rotate-90" : ""} /></Button><Button variant="ghost" class="h-8 min-w-0 flex-1 justify-start bg-transparent px-1 text-xs font-medium hover:bg-transparent" onclick={() => newSession(project.id)}><Folder size={14} class="text-teal-400" /><span class="truncate">{project.name}</span></Button><Button href={`/project/${project.id}/canvas`} variant="ghost" size="icon" class="size-6" aria-label={`Open canvas for ${project.name}`} title="Design canvas"><Sparkles size={12} /></Button><Button href={`/project/${project.id}`} variant="ghost" size="icon" class="size-6" aria-label={`Settings for ${project.name}`} title="Project tasks and settings"><Settings size={12} /></Button></div>
             {#if !collapsed.includes(project.id)}<div class="ml-3 border-l pl-3">{#each filteredSessions.filter((s) => s.projectId === project.id) as session}
               {@const active = session.id === sessionId}
               <div class={`group flex h-8 items-center rounded-md pr-1 ${active ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-accent/50"}`}>
@@ -601,8 +596,8 @@ async function answer(requestId: string, answers: string[][]) {
   <main class="flex min-w-0 flex-1 flex-col">
     <header class="flex h-14 shrink-0 items-center gap-3 border-b px-4">
       {#if !sidebarOpen}<Button variant="ghost" size="icon" aria-label="Open sidebar" onclick={() => sidebarOpen = true}><PanelLeft size={16} /></Button>{/if}
-      <div class="min-w-0 flex-1"><p class="truncate text-sm font-medium">{viewMode === "chat" ? (conversation?.session.title ?? "New session") : `${viewMode === "kanban" ? "Tasks" : "Design canvas"} · ${selectedProject?.name ?? "No project"}`}</p>{#if selectedProject}<p class="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground"><span class="truncate">{selectedProject.name}</span><GitBranch size={11} />{selectedProject.defaultBranch}</p>{/if}</div>
-      <Tabs.Root bind:value={viewMode} onValueChange={(value) => syncViewParam(value as ViewMode)} aria-label="Workspace mode"><Tabs.List class="h-8"><Tabs.Trigger value="chat" class="h-6 px-3 text-xs">Chat</Tabs.Trigger><Tabs.Trigger value="kanban" class="h-6 px-3 text-xs">Kanban</Tabs.Trigger><Tabs.Trigger value="canvas" class="h-6 px-3 text-xs">Canvas</Tabs.Trigger></Tabs.List></Tabs.Root>
+      <div class="min-w-0 flex-1"><p class="truncate text-sm font-medium">{viewMode === "chat" ? (conversation?.session.title ?? "New session") : `Tasks · ${selectedProject?.name ?? "No project"}`}</p>{#if selectedProject}<p class="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground"><span class="truncate">{selectedProject.name}</span><GitBranch size={11} />{selectedProject.defaultBranch}</p>{/if}</div>
+      <Tabs.Root bind:value={viewMode} onValueChange={(value) => syncViewParam(value as ViewMode)} aria-label="Workspace mode"><Tabs.List class="h-8"><Tabs.Trigger value="chat" class="h-6 px-3 text-xs">Chat</Tabs.Trigger><Tabs.Trigger value="kanban" class="h-6 px-3 text-xs">Kanban</Tabs.Trigger></Tabs.List></Tabs.Root>
       {#if sessionId && viewMode === "chat"}<Button variant="ghost" size="icon" title="Rename session" aria-label="Rename session" onclick={() => openRename(sessionId, conversation?.session.title ?? "")}><Pencil size={15} /></Button><Button variant="outline" size="sm" onclick={() => showFiles()}><FileCode size={14} /><span class="hidden sm:inline">Changes</span></Button>{/if}
     </header>
     {#if viewMode === "kanban"}
@@ -613,14 +608,6 @@ async function answer(requestId: string, answers: string[][]) {
           <KanbanBoard projectId={selectedProjectId} tasks={legacyTasks.filter((task) => task.projectId === selectedProjectId)} onChanged={refreshBoard} />
         {/if}
       </div>
-    {:else if viewMode === "canvas"}
-      {#if !selectedProjectId}
-        <div class="min-h-0 flex-1 overflow-y-auto px-5 py-5">
-          <p class="py-12 text-center text-sm text-muted-foreground">Add a project to start designing on the canvas.</p>
-        </div>
-      {:else}
-        <DesignCanvas projectId={selectedProjectId} projectName={selectedProject?.name ?? ""} {catalog} />
-      {/if}
     {:else}
     {#if noModels}<div role="alert" class="flex shrink-0 flex-wrap items-center gap-3 border-b border-amber-500/30 bg-amber-500/10 px-5 py-3 text-sm text-amber-200"><TriangleAlert size={16} class="shrink-0 text-amber-300" /><p class="min-w-0 flex-1">Connected, but no models are configured in OpenCode. Add a provider (for example, run <code class="rounded bg-black/30 px-1 py-0.5 text-xs">opencode auth login</code>), then restart the daemon.</p><Button variant="outline" size="sm" onclick={reloadModels}><RefreshCw size={13} />Reload models</Button></div>{/if}
     <div bind:this={scroller} onscroll={(event) => { const node = event.currentTarget; follow = node.scrollHeight - node.scrollTop - node.clientHeight < 100; }} class="nice-scroll min-h-0 flex-1 overflow-y-auto">
