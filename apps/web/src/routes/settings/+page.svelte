@@ -3,17 +3,15 @@ import {
 	Archive,
 	Check,
 	ChevronLeft,
-	CircleHelp,
 	Folder,
 	FolderOpen,
 	RefreshCw,
-	Search,
-	Settings2,
 	Trash2,
 	X,
 } from "@lucide/svelte";
 import { onMount } from "svelte";
 import { toast } from "svelte-sonner";
+import SettingsSidebar from "$lib/components/settings/SettingsSidebar.svelte";
 import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
 import { Button } from "$lib/components/ui/button";
 import { Input } from "$lib/components/ui/input";
@@ -180,14 +178,7 @@ async function deleteWorkspace() {
 
 <div class="min-h-svh bg-[#090909] text-neutral-100">
 	<div class="mx-auto flex min-h-svh max-w-[1500px]">
-		<aside class="hidden w-64 shrink-0 border-r border-white/10 px-3 py-4 md:block">
-			<div class="mb-5 flex items-center gap-2 px-2 text-sm font-semibold"><span class="flex size-6 items-center justify-center rounded-md bg-white text-black">L</span> loom</div>
-			<label class="relative block"><Search class="absolute left-3 top-2.5 size-4 text-neutral-500" /><Input bind:value={search} placeholder="Search settings…" class="h-9 border-white/10 bg-white/[0.04] pl-9 text-xs" /></label>
-			<nav class="mt-6 space-y-6" aria-label="Settings sections">
-				<div><p class="mb-2 px-2 text-[10px] font-medium uppercase tracking-[0.18em] text-neutral-500">Workspace</p><button class="flex h-9 w-full items-center gap-2 rounded-md bg-white/[0.14] px-3 text-left text-sm"><Settings2 class="size-4" />General</button><button class="flex h-9 w-full items-center gap-2 rounded-md px-3 text-left text-sm text-neutral-400 hover:bg-white/[0.06]" type="button"><CircleHelp class="size-4" />Context</button></div>
-				<div><p class="mb-2 px-2 text-[10px] font-medium uppercase tracking-[0.18em] text-neutral-500">Agents</p><Button href="/settings/providers" variant="ghost" class="w-full justify-start gap-2 text-neutral-400"><Settings2 class="size-4" />Providers</Button></div><div><p class="mb-2 px-2 text-[10px] font-medium uppercase tracking-[0.18em] text-neutral-500">Application</p><Button href="/settings" variant="ghost" class="w-full justify-start gap-2 text-neutral-400"><Settings2 class="size-4" />General</Button><Button href="/" variant="ghost" class="w-full justify-start gap-2 text-neutral-400"><ChevronLeft class="size-4" />Back to workspace</Button></div>
-			</nav>
-		</aside>
+		<SettingsSidebar active="general" bind:search />
 
 		<main class="min-w-0 flex-1 px-4 py-8 sm:px-8 lg:px-12 lg:py-10">
 			<div class="mx-auto max-w-5xl">

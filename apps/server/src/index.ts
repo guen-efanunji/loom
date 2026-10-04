@@ -737,6 +737,13 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			launched: connection.status === "connected",
 			connected: connection.status === "connected",
 			configured: connection.authenticated,
+			command: connection.authCommand
+				? [
+						providerManager.registry.require(connection.providerId).definition
+							.executable,
+						...connection.authCommand,
+					]
+				: undefined,
 		});
 	});
 	app.post("/api/providers/:id/disconnect", async (c) => {
@@ -768,6 +775,13 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			launched: connection.status === "connected",
 			connected: connection.status === "connected",
 			configured: connection.authenticated,
+			command: connection.authCommand
+				? [
+						providerManager.registry.require(connection.providerId).definition
+							.executable,
+						...connection.authCommand,
+					]
+				: undefined,
 		});
 	});
 	app.post("/api/projects/:id/index/rebuild", async (c) => {

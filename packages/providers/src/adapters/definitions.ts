@@ -25,7 +25,7 @@ export const codexDefinition: ProviderDefinition = {
 export const antigravityDefinition: ProviderDefinition = {
 	id: "antigravity",
 	name: "Antigravity CLI",
-	executable: "antigravity",
+	executable: "agy",
 	homepage: "https://antigravity.google/product/antigravity-cli/",
 	authCommand: ["login"],
 	capabilities: [],
