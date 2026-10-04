@@ -52,6 +52,11 @@ export type Question = {
 		options: Array<{ label: string; description: string }>;
 	}>;
 };
+export type ChatAttachment = {
+	filename: string;
+	mime: string;
+	data: string;
+};
 export type ChatState = {
 	session: ChatSession;
 	messages: ChatMessage[];
@@ -93,6 +98,7 @@ export const chat = {
 			agent?: string;
 			model?: { providerID: string; modelID: string };
 			files: string[];
+			attachments?: ChatAttachment[];
 			agents: string[];
 		},
 	) => post<void>(`/sessions/${encodeURIComponent(id)}/messages`, input),

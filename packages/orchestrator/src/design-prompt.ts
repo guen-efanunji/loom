@@ -55,11 +55,7 @@ export function buildDesignPrompt(input: {
 	];
 	const context = contextLines(input.context);
 	if (context.length) lines.push("", "Project context:", ...context);
-	lines.push(
-		"",
-		"Craft requirements:",
-		OUTPUT_RULES,
-	);
+	lines.push("", "Craft requirements:", OUTPUT_RULES);
 	return lines.join("\n");
 }
 

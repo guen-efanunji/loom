@@ -4,15 +4,15 @@ import {
 	Bot,
 	Camera,
 	ChevronDown,
-	File,
-	Image,
+	File as FileIcon,
+	Image as ImageIcon,
 	LoaderCircle,
 	Paperclip,
 	Square,
 	X,
 } from "@lucide/svelte";
 import { tick } from "svelte";
-import { type Catalog, chat } from "$lib/chat";
+import { type Catalog, chat, type ChatAttachment } from "$lib/chat";
 import { Button } from "$lib/components/ui/button";
 import * as Command from "$lib/components/ui/command";
 import * as Popover from "$lib/components/ui/popover";
@@ -37,6 +37,7 @@ let {
 	onsend: (input: {
 		text: string;
 		files: string[];
+		attachments?: ChatAttachment[];
 		agents: string[];
 		agent?: string;
 		model?: { providerID: string; modelID: string };
@@ -48,7 +49,7 @@ let {
 } = $props();
 let textarea = $state<HTMLTextAreaElement | null>(null);
 let files = $state<string[]>([]);
-let attachments = $state<File[]>([]);
+let attachments = $state<globalThis.File[]>([]);
 let attachmentInput = $state<HTMLInputElement | null>(null);
 let agents = $state<string[]>([]);
 let modelOpen = $state(false);
@@ -132,7 +133,7 @@ function addAttachments(event: Event) {
 	input.value = "";
 }
 
-function removeAttachment(file: File) {
+function removeAttachment(file: globalThis.File) {
 	attachments = attachments.filter((item) => item !== file);
 }
 
@@ -149,13 +150,34 @@ async function attach() {
 	input();
 }
 async function send() {
-	if (sending || busy || disabled || (!draft.trim() && !files.length && !attachments.length)) return;
+	if (
+		sending ||
+		busy ||
+		disabled ||
+		(!draft.trim() && !files.length && !attachments.length)
+	)
+		return;
 	sending = true;
 	query = null;
 	try {
 		const ok = await onsend({
 			text: draft.trim(),
-			files: [...files, ...attachments.map((file) => file.name)],
+			files,
+			attachments: await Promise.all(
+				attachments.map(
+					async (file): Promise<ChatAttachment> => ({
+						filename: file.name,
+						mime: file.type || "application/octet-stream",
+						data: await new Promise<string>((resolve, reject) => {
+							const reader = new FileReader();
+							reader.onload = () =>
+								resolve(String(reader.result).split(",")[1] ?? "");
+							reader.onerror = () => reject(reader.error);
+							reader.readAsDataURL(file);
+						}),
+					}),
+				),
+			),
 			agents,
 			agent,
 			model: selectedModel
@@ -217,16 +239,16 @@ function keydown(event: KeyboardEvent) {
         {#if searching}<p class="p-3 text-xs text-muted-foreground">Searching project files…</p>{:else if searchError}<p role="alert" class="p-3 text-xs text-destructive">{searchError}</p>{:else if !choices.length}<p class="p-3 text-xs text-muted-foreground">No matching files or agents.</p>{/if}
         {#each choices as item, index}
           <Button id={`mention-${index}`} type="button" role="option" aria-selected={active === index} variant="ghost" class={`h-auto w-full justify-start py-2 text-left text-xs ${active === index ? "bg-accent" : ""}`} onclick={() => choose(item)}>
-            {#if item.type === "agent"}<Bot size={15} />{:else}<File size={15} />{/if}<span class="min-w-0 truncate">{item.value}</span><span class="ml-auto text-muted-foreground">{item.type}</span>
+            {#if item.type === "agent"}<Bot size={15} />{:else}<FileIcon size={15} />{/if}<span class="min-w-0 truncate">{item.value}</span><span class="ml-auto text-muted-foreground">{item.type}</span>
           </Button>
         {/each}
       </div>
     </div>
   {/if}
   {#if files.length || agents.length || attachments.length}<div class="flex flex-wrap gap-1 px-3 pt-3">
-    {#each files as file}<Button variant="secondary" size="sm" class="max-w-full text-xs" onclick={() => files = files.filter((f) => f !== file)} title={`Remove ${file}`} aria-label={`Remove ${file}`}><File size={12} /><span class="truncate">{file}</span><X size={12} /></Button>{/each}
+    {#each files as file}<Button variant="secondary" size="sm" class="max-w-full text-xs" onclick={() => files = files.filter((f) => f !== file)} title={`Remove ${file}`} aria-label={`Remove ${file}`}><FileIcon size={12} /><span class="truncate">{file}</span><X size={12} /></Button>{/each}
     {#each agents as name}<Button variant="secondary" size="sm" class="text-xs" onclick={() => agents = agents.filter((a) => a !== name)} title={`Remove ${name}`}><Bot size={12} />{name}<X size={12} /></Button>{/each}
-     {#each attachments as file}<Button variant="secondary" size="sm" class="max-w-full text-xs" onclick={() => removeAttachment(file)} title={`Remove ${file.name}`} aria-label={`Remove ${file.name}`}><Image size={12} /><span class="truncate">{file.name}</span><X size={12} /></Button>{/each}
+     {#each attachments as file}<Button variant="secondary" size="sm" class="max-w-full text-xs" onclick={() => removeAttachment(file)} title={`Remove ${file.name}`} aria-label={`Remove ${file.name}`}><ImageIcon size={12} /><span class="truncate">{file.name}</span><X size={12} /></Button>{/each}
   </div>{/if}
   <input bind:this={attachmentInput} type="file" accept="image/*,.txt,.md,.json,.ts,.tsx,.js,.jsx,.css,.html,.pdf" multiple onchange={addAttachments} class="sr-only" aria-label="Attach files or images" />
    <Textarea bind:ref={textarea} bind:value={draft} oninput={input} onclick={input} onkeydown={keydown} aria-label="Message agent" aria-controls={query !== null ? "mention-list" : undefined} aria-activedescendant={query !== null ? `mention-${active}` : undefined} placeholder="Ask anything… @ for files and agents" rows={3} class="max-h-56 min-h-24 resize-none border-0 bg-transparent p-4 text-sm shadow-none focus-visible:ring-0" disabled={disabled || sending} />

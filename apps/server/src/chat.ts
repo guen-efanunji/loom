@@ -12,6 +12,16 @@ const promptSchema = z
 		agent: z.string().optional(),
 		model: z.object({ providerID: z.string(), modelID: z.string() }).optional(),
 		files: z.array(z.string()).max(50).default([]),
+		attachments: z
+			.array(
+				z.object({
+					filename: z.string(),
+					mime: z.string(),
+					data: z.string().max(10_000_000),
+				}),
+			)
+			.max(10)
+			.default([]),
 		agents: z.array(z.string()).max(10).default([]),
 	})
 	.refine(
@@ -237,6 +247,12 @@ export function createChatRoutes(options: {
 			parts: [
 				{ type: "text", text: input.text },
 				...files,
+				...input.attachments.map((attachment) => ({
+					type: "file",
+					mime: attachment.mime,
+					filename: attachment.filename,
+					url: `data:${attachment.mime};base64,${attachment.data}`,
+				})),
 				...input.agents.map((name) => ({ type: "agent", name })),
 			],
 		});
