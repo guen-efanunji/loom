@@ -1,4 +1,4 @@
-import type { AgentRuntime } from "@loom/opencode";
+import type { AgentModel, AgentRuntime } from "@loom/opencode";
 import type { PlannerResult } from "@loom/protocol";
 import type { ProjectContext } from "./context-builder";
 import { buildPlannerPrompt, PLANNER_REPAIR_PROMPT } from "./prompt";
@@ -9,6 +9,7 @@ export interface Planner {
 		projectId: string;
 		message: string;
 		context: ProjectContext;
+		model?: AgentModel;
 	}): Promise<PlannerResult>;
 }
 
@@ -32,6 +33,7 @@ export class RuntimePlanner implements Planner {
 		projectId: string;
 		message: string;
 		context: ProjectContext;
+		model?: AgentModel;
 	}): Promise<PlannerResult> {
 		const session = await this.runtime.createSession({
 			cwd: this.cwd,
@@ -43,6 +45,7 @@ export class RuntimePlanner implements Planner {
 			await this.runtime.prompt({
 				sessionId: session.id,
 				prompt: buildPlannerPrompt(input),
+				model: input.model,
 			});
 			const status = await this.runtime.wait(session.id, {
 				timeoutMs: 300_000,
@@ -57,6 +60,7 @@ export class RuntimePlanner implements Planner {
 			await this.runtime.prompt({
 				sessionId: session.id,
 				prompt: `${PLANNER_REPAIR_PROMPT}${problems}`,
+				model: input.model,
 			});
 			const repairStatus = await this.runtime.wait(session.id, {
 				timeoutMs: 300_000,

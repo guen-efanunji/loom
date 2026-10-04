@@ -6,6 +6,7 @@ import {
 	repositories,
 } from "@loom/db";
 import {
+	type AgentRuntime,
 	OpenCodeHttpRuntime,
 	type OpenCodeManager,
 	OpenCodeServerManager,
@@ -224,6 +225,7 @@ export type DaemonAppOptions = {
 	openCodeManager?: OpenCodeManager;
 	startOpenCode?: boolean;
 	projectValidation?: ReturnType<typeof createProjectValidationService>;
+	plannerRuntime?: AgentRuntime;
 };
 
 export async function createApp(options: DaemonAppOptions = {}) {
@@ -274,7 +276,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		planRepository(db),
 		repos,
 		orchestrator,
-		agentRuntime,
+		options.plannerRuntime ?? agentRuntime,
 	);
 	orchestrator.setLifecycle(combineHooks(epics.hooks(), automation.hooks()));
 	await orchestrator.reconcile();
@@ -556,6 +558,9 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		message: z.string().trim().min(1).max(20000),
 		sourceSessionId: z.string().min(1).max(200).optional(),
 		mode: z.enum(["plan", "build"]).default("plan"),
+		model: z
+			.object({ providerID: z.string().min(1), modelID: z.string().min(1) })
+			.optional(),
 	});
 	const planPatchSchema = z.object({
 		title: z.string().trim().min(1).max(200).optional(),
@@ -634,9 +639,22 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			return errorResponse(c, error);
 		}
 	});
+	app.delete("/api/plans/:id", async (c) => {
+		try {
+			await automation.deletePlan(c.req.param("id"));
+			return c.body(null, 204);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
 	app.post("/api/plans/:id/retry", async (c) => {
-		try { await automation.retryPlan(c.req.param("id")); return c.json({ accepted: true }, 202); }
-		catch (error) { return errorResponse(c, error); }
+		try {
+			const input = z.object({
+				model: z.object({ providerID: z.string().min(1), modelID: z.string().min(1) }).optional(),
+			}).parse(await jsonBody(c).catch(() => ({})));
+			await automation.retryPlan(c.req.param("id"), input.model);
+			return c.json({ accepted: true }, 202);
+		} catch (error) { return errorResponse(c, error); }
 	});
 	app.get("/api/automation/settings", async (c) => {
 		try {

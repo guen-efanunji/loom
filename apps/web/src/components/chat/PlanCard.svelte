@@ -1,5 +1,5 @@
 <script lang="ts">
-import { ClipboardList, LoaderCircle } from "@lucide/svelte";
+import { ClipboardList, LoaderCircle, Trash2 } from "@lucide/svelte";
 import { Badge } from "$lib/components/ui/badge";
 import { Button } from "$lib/components/ui/button";
 
@@ -24,10 +24,12 @@ let {
 	card,
 	onreview,
 	onconvert,
+	ondelete,
 }: {
 	card: PlanCardState;
 	onreview: (card: PlanCardState) => void;
 	onconvert: (card: PlanCardState, start: boolean) => void;
+	ondelete?: (card: PlanCardState) => void;
 } = $props();
 
 const ready = $derived(
@@ -62,6 +64,10 @@ const ready = $derived(
 			<Button size="sm" variant="outline" onclick={() => onreview(card)}>Review plan</Button>
 			<Button size="sm" onclick={() => onconvert(card, false)}>Add to Kanban</Button>
 			<Button size="sm" variant="secondary" onclick={() => onconvert(card, true)}>Add & Start</Button>
+		{:else if card.status === "failed"}
+			{#if ondelete}
+				<Button size="sm" variant="outline" class="text-destructive" onclick={() => ondelete(card)}><Trash2 size={13} />Delete</Button>
+			{/if}
 		{:else if card.converted}
 			<Button size="sm" variant="outline" onclick={() => onreview(card)}>Open plan</Button>
 		{/if}

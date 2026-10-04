@@ -11,9 +11,29 @@ import {
 	daemon,
 	formatStatus,
 	type PlanTaskDraft,
-		type Task,
-		request,
+	type Task,
 } from "$lib/daemon";
+
+function readPlannerModel():
+	| { providerID: string; modelID: string }
+	| undefined {
+	try {
+		const raw = localStorage.getItem("loom.planner.model");
+		if (!raw) return undefined;
+		const parsed = JSON.parse(raw) as {
+			providerID?: unknown;
+			modelID?: unknown;
+		};
+		if (
+			typeof parsed.providerID === "string" &&
+			typeof parsed.modelID === "string"
+		)
+			return { providerID: parsed.providerID, modelID: parsed.modelID };
+	} catch {
+		// Corrupt stored value: fall back to the server default model.
+	}
+	return undefined;
+}
 
 let detail = $state<AutomationPlanDetail | null>(null);
 let draft = $state<PlanTaskDraft[]>([]);
@@ -133,7 +153,7 @@ onMount(() => {
 			</div>
 		</header>
 		{#if detail.plan.errorMessage}<p class="mb-4 rounded-lg border border-amber-800 p-3 text-sm text-amber-200">{detail.plan.errorMessage}</p>{/if}
-		{#if detail.plan.status === "failed" && !detail.plan.convertedAt}<Button disabled={!!busy} onclick={() => action("regenerate", async () => { await request(`/api/plans/${id}/retry`, { method: "POST" }); initialized = false; })}>Regenerate plan</Button>{/if}
+		{#if detail.plan.status === "failed" && !detail.plan.convertedAt}<Button disabled={!!busy} onclick={() => action("regenerate", async () => { await daemon.retryPlan(id, { model: readPlannerModel() }); initialized = false; })}>Regenerate plan</Button>{/if}
 		{#if !detail.plan.cancelledAt && detail.plan.status !== "completed"}<Button variant="outline" disabled={!!busy} onclick={() => action("cancel", () => daemon.cancelPlan(id))}>Cancel plan</Button>{/if}
 		{#if detail.plan.status === "draft" && !detail.draft.length}<p class="rounded-xl border p-6">OpenCode is preparing the plan. This page updates automatically.</p>{/if}
 		{#if editable}

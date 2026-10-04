@@ -39,9 +39,14 @@ export type RuntimeOutput = {
 	truncated?: boolean;
 };
 
+export type AgentModel = {
+	providerID: string;
+	modelID: string;
+};
+
 export type AgentRuntime = {
 	createSession(input: { cwd: string; title: string; readOnly?: boolean }): Promise<{ id: string }>;
-	prompt(input: { sessionId: string; prompt: string }): Promise<void>;
+	prompt(input: { sessionId: string; prompt: string; model?: AgentModel }): Promise<void>;
 	status(sessionId: string): Promise<AgentRunStatus>;
 	readOutput?(sessionId: string): Promise<RuntimeOutput | null>;
 	wait(
@@ -301,9 +306,10 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 		if (!response.ok) {
 			throw new OpenCodeError(
 				"HTTP_ERROR",
-				`OpenCode request failed with HTTP ${response.status}`,
+				`OpenCode request failed with HTTP ${response.status} (${init.method ?? "GET"} ${path})`,
 				{
 					status: String(response.status),
+					path,
 				},
 			);
 		}
@@ -328,14 +334,28 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 		return session;
 	}
 
-	async prompt(input: { sessionId: string; prompt: string }): Promise<void> {
+	async prompt(input: {
+		sessionId: string;
+		prompt: string;
+		model?: AgentModel;
+	}): Promise<void> {
 		this.cancelled.delete(input.sessionId);
 		await this.request(
 			`/session/${encodeURIComponent(input.sessionId)}/prompt_async`,
 			{
 				method: "POST",
 				headers: { "content-type": "application/json" },
-				body: JSON.stringify({ parts: [{ type: "text", text: input.prompt }] }),
+				body: JSON.stringify({
+					...(input.model
+						? {
+								model: {
+									providerID: input.model.providerID,
+									modelID: input.model.modelID,
+								},
+							}
+						: {}),
+					parts: [{ type: "text", text: input.prompt }],
+				}),
 			},
 		);
 	}

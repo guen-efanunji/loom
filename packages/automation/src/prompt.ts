@@ -54,6 +54,7 @@ export function buildPlannerPrompt(input: {
 	}
 	if (input.context.conventions)
 		lines.push("", "Project conventions:", input.context.conventions);
+	lines.push("", OUTPUT_SHAPE);
 	return lines.join("\n");
 }
 
@@ -61,3 +62,6 @@ export const PLANNER_REPAIR_PROMPT = `Your previous output was rejected. Fix ONL
 
 Problems:
 `;
+
+const OUTPUT_SHAPE = `Return ONLY a JSON object with this exact shape, no markdown fences, no commentary:
+{"title": string, "summary": string, "tasks": [{"key": string (unique, short, slug-like), "title": string, "description": string, "priority": "low" | "medium" | "high", "dependencies": string[] (keys of other tasks, may be empty), "acceptanceCriteria": string[] (at least one concrete, measurable check per task), "suggestedFiles": string[] (may be empty), "parallelGroup"?: string}]}`;

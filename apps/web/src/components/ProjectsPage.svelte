@@ -15,6 +15,7 @@ import {
 	Settings,
 	ShieldCheck,
 	Sparkles,
+	TriangleAlert,
 	Trash2,
 	X,
 } from "@lucide/svelte";
@@ -107,6 +108,8 @@ let catalog = $state<Catalog>({
 	],
 	commands: [],
 });
+let catalogLoaded = $state(false);
+let catalogNonce = $state(0);
 let fileOpen = $state(false);
 let fileLoading = $state(false);
 let fileError = $state("");
@@ -271,13 +274,21 @@ $effect(() => {
 	if (ready && id !== sessionId) void selectSession(id);
 });
 $effect(() => {
-	const mode = viewMode;
+	if (viewMode !== "chat" && ready) void refreshBoard();
+});
+function syncViewParam(mode: ViewMode) {
+	// Only called from user interaction (tab switch), when the router is ready.
+	// Must not run during mount: SvelteKit throws if replaceState is called
+	// before router initialization, which breaks workspace loading.
 	const url = new URL(window.location.href);
 	if (mode === "chat") url.searchParams.delete("view");
 	else url.searchParams.set("view", mode);
-	replaceState(url, {});
-	if (mode !== "chat" && ready) void refreshBoard();
-});
+	try {
+		replaceState(url.toString(), {});
+	} catch {
+		// Non-fatal: the view state itself is already updated.
+	}
+}
 function modelKey(projectId: string) {
 	return `loom.model.${projectId}`;
 }
@@ -294,13 +305,16 @@ $effect(() => {
 });
 $effect(() => {
 	const projectId = selectedProjectId;
+	void catalogNonce;
 	if (!projectId) return;
 	const request = ++projectRequest;
+	catalogLoaded = false;
 	chat
 		.catalog(projectId)
 		.then((result) => {
 			if (disposed || request !== projectRequest) return;
 			catalog = result;
+			catalogLoaded = true;
 			if (
 				!sessionId &&
 				model &&
@@ -315,6 +329,17 @@ $effect(() => {
 			if (!disposed && request === projectRequest) report(reason);
 		});
 });
+const noModels = $derived(
+	ready &&
+		connected &&
+		catalogLoaded &&
+		!!selectedProjectId &&
+		catalog.models.length === 0,
+);
+async function reloadModels() {
+	catalogNonce += 1;
+	await retryConnection();
+}
 async function poll() {
 	if (disposed) return;
 	try {
@@ -421,6 +446,16 @@ async function sendPlan(brief: string, mode: "plan" | "build") {
 		error: "",
 	});
 	planCards = [...planCards, card];
+	const slash = model.indexOf("/");
+	const plannerModel =
+		slash > 0
+			? {
+					providerID: model.slice(0, slash),
+					modelID: model.slice(slash + 1),
+				}
+			: undefined;
+	if (plannerModel && typeof localStorage !== "undefined")
+		localStorage.setItem("loom.planner.model", JSON.stringify(plannerModel));
 	try {
 		const created = await daemon.createPlan({
 			projectId: selectedProjectId,
@@ -428,6 +463,7 @@ async function sendPlan(brief: string, mode: "plan" | "build") {
 			message: brief,
 			mode,
 			sourceSessionId: sessionId || undefined,
+			...(plannerModel ? { model: plannerModel } : {}),
 		});
 		card.planId = created.planId;
 		card.status = "planning";
@@ -527,6 +563,18 @@ async function planCardConvert(card: ChatPlanCard, start: boolean) {
 		toast.success(start ? "Plan started" : "Tasks added to Kanban");
 	} catch (reason) {
 		toast.error(reason instanceof Error ? reason.message : "Operation failed");
+	}
+}
+
+async function deletePlanCard(card: ChatPlanCard) {
+	try {
+		await daemon.deletePlan(card.planId);
+		planCards = planCards.filter((item) => item.key !== card.key);
+		plansProject = "";
+		lastPlanRefresh = 0;
+		toast.success("Plan deleted");
+	} catch (reason) {
+		toast.error(reason instanceof Error ? reason.message : "Delete failed");
 	}
 }
 
@@ -757,7 +805,7 @@ async function answer(requestId: string, answers: string[][]) {
     <header class="flex h-14 shrink-0 items-center gap-3 border-b px-4">
       {#if !sidebarOpen}<Button variant="ghost" size="icon" aria-label="Open sidebar" onclick={() => sidebarOpen = true}><PanelLeft size={16} /></Button>{/if}
       <div class="min-w-0 flex-1"><p class="truncate text-sm font-medium">{viewMode === "chat" ? (conversation?.session.title ?? "New session") : `${viewMode === "kanban" ? "Tasks" : "Progress"} · ${selectedProject?.name ?? "No project"}`}</p>{#if selectedProject}<p class="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground"><span class="truncate">{selectedProject.name}</span><GitBranch size={11} />{selectedProject.defaultBranch}</p>{/if}</div>
-      <Tabs.Root bind:value={viewMode} aria-label="Workspace mode"><Tabs.List class="h-8"><Tabs.Trigger value="chat" class="h-6 px-3 text-xs">Chat</Tabs.Trigger><Tabs.Trigger value="kanban" class="h-6 px-3 text-xs">Kanban</Tabs.Trigger><Tabs.Trigger value="progress" class="h-6 px-3 text-xs">Progress</Tabs.Trigger></Tabs.List></Tabs.Root>
+      <Tabs.Root bind:value={viewMode} onValueChange={(value) => syncViewParam(value as ViewMode)} aria-label="Workspace mode"><Tabs.List class="h-8"><Tabs.Trigger value="chat" class="h-6 px-3 text-xs">Chat</Tabs.Trigger><Tabs.Trigger value="kanban" class="h-6 px-3 text-xs">Kanban</Tabs.Trigger><Tabs.Trigger value="progress" class="h-6 px-3 text-xs">Progress</Tabs.Trigger></Tabs.List></Tabs.Root>
       {#if sessionId && viewMode === "chat"}<Button variant="ghost" size="icon" title="Rename session" aria-label="Rename session" onclick={() => openRename(sessionId, conversation?.session.title ?? "")}><Pencil size={15} /></Button><Button variant="outline" size="sm" onclick={() => showFiles()}><FileCode size={14} /><span class="hidden sm:inline">Changes</span></Button>{/if}
     </header>
     {#if viewMode === "kanban"}
@@ -773,6 +821,7 @@ async function answer(requestId: string, answers: string[][]) {
           <ProgressBoard projectId={selectedProjectId} tasks={selectedProjectId ? legacyTasks.filter((task) => task.projectId === selectedProjectId) : legacyTasks} onChanged={refreshBoard} />
       </div>
     {:else}
+    {#if noModels}<div role="alert" class="flex shrink-0 flex-wrap items-center gap-3 border-b border-amber-500/30 bg-amber-500/10 px-5 py-3 text-sm text-amber-200"><TriangleAlert size={16} class="shrink-0 text-amber-300" /><p class="min-w-0 flex-1">Connected, but no models are configured in OpenCode. Add a provider (for example, run <code class="rounded bg-black/30 px-1 py-0.5 text-xs">opencode auth login</code>), then restart the daemon.</p><Button variant="outline" size="sm" onclick={reloadModels}><RefreshCw size={13} />Reload models</Button></div>{/if}
     <div bind:this={scroller} onscroll={(event) => { const node = event.currentTarget; follow = node.scrollHeight - node.scrollTop - node.clientHeight < 100; }} class="nice-scroll min-h-0 flex-1 overflow-y-auto">
       <div class={`mx-auto flex min-h-full w-full max-w-3xl flex-col px-5 ${sessionId ? "py-8" : "justify-center py-12"}`}>
         {#if loading || sessionLoading}<div role="status" class="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground"><LoaderCircle size={17} class="animate-spin" />Loading {loading ? "workspace" : "conversation"}…</div>
@@ -781,8 +830,8 @@ async function answer(requestId: string, answers: string[][]) {
           {#if busy}<div role="status" class="mt-5 flex items-center gap-2 text-xs text-muted-foreground"><LoaderCircle size={14} class="animate-spin" />{conversation?.permissions.length ? "Waiting for permission" : conversation?.questions.length ? "Waiting for your answer" : conversation?.status.message || "OpenCode is working…"}</div>{/if}
           {#each conversation?.permissions ?? [] as request}<div class="mt-5 space-y-3 rounded-xl border border-amber-500/30 bg-card p-4"><p class="flex items-center gap-2 text-sm font-medium"><ShieldCheck size={16} />Permission required: {request.permission}</p><pre class="overflow-auto whitespace-pre-wrap text-xs text-muted-foreground">{request.patterns.join("\n")}</pre><div class="flex flex-wrap gap-2"><Button size="sm" onclick={() => permission(request.id, "once")}>Allow once</Button><Button variant="outline" size="sm" onclick={() => permission(request.id, "always")}>Always allow</Button><Button variant="ghost" size="sm" onclick={() => permission(request.id, "reject")}>Deny</Button></div></div>{/each}
           {#each conversation?.questions ?? [] as question}<div class="mt-5"><QuestionCard {question} onanswer={(answers) => answer(question.id, answers)} /></div>{/each}
-          {#each planCards.filter((card) => card.projectId === selectedProjectId) as card (card.key)}<PlanCard {card} onreview={(item) => goto(`/plans/${item.planId}`)} onconvert={(item, start) => void planCardConvert(item, start)} />{/each}
         {/if}
+        {#each planCards.filter((card) => card.projectId === selectedProjectId) as card (card.key)}<PlanCard {card} onreview={(item) => goto(`/plans/${item.planId}`)} onconvert={(item, start) => void planCardConvert(item, start)} ondelete={(item) => void deletePlanCard(item)} />{/each}
         {#if error}<div role="alert" class="my-4 flex items-start gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm"><p class="min-w-0 flex-1 break-words text-destructive">{error}</p><Button variant="ghost" size="sm" onclick={retryConnection}><RefreshCw size={13} />Retry</Button><Button variant="ghost" size="icon" class="size-7" aria-label="Dismiss error" onclick={() => error = ""}><X size={13} /></Button></div>{/if}
         {#if !sessionId && !loading}
           {#if !projects.length}<div class="mb-5 text-center"><p class="mb-3 text-sm text-muted-foreground">Add a local Git project to start chatting with OpenCode.</p><Button onclick={() => addProjectOpen = true}><FolderPlus size={16} />Add project</Button></div>{:else}<div class="mb-3"><Select.Root type="single" bind:value={selectedProjectId}><Select.Trigger class="w-auto min-w-40 border-0 bg-transparent shadow-none" aria-label="Choose project"><Folder size={14} />{selectedProject?.name ?? "Choose project"}</Select.Trigger><Select.Content>{#each projects as project}<Select.Item value={project.id}>{project.name}</Select.Item>{/each}</Select.Content></Select.Root></div>{/if}

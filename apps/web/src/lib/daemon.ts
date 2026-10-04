@@ -305,8 +305,17 @@ export const daemon = {
 		message: string;
 		mode?: "plan" | "build";
 		sourceSessionId?: string;
+		model?: { providerID: string; modelID: string };
 	}) =>
 		request<{ planId: string; status: string }>("/api/plans", {
+			method: "POST",
+			body: JSON.stringify(input),
+		}),
+	retryPlan: (
+		id: string,
+		input: { model?: { providerID: string; modelID: string } } = {},
+	) =>
+		request<{ accepted: boolean }>(`/api/plans/${id}/retry`, {
 			method: "POST",
 			body: JSON.stringify(input),
 		}),
@@ -346,6 +355,8 @@ export const daemon = {
 		request<{ cancelled: boolean }>(`/api/plans/${id}/cancel`, {
 			method: "POST",
 		}),
+	deletePlan: (id: string) =>
+		request<void>(`/api/plans/${id}`, { method: "DELETE" }),
 	getAutomationSettings: () =>
 		request<{ automationMode: "review" | "auto-create" | "auto-start" }>(
 			"/api/automation/settings",

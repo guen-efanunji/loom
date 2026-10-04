@@ -12,7 +12,7 @@ import type {
 	repositories,
 	TaskRecord,
 } from "@loom/db";
-import type { AgentRuntime } from "@loom/opencode";
+import type { AgentModel, AgentRuntime } from "@loom/opencode";
 import type { AutomationPlanTask, PlanStatus } from "@loom/protocol";
 import type { TaskLifecycleHooks, TaskOrchestrator } from "./index";
 import { git, snapshotWorkspace } from "./commands";
@@ -93,6 +93,7 @@ export class AutomationService {
 		message: string;
 		sourceSessionId?: string;
 		automationMode?: "review" | "auto-create" | "auto-start";
+		model?: AgentModel;
 	}): Promise<{ planId: string; status: PlanStatus }> {
 		const project = await this.requireProject(input.projectId);
 		const message = input.message.trim();
@@ -109,7 +110,7 @@ export class AutomationService {
 			summary: "",
 		});
 		await this.tasks.publishDaemonEvent({ type: "plan.created", planId: id });
-		this.launch(id, () => this.generate(id, project, message));
+		this.launch(id, () => this.generate(id, project, message, input.model));
 		return { planId: id, status: "draft" };
 	}
 
@@ -117,6 +118,7 @@ export class AutomationService {
 		planId: string,
 		project: ProjectRecord,
 		message: string,
+		model?: AgentModel,
 	) {
 		const context = await buildAutomationContext(project.path, project.name);
 		const planner = new RuntimePlanner(this.runtime, project.path, "Loom planner", async sessionId => {
@@ -127,6 +129,7 @@ export class AutomationService {
 			projectId: project.id,
 			message,
 			context,
+			model,
 		});
 		if ((await this.requirePlan(planId)).cancelledAt) return;
 		await this.store.replaceTasks(planId, convertPlanTasks(result.tasks));
@@ -304,13 +307,24 @@ export class AutomationService {
 			}
 	}
 
-	async retryPlan(planId: string) {
+	async deletePlan(planId: string): Promise<void> {
+		const plan = await this.requirePlan(planId);
+		if (this.busy.has(planId))
+			throw new Error("Plan is still working; cancel it before deleting");
+		if (plan.convertedAt)
+			throw new Error("This plan created Kanban tasks; delete those tasks first");
+		const sessionId = this.sessions.get(planId);
+		if (sessionId) await this.runtime.abort(sessionId).catch(() => {});
+		await this.store.delete(planId);
+	}
+
+	async retryPlan(planId: string, model?: AgentModel) {
 		const plan = await this.requirePlan(planId);
 		if (plan.convertedAt || plan.status !== "failed" || !plan.sourceMessage) throw new Error("Only failed, unconverted plans with a saved brief can regenerate");
 		if (this.busy.has(planId)) throw new Error("Plan operation is already active");
 		const project = await this.requireProject(plan.projectId);
 		await this.store.update(planId, { status: "draft", cancelledAt: null, errorMessage: null });
-		this.launch(planId, () => this.generate(planId, project, plan.sourceMessage));
+		this.launch(planId, () => this.generate(planId, project, plan.sourceMessage, model));
 	}
 
 	async detail(planId: string) {
