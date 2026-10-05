@@ -27,7 +27,6 @@ export const antigravityDefinition: ProviderDefinition = {
 	name: "Antigravity CLI",
 	executable: "agy",
 	homepage: "https://antigravity.google/product/antigravity-cli/",
-	authCommand: ["login"],
 	capabilities: [],
 	install: {
 		supported: true,

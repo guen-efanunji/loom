@@ -36,6 +36,7 @@ import { Badge } from "$lib/components/ui/badge";
 import { Button } from "$lib/components/ui/button";
 import * as Dialog from "$lib/components/ui/dialog";
 import { Input } from "$lib/components/ui/input";
+import * as Marker from "$lib/components/ui/marker";
 import * as Select from "$lib/components/ui/select";
 import * as Tabs from "$lib/components/ui/tabs";
 import { daemon, type Project, type Task } from "$lib/daemon";
@@ -333,6 +334,10 @@ async function poll() {
 }
 onMount(() => {
 	sidebarOpen = window.innerWidth >= 768;
+	const refreshProviders = () => {
+		catalogNonce += 1;
+	};
+	window.addEventListener("loom:providers-changed", refreshProviders);
 	void (async () => {
 		try {
 			await refreshProjects();
@@ -358,6 +363,7 @@ onMount(() => {
 	})();
 	return () => {
 		disposed = true;
+		window.removeEventListener("loom:providers-changed", refreshProviders);
 		clearTimeout(timer);
 	};
 });
@@ -597,7 +603,7 @@ async function answer(requestId: string, answers: string[][]) {
     <header class="flex h-14 shrink-0 items-center gap-3 border-b px-4">
       {#if !sidebarOpen}<Button variant="ghost" size="icon" aria-label="Open sidebar" onclick={() => sidebarOpen = true}><PanelLeft size={16} /></Button>{/if}
       <div class="min-w-0 flex-1"><p class="truncate text-sm font-medium">{viewMode === "chat" ? (conversation?.session.title ?? "New session") : `Tasks · ${selectedProject?.name ?? "No project"}`}</p>{#if selectedProject}<p class="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground"><span class="truncate">{selectedProject.name}</span><GitBranch size={11} />{selectedProject.defaultBranch}</p>{/if}</div>
-      <Tabs.Root bind:value={viewMode} onValueChange={(value) => syncViewParam(value as ViewMode)} aria-label="Workspace mode"><Tabs.List class="h-8"><Tabs.Trigger value="chat" class="h-6 px-3 text-xs">Chat</Tabs.Trigger><Tabs.Trigger value="kanban" class="h-6 px-3 text-xs">Kanban</Tabs.Trigger></Tabs.List></Tabs.Root>
+      <Tabs.Root bind:value={viewMode} onValueChange={(value) => syncViewParam(value as ViewMode)} aria-label="Workspace mode"><Tabs.List class="h-8"><Tabs.Trigger value="chat" class="h-6 px-3 text-xs">Chat</Tabs.Trigger><Tabs.Trigger value="kanban" class="h-6 px-3 text-xs">Kanban</Tabs.Trigger></Tabs.List></Tabs.Root>{#if selectedProject}<Button href={`/project/${selectedProject.id}/canvas`} variant="outline" size="sm"><Sparkles size={14} />Canvas</Button>{/if}
       {#if sessionId && viewMode === "chat"}<Button variant="ghost" size="icon" title="Rename session" aria-label="Rename session" onclick={() => openRename(sessionId, conversation?.session.title ?? "")}><Pencil size={15} /></Button><Button variant="outline" size="sm" onclick={() => showFiles()}><FileCode size={14} /><span class="hidden sm:inline">Changes</span></Button>{/if}
     </header>
     {#if viewMode === "kanban"}
@@ -614,8 +620,8 @@ async function answer(requestId: string, answers: string[][]) {
       <div class={`mx-auto flex min-h-full w-full max-w-3xl flex-col px-5 ${sessionId ? "py-8" : "justify-center py-12"}`}>
         {#if loading || sessionLoading}<div role="status" class="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground"><LoaderCircle size={17} class="animate-spin" />Loading {loading ? "workspace" : "conversation"}…</div>
         {:else if !sessionId}<div class="mb-8 text-center"><div class="mx-auto mb-5 flex size-10 items-center justify-center rounded-xl border bg-card"><Sparkles size={20} class="text-teal-300" /></div><h1 class="text-2xl font-medium tracking-tight sm:text-3xl">What are we working on?</h1><p class="mt-3 text-sm text-muted-foreground">A little context. A clear idea. Let's build something.</p></div>{/if}
-        {#if sessionId}<div class="space-y-8" aria-live="polite" aria-relevant="additions text">{#each turns as turn (turn.key)}<Turn messages={turn.messages} {sessionId} projectId={selectedProjectId} onfile={showFiles} />{/each}</div>
-          {#if busy}<div role="status" class="mt-5 flex items-center gap-2 text-xs text-muted-foreground"><LoaderCircle size={14} class="animate-spin" />{conversation?.permissions.length ? "Waiting for permission" : conversation?.questions.length ? "Waiting for your answer" : conversation?.status.message || "OpenCode is working…"}</div>{/if}
+         {#if sessionId}<div class="space-y-8" aria-live="polite" aria-relevant="additions text">{#each turns as turn (turn.key)}<Turn messages={turn.messages} {sessionId} projectId={selectedProjectId} onfile={showFiles} />{/each}</div>
+           {#if busy}<Marker.Root variant="border" class="mt-5 flex items-center"><Marker.Icon><LoaderCircle size={14} class="animate-spin" /></Marker.Icon><Marker.Content>{conversation?.permissions.length ? "Waiting for permission" : conversation?.questions.length ? "Waiting for your answer" : conversation?.status.message || "OpenCode is working…"}</Marker.Content></Marker.Root>{/if}
           {#each conversation?.permissions ?? [] as request}<div class="mt-5 space-y-3 rounded-xl border border-amber-500/30 bg-card p-4"><p class="flex items-center gap-2 text-sm font-medium"><ShieldCheck size={16} />Permission required: {request.permission}</p><pre class="overflow-auto whitespace-pre-wrap text-xs text-muted-foreground">{request.patterns.join("\n")}</pre><div class="flex flex-wrap gap-2"><Button size="sm" onclick={() => permission(request.id, "once")}>Allow once</Button><Button variant="outline" size="sm" onclick={() => permission(request.id, "always")}>Always allow</Button><Button variant="ghost" size="sm" onclick={() => permission(request.id, "reject")}>Deny</Button></div></div>{/each}
           {#each conversation?.questions ?? [] as question}<div class="mt-5"><QuestionCard {question} onanswer={(answers) => answer(question.id, answers)} /></div>{/each}
         {/if}

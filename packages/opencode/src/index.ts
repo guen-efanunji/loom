@@ -56,6 +56,7 @@ export type AgentRuntime = {
 		model?: AgentModel;
 	}): Promise<void>;
 	status(sessionId: string): Promise<AgentRunStatus>;
+	lastError?(sessionId: string): Promise<string | null>;
 	readOutput?(sessionId: string): Promise<RuntimeOutput | null>;
 	wait(
 		sessionId: string,
@@ -277,6 +278,7 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 	private readonly fetcher: Fetcher;
 	private readonly directories = new Map<string, string>();
 	private readonly cancelled = new Set<string>();
+	private readonly lastErrors = new Map<string, string>();
 
 	constructor(options: { baseUrl?: string; fetcher?: Fetcher } = {}) {
 		this.baseUrl = (options.baseUrl ?? "http://127.0.0.1:4096").replace(
@@ -392,14 +394,31 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 			return "running";
 		const messages = await this.request<
 			Array<{
-				info: { role: string; error?: unknown; time: { completed?: number } };
+				info: {
+					role: string;
+					error?: { name?: string; data?: { message?: string } };
+					time: { completed?: number };
+				};
 			}>
 		>(`/session/${encodeURIComponent(sessionId)}/message`);
 		const last = messages.at(-1)?.info;
-		if (last?.error) return "failed";
+		if (last?.error) {
+			const detail = last.error.data?.message || last.error.name || "";
+			this.lastErrors.set(sessionId, detail || "the agent reported an error");
+			return "failed";
+		}
+		this.lastErrors.delete(sessionId);
 		return last?.role === "assistant" && last.time.completed
 			? "completed"
 			: "running";
+	}
+
+	/**
+	 * The real reason the last run failed, captured while polling status. Loom
+	 * shows this instead of guessing at a credential problem.
+	 */
+	async lastError(sessionId: string): Promise<string | null> {
+		return this.lastErrors.get(sessionId) ?? null;
 	}
 
 	async wait(

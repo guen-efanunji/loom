@@ -25,7 +25,8 @@ const promptSchema = z
 		agents: z.array(z.string()).max(10).default([]),
 	})
 	.refine(
-		(value) => value.text.trim() || value.files.length,
+		(value) =>
+			value.text.trim() || value.files.length || value.attachments.length,
 		"Message cannot be empty",
 	);
 type Session = {
@@ -162,6 +163,18 @@ export function createChatRoutes(options: {
 				providerId: model.providerId,
 				connectionId: model.connectionId,
 				capabilities: model.capabilities,
+				designSupported:
+					model.providerId === "opencode" &&
+					typeof model.metadata?.upstreamProviderId === "string" &&
+					typeof model.metadata?.providerModelId === "string",
+				openCodeProviderID:
+					typeof model.metadata?.upstreamProviderId === "string"
+						? model.metadata.upstreamProviderId
+						: undefined,
+				openCodeModelID:
+					typeof model.metadata?.providerModelId === "string"
+						? model.metadata.providerModelId
+						: undefined,
 			})) ?? [];
 		return c.json({
 			models: [
@@ -171,6 +184,9 @@ export function createChatRoutes(options: {
 						modelID: key,
 						name: m.name || key,
 						provider: p.name,
+						designSupported: true,
+						openCodeProviderID: p.id,
+						openCodeModelID: key,
 					})),
 				),
 				...normalizedModels.filter(

@@ -276,6 +276,14 @@ export class DesignService {
 		if (status === "cancelled")
 			throw new Error("Design generation was cancelled");
 		if (status !== "completed") {
+			const detail =
+				status === "failed"
+					? await this.runtime.lastError?.(sessionId).catch(() => null)
+					: null;
+			if (detail)
+				throw new Error(
+					`The design agent could not finish: ${detail}. If this model works in chat, retry with a shorter brief or a different model.`,
+				);
 			const hint =
 				status === "failed"
 					? " The agent reported an error, usually a missing or rejected provider credential."

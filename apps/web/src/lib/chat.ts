@@ -72,6 +72,9 @@ export type Model = {
 	providerId?: string;
 	connectionId?: string;
 	capabilities?: string[];
+	designSupported?: boolean;
+	openCodeProviderID?: string;
+	openCodeModelID?: string;
 };
 export type Catalog = {
 	models: Model[];

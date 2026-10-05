@@ -15,8 +15,8 @@ import {
 	chat,
 	type FileDiff,
 } from "$lib/chat";
-import { Badge } from "$lib/components/ui/badge";
 import { Button } from "$lib/components/ui/button";
+import * as Marker from "$lib/components/ui/marker";
 import CodeBlock from "./CodeBlock.svelte";
 import Markdown from "./Markdown.svelte";
 
@@ -231,7 +231,7 @@ async function copy() {
 									<span class="shrink-0 font-medium">{kind === "shell" ? "Shell Command" : kind === "edit" ? "Edit File" : (part.state.title || part.tool || "Tool")}</span>
 									<span class="min-w-0 flex-1 truncate text-muted-foreground">{kind === "edit" && file ? file : commandOf(part)}</span>
 									{#if stats}<span class="shrink-0 font-mono text-[11px]"><span class="text-emerald-400">+{stats.additions}</span><span class="text-red-400">−{stats.deletions}</span></span>{/if}
-									<Badge variant="outline" class="shrink-0">{statusOf(part)}</Badge>
+									<Marker.Root class="shrink-0 text-[11px]"><Marker.Content>{statusOf(part)}</Marker.Content></Marker.Root>
 									<ChevronDown size={14} class="shrink-0 text-muted-foreground" />
 								</summary>
 								<div class="space-y-2 border-t p-3">

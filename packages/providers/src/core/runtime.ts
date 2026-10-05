@@ -31,6 +31,7 @@ export type AgentRuntime = {
 		model?: RuntimeModel;
 	}): Promise<void>;
 	status(sessionId: string): Promise<AgentRunStatus>;
+	lastError?(sessionId: string): Promise<string | null>;
 	readOutput?(sessionId: string): Promise<RuntimeOutput | null>;
 	wait(
 		sessionId: string,

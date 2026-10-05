@@ -31,7 +31,7 @@ class UnsupportedProviderAdapter implements CliProviderAdapter {
 		const executablePath = await findExecutable(this.definition.executable);
 		if (!executablePath) return { installed: false };
 		const version = await run(executablePath, ["--version"]);
-		if (!version)
+		if (version?.exitCode !== 0)
 			return {
 				installed: false,
 				executablePath,
@@ -40,7 +40,7 @@ class UnsupportedProviderAdapter implements CliProviderAdapter {
 		return {
 			installed: true,
 			executablePath,
-			version: version?.trim() || undefined,
+			version: version.stdout.trim() || undefined,
 		};
 	}
 
@@ -49,10 +49,49 @@ class UnsupportedProviderAdapter implements CliProviderAdapter {
 	}
 
 	async getAuthStatus(): Promise<AuthStatus> {
+		if (this.definition.id === "claude") {
+			const result = await run(this.definition.executable, [
+				"auth",
+				"status",
+				"--json",
+			]);
+			if (result?.exitCode === 0) {
+				try {
+					const body = JSON.parse(result.stdout) as {
+						loggedIn?: boolean;
+						authMethod?: string;
+					};
+					return {
+						authenticated: body.loggedIn === true,
+						strategy: this.definition.authStrategy,
+						accountLabel: body.authMethod,
+						message:
+							body.loggedIn === true
+								? undefined
+								: "Claude Code is not authenticated",
+					};
+				} catch {}
+			}
+		}
+		if (this.definition.id === "codex") {
+			const result = await run(this.definition.executable, ["login", "status"]);
+			const authenticated =
+				result?.exitCode === 0 && /logged in using/i.test(result.stdout);
+			return {
+				authenticated,
+				strategy: this.definition.authStrategy,
+				message: authenticated
+					? undefined
+					: "Codex authentication could not be verified",
+			};
+		}
 		return {
 			authenticated: false,
 			strategy: this.definition.authStrategy,
-			message: "Authentication status is not exposed by this adapter",
+			message:
+				this.definition.id === "antigravity"
+					? "Antigravity authentication is managed by agy; run agy in a terminal to check it"
+					: "Authentication status is not exposed by this adapter",
 		};
 	}
 
@@ -115,13 +154,17 @@ async function findExecutable(command: string): Promise<string | null> {
 	return null;
 }
 
-function run(command: string, args: string[]): Promise<string | null> {
+function run(
+	command: string,
+	args: string[],
+): Promise<{ stdout: string; stderr: string; exitCode: number | null } | null> {
 	return new Promise((resolve) => {
 		const child = spawn(command, args, {
-			stdio: ["ignore", "pipe", "ignore"],
+			stdio: ["ignore", "pipe", "pipe"],
 			windowsHide: true,
 		});
 		let stdout = "";
+		let stderr = "";
 		const timer = setTimeout(() => {
 			child.kill();
 			resolve(null);
@@ -129,13 +172,16 @@ function run(command: string, args: string[]): Promise<string | null> {
 		child.stdout.on("data", (chunk: Buffer) => {
 			stdout += chunk.toString();
 		});
+		child.stderr?.on("data", (chunk: Buffer) => {
+			stderr += chunk.toString();
+		});
 		child.once("error", () => {
 			clearTimeout(timer);
 			resolve(null);
 		});
-		child.once("exit", () => {
+		child.once("exit", (code) => {
 			clearTimeout(timer);
-			resolve(stdout);
+			resolve({ stdout, stderr, exitCode: code });
 		});
 	});
 }

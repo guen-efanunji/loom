@@ -82,14 +82,27 @@ const threadMessages = $derived(
 		.filter((message) => !activeNodeId || message.nodeId === activeNodeId)
 		.sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
 );
+const selectedModel = $derived(
+	catalog.models.find((item) => `${item.providerID}/${item.modelID}` === model),
+);
 const modelChoices = $derived(
 	catalog.models.map((item) => ({
 		value: `${item.providerID}/${item.modelID}`,
 		label: item.name,
+		supported: item.designSupported !== false,
 	})),
+);
+const unsupportedModel = $derived(
+	Boolean(model && (!selectedModel || selectedModel.designSupported === false)),
 );
 
 function modelRef() {
+	if (unsupportedModel) return undefined;
+	if (selectedModel?.openCodeProviderID && selectedModel.openCodeModelID)
+		return {
+			providerID: selectedModel.openCodeProviderID,
+			modelID: selectedModel.openCodeModelID,
+		};
 	const slash = model.indexOf("/");
 	if (slash <= 0) return undefined;
 	return {
@@ -200,6 +213,10 @@ async function createDesign(brief: string) {
 		toast.error("Add a project before generating designs.");
 		return;
 	}
+	if (unsupportedModel) {
+		toast.error("This model is not supported by the OpenCode design agent.");
+		return;
+	}
 	const text = brief.trim();
 	if (!text) return;
 	sending = true;
@@ -223,6 +240,10 @@ async function createDesign(brief: string) {
 }
 
 async function refineDesign(node: DesignNode, message: string) {
+	if (unsupportedModel) {
+		toast.error("This model is not supported by the OpenCode design agent.");
+		return;
+	}
 	sending = true;
 	try {
 		const created = await daemon.refineDesign(node.id, {
@@ -600,12 +621,13 @@ function wheel(event: WheelEvent) {
 							<div class="min-w-0 flex-1">
 								<select bind:value={model} aria-label="Model" class="h-8 w-full min-w-0 truncate rounded-md border bg-background px-2 text-xs">
 									<option value="">Default model</option>
-									{#each modelChoices as choice}<option value={choice.value}>{choice.label}</option>{/each}
+									{#each modelChoices as choice}									<option value={choice.value} disabled={!choice.supported}>{choice.label}{choice.supported ? "" : " · unavailable for OpenCode design"}</option>{/each}
 								</select>
 							</div>
 						{:else}
 							<span class="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">{catalog.models.length ? "Pick a model" : "No models configured — run opencode auth login"}</span>
 						{/if}
+						{#if unsupportedModel}<span class="w-full text-[11px] text-destructive" role="alert">Selected provider model is unavailable for the OpenCode design agent.</span>{/if}
 						<Button type="submit" size="icon" class="size-8 rounded-full" aria-label={selected?.status === "ready" ? "Send change request" : "Generate design"} disabled={sending || !draft.trim() || !projectId}>
 							{#if sending}<LoaderCircle size={15} class="animate-spin" />{:else}<ArrowUp size={15} />{/if}
 						</Button>
