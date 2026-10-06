@@ -42,7 +42,7 @@ export class ClaudeProviderAdapter extends CliProviderAdapter {
 }
 
 async function knownModels(): Promise<AgentModel[]> {
-	const result = await runCli("claude", ["models"], { timeoutMs: 30_000 });
+	const result = await runCli("claude", ["models"], { timeoutMs: 5_000 });
 	if (result?.exitCode === 0) {
 		const models = result.stdout
 			.split("\n")

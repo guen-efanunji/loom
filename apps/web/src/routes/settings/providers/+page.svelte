@@ -35,7 +35,7 @@ const lastCheckedLabel = $derived(
 			: "never",
 );
 
-onMount(() => void checkProviders());
+onMount(() => void loadProviders());
 
 async function loadProviders() {
 	loading = true;

@@ -54,11 +54,13 @@ export class ProviderManager {
 		return this.registry.require(providerIdOrConnectionId).definition.id;
 	}
 
-	async refreshAll(): Promise<ProviderConnection[]> {
+	async refreshAll(
+		options: { refreshModels?: boolean } = {},
+	): Promise<ProviderConnection[]> {
 		const results = await Promise.allSettled(
 			this.registry
 				.list()
-				.map((adapter) => this.refresh(adapter.definition.id)),
+				.map((adapter) => this.refresh(adapter.definition.id, options)),
 		);
 		return results.map((result, index) => {
 			if (result.status === "fulfilled") return result.value;
@@ -71,7 +73,10 @@ export class ProviderManager {
 		});
 	}
 
-	async refresh(providerIdOrConnectionId: string): Promise<ProviderConnection> {
+	async refresh(
+		providerIdOrConnectionId: string,
+		options: { refreshModels?: boolean } = {},
+	): Promise<ProviderConnection> {
 		const providerId = this.normalizeProviderId(providerIdOrConnectionId);
 		const adapter = this.registry.require(providerId);
 		this.setConnection(providerId, { status: "checking", error: undefined });
@@ -93,7 +98,7 @@ export class ProviderManager {
 				error: detection.error,
 			});
 			await this.emit({ type: "provider.detected", providerId, connection });
-			if (connection.status === "connected")
+			if (connection.status === "connected" && options.refreshModels)
 				await this.refreshModels(providerId);
 			return connection;
 		} catch (error) {

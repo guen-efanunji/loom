@@ -733,7 +733,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		});
 	app.get("/api/providers", async (c) => c.json(serializeProviders()));
 	app.post("/api/providers/refresh-all", async (c) => {
-		await providerManager.refreshAll();
+		await providerManager.refreshAll({ refreshModels: true });
 		return c.json(serializeProviders());
 	});
 	app.get("/api/providers/:id", async (c) => {
