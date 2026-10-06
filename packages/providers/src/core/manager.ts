@@ -81,6 +81,7 @@ export class ProviderManager {
 				? await adapter.getAuthStatus()
 				: { authenticated: false, strategy: adapter.definition.authStrategy };
 			const connection = this.setConnection(providerId, {
+				installed: detection.installed,
 				status: !detection.installed
 					? "disconnected"
 					: auth.authenticated
@@ -122,12 +123,14 @@ export class ProviderManager {
 			if (!detection.installed) {
 				this.catalog.replaceConnection(connectionId(providerId), []);
 				return this.setConnection(providerId, {
+					installed: false,
 					status: "disconnected",
 					error: "Provider is not installed",
 				});
 			}
 			const auth = await adapter.authenticate(input);
 			const connection = this.setConnection(providerId, {
+				installed: true,
 				status: auth.status.authenticated ? "connected" : "auth-required",
 				executablePath: detection.executablePath ?? null,
 				version: detection.version ?? null,
@@ -251,6 +254,7 @@ export class ProviderManager {
 			providerId,
 			name: previous?.name ?? adapter.definition.name,
 			status: previous?.status ?? "disconnected",
+			installed: previous?.installed ?? false,
 			executablePath: previous?.executablePath ?? null,
 			version: previous?.version ?? null,
 			authenticated: previous?.authenticated ?? false,

@@ -205,7 +205,8 @@ async function readVersion(
 		if (!text) continue;
 		const line =
 			text.split("\n").find((value) => /\d/.test(value)) ??
-			(text.split("\n")[0] ?? "");
+			text.split("\n")[0] ??
+			"";
 		const value = line.trim();
 		if (value) return value;
 	}

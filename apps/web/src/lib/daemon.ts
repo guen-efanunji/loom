@@ -227,6 +227,7 @@ export const daemon = {
 				auth: string;
 				authCommand: string[] | null;
 				installed: boolean;
+				executablePath?: string | null;
 				version: string | null;
 				status: string;
 				authenticated: boolean;
@@ -244,6 +245,7 @@ export const daemon = {
 				auth: string;
 				authCommand: string[] | null;
 				installed: boolean;
+				executablePath?: string | null;
 				version: string | null;
 				status: string;
 				authenticated: boolean;
@@ -488,9 +490,15 @@ export const daemon = {
 		request<void>(`/api/projects/${projectId}/designs`, { method: "DELETE" }),
 };
 
-export type { DesignMessage, DesignNode, DesignThread, DesignViewport };
-export type { DesignChatResult, DesignQuestion };
-export type { DesignActivity };
+export type {
+	DesignActivity,
+	DesignChatResult,
+	DesignMessage,
+	DesignNode,
+	DesignQuestion,
+	DesignThread,
+	DesignViewport,
+};
 
 export function diffStats(diff: string) {
 	const files = [...diff.matchAll(/^diff --git a\/(.+?) b\/(.+)$/gm)].map(

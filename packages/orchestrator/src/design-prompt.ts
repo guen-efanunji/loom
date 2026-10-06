@@ -1,22 +1,32 @@
+import { readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ProjectContext } from "@loom/automation";
-import {
-	designQuestionSchema,
-	type DesignQuestion,
-} from "@loom/protocol";
+import { type DesignQuestion, designQuestionSchema } from "@loom/protocol";
 
-const OUTPUT_RULES = [
-	"You may open with a SHORT plain-text design note (max 2 sentences) that tells the user which theme and key components you matched - this note is shown in the chat panel. Never paste HTML into the note.",
-	"After the note, reply with one or more complete, self-contained HTML documents.",
-	'Put a title marker on its own line immediately before EACH document: <!-- design: SHORT_TITLE -->. SHORT_TITLE names the artifact in 2-5 words (for example "Login page", "Footer", "Onboarding 01") - never the user\'s whole request.',
-	"If the brief asks for one screen, return exactly one marked document. If it asks for several screens or pages, return one marked document per screen, numbered in order (Onboarding 01, Onboarding 02, ...).",
-	"Each document must start with <!DOCTYPE html> and end with </html>.",
-	"Put every style inside a single <style> block in the <head>.",
-	"Make every document fully responsive so it looks correct and unbroken from 390px to 1440px wide: use fluid layouts, relative units, flex/grid that wraps, and media queries for narrow screens. Never overflow horizontally - avoid fixed widths larger than the viewport, cap images and media with max-width:100%, and set body{overflow-x:hidden}.",
-	"Do not load external resources: no CDN, remote fonts, remote images, no network calls. Use the system font stack, inline SVG and CSS gradients for imagery.",
-	"Keep each document under roughly 600 lines.",
-].join("\n");
+function promptFile(name: string): string {
+	const paths = [
+		join(process.cwd(), "prompts", "design", name),
+		resolve(
+			dirname(fileURLToPath(import.meta.url)),
+			"../../../prompts/design",
+			name,
+		),
+	];
+	for (const path of paths) {
+		try {
+			return readFileSync(path, "utf8").trim();
+		} catch {}
+	}
+	throw new Error(`Prompt file is missing: ${name}`);
+}
 
-export const DESIGN_OUTPUT_RULES = OUTPUT_RULES;
+const DESIGN_SYSTEM_PROMPT = promptFile("system.md");
+const DESIGN_CRAFT_PROMPT = promptFile("craft.md");
+const DESIGN_REFINE_PROMPT = promptFile("refine.md");
+const DESIGN_CLASSIFY_PROMPT = promptFile("classify.md");
+
+export const DESIGN_OUTPUT_RULES = DESIGN_CRAFT_PROMPT;
 
 export function deriveDesignTitle(brief: string): string {
 	const firstLine = brief
@@ -44,7 +54,10 @@ export function buildDesignPrompt(input: {
 	const lines = [
 		input.brief.trim(),
 		"",
-		`Return a single complete, self-contained HTML document for a ${input.viewport} screen (${canvas}). Put all CSS in one <style> block, use no external resources, and do not create or edit any files - reply with the HTML only.`,
+		DESIGN_SYSTEM_PROMPT,
+		"",
+		`Return a single complete, self-contained HTML document for a ${input.viewport} screen (${canvas}). Put all CSS in one <style> block, use no external resources, and do not create or edit any files.`,
+		DESIGN_CRAFT_PROMPT,
 	];
 	if (input.context?.theme)
 		lines.push("", "Match these existing theme tokens:", input.context.theme);
@@ -59,7 +72,7 @@ export function buildRefinePrompt(input: {
 }): string {
 	const canvas = canvasOf(input.viewport);
 	return [
-		"You are revising an existing UI design. Keep everything that still works and change only what the request below asks for.",
+		DESIGN_REFINE_PROMPT,
 		"",
 		"Original brief:",
 		input.brief.trim(),
@@ -72,7 +85,7 @@ export function buildRefinePrompt(input: {
 		"Current design:",
 		input.previousHtml.trim(),
 		"",
-		OUTPUT_RULES,
+		DESIGN_CRAFT_PROMPT,
 	].join("\n");
 }
 
@@ -89,7 +102,8 @@ export function buildDesignAssistantPrompt(input: {
 	const identity: string[] = [];
 	if (name) identity.push(`Project name: ${name}`);
 	if (path) identity.push(`Project folder: ${path}`);
-	if (context?.stack.length) identity.push(`Stack: ${context.stack.join(", ")}`);
+	if (context?.stack.length)
+		identity.push(`Stack: ${context.stack.join(", ")}`);
 	if (context?.packageManager)
 		identity.push(`Package manager: ${context.packageManager}`);
 	if (context?.currentBranch)
@@ -113,6 +127,8 @@ export function buildDesignAssistantPrompt(input: {
 		);
 
 	const lines = [
+		DESIGN_SYSTEM_PROMPT,
+		"",
 		`You are a UI/UX design agent helping the user design screens for their project${name ? ` "${name}"` : ""}${path ? ` at ${path}` : ""}. Every design you produce appears as a card on the canvas to the right.`,
 		"",
 		`IMPORTANT: the project you are working on is${name ? ` named "${name}"` : " the user's own project"} - it is NOT "Loom". Loom is only the tool hosting this chat. Always refer to the project by its real name and folder. You run inside an isolated scratch directory, so your shell cannot list the project directly - rely on the Project files listing below and any file the user @mentions.`,
@@ -128,7 +144,11 @@ export function buildDesignAssistantPrompt(input: {
 		"Theme fidelity: when Project theme tokens are provided, style designs with those exact tokens - never invent a new palette, font or radius.",
 	];
 	if (identity.length) lines.push("", "Project context:", ...identity);
-	lines.push("", "Craft requirements (apply only to DESIGN replies):", OUTPUT_RULES);
+	lines.push(
+		"",
+		"Craft requirements (apply only to DESIGN replies):",
+		DESIGN_CRAFT_PROMPT,
+	);
 	return lines.join("\n");
 }
 
@@ -137,10 +157,8 @@ export function buildIntentClassifierPrompt(
 	opts: { hasSelectedNode: boolean },
 ): string {
 	return [
-		"You are an intent classifier for a UI/UX design assistant inside a design canvas.",
+		DESIGN_CLASSIFY_PROMPT,
 		"Decide what the user's message below asks for right now.",
-		"- DESIGN: they ask to create, build, draw or change a screen, page, component or visual mockup.",
-		"- CHAT: greeting, small talk, a question about the project, or anything that is not a request to produce or edit a visual design.",
 		opts.hasSelectedNode
 			? "A design is already selected on the canvas, so a request to change or adjust it counts as DESIGN."
 			: "No design is selected yet, so only a request to create a new design counts as DESIGN.",
@@ -188,7 +206,9 @@ export function parseDesignQuestions(reply: string): DesignQuestion | null {
 
 /** True when a reply carries a real design document (marker or full doc). */
 export function hasDesignDoc(reply: string): boolean {
-	return SCREEN_MARKER.test(reply) || /<!doctype html[\s\S]*<\/html>/i.test(reply);
+	return (
+		SCREEN_MARKER.test(reply) || /<!doctype html[\s\S]*<\/html>/i.test(reply)
+	);
 }
 
 /**
@@ -258,9 +278,7 @@ export function extractDesignScreens(raw: string): DesignScreen[] {
 		for (let index = 0; index < marks.length; index += 1) {
 			const mark = marks[index];
 			if (!mark) continue;
-			const title = (mark[1] ?? "")
-				.trim()
-				.replace(/^["'`]+|["'`]+$/g, "");
+			const title = (mark[1] ?? "").trim().replace(/^["'`]+|["'`]+$/g, "");
 			const from = (mark.index ?? 0) + mark[0].length;
 			const next = marks[index + 1];
 			const to = next?.index ?? text.length;

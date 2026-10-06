@@ -716,21 +716,19 @@ export async function createApp(options: DaemonAppOptions = {}) {
 				providerId: adapter.definition.id,
 				name: adapter.definition.name,
 				status: connection?.status ?? "disconnected",
-				executablePath: connection?.executablePath ?? null,
 				version: connection?.version ?? null,
 				authenticated: connection?.authenticated ?? false,
 				authCommand:
 					connection?.authCommand ?? adapter.definition.authCommand ?? null,
 				lastCheckedAt: connection?.lastCheckedAt ?? null,
-				capabilities:
-					connection?.capabilities ?? [...adapter.definition.capabilities],
+				capabilities: connection?.capabilities ?? [
+					...adapter.definition.capabilities,
+				],
 				command: adapter.definition.executable,
 				install: adapter.definition.homepage ?? null,
 				auth: adapter.definition.authStrategy,
-				installed: connection
-					? connection.status !== "disconnected" ||
-						Boolean(connection.executablePath)
-					: false,
+				installed: connection?.installed ?? false,
+				executablePath: connection?.executablePath ?? null,
 			};
 		});
 	app.get("/api/providers", async (c) => c.json(serializeProviders()));

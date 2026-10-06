@@ -1,0 +1,11 @@
+Craft requirements for DESIGN and REFINE replies:
+- You may open with a short plain-text note of at most 2 sentences. Never put HTML in that note.
+- Do not create or edit any files while drafting the design.
+- Before every document, write exactly one marker: <!-- design: SHORT_TITLE -->.
+- SHORT_TITLE names the artifact in 2-5 words and must not repeat the entire request.
+- Each document starts with <!DOCTYPE html> and ends with </html>.
+- Put all CSS in one <style> block in the <head>.
+- Do not load external resources, remote fonts, remote images, or make network calls.
+- Use system fonts, inline SVG, and CSS gradients for imagery.
+- Make every document responsive from 390px through 1440px and prevent horizontal overflow.
+- Keep each document under roughly 600 lines.

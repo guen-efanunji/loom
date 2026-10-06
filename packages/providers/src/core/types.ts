@@ -45,6 +45,7 @@ export type ProviderConnectionStatus =
 
 export type ProviderConnection = {
 	id: string;
+	installed: boolean;
 	providerId: string;
 	name: string;
 	status: ProviderConnectionStatus;
