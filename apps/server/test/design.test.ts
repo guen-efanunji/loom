@@ -178,13 +178,14 @@ describe("design canvas API", () => {
 			expect(
 				thread.messages.some(
 					(message) =>
-						message.role === "assistant" && message.text.includes("ready"),
+						message.role === "assistant" &&
+						message.text.includes("ready"),
 				),
 			).toBe(true);
 		});
 	});
 
-	test("refines into a sibling node and records the change request", async () => {
+	test("refines a design in place and records the change request", async () => {
 		await withSetup(async (setup) => {
 			const created = await setup.daemon.app.request("/api/designs", {
 				method: "POST",
@@ -207,21 +208,28 @@ describe("design canvas API", () => {
 				},
 			);
 			expect(refined.status).toBe(202);
-			const child = await waitForNode(
-				setup.daemon.app,
-				((await refined.json()) as { nodeId: string }).nodeId,
-			);
-			expect(child.parentId).toBe(nodeId);
-			expect(child.x).toBeGreaterThan(0);
+			// Refining in place returns the same node and adds no duplicate card.
+			const refinedBody = (await refined.json()) as { nodeId: string };
+			expect(refinedBody.nodeId).toBe(nodeId);
+			const node = await waitForNode(setup.daemon.app, nodeId);
+			expect(node.status).toBe("ready");
+			expect(node.html).toContain("<!DOCTYPE html>");
 			const refinePrompt = setup.runtime.prompts.at(-1) ?? "";
 			expect(refinePrompt).toContain("Add a promo code field");
 			expect(refinePrompt).toContain("<!DOCTYPE html>");
 			const thread = await readThread(setup.daemon.app, setup.project.id);
-			expect(thread.nodes.length).toBe(2);
+			expect(thread.nodes.length).toBe(1);
+			expect(
+				thread.messages.some(
+					(message) =>
+						message.role === "user" &&
+						message.text === "Add a promo code field",
+				),
+			).toBe(true);
 		});
 	});
 
-	test("retrying a failed refinement keeps the parent design and model", async () => {
+	test("retrying a refined design keeps its model and re-applies the change", async () => {
 		await withSetup(async (setup) => {
 			const created = await setup.daemon.app.request("/api/designs", {
 				method: "POST",
@@ -241,12 +249,13 @@ describe("design canvas API", () => {
 				{
 					method: "POST",
 					headers,
-					// No model picked: the refinement inherits the parent's choice.
+					// No model picked: the refinement inherits the node's choice.
 					body: JSON.stringify({ message: "Add a promo code field" }),
 				},
 			);
-			const childId = ((await refined.json()) as { nodeId: string }).nodeId;
-			expect((await waitForNode(setup.daemon.app, childId)).status).toBe(
+			const refinedId = ((await refined.json()) as { nodeId: string }).nodeId;
+			expect(refinedId).toBe(nodeId);
+			expect((await waitForNode(setup.daemon.app, nodeId)).status).toBe(
 				"ready",
 			);
 			expect(setup.runtime.models.at(-1)).toEqual({
@@ -256,20 +265,20 @@ describe("design canvas API", () => {
 
 			setup.runtime.failNext = true;
 			const failedRetry = await setup.daemon.app.request(
-				`/api/designs/${childId}/retry`,
+				`/api/designs/${nodeId}/retry`,
 				{ method: "POST", headers },
 			);
 			expect(failedRetry.status).toBe(202);
-			expect((await waitForNode(setup.daemon.app, childId)).status).toBe(
+			expect((await waitForNode(setup.daemon.app, nodeId)).status).toBe(
 				"failed",
 			);
 
 			const retry = await setup.daemon.app.request(
-				`/api/designs/${childId}/retry`,
+				`/api/designs/${nodeId}/retry`,
 				{ method: "POST", headers },
 			);
 			expect(retry.status).toBe(202);
-			const recovered = await waitForNode(setup.daemon.app, childId);
+			const recovered = await waitForNode(setup.daemon.app, nodeId);
 			expect(recovered.status).toBe("ready");
 			const prompt = setup.runtime.prompts.at(-1) ?? "";
 			expect(prompt).toContain("Checkout flow");

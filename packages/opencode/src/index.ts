@@ -54,6 +54,7 @@ export type AgentRuntime = {
 		sessionId: string;
 		prompt: string;
 		model?: AgentModel;
+		images?: Array<{ mime: string; data: string }>;
 	}): Promise<void>;
 	status(sessionId: string): Promise<AgentRunStatus>;
 	lastError?(sessionId: string): Promise<string | null>;
@@ -343,8 +344,15 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 			},
 			body: JSON.stringify({
 				title: input.title,
+				// A read-only session must stop the agent from mutating the repo, but
+				// it cannot deny every permission: OpenCode's free-tier provider
+				// requires `bash` to stay available, and a blanket `{permission:"*"}`
+				// deny makes the gateway reject the run with
+				// "OpenCode's free tier can only be used from within OpenCode".
+				// Denying just `edit` keeps the canvas/planner read-only while
+				// leaving free-tier models usable.
 				...(input.readOnly
-					? { permission: [{ permission: "*", pattern: "*", action: "deny" }] }
+					? { permission: [{ permission: "edit", pattern: "*", action: "deny" }] }
 					: {}),
 			}),
 		});
@@ -357,6 +365,7 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 		sessionId: string;
 		prompt: string;
 		model?: AgentModel;
+		images?: Array<{ mime: string; data: string }>;
 	}): Promise<void> {
 		this.cancelled.delete(input.sessionId);
 		await this.request(
@@ -373,7 +382,14 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 								},
 							}
 						: {}),
-					parts: [{ type: "text", text: input.prompt }],
+					parts: [
+						{ type: "text", text: input.prompt },
+						...(input.images ?? []).map((image) => ({
+							type: "file",
+							mime: image.mime,
+							url: `data:${image.mime};base64,${image.data}`,
+						})),
+					],
 				}),
 			},
 		);
@@ -515,7 +531,11 @@ export class MockAgentRuntime implements AgentRuntime {
 		return { id };
 	}
 
-	async prompt(input: { sessionId: string; prompt: string }): Promise<void> {
+	async prompt(input: {
+		sessionId: string;
+		prompt: string;
+		images?: Array<{ mime: string; data: string }>;
+	}): Promise<void> {
 		const session = this.sessions.get(input.sessionId);
 		if (!session)
 			throw new OpenCodeError("HTTP_ERROR", "Mock session was not found");

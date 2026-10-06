@@ -424,7 +424,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		cors({
 			origin: (origin) =>
 				!origin || allowedOrigins.has(origin) ? origin : undefined,
-			allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+			allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
 			allowHeaders: ["Content-Type", "Authorization"],
 			credentials: true,
 		}),

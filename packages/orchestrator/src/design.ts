@@ -1,4 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { mkdirSync } from "node:fs";
+import { open, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { buildAutomationContext, type ProjectContext } from "@loom/automation";
 import type {
 	DesignMessageRecord,
@@ -7,13 +11,14 @@ import type {
 	ProjectRecord,
 	repositories,
 } from "@loom/db";
-import type { DesignPatch, DesignViewport } from "@loom/protocol";
+import type { DesignAttachment, DesignPatch, DesignViewport } from "@loom/protocol";
 import type { AgentRuntime, RuntimeModel } from "@loom/providers/core";
 import {
 	buildDesignPrompt,
 	buildRefinePrompt,
 	deriveDesignTitle,
-	extractDesignHtml,
+	designChatSummary,
+	extractDesignScreens,
 } from "./design-prompt";
 
 type Repos = ReturnType<typeof repositories>;
@@ -53,6 +58,59 @@ function friendlyRuntimeError(error: unknown): string {
 	if (/did not finish before timeout/i.test(message))
 		return "The design agent took too long and was stopped. Retry with a shorter brief or a faster model.";
 	return message;
+}
+
+const REFERENCE_FILE_LIMIT = 12;
+const REFERENCE_PER_FILE = 12_000;
+const REFERENCE_TOTAL_BUDGET = 40_000;
+
+async function readBounded(path: string, limit: number): Promise<string> {
+	const info = await stat(path);
+	if (!info.isFile() || info.size === 0) return "";
+	const handle = await open(path, "r");
+	try {
+		const buffer = Buffer.alloc(Math.min(limit, info.size));
+		const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+		return buffer.subarray(0, bytesRead).toString("utf8");
+	} finally {
+		await handle.close();
+	}
+}
+
+/**
+ * Reads the files a user @mentioned so the design agent can mirror their markup
+ * and tokens. Every path is confined to the project root and bounded in size.
+ */
+async function referenceFilesBlock(
+	projectPath: string,
+	paths: string[],
+): Promise<string> {
+	const root = resolve(projectPath);
+	const chunks: string[] = [];
+	let budget = REFERENCE_TOTAL_BUDGET;
+	for (const rel of paths.slice(0, REFERENCE_FILE_LIMIT)) {
+		if (budget <= 0) break;
+		const target = resolve(root, rel);
+		const local = relative(root, target);
+		if (
+			!local ||
+			local === ".." ||
+			local.startsWith(`..${sep}`) ||
+			isAbsolute(local)
+		)
+			continue;
+		let text = "";
+		try {
+			text = await readBounded(target, Math.min(REFERENCE_PER_FILE, budget));
+		} catch {
+			continue;
+		}
+		if (!text.trim()) continue;
+		budget -= text.length;
+		chunks.push(`--- ${local.split(sep).join("/")} ---\n${text}`);
+	}
+	if (!chunks.length) return "";
+	return `\n\nReference files from the project (match their markup, design tokens and component patterns):\n\n${chunks.join("\n\n")}`;
 }
 
 export type DesignThreadRecord = {
@@ -142,6 +200,8 @@ export class DesignService {
 		brief: string;
 		viewport?: DesignViewport;
 		model?: RuntimeModel;
+		files?: string[];
+		attachments?: DesignAttachment[];
 	}): Promise<{ nodeId: string; status: string }> {
 		const project = await this.requireProject(input.projectId);
 		const brief = input.brief.trim();
@@ -169,49 +229,66 @@ export class DesignService {
 			text: brief,
 			model: modelLabel(input.model),
 		});
-		this.launch(id, () => this.generate(id, project, input.model));
+		this.launch(id, () =>
+			this.generate(
+				id,
+				project,
+				input.model,
+				"create",
+				undefined,
+				input.files,
+				input.attachments,
+			),
+		);
 		return { nodeId: id, status: "queued" };
 	}
 
-	private async rootBrief(node: DesignNodeRecord): Promise<string> {
-		let current = node;
-		const seen = new Set<string>([current.id]);
-		while (current.parentId) {
-			if (seen.has(current.parentId)) break;
-			const parent = await this.store
-				.getNode(current.parentId)
-				.catch(() => null);
-			if (!parent) break;
-			seen.add(parent.id);
-			current = parent;
+	/**
+	 * A node keeps its original brief; every later user message is a refinement.
+	 * The latest instruction that differs from the brief is the pending change.
+	 */
+	private async lastInstruction(
+		node: DesignNodeRecord,
+	): Promise<string | null> {
+		const messages = await this.store.listMessages(node.projectId);
+		const brief = node.brief.trim();
+		for (let index = messages.length - 1; index >= 0; index -= 1) {
+			const message = messages[index];
+			if (message?.nodeId !== node.id || message.role !== "user") continue;
+			const text = message.text.trim();
+			return text && text !== brief ? text : null;
 		}
-		return current.brief;
+		return null;
 	}
 
-	/**
-	 * A node with a parent is a refinement: the prompt carries the previous
-	 * document so the agent edits it instead of designing from scratch.
-	 */
-	private async promptFor(
+	private async buildPrompt(
 		node: DesignNodeRecord,
 		project: ProjectRecord,
+		mode: "create" | "refine",
+		message?: string,
+		files?: string[],
 	): Promise<string> {
 		const viewport = viewportOf(node.viewport);
-		const parent = node.parentId
-			? await this.store.getNode(node.parentId).catch(() => null)
-			: null;
-		if (parent?.html)
-			return buildRefinePrompt({
-				brief: await this.rootBrief(node),
-				message: node.brief,
+		let prompt: string;
+		if (mode === "refine" && message && node.html)
+			prompt = buildRefinePrompt({
+				brief: node.brief,
+				message,
 				viewport,
-				previousHtml: parent.html,
+				previousHtml: node.html,
 			});
-		const context: ProjectContext | undefined = await buildAutomationContext(
-			project.path,
-			project.name,
-		).catch(() => undefined);
-		return buildDesignPrompt({ brief: node.brief, viewport, context });
+		else {
+			const context: ProjectContext | undefined =
+				await buildAutomationContext(
+					project.path,
+					project.name,
+				).catch(() => undefined);
+			prompt = buildDesignPrompt({ brief: node.brief, viewport, context });
+		}
+		const references = files?.length
+			? await referenceFilesBlock(project.path, files)
+			: "";
+		return prompt + references;
 	}
 
 	/**
@@ -238,38 +315,63 @@ export class DesignService {
 	private async generate(
 		nodeId: string,
 		project: ProjectRecord,
-		model?: RuntimeModel,
+		model: RuntimeModel | undefined,
+		mode: "create" | "refine",
+		message?: string,
+		files?: string[],
+		attachments?: DesignAttachment[],
 	) {
 		const node = await this.requireNode(nodeId);
 		await this.store.updateNode(nodeId, {
 			status: "generating",
 			errorMessage: null,
 		});
-		const prompt = await this.promptFor(node, project);
+		const prompt = await this.buildPrompt(node, project, mode, message, files);
+		const images = (attachments ?? []).map((attachment) => ({
+			mime: attachment.mime,
+			data: attachment.data,
+		}));
+		// Design generation is only a preview step: the agent drafts its HTML in
+		// an isolated temp working directory and never writes into the user's
+		// project (even via bash). Only an explicit "Publish" copies a finished
+		// design into the repo, after the user has reviewed the mockup.
+		const workdir = join(tmpdir(), "loom-design", project.id, nodeId);
+		mkdirSync(workdir, { recursive: true });
 		const session = await this.runtime.createSession({
-			cwd: project.path,
+			cwd: workdir,
 			title: `Loom design · ${node.title}`,
 			readOnly: true,
 		});
 		await this.store.updateNode(nodeId, { sessionId: session.id });
-		await this.render(
-			nodeId,
-			project,
+		const startedAt = Date.now();
+		const reply = await this.runSession(
 			session.id,
 			prompt,
 			model ?? (await this.storedModel(node)),
+			images,
+		);
+		await this.persist(
+			nodeId,
+			project,
+			node,
+			reply,
+			mode,
+			Date.now() - startedAt,
 		);
 	}
 
-	private async render(
-		nodeId: string,
-		project: ProjectRecord,
+	private async runSession(
 		sessionId: string,
 		prompt: string,
 		model?: RuntimeModel,
-	) {
-		const startedAt = Date.now();
-		await this.runtime.prompt({ sessionId, prompt, model });
+		images?: Array<{ mime: string; data: string }>,
+	): Promise<string> {
+		await this.runtime.prompt({
+			sessionId,
+			prompt,
+			model,
+			images: images?.length ? images : undefined,
+		});
 		const status = await this.runtime.wait(sessionId, {
 			timeoutMs: DESIGN_TIMEOUT_MS,
 		});
@@ -291,19 +393,62 @@ export class DesignService {
 			throw new Error(`Design agent ended with status: ${status}.${hint}`);
 		}
 		const output = await this.runtime.readOutput?.(sessionId);
-		const html = extractDesignHtml(output?.output ?? "");
-		const durationMs = Date.now() - startedAt;
+		return output?.output ?? "";
+	}
+
+	/**
+	 * Writes the agent reply back to the canvas. A fresh generation may return
+	 * several screens (one node each); a refinement updates the node in place so
+	 * iterating on a design never spawns a duplicate card.
+	 */
+	private async persist(
+		nodeId: string,
+		project: ProjectRecord,
+		node: DesignNodeRecord,
+		reply: string,
+		mode: "create" | "refine",
+		durationMs: number,
+	) {
+		const screens = extractDesignScreens(reply);
+		const primary = screens[0];
+		if (!primary)
+			throw new Error("Design agent returned no usable document");
+		const model = await this.storedModel(node);
 		await this.store.updateNode(nodeId, {
 			status: "ready",
-			html,
+			html: primary.html,
+			title: primary.title || node.title,
 			errorMessage: null,
 			durationMs,
 		});
+		if (mode === "create") {
+			for (let index = 1; index < screens.length; index += 1) {
+				const screen = screens[index];
+				if (!screen) continue;
+				const id = randomUUID();
+				await this.store.createNode({
+					projectId: project.id,
+					id,
+					title: screen.title || `${node.title} ${index + 1}`,
+					brief: node.brief,
+					viewport: node.viewport,
+					status: "ready",
+					x: node.x + index * (node.width + GAP_X),
+					y: node.y,
+					width: node.width,
+					height: node.height,
+				});
+				await this.store.updateNode(id, {
+					html: screen.html,
+					durationMs,
+				});
+			}
+		}
 		await this.store.addMessage({
 			projectId: project.id,
 			nodeId,
 			role: "assistant",
-			text: "Design is ready on the canvas.",
+			text: designChatSummary(reply, screens),
 			model: modelLabel(model),
 			durationMs,
 		});
@@ -311,41 +456,47 @@ export class DesignService {
 
 	async refine(
 		nodeId: string,
-		input: { message: string; model?: RuntimeModel },
+		input: {
+			message: string;
+			model?: RuntimeModel;
+			files?: string[];
+			attachments?: DesignAttachment[];
+		},
 	): Promise<{ nodeId: string; status: string }> {
-		const parent = await this.requireNode(nodeId);
+		const node = await this.requireNode(nodeId);
 		if (this.busy.has(nodeId))
 			throw new Error("This design is still generating");
-		const project = await this.requireProject(parent.projectId);
+		const project = await this.requireProject(node.projectId);
 		const message = input.message.trim();
 		if (!message) throw new Error("Describe what to change");
-		const viewport = viewportOf(parent.viewport);
-		const size = designNodeSize(viewport);
-		// A refinement keeps the parent's model unless the caller picks another.
-		const model = input.model ?? (await this.storedModel(parent));
-		const id = randomUUID();
-		await this.store.createNode({
-			id,
-			projectId: project.id,
-			title: parent.title,
-			brief: message,
-			viewport,
-			parentId: parent.id,
-			status: "queued",
-			x: parent.x + parent.width + GAP_X,
-			y: parent.y,
-			width: size.width,
-			height: size.height,
-		});
+		// A refinement keeps the node's model unless the caller picks another.
+		const model = input.model ?? (await this.storedModel(node));
 		await this.store.addMessage({
 			projectId: project.id,
-			nodeId: id,
+			nodeId,
 			role: "user",
 			text: message,
 			model: modelLabel(model),
 		});
-		this.launch(id, () => this.generate(id, project, model));
-		return { nodeId: id, status: "queued" };
+		// Refine in place: the previous document stays until the new one is ready,
+		// so a failed change never wipes a good design and no duplicate card is
+		// created for every iteration.
+		await this.store.updateNode(nodeId, {
+			status: "queued",
+			errorMessage: null,
+		});
+		this.launch(nodeId, () =>
+			this.generate(
+				nodeId,
+				project,
+				model,
+				"refine",
+				message,
+				input.files,
+				input.attachments,
+			),
+		);
+		return { nodeId, status: "queued" };
 	}
 
 	async retry(
@@ -356,12 +507,19 @@ export class DesignService {
 		const project = await this.requireProject(node.projectId);
 		if (this.busy.has(nodeId))
 			throw new Error("This design is still generating");
+		// Replaying a node that already has a design and a pending change request
+		// re-applies that refinement; otherwise retry starts a fresh generation.
+		const instruction = node.html ? await this.lastInstruction(node) : null;
+		const mode: "create" | "refine" =
+			instruction && node.html ? "refine" : "create";
 		await this.store.updateNode(nodeId, {
 			status: "queued",
 			errorMessage: null,
 			sessionId: null,
 		});
-		this.launch(nodeId, () => this.generate(nodeId, project, model));
+		this.launch(nodeId, () =>
+			this.generate(nodeId, project, model, mode, instruction ?? undefined),
+		);
 		return { nodeId, status: "queued" };
 	}
 

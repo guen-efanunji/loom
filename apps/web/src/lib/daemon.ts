@@ -1,5 +1,6 @@
 import type {
 	AgentModelRef,
+	DesignAttachment,
 	DesignMessage,
 	DesignNode,
 	DesignPatch,
@@ -407,6 +408,8 @@ export const daemon = {
 		brief: string;
 		viewport?: DesignViewport;
 		model?: AgentModelRef;
+		files?: string[];
+		attachments?: DesignAttachment[];
 	}) =>
 		request<{ nodeId: string; status: string }>("/api/designs", {
 			method: "POST",
@@ -422,7 +425,12 @@ export const daemon = {
 		}),
 	refineDesign: (
 		id: string,
-		input: { message: string; model?: AgentModelRef },
+		input: {
+			message: string;
+			model?: AgentModelRef;
+			files?: string[];
+			attachments?: DesignAttachment[];
+		},
 	) =>
 		request<{ nodeId: string; status: string }>(`/api/designs/${id}/refine`, {
 			method: "POST",

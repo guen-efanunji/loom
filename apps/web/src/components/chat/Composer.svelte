@@ -29,6 +29,8 @@ let {
 	draft = $bindable(""),
 	model = $bindable(""),
 	agent = $bindable("build"),
+	showAgents = true,
+	inputId,
 }: {
 	projectId: string;
 	catalog: Catalog;
@@ -46,6 +48,8 @@ let {
 	draft?: string;
 	model?: string;
 	agent?: string;
+	showAgents?: boolean;
+	inputId?: string;
 } = $props();
 let textarea = $state<HTMLTextAreaElement | null>(null);
 let files = $state<string[]>([]);
@@ -136,6 +140,28 @@ function addAttachments(event: Event) {
 
 function removeAttachment(file: globalThis.File) {
 	attachments = attachments.filter((item) => item !== file);
+}
+
+/** Ctrl/Cmd+V a screenshot or photo straight into the attachment tray. */
+function onpaste(event: ClipboardEvent) {
+	const items = event.clipboardData?.items;
+	if (!items) return;
+	const images: globalThis.File[] = [];
+	for (const item of Array.from(items)) {
+		if (item.kind === "file" && item.type.startsWith("image/")) {
+			const file = item.getAsFile();
+			if (file) images.push(file);
+		}
+	}
+	if (!images.length) return;
+	event.preventDefault();
+	const stamp = Date.now();
+	const named = images.map((file, index) =>
+		file.name && file.name !== "image.png"
+			? file
+			: new File([file], `pasted-${stamp}-${index}.png`, { type: file.type }),
+	);
+	attachments = [...attachments, ...named].slice(0, 10);
 }
 
 async function attach() {
@@ -252,7 +278,7 @@ function keydown(event: KeyboardEvent) {
      {#each attachments as file}<Button variant="secondary" size="sm" class="max-w-full text-xs" onclick={() => removeAttachment(file)} title={`Remove ${file.name}`} aria-label={`Remove ${file.name}`}><ImageIcon size={12} /><span class="truncate">{file.name}</span><X size={12} /></Button>{/each}
   </div>{/if}
   <input bind:this={attachmentInput} type="file" accept="image/*,.txt,.md,.json,.ts,.tsx,.js,.jsx,.css,.html,.pdf" multiple onchange={addAttachments} class="sr-only" aria-label="Attach files or images" />
-   <Textarea bind:ref={textarea} bind:value={draft} oninput={input} onclick={input} onkeydown={keydown} aria-label="Message agent" aria-controls={query !== null ? "mention-list" : undefined} aria-activedescendant={query !== null ? `mention-${active}` : undefined} placeholder="Ask anything… @ for files and agents" rows={3} class="max-h-56 min-h-24 resize-none border-0 bg-transparent p-4 text-sm shadow-none focus-visible:ring-0" disabled={disabled || sending} />
+   <Textarea id={inputId} bind:ref={textarea} bind:value={draft} oninput={input} onclick={input} onpaste={onpaste} onkeydown={keydown} aria-label="Message agent" aria-controls={query !== null ? "mention-list" : undefined} aria-activedescendant={query !== null ? `mention-${active}` : undefined} placeholder="Ask anything… @ for files and agents" rows={3} class="max-h-56 min-h-24 resize-none border-0 bg-transparent p-4 text-sm shadow-none focus-visible:ring-0" disabled={disabled || sending} />
   <div class="flex flex-wrap items-center justify-between gap-2 px-3 pb-3">
      <Popover.Root bind:open={attachmentOpen}><Popover.Trigger class="inline-flex size-9 items-center justify-center rounded-md border border-transparent text-sm hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50" title="Add to message" aria-label="Add to message" disabled={sending}><Plus size={16} /></Popover.Trigger><Popover.Content class="w-64 p-1" align="start"><Command.Root><Command.List><Command.Group><Command.Item value="Add photos & files" onSelect={() => { attachmentOpen = false; attachmentInput?.click(); }}><ImageIcon size={15} /><span>Add photos &amp; files</span></Command.Item><Command.Item value="@ for mentions" disabled={!projectId} onSelect={() => { attachmentOpen = false; void attach(); }}><AtSign size={15} /><span>@ for mentions</span></Command.Item></Command.Group></Command.List></Command.Root></Popover.Content></Popover.Root>
     <div class="flex min-w-0 items-center gap-1">
@@ -260,7 +286,7 @@ function keydown(event: KeyboardEvent) {
         <Popover.Content class="w-80 p-0" align="end"><Command.Root><Command.Input placeholder="Search models…" /><Command.List><Command.Empty>No configured models found.</Command.Empty><Command.Group heading="Models"><Command.Item value="default" onSelect={() => { model = ""; modelOpen = false; }}>Default model</Command.Item>{#each catalog.models as item}<Command.Item value={`${item.providerID}/${item.modelID} ${item.name}`} onSelect={() => { model = `${item.providerID}/${item.modelID}`; modelOpen = false; }}><div><p>{item.name}</p><p class="text-xs text-muted-foreground">{item.provider} · {item.providerId ?? item.providerID}{item.connectionId ? ` · ${item.connectionId}` : ""}</p></div></Command.Item>{/each}</Command.Group></Command.List></Command.Root></Popover.Content>
       </Popover.Root>
 
-      <Select.Root type="single" bind:value={agent}><Select.Trigger class="h-8 w-auto border-0 text-xs shadow-none" aria-label="Select agent">{agent}</Select.Trigger><Select.Content>{#each catalog.agents.filter((a) => a.mode !== "subagent") as item}<Select.Item value={item.name}>{item.name}</Select.Item>{/each}</Select.Content></Select.Root>
+      {#if showAgents}<Select.Root type="single" bind:value={agent}><Select.Trigger class="h-8 w-auto border-0 text-xs shadow-none" aria-label="Select agent">{agent}</Select.Trigger><Select.Content>{#each catalog.agents.filter((a) => a.mode !== "subagent") as item}<Select.Item value={item.name}>{item.name}</Select.Item>{/each}</Select.Content></Select.Root>{/if}
       {#if busy}<Button type="button" size="icon" variant="secondary" aria-label="Stop response" title="Stop response" onclick={onstop}><Square size={14} /></Button>{:else}<Button type="submit" size="icon" class="rounded-full" aria-label="Send message" title="Send message" disabled={disabled || sending || (!draft.trim() && !files.length && !attachments.length)}>{#if sending}<LoaderCircle size={16} class="animate-spin" />{:else}<ArrowUp size={17} />{/if}</Button>{/if}
     </div>
   </div>

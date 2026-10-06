@@ -29,6 +29,8 @@ export type AgentRuntime = {
 		sessionId: string;
 		prompt: string;
 		model?: RuntimeModel;
+		/** Base64 images (pasted photos, mockups) sent alongside the text. */
+		images?: Array<{ mime: string; data: string }>;
 	}): Promise<void>;
 	status(sessionId: string): Promise<AgentRunStatus>;
 	lastError?(sessionId: string): Promise<string | null>;

@@ -10,6 +10,8 @@ export type ProjectContext = {
 	scripts: Record<string, string>;
 	conventions?: string;
 	currentBranch?: string;
+	/** Design tokens (CSS variables / tailwind theme) scraped from the repo. */
+	theme?: string;
 };
 
 const IGNORED = new Set([
@@ -101,6 +103,58 @@ function detectPackageManager(
 	return manager || undefined;
 }
 
+const THEME_FILE = /\.(css)$|tailwind\.config\.(js|cjs|mjs|ts)$|components\.json$/i;
+
+/** Keep only the lines that actually carry design tokens from a CSS file. */
+function cssTokens(css: string): string {
+	return css
+		.split("\n")
+		.filter((line) => {
+			const t = line.trim();
+			if (!t) return false;
+			return (
+				/--[\w-]+\s*:/.test(t) ||
+				/(^|\s)(:root|\.dark|html|body)\b/.test(t) ||
+				/@theme\b/.test(t) ||
+				/font-family\s*:/i.test(t)
+			);
+		})
+		.join("\n");
+}
+
+/**
+ * Scrapes the project's real theme so design mockups match the product instead
+ * of inventing a palette. Reads CSS files (shadcn-style `--token` variables),
+ * the tailwind config, and components.json, bounded to a small budget.
+ */
+async function collectTheme(
+	root: string,
+	files: string[],
+): Promise<string | undefined> {
+	const candidates = files.filter(
+		(file) => THEME_FILE.test(file) && !/\.min\.css$/i.test(file),
+	);
+	const parts: string[] = [];
+	let budget = 6000;
+	for (const rel of candidates) {
+		if (budget <= 0) break;
+		const raw = await readBounded(
+			join(root, rel),
+			Math.min(8000, budget + 2000),
+			root,
+		);
+		if (!raw) continue;
+		const body = /\.css$/i.test(rel) ? cssTokens(raw) : raw;
+		const trimmed = body.trim();
+		if (trimmed.length < 20) continue;
+		const slice = trimmed.slice(0, budget);
+		parts.push(`### ${rel}\n${slice}`);
+		budget -= slice.length;
+	}
+	if (!parts.length) return undefined;
+	return parts.join("\n\n").slice(0, 6000);
+}
+
 export async function buildAutomationContext(
 	projectPath: string,
 	projectName: string,
@@ -148,5 +202,7 @@ export async function buildAutomationContext(
 	if (packageManager) context.packageManager = packageManager;
 	if (conventions) context.conventions = conventions;
 	if (currentBranch) context.currentBranch = currentBranch;
+	const theme = await collectTheme(projectPath, files);
+	if (theme) context.theme = theme;
 	return context;
 }

@@ -1,6 +1,5 @@
 <script lang="ts">
 import {
-	ArrowUp,
 	ChevronRight,
 	Layers,
 	LoaderCircle,
@@ -18,12 +17,11 @@ import {
 } from "@lucide/svelte";
 import { onDestroy, onMount, tick } from "svelte";
 import { toast } from "svelte-sonner";
-import type { Catalog } from "$lib/chat";
+import type { Catalog, ChatAttachment } from "$lib/chat";
 import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
+import Composer from "./chat/Composer.svelte";
 import { Badge } from "$lib/components/ui/badge";
 import { Button } from "$lib/components/ui/button";
-import * as Dialog from "$lib/components/ui/dialog";
-import { Textarea } from "$lib/components/ui/textarea";
 import {
 	type DesignMessage,
 	type DesignNode,
@@ -47,17 +45,14 @@ let loading = $state(true);
 let error = $state("");
 let selectedId = $state("");
 let draft = $state("");
-let viewport = $state<DesignViewport>("desktop");
 let model = $state("");
 let zoom = $state(1);
 let panX = $state(48);
 let panY = $state(48);
 let theme = $state<"light" | "dark">("light");
-let previewNode = $state<DesignNode | null>(null);
 let deleteTarget = $state<DesignNode | null>(null);
 let deleteOpen = $state(false);
 let publishing = $state(false);
-let previewOpen = $state(false);
 let sending = $state(false);
 let surface = $state<HTMLDivElement>();
 let scroller = $state<HTMLDivElement>();
@@ -85,15 +80,15 @@ const threadMessages = $derived(
 const selectedModel = $derived(
 	catalog.models.find((item) => `${item.providerID}/${item.modelID}` === model),
 );
-const modelChoices = $derived(
-	catalog.models.map((item) => ({
-		value: `${item.providerID}/${item.modelID}`,
-		label: item.name,
-		supported: item.designSupported !== false,
-	})),
-);
 const unsupportedModel = $derived(
 	Boolean(model && (!selectedModel || selectedModel.designSupported === false)),
+);
+const workingNode = $derived(
+	nodes.find(
+		(node) =>
+			node.id === activeNodeId &&
+			(node.status === "queued" || node.status === "generating"),
+	) ?? null,
 );
 
 function modelRef() {
@@ -131,17 +126,22 @@ function scaleOf(node: DesignNode) {
 	return node.width / frame.width;
 }
 
-function withTheme(html: string, dark: boolean) {
-	if (!html || !dark) return html;
-	const style =
-		"<style>html{filter:invert(1) hue-rotate(180deg);background:#0b0b0d}img,video,canvas{filter:invert(1) hue-rotate(180deg)}</style>";
+const PREVIEW_GUARD =
+	"<style>html,body{overflow-x:hidden}html{scrollbar-width:none}::-webkit-scrollbar{width:0;height:0;display:none}</style>";
+const DARK_STYLE =
+	"<style>html{filter:invert(1) hue-rotate(180deg);background:#0b0b0d}img,video,canvas{filter:invert(1) hue-rotate(180deg)}</style>";
+
+function injectHead(html: string, style: string) {
+	if (!html) return html;
 	return /<\/head>/i.test(html)
 		? html.replace(/<\/head>/i, `${style}</head>`)
 		: `${style}${html}`;
 }
 
 function previewSrcdoc(html: string) {
-	return withTheme(html, theme === "dark");
+	let doc = injectHead(html, PREVIEW_GUARD);
+	if (theme === "dark") doc = injectHead(doc, DARK_STYLE);
+	return doc;
 }
 
 async function load() {
@@ -208,71 +208,96 @@ $effect(() => {
 	})();
 });
 
-async function createDesign(brief: string) {
+type DesignSend = {
+	text: string;
+	files: string[];
+	attachments?: ChatAttachment[];
+};
+
+function toAttachments(items?: ChatAttachment[]) {
+	return (items ?? []).map((item) => ({
+		filename: item.filename,
+		mime: item.mime,
+		data: item.data,
+	}));
+}
+
+async function createDesign(
+	brief: string,
+	files: string[],
+	attachments: ChatAttachment[],
+): Promise<boolean> {
 	if (!projectId) {
 		toast.error("Add a project before generating designs.");
-		return;
+		return false;
 	}
 	if (unsupportedModel) {
 		toast.error("This model is not supported by the OpenCode design agent.");
-		return;
+		return false;
 	}
 	const text = brief.trim();
-	if (!text) return;
+	if (!text) return false;
 	sending = true;
 	try {
 		const created = await daemon.createDesign({
 			projectId,
 			brief: text,
-			viewport,
+			viewport: "desktop",
+			files,
+			attachments: toAttachments(attachments),
 			...(modelRef() ? { model: modelRef() } : {}),
 		});
 		selectedId = created.nodeId;
-		draft = "";
 		await load();
+		return true;
 	} catch (reason) {
 		toast.error(
 			reason instanceof Error ? reason.message : "Design failed to start",
 		);
+		return false;
 	} finally {
 		sending = false;
 	}
 }
 
-async function refineDesign(node: DesignNode, message: string) {
+async function refineDesign(
+	node: DesignNode,
+	message: string,
+	files: string[],
+	attachments: ChatAttachment[],
+): Promise<boolean> {
 	if (unsupportedModel) {
 		toast.error("This model is not supported by the OpenCode design agent.");
-		return;
+		return false;
 	}
 	sending = true;
 	try {
 		const created = await daemon.refineDesign(node.id, {
 			message: message.trim(),
+			files,
+			attachments: toAttachments(attachments),
 			...(modelRef() ? { model: modelRef() } : {}),
 		});
 		selectedId = created.nodeId;
-		draft = "";
 		await load();
+		return true;
 	} catch (reason) {
 		toast.error(reason instanceof Error ? reason.message : "Refine failed");
+		return false;
 	} finally {
 		sending = false;
 	}
 }
 
-function submit() {
-	const text = draft.trim();
-	if (!text || sending) return;
+/** Composer hands us text plus @-mentioned files and pasted/uploaded photos. */
+async function handleSend(input: DesignSend): Promise<boolean> {
 	const target = selected;
-	if (target && target.status === "ready") void refineDesign(target, text);
-	else void createDesign(text);
-}
-
-function keydown(event: KeyboardEvent) {
-	if (event.key === "Enter" && !event.shiftKey) {
-		event.preventDefault();
-		submit();
+	if (target?.html) {
+		if (target.status === "queued" || target.status === "generating")
+			return false;
+		return refineDesign(target, input.text, input.files, input.attachments ?? []);
 	}
+	return createDesign(input.text, input.files, input.attachments ?? []);
 }
 
 async function retry(node: DesignNode) {
@@ -297,10 +322,6 @@ async function remove(node: DesignNode | null = deleteTarget) {
 	try {
 		await daemon.deleteDesign(node.id);
 		if (selectedId === node.id) selectedId = "";
-		if (previewNode?.id === node.id) {
-			previewNode = null;
-			previewOpen = false;
-		}
 		await load();
 		toast.success("Design removed");
 	} catch (reason) {
@@ -364,11 +385,76 @@ function nodeDown(event: PointerEvent, node: DesignNode) {
 	};
 }
 
+/**
+ * Builds a self-contained HTML page that previews a generated design in a real
+ * browser tab, with Desktop/Mobile and Light/Dark toggles so the result can be
+ * checked responsively. The design document is injected into a sandboxed iframe
+ * at runtime (via srcdoc) so its own markup never collides with this shell.
+ */
+function previewShellHtml(node: DesignNode): string {
+	const title = node.title.replace(/[&<>]/g, (ch) =>
+		ch === "&" ? "&amp;" : ch === "<" ? "&lt;" : "&gt;",
+	);
+	// JSON.stringify leaves `<` untouched, so a closing script tag inside the
+	// design would end this shell's own inline script early and leak the JS as
+	// visible text. Escaping `<` to \u003c keeps it inert for the HTML parser
+	// while the JS string still evaluates back to the real markup.
+	const doc = JSON.stringify(node.html).replace(/</g, "\\u003c");
+	return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>${title} · Loom preview</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font:13px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:#18181b;color:#e4e4e7}
+.bar{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 16px;background:#27272a;border-bottom:1px solid #3f3f46}
+.bar .t{font-weight:600;margin-right:auto;max-width:44vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.grp{display:flex;border:1px solid #52525b;border-radius:8px;overflow:hidden}
+.grp button{border:0;background:transparent;color:#e4e4e7;padding:6px 12px;font:inherit;cursor:pointer}
+.grp button.on{background:#fafafa;color:#18181b}
+.stage{display:flex;justify-content:center;align-items:flex-start;padding:24px}
+.frame{transform-origin:top center;border:0;background:#fff;border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,.45)}
+</style></head>
+<body>
+<div class="bar"><span class="t">${title}</span>
+<div class="grp" id="v"><button data-v="desktop" class="on">Desktop</button><button data-v="mobile">Mobile</button></div>
+<div class="grp" id="th"><button data-th="light" class="on">Light</button><button data-th="dark">Dark</button></div>
+</div>
+<div class="stage" id="s"><iframe class="frame" id="f" title="Design preview" sandbox="allow-scripts"></iframe></div>
+<script>
+var DOC=${doc},v="desktop",th="light",S={desktop:[1440,900],mobile:[390,844]};
+var GUARD='<style>html,body{overflow-x:hidden}html{scrollbar-width:none}::-webkit-scrollbar{width:0;height:0;display:none}</style>';
+var DARK='<style>html{filter:invert(1) hue-rotate(180deg);background:#0b0b0d}img,video,canvas{filter:invert(1) hue-rotate(180deg)}</style>';
+function inject(doc,style){return /<\\/head>/i.test(doc)?doc.replace(/<\\/head>/i,style+'</head>'):style+doc;}
+function apply(){var f=document.getElementById('f'),doc=inject(DOC,GUARD);
+if(th==='dark')doc=inject(doc,DARK);
+f.setAttribute('srcdoc',doc);var w=S[v][0],h=S[v][1];f.style.width=w+'px';f.style.height=h+'px';
+var st=document.getElementById('s'),k=Math.min(1,(st.clientWidth-48)/w,(window.innerHeight-120)/h);
+f.style.transform='scale('+k+')';st.style.height=(h*k+48)+'px';}
+document.getElementById('v').addEventListener('click',function(e){var b=e.target.closest('button');if(!b)return;v=b.dataset.v;[].forEach.call(this.children,function(c){c.classList.toggle('on',c===b)});apply();});
+document.getElementById('th').addEventListener('click',function(e){var b=e.target.closest('button');if(!b)return;th=b.dataset.th;[].forEach.call(this.children,function(c){c.classList.toggle('on',c===b)});apply();});
+window.addEventListener('resize',apply);apply();
+<\/script>
+</body></html>`;
+}
+
 function openPreview() {
 	const node = selected ?? nodes.at(-1) ?? null;
-	if (!node) return;
-	previewNode = node;
-	previewOpen = true;
+	if (!node || node.status !== "ready" || !node.html) {
+		toast.error("Generate a design before opening the preview.");
+		return;
+	}
+	const url = URL.createObjectURL(
+		new Blob([previewShellHtml(node)], { type: "text/html" }),
+	);
+	const opened = window.open(url, "_blank", "noopener");
+	if (!opened)
+		toast.error("The preview tab was blocked. Allow pop-ups and try again.");
+	setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+function focusChat() {
+	const el = document.getElementById("design-composer-input");
+	if (el) el.focus();
 }
 
 function pointerMove(event: PointerEvent) {
@@ -487,10 +573,6 @@ function wheel(event: WheelEvent) {
 				<Button variant={theme === "light" ? "secondary" : "ghost"} size="icon" class="size-7" aria-label="Light preview" title="Light preview" onclick={() => theme = "light"}><Sun size={13} /></Button>
 				<Button variant={theme === "dark" ? "secondary" : "ghost"} size="icon" class="size-7" aria-label="Dark preview" title="Dark preview" onclick={() => theme = "dark"}><Moon size={13} /></Button>
 			</div>
-			<Button variant="outline" size="sm" onclick={() => publish(selected)} disabled={publishing || !selected || selected.status !== "ready"}>
-				{#if publishing}<LoaderCircle size={14} class="animate-spin" />{:else}<Upload size={14} />{/if}
-				<span class="hidden sm:inline">Publish</span>
-			</Button>
 		</div>
 		<div
 			bind:this={surface}
@@ -516,7 +598,7 @@ function wheel(event: WheelEvent) {
 				<div class="absolute top-0 left-0 origin-top-left" style="transform: translate({panX}px, {panY}px) scale({zoom});">
 					{#each nodes as node (node.id)}
 						<div
-							class="absolute overflow-hidden rounded-xl border bg-card shadow-lg transition-colors {node.id === selectedId ? "border-primary ring-2 ring-primary/30" : "border-muted-foreground/25"}"
+							class="absolute"
 							style="left: {node.x}px; top: {node.y}px; width: {node.width}px; height: {node.height}px;"
 							onpointerdown={(event) => nodeDown(event, node)}
 							role="button"
@@ -524,22 +606,29 @@ function wheel(event: WheelEvent) {
 							onkeydown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectedId = node.id; } }}
 							aria-label={`${node.title} · ${statusLabel(node.status)}`}
 						>
-							<div class="flex h-8 items-center gap-2 border-b bg-card px-2">
-								{#if node.viewport === "mobile"}<Smartphone size={12} />{:else}<Monitor size={12} />{/if}
+							<!-- Floating title/status label above the card (Stitch-style) -->
+							<div class="pointer-events-none absolute bottom-full left-0 flex w-full items-center gap-1.5 pb-1.5">
+								{#if node.viewport === "mobile"}<Smartphone size={12} class="shrink-0 text-muted-foreground" />{:else}<Monitor size={12} class="shrink-0 text-muted-foreground" />{/if}
 								<p class="min-w-0 flex-1 truncate text-[11px] font-medium">{node.title}</p>
 								{#if node.status === "queued" || node.status === "generating"}
-									<LoaderCircle size={12} class="animate-spin text-sky-400" />
+									<LoaderCircle size={12} class="shrink-0 animate-spin text-sky-400" />
 								{:else if node.status === "failed"}
-									<Badge variant="destructive" class="h-4 px-1.5 text-[10px]">Failed</Badge>
-								{:else}
-									<Badge variant="secondary" class="h-4 px-1.5 text-[10px]">Ready</Badge>
+									<Badge variant="destructive" class="h-4 shrink-0 px-1.5 text-[10px]">Failed</Badge>
+								{:else if node.status === "ready"}
+									<Badge variant="secondary" class="h-4 shrink-0 px-1.5 text-[10px]">Ready</Badge>
 								{/if}
 							</div>
-							<div class="relative h-[calc(100%-2rem)] overflow-hidden bg-white">
-								{#if node.status === "ready" && node.html}
+							<div class="relative size-full overflow-hidden rounded-xl border bg-card shadow-lg transition-colors {node.id === selectedId ? "border-primary ring-2 ring-primary/30" : "border-muted-foreground/25"}">
+								{#if node.html}
 									<div class="pointer-events-none absolute top-0 left-0 origin-top-left" style="width: {frames[node.viewport === "mobile" ? "mobile" : "desktop"].width}px; height: {frames[node.viewport === "mobile" ? "mobile" : "desktop"].height}px; transform: scale({scaleOf(node)});">
 										<iframe title={`${node.title} preview`} srcdoc={previewSrcdoc(node.html)} sandbox="allow-scripts" class="size-full border-0" loading="lazy" tabindex="-1"></iframe>
 									</div>
+									{#if node.status === "queued" || node.status === "generating"}
+										<div class="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-background/70 text-muted-foreground backdrop-blur-[1px]">
+											<LoaderCircle size={18} class="animate-spin" />
+											<p class="text-[11px]">Refining this design…</p>
+										</div>
+									{/if}
 								{:else if node.status === "failed"}
 									<div class="flex size-full flex-col items-center justify-center gap-2 bg-destructive/5 p-3 text-center">
 										<p class="line-clamp-3 text-[11px] text-destructive">{node.errorMessage ?? "Generation failed"}</p>
@@ -566,11 +655,19 @@ function wheel(event: WheelEvent) {
 				<Button variant="ghost" size="icon" class="size-7" aria-label="Zoom in" title="Zoom in" onclick={() => zoomBy(0.15)}><ZoomIn size={14} /></Button>
 				<Button variant="ghost" size="icon" class="size-7" aria-label="Fit nodes" title="Fit nodes" onclick={fit}><Scan size={14} /></Button>
 			</div>
-			{#if nodes.length}
-				<div class="absolute top-3 right-3 flex items-center gap-1 rounded-lg border bg-card/90 p-1 shadow backdrop-blur">
-					<Button variant="ghost" size="sm" class="h-7 text-[11px]" onclick={openPreview}><Monitor size={12} />Open preview</Button>
-					{#if selected}<Button variant="ghost" size="icon" class="size-7" aria-label="Retry design" title="Retry design" onclick={() => selected && void retry(selected)}><RefreshCw size={13} /></Button>
-					<Button variant="ghost" size="icon" class="size-7 text-destructive" aria-label="Delete design" title="Delete design" onclick={() => selected && askRemove(selected)}><Trash2 size={13} /></Button>{/if}
+			{#if selected}
+				<div class="absolute top-3 left-1/2 flex max-w-[94%] -translate-x-1/2 items-center gap-1 rounded-xl border bg-card/95 py-1 pr-1 pl-2 shadow-lg backdrop-blur">
+					<span class="flex min-w-0 items-center gap-1.5 text-[11px] font-medium">
+						{#if selected.viewport === "mobile"}<Smartphone size={13} class="shrink-0 text-muted-foreground" />{:else}<Monitor size={13} class="shrink-0 text-muted-foreground" />{/if}
+						<span class="max-w-[150px] truncate">{selected.title}</span>
+					</span>
+					<span class="mx-1 h-5 w-px bg-border"></span>
+					<Button variant="secondary" size="sm" class="h-7 gap-1.5 text-[11px]" onclick={focusChat}><Sparkles size={12} />Refine</Button>
+					<Button variant="ghost" size="sm" class="h-7 gap-1.5 text-[11px]" onclick={openPreview}><Monitor size={12} /><span class="hidden sm:inline">Preview</span></Button>
+					<Button variant="ghost" size="sm" class="h-7 gap-1.5 text-[11px]" onclick={() => publish(selected)} disabled={publishing || selected.status !== "ready"}><Upload size={12} /><span class="hidden sm:inline">Publish</span></Button>
+					<span class="mx-1 h-5 w-px bg-border"></span>
+					<Button variant="ghost" size="icon" class="size-7" aria-label="Regenerate design" title="Regenerate" onclick={() => void retry(selected)}><RefreshCw size={13} /></Button>
+					<Button variant="ghost" size="icon" class="size-7 text-destructive" aria-label="Delete design" title="Delete design" onclick={() => askRemove(selected)}><Trash2 size={13} /></Button>
 				</div>
 			{/if}
 		</div>
@@ -595,67 +692,47 @@ function wheel(event: WheelEvent) {
 						{#if message.errorMessage}
 							<div class="rounded-lg border border-destructive/40 bg-destructive/10 p-2.5 text-xs leading-5 text-destructive">{message.errorMessage}</div>
 						{:else}
-							<div class="rounded-2xl rounded-bl-sm border bg-background px-3 py-2 text-sm">{message.text}</div>
+							<div class="rounded-2xl rounded-bl-sm border bg-background px-3 py-2">
+								<pre class="nice-scroll max-h-72 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-muted-foreground">{message.text}</pre>
+							</div>
 							{#if message.durationMs}<p class="mt-1 text-[11px] text-muted-foreground">{durationLabel(message.durationMs)}</p>{/if}
 						{/if}
 					</div>
 				{/if}
 			{/each}
+			{#if workingNode}
+				<div class="max-w-[90%]">
+					<p class="mb-1 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">OpenCode agent</p>
+					<div class="flex items-center gap-2 rounded-2xl rounded-bl-sm border bg-background px-3 py-2 text-xs text-muted-foreground">
+						<LoaderCircle size={13} class="shrink-0 animate-spin" />
+						<span>Reading your project files and matching its theme…</span>
+					</div>
+				</div>
+			{/if}
 			{#if error}<p role="alert" class="rounded-lg border border-destructive/40 bg-destructive/10 p-2 text-xs text-destructive">{error}</p>{/if}
 		</div>
 		<div class="shrink-0 border-t p-3">
-			{#if selected?.status === "ready"}
-				<p class="mb-2 truncate text-[11px] text-muted-foreground">Refining “{selected.title}” — changes create a new node next to it.</p>
+			{#if selected?.html}
+				<p class="mb-2 truncate text-[11px] text-muted-foreground">Refining “{selected.title}” — changes update this design in place.</p>
 			{:else}
-				<p class="mb-2 text-[11px] text-muted-foreground">Generating a new node with the selected viewport.</p>
+				<p class="mb-2 text-[11px] text-muted-foreground">Describe a screen. Use @ to reference project files, or paste a screenshot.</p>
 			{/if}
-			<form onsubmit={(event) => { event.preventDefault(); submit(); }}>
-				<div class="rounded-xl border bg-background">
-					<Textarea bind:value={draft} onkeydown={keydown} rows={3} aria-label="Design brief" placeholder={selected?.status === "ready" ? "Ask for changes: darker theme, add pricing section…" : "Describe the UI you want to design…"} class="max-h-40 min-h-16 resize-none border-0 bg-transparent p-3 text-sm shadow-none focus-visible:ring-0" disabled={sending || !projectId} />
-					<div class="flex flex-wrap items-center gap-1 border-t px-2 py-2">
-						<div class="flex items-center rounded-md border">
-							<Button type="button" variant={viewport === "desktop" ? "secondary" : "ghost"} size="icon" class="size-7 rounded-none" aria-label="Desktop viewport" title="Desktop 1440×900" onclick={() => viewport = "desktop"}><Monitor size={13} /></Button>
-							<Button type="button" variant={viewport === "mobile" ? "secondary" : "ghost"} size="icon" class="size-7 rounded-none" aria-label="Mobile viewport" title="Mobile 390×844" onclick={() => viewport = "mobile"}><Smartphone size={13} /></Button>
-						</div>
-						{#if modelChoices.length}
-							<div class="min-w-0 flex-1">
-								<select bind:value={model} aria-label="Model" class="h-8 w-full min-w-0 truncate rounded-md border bg-background px-2 text-xs">
-									<option value="">Default model</option>
-									{#each modelChoices as choice}									<option value={choice.value} disabled={!choice.supported}>{choice.label}{choice.supported ? "" : " · unavailable for OpenCode design"}</option>{/each}
-								</select>
-							</div>
-						{:else}
-							<span class="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">{catalog.models.length ? "Pick a model" : "No models configured — run opencode auth login"}</span>
-						{/if}
-						{#if unsupportedModel}<span class="w-full text-[11px] text-destructive" role="alert">Selected provider model is unavailable for the OpenCode design agent.</span>{/if}
-						<Button type="submit" size="icon" class="size-8 rounded-full" aria-label={selected?.status === "ready" ? "Send change request" : "Generate design"} disabled={sending || !draft.trim() || !projectId}>
-							{#if sending}<LoaderCircle size={15} class="animate-spin" />{:else}<ArrowUp size={15} />{/if}
-						</Button>
-					</div>
-				</div>
-			</form>
-			<p class="mt-2 text-center text-[10px] text-muted-foreground">Enter to send · Shift + Enter for a new line</p>
+			<Composer
+				{projectId}
+				{catalog}
+				busy={false}
+				disabled={sending || !projectId}
+				bind:draft
+				bind:model
+				showAgents={false}
+				inputId="design-composer-input"
+				onsend={handleSend}
+				onstop={() => {}}
+			/>
+			{#if unsupportedModel}<p class="mt-2 text-[11px] text-destructive" role="alert">Selected model is unavailable for the OpenCode design agent.</p>{/if}
 		</div>
 	</aside>
 </div>
-
-<Dialog.Root bind:open={previewOpen}>
-	<Dialog.Content class="flex max-h-[90svh] flex-col overflow-hidden sm:max-w-6xl">
-		<Dialog.Header>
-			<Dialog.Title class="truncate pr-8">{previewNode?.title ?? "Design preview"}</Dialog.Title>
-			<Dialog.Description>{previewNode ? `${previewNode.viewport === "mobile" ? "390 × 844" : "1440 × 900"} · ${statusLabel(previewNode.status)}` : ""}</Dialog.Description>
-		</Dialog.Header>
-		{#if previewNode}
-			<div class="min-h-0 flex-1 overflow-auto rounded-lg border bg-white">
-				<iframe title={`${previewNode.title} full preview`} srcdoc={previewSrcdoc(previewNode.html)} sandbox="allow-scripts" class="mx-auto border-0" style="width: {frames[previewNode.viewport === "mobile" ? "mobile" : "desktop"].width}px; height: {frames[previewNode.viewport === "mobile" ? "mobile" : "desktop"].height}px;"></iframe>
-			</div>
-			<Dialog.Footer>
-				<Button variant="outline" onclick={() => previewNode && void publish(previewNode)} disabled={publishing}><Upload size={14} />Publish to project</Button>
-				<Button onclick={() => previewNode && void refineDesign(previewNode, draft.trim() || "Make this design feel more polished")}>Refine</Button>
-			</Dialog.Footer>
-		{/if}
-	</Dialog.Content>
-</Dialog.Root>
 
 <AlertDialog.Root bind:open={deleteOpen}>
 	<AlertDialog.Content>

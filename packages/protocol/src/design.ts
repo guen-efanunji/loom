@@ -20,6 +20,15 @@ export const agentModelRefSchema = z.object({
 
 export type AgentModelRef = z.infer<typeof agentModelRefSchema>;
 
+/** A pasted or uploaded file (photo, mockup, doc) sent to the design agent. */
+export const designAttachmentSchema = z.object({
+	filename: z.string().min(1).max(300),
+	mime: z.string().min(1).max(120),
+	data: z.string().min(1).max(10_000_000),
+});
+
+export type DesignAttachment = z.infer<typeof designAttachmentSchema>;
+
 export const designNodeSchema = z.object({
 	id: z.string().min(1),
 	projectId: z.string().min(1),
@@ -68,6 +77,8 @@ export const createDesignSchema = z.object({
 	brief: z.string().trim().min(1).max(8000),
 	viewport: designViewportSchema.default("desktop"),
 	model: agentModelRefSchema.optional(),
+	files: z.array(z.string().min(1).max(400)).max(50).default([]),
+	attachments: z.array(designAttachmentSchema).max(10).default([]),
 });
 
 export type CreateDesignInput = z.infer<typeof createDesignSchema>;
@@ -75,6 +86,8 @@ export type CreateDesignInput = z.infer<typeof createDesignSchema>;
 export const refineDesignSchema = z.object({
 	message: z.string().trim().min(1).max(8000),
 	model: agentModelRefSchema.optional(),
+	files: z.array(z.string().min(1).max(400)).max(50).default([]),
+	attachments: z.array(designAttachmentSchema).max(10).default([]),
 });
 
 export type RefineDesignInput = z.infer<typeof refineDesignSchema>;
