@@ -11,19 +11,33 @@ import type {
 	ProjectRecord,
 	repositories,
 } from "@loom/db";
-import type { DesignAttachment, DesignPatch, DesignViewport } from "@loom/protocol";
+import type {
+	DesignActivity,
+	DesignAttachment,
+	DesignChatResult,
+	DesignPatch,
+	DesignViewport,
+} from "@loom/protocol";
 import type { AgentRuntime, RuntimeModel } from "@loom/providers/core";
 import {
+	buildDesignAssistantPrompt,
 	buildDesignPrompt,
+	buildIntentClassifierPrompt,
 	buildRefinePrompt,
+	chatReplyText,
 	deriveDesignTitle,
 	designChatSummary,
 	extractDesignScreens,
+	hasDesignDoc,
+	looksLikeDesignRequest,
+	parseDesignQuestions,
+	wantsAllNodes,
 } from "./design-prompt";
 
 type Repos = ReturnType<typeof repositories>;
 
 const DESIGN_TIMEOUT_MS = 240_000;
+const CHAT_TIMEOUT_MS = 120_000;
 const COLUMN_COUNT = 3;
 const GAP_X = 48;
 const GAP_Y = 64;
@@ -120,6 +134,10 @@ export type DesignThreadRecord = {
 
 export class DesignService {
 	private readonly busy = new Map<string, Promise<unknown>>();
+	/** One live OpenCode session per project so the design chat keeps its memory. */
+	private readonly chatSessions = new Map<string, string>();
+	/** Transient "what is it doing" feed per generating node (never persisted). */
+	private readonly activity = new Map<string, DesignActivity>();
 
 	constructor(
 		private readonly store: DesignRepository,
@@ -163,12 +181,26 @@ export class DesignService {
 			})
 			.finally(() => {
 				this.busy.delete(id);
+				this.activity.delete(id);
 			});
 		this.busy.set(id, job);
 	}
 
 	async idle(id: string) {
 		await this.busy.get(id);
+	}
+
+	private setActivity(nodeId: string, activity: DesignActivity): void {
+		this.activity.set(nodeId, activity);
+	}
+
+	/**
+	 * Live "what is the agent doing" for a generating node: the current phase and
+	 * the real project files it read to ground the design. Null once idle.
+	 */
+	async getSteps(nodeId: string): Promise<DesignActivity | null> {
+		await this.requireNode(nodeId);
+		return this.activity.get(nodeId) ?? null;
 	}
 
 	private async nextSlot(projectId: string) {
@@ -270,6 +302,7 @@ export class DesignService {
 	): Promise<string> {
 		const viewport = viewportOf(node.viewport);
 		let prompt: string;
+		const read = new Set<string>();
 		if (mode === "refine" && message && node.html)
 			prompt = buildRefinePrompt({
 				brief: node.brief,
@@ -283,8 +316,14 @@ export class DesignService {
 					project.path,
 					project.name,
 				).catch(() => undefined);
+			for (const file of context?.readFiles ?? []) read.add(file);
 			prompt = buildDesignPrompt({ brief: node.brief, viewport, context });
 		}
+		if (files?.length) for (const file of files) read.add(file);
+		this.setActivity(node.id, {
+			phase: "reading",
+			files: [...read].slice(0, 80),
+		});
 		const references = files?.length
 			? await referenceFilesBlock(project.path, files)
 			: "";
@@ -322,11 +361,16 @@ export class DesignService {
 		attachments?: DesignAttachment[],
 	) {
 		const node = await this.requireNode(nodeId);
+		this.setActivity(nodeId, { phase: "reading", files: [] });
 		await this.store.updateNode(nodeId, {
 			status: "generating",
 			errorMessage: null,
 		});
 		const prompt = await this.buildPrompt(node, project, mode, message, files);
+		this.setActivity(nodeId, {
+			phase: "drafting",
+			files: this.activity.get(nodeId)?.files ?? [],
+		});
 		const images = (attachments ?? []).map((attachment) => ({
 			mime: attachment.mime,
 			data: attachment.data,
@@ -454,6 +498,31 @@ export class DesignService {
 		});
 	}
 
+	private launchRefine(
+		node: DesignNodeRecord,
+		project: ProjectRecord,
+		message: string,
+		model: RuntimeModel | undefined,
+		files?: string[],
+		attachments?: DesignAttachment[],
+	): void {
+		void this.store.updateNode(node.id, {
+			status: "queued",
+			errorMessage: null,
+		});
+		this.launch(node.id, () =>
+			this.generate(
+				node.id,
+				project,
+				model,
+				"refine",
+				message,
+				files,
+				attachments,
+			),
+		);
+	}
+
 	async refine(
 		nodeId: string,
 		input: {
@@ -469,7 +538,7 @@ export class DesignService {
 		const project = await this.requireProject(node.projectId);
 		const message = input.message.trim();
 		if (!message) throw new Error("Describe what to change");
-		// A refinement keeps the node's model unless the caller picks another.
+		
 		const model = input.model ?? (await this.storedModel(node));
 		await this.store.addMessage({
 			projectId: project.id,
@@ -478,24 +547,8 @@ export class DesignService {
 			text: message,
 			model: modelLabel(model),
 		});
-		// Refine in place: the previous document stays until the new one is ready,
-		// so a failed change never wipes a good design and no duplicate card is
-		// created for every iteration.
-		await this.store.updateNode(nodeId, {
-			status: "queued",
-			errorMessage: null,
-		});
-		this.launch(nodeId, () =>
-			this.generate(
-				nodeId,
-				project,
-				model,
-				"refine",
-				message,
-				input.files,
-				input.attachments,
-			),
-		);
+
+		this.launchRefine(node, project, message, model, input.files, input.attachments);
 		return { nodeId, status: "queued" };
 	}
 
@@ -507,8 +560,6 @@ export class DesignService {
 		const project = await this.requireProject(node.projectId);
 		if (this.busy.has(nodeId))
 			throw new Error("This design is still generating");
-		// Replaying a node that already has a design and a pending change request
-		// re-applies that refinement; otherwise retry starts a fresh generation.
 		const instruction = node.html ? await this.lastInstruction(node) : null;
 		const mode: "create" | "refine" =
 			instruction && node.html ? "refine" : "create";
@@ -521,6 +572,310 @@ export class DesignService {
 			this.generate(nodeId, project, model, mode, instruction ?? undefined),
 		);
 		return { nodeId, status: "queued" };
+	}
+
+	/**
+	 * The design agent's conversational entry point. Every chat-panel message
+	 * goes through here: a fast intent turn decides whether to answer as chat,
+	 * ask a clarifying questionnaire, or kick off a canvas generation. This is
+	 * what stops a plain "halo" from drawing a node.
+	 */
+	async chat(input: {
+		projectId: string;
+		message: string;
+		nodeId?: string;
+		model?: RuntimeModel;
+		files?: string[];
+		attachments?: DesignAttachment[];
+	}): Promise<DesignChatResult> {
+		const project = await this.requireProject(input.projectId);
+		const message = input.message.trim();
+		if (!message) throw new Error("A message is required");
+		const target = input.nodeId
+			? await this.store.getNode(input.nodeId).catch(() => null)
+			: null;
+
+		const intent = await this.classifyIntent(
+			project,
+			message,
+			Boolean(target?.html),
+			input.model,
+		);
+
+		if (intent === "design") {
+			// A change request that names the whole set ("pada keduanya", "ubah warna
+			// di semua canvas") refines every ready node at once - one message, one
+			// shared turn - instead of forcing the user to iterate card by card.
+			const readyNodes = (await this.store.listNodes(project.id)).filter(
+				(node) => node.html && node.status === "ready" && !this.busy.has(node.id),
+			);
+			if (readyNodes.length >= 2 && wantsAllNodes(message)) {
+				const primary =
+					readyNodes.find((node) => node.id === target?.id) ?? readyNodes[0];
+				if (primary) {
+					await this.store.addMessage({
+						projectId: project.id,
+						nodeId: primary.id,
+						role: "user",
+						text: message,
+						model: modelLabel(input.model),
+					});
+					for (const node of readyNodes) {
+						const model = input.model ?? (await this.storedModel(node));
+						this.launchRefine(
+							node,
+							project,
+							message,
+							model,
+							input.files,
+							input.attachments,
+						);
+					}
+					return { kind: "design", nodeId: primary.id, status: "queued" };
+				}
+			}
+			if (target && target.html) {
+				const refined = await this.refine(target.id, {
+					message,
+					model: input.model,
+					files: input.files,
+					attachments: input.attachments,
+				});
+				return { kind: "design", nodeId: refined.nodeId, status: "queued" };
+			}
+			const created = await this.create({
+				projectId: project.id,
+				brief: message,
+				model: input.model,
+				files: input.files,
+				attachments: input.attachments,
+			});
+			return { kind: "design", nodeId: created.nodeId, status: "queued" };
+		}
+
+		const images = (input.attachments ?? []).map((attachment) => ({
+			mime: attachment.mime,
+			data: attachment.data,
+		}));
+		const references = input.files?.length
+			? await referenceFilesBlock(project.path, input.files)
+			: "";
+		const reply = await this.runChatTurn(
+			project,
+			message + references,
+			input.model,
+			images,
+		);
+
+		const question = parseDesignQuestions(reply);
+		if (question) {
+			const note = chatReplyText(reply) || "I need a little more detail first.";
+			await this.store.addMessage({
+				projectId: project.id,
+				nodeId: null,
+				role: "user",
+				text: message,
+				model: modelLabel(input.model),
+			});
+			await this.store.addMessage({
+				projectId: project.id,
+				nodeId: null,
+				role: "assistant",
+				text: note,
+				model: modelLabel(input.model),
+			});
+			return { kind: "question", question };
+		}
+
+		// Defensive: the classifier said chat but the model produced a design
+		// anyway - honour it so the work is never lost to a misclassification.
+		if (hasDesignDoc(reply)) {
+			const nodeId = await this.materializeReplyAsDesign(
+				project,
+				message,
+				reply,
+				input.model,
+			);
+			return { kind: "design", nodeId, status: "ready" };
+		}
+
+		const text = chatReplyText(reply) || reply.trim();
+		await this.store.addMessage({
+			projectId: project.id,
+			nodeId: null,
+			role: "user",
+			text: message,
+			model: modelLabel(input.model),
+		});
+		await this.store.addMessage({
+			projectId: project.id,
+			nodeId: null,
+			role: "assistant",
+			text,
+			model: modelLabel(input.model),
+		});
+		return { kind: "chat", text };
+	}
+
+	/** DESIGN vs CHAT. Model answer wins; regex is the safety net. */
+	private async classifyIntent(
+		project: ProjectRecord,
+		message: string,
+		hasSelectedNode: boolean,
+		model?: RuntimeModel,
+	): Promise<"design" | "chat"> {
+		try {
+			const workdir = join(tmpdir(), "loom-design", "intent", project.id);
+			mkdirSync(workdir, { recursive: true });
+			const session = await this.runtime.createSession({
+				cwd: workdir,
+				title: "Loom design intent",
+				readOnly: true,
+			});
+			const reply = await this.runChatPrompt(
+				session.id,
+				buildIntentClassifierPrompt(message, { hasSelectedNode }),
+				model,
+			);
+			const token = reply.toUpperCase();
+			const design = /\bDESIGN\b/.test(token);
+			const chat = /\bCHAT\b/.test(token);
+			if (design && !chat) return "design";
+			if (chat && !design) return "chat";
+		} catch {
+			// fall through to the heuristic
+		}
+		return looksLikeDesignRequest(message) ? "design" : "chat";
+	}
+
+	/** Reuses one OpenCode session per project; seeds the assistant role once. */
+	private async runChatTurn(
+		project: ProjectRecord,
+		userText: string,
+		model: RuntimeModel | undefined,
+		images: Array<{ mime: string; data: string }>,
+	): Promise<string> {
+		const workdir = join(tmpdir(), "loom-design", "chat", project.id);
+		mkdirSync(workdir, { recursive: true });
+		let sessionId = this.chatSessions.get(project.id);
+		let seed = false;
+		if (!sessionId) {
+			const created = await this.runtime.createSession({
+				cwd: workdir,
+				title: `Loom design chat \u00b7 ${project.name}`,
+				readOnly: true,
+			});
+			sessionId = created.id;
+			this.chatSessions.set(project.id, sessionId);
+			seed = true;
+		}
+		let prompt = userText;
+		if (seed) {
+			const context = await buildAutomationContext(
+				project.path,
+				project.name,
+			).catch(() => undefined);
+			prompt = `${buildDesignAssistantPrompt({
+				context,
+				projectName: project.name,
+				projectPath: project.path,
+			})}\n\nUser message:\n${userText}`;
+		}
+		return this.runChatPrompt(sessionId, prompt, model, images);
+	}
+
+	/** One blocking assistant turn; returns raw text without requiring HTML. */
+	private async runChatPrompt(
+		sessionId: string,
+		prompt: string,
+		model?: RuntimeModel,
+		images?: Array<{ mime: string; data: string }>,
+	): Promise<string> {
+		await this.runtime.prompt({
+			sessionId,
+			prompt,
+			model,
+			images: images?.length ? images : undefined,
+		});
+		const status = await this.runtime.wait(sessionId, {
+			timeoutMs: CHAT_TIMEOUT_MS,
+		});
+		if (status === "cancelled")
+			throw new Error("The design agent was cancelled.");
+		if (status !== "completed") {
+			const detail =
+				status === "failed"
+					? await this.runtime.lastError?.(sessionId).catch(() => null)
+					: null;
+			throw new Error(
+				detail
+					? `The design agent could not answer: ${detail}`
+					: `Design agent ended with status: ${status}.`,
+			);
+		}
+		const output = await this.runtime.readOutput?.(sessionId);
+		return output?.output ?? "";
+	}
+
+	/** Turns an unexpected design doc in a chat reply into ready canvas node(s). */
+	private async materializeReplyAsDesign(
+		project: ProjectRecord,
+		brief: string,
+		reply: string,
+		model?: RuntimeModel,
+	): Promise<string> {
+		const screens = extractDesignScreens(reply);
+		const primary = screens[0];
+		if (!primary) throw new Error("Design agent returned no usable document");
+		const size = designNodeSize("desktop");
+		const slot = await this.nextSlot(project.id);
+		const id = randomUUID();
+		await this.store.createNode({
+			id,
+			projectId: project.id,
+			title: primary.title || deriveDesignTitle(brief),
+			brief,
+			viewport: "desktop",
+			status: "ready",
+			x: slot.x,
+			y: slot.y,
+			width: size.width,
+			height: size.height,
+		});
+		await this.store.updateNode(id, { html: primary.html });
+		for (let index = 1; index < screens.length; index += 1) {
+			const screen = screens[index];
+			if (!screen) continue;
+			const extra = randomUUID();
+			await this.store.createNode({
+				id: extra,
+				projectId: project.id,
+				title: screen.title || `${primary.title} ${index + 1}`,
+				brief,
+				viewport: "desktop",
+				status: "ready",
+				x: slot.x + index * (size.width + GAP_X),
+				y: slot.y,
+				width: size.width,
+				height: size.height,
+			});
+			await this.store.updateNode(extra, { html: screen.html });
+		}
+		await this.store.addMessage({
+			projectId: project.id,
+			nodeId: id,
+			role: "user",
+			text: brief,
+			model: modelLabel(model),
+		});
+		await this.store.addMessage({
+			projectId: project.id,
+			nodeId: id,
+			role: "assistant",
+			text: designChatSummary(reply, screens),
+			model: modelLabel(model),
+		});
+		return id;
 	}
 
 	async list(projectId: string): Promise<DesignThreadRecord> {
@@ -566,6 +921,9 @@ export class DesignService {
 		const nodes = await this.store.listNodes(projectId);
 		for (const node of nodes)
 			await this.runtime.abort(node.sessionId ?? "").catch(() => undefined);
+		const chatSession = this.chatSessions.get(projectId);
+		if (chatSession) await this.runtime.abort(chatSession).catch(() => undefined);
+		this.chatSessions.delete(projectId);
 		await this.store.clearProject(projectId);
 	}
 

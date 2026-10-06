@@ -9,7 +9,11 @@ import type {
 	AgentRuntime,
 	RuntimeOutput,
 } from "@loom/opencode";
-import type { DesignMessage, DesignNode } from "@loom/protocol";
+import type {
+	DesignChatResult,
+	DesignMessage,
+	DesignNode,
+} from "@loom/protocol";
 import type { DaemonConfig } from "../src/config";
 import { createApp } from "../src/index";
 
@@ -38,6 +42,9 @@ class FakeDesignRuntime implements AgentRuntime {
 	readonly prompts: string[] = [];
 	readonly models: Array<AgentModel | undefined> = [];
 	failNext = false;
+	/** Canned answers for the design-chat intent + assistant turns. */
+	intent = "CHAT";
+	chatReply = "Halo! Ada yang bisa saya bantu?";
 	private readonly sessions = new Map<string, string>();
 	private nextId = 0;
 
@@ -64,6 +71,8 @@ class FakeDesignRuntime implements AgentRuntime {
 
 	async readOutput(sessionId: string): Promise<RuntimeOutput> {
 		const prompt = this.prompts[this.prompts.length - 1] ?? "";
+		if (/intent classifier/i.test(prompt)) return { output: this.intent };
+		if (/UI\/UX design agent/i.test(prompt)) return { output: this.chatReply };
 		return {
 			output: `<!DOCTYPE html>\n<html lang="en">\n<head><title>${sessionId}</title></head>\n<body><h1>${prompt.slice(0, 40)}</h1></body>\n</html>`,
 		};
@@ -443,6 +452,159 @@ describe("design canvas API", () => {
 				body: JSON.stringify({ projectId: setup.project.id, brief: "Screen" }),
 			});
 			expect(unauthenticated.status).toBe(401);
+		});
+	});
+});
+
+describe("design agent chat", () => {
+	async function chat(
+		app: DesignApp["app"],
+		projectId: string,
+		body: Record<string, unknown>,
+	) {
+		const response = await app.request(
+			`/api/projects/${projectId}/design/chat`,
+			{ method: "POST", headers, body: JSON.stringify(body) },
+		);
+		return (await response.json()) as DesignChatResult;
+	}
+
+	test("answers a greeting as chat without drawing a node", async () => {
+		await withSetup(async (setup) => {
+			setup.runtime.intent = "CHAT";
+			setup.runtime.chatReply = "Halo! Saya siap membantu mendesain.";
+			const result = await chat(setup.daemon.app, setup.project.id, {
+				message: "halo",
+			});
+			expect(result.kind).toBe("chat");
+			if (result.kind === "chat")
+				expect(result.text).toContain("Halo");
+			const thread = await readThread(setup.daemon.app, setup.project.id);
+			expect(thread.nodes).toEqual([]);
+			expect(
+				thread.messages.some(
+					(m) => m.role === "user" && m.text === "halo",
+				),
+			).toBe(true);
+			expect(
+				thread.messages.some(
+					(m) => m.role === "assistant" && m.nodeId === null,
+				),
+			).toBe(true);
+		});
+	});
+
+	test("routes an explicit build request to a canvas node", async () => {
+		await withSetup(async (setup) => {
+			setup.runtime.intent = "DESIGN";
+			const result = await chat(setup.daemon.app, setup.project.id, {
+				message: "buatkan landing page untuk kedai kopi",
+			});
+			expect(result.kind).toBe("design");
+			if (result.kind !== "design") return;
+			expect(result.status).toBe("queued");
+			const node = await waitForNode(setup.daemon.app, result.nodeId);
+			expect(node.status).toBe("ready");
+			expect(node.html).toContain("<!DOCTYPE html>");
+		});
+	});
+
+	test("returns a questionnaire when the agent needs to clarify", async () => {
+		await withSetup(async (setup) => {
+			setup.runtime.intent = "CHAT";
+			const questionnaire = {
+				id: "q1",
+				questions: [
+					{
+						header: "Screen",
+						question: "Layar mana yang mau dibuat?",
+						options: [
+							{ label: "Landing", description: "Halaman utama" },
+						],
+					},
+				],
+			};
+			setup.runtime.chatReply =
+				"Aku butuh detail dulu.\n```loom-questions\n" +
+				JSON.stringify(questionnaire) +
+				"\n```";
+			const result = await chat(setup.daemon.app, setup.project.id, {
+				message: "buatkan sesuatu",
+			});
+			expect(result.kind).toBe("question");
+			if (result.kind === "question")
+				expect(result.question.questions[0]?.header).toBe("Screen");
+			const thread = await readThread(setup.daemon.app, setup.project.id);
+			expect(thread.nodes).toEqual([]);
+		});
+	});
+
+	test("reports live design activity for a node", async () => {
+		await withSetup(async (setup) => {
+			const missing = await setup.daemon.app.request(
+				"/api/designs/nope/steps",
+				{ headers },
+			);
+			expect(missing.status).toBe(404);
+			const created = await setup.daemon.app.request("/api/designs", {
+				method: "POST",
+				headers,
+				body: JSON.stringify({
+					projectId: setup.project.id,
+					brief: "Pricing table",
+				}),
+			});
+			const { nodeId } = (await created.json()) as { nodeId: string };
+			expect((await waitForNode(setup.daemon.app, nodeId)).status).toBe(
+				"ready",
+			);
+			// Idle once ready: no in-flight activity to report.
+			const steps = await setup.daemon.app.request(
+				`/api/designs/${nodeId}/steps`,
+				{ headers },
+			);
+			expect(steps.status).toBe(200);
+			expect(await steps.json()).toBeNull();
+		});
+	});
+
+	test("fans a change request out to every canvas at once", async () => {
+		await withSetup(async (setup) => {
+			const ids: string[] = [];
+			for (const brief of ["Login page", "Register page"]) {
+				const created = await setup.daemon.app.request("/api/designs", {
+					method: "POST",
+					headers,
+					body: JSON.stringify({ projectId: setup.project.id, brief }),
+				});
+				const { nodeId } = (await created.json()) as { nodeId: string };
+				expect((await waitForNode(setup.daemon.app, nodeId)).status).toBe(
+					"ready",
+				);
+				ids.push(nodeId);
+			}
+			setup.runtime.intent = "DESIGN";
+			const result = await chat(setup.daemon.app, setup.project.id, {
+				message: "pada keduanya tambahkan animasi",
+				nodeId: ids[1],
+			});
+			expect(result.kind).toBe("design");
+			// Every ready node is refined, not just the selected one.
+			for (const id of ids)
+				expect((await waitForNode(setup.daemon.app, id)).status).toBe("ready");
+			const refinePrompts = setup.runtime.prompts.filter(
+				(prompt) =>
+					prompt.includes("tambahkan animasi") &&
+					prompt.includes("<!DOCTYPE html>"),
+			);
+			expect(refinePrompts.length).toBe(2);
+			const thread = await readThread(setup.daemon.app, setup.project.id);
+			// One shared user turn, not a duplicate per node.
+			expect(
+				thread.messages.filter(
+					(m) => m.role === "user" && m.text === "pada keduanya tambahkan animasi",
+				),
+			).toHaveLength(1);
 		});
 	});
 });

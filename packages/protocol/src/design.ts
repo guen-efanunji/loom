@@ -29,6 +29,35 @@ export const designAttachmentSchema = z.object({
 
 export type DesignAttachment = z.infer<typeof designAttachmentSchema>;
 
+/** One selectable option inside a clarifying question the design agent asks. */
+export const designQuestionOptionSchema = z.object({
+	label: z.string().min(1).max(200),
+	description: z.string().max(500).default(""),
+});
+
+export type DesignQuestionOption = z.infer<typeof designQuestionOptionSchema>;
+
+/** A single clarifying question (theme, style, which screen, ...). */
+export const designQuestionItemSchema = z.object({
+	header: z.string().min(1).max(60),
+	question: z.string().min(1).max(500),
+	multiple: z.boolean().optional(),
+	options: z.array(designQuestionOptionSchema).min(1).max(12),
+});
+
+export type DesignQuestionItem = z.infer<typeof designQuestionItemSchema>;
+
+/**
+ * A questionnaire the agent returns instead of generating, when a build request
+ * is too vague to start. Mirrors the web QuestionCard `Question` shape.
+ */
+export const designQuestionSchema = z.object({
+	id: z.string().min(1).max(120),
+	questions: z.array(designQuestionItemSchema).min(1).max(3),
+});
+
+export type DesignQuestion = z.infer<typeof designQuestionSchema>;
+
 export const designNodeSchema = z.object({
 	id: z.string().min(1),
 	projectId: z.string().min(1),
@@ -91,6 +120,44 @@ export const refineDesignSchema = z.object({
 });
 
 export type RefineDesignInput = z.infer<typeof refineDesignSchema>;
+
+/** A conversational turn sent to the design agent chat. */
+export const chatDesignSchema = z.object({
+	message: z.string().trim().min(1).max(8000),
+	nodeId: z.string().optional(),
+	model: agentModelRefSchema.optional(),
+	files: z.array(z.string().min(1).max(400)).max(50).default([]),
+	attachments: z.array(designAttachmentSchema).max(10).default([]),
+});
+
+export type ChatDesignInput = z.infer<typeof chatDesignSchema>;
+
+/**
+ * What a design-chat turn decided to do: answer as chat, ask a questionnaire,
+ * or kick off (async) a canvas generation.
+ */
+export const designChatResultSchema = z.discriminatedUnion("kind", [
+	z.object({ kind: z.literal("chat"), text: z.string() }),
+	z.object({ kind: z.literal("question"), question: designQuestionSchema }),
+	z.object({
+		kind: z.literal("design"),
+		nodeId: z.string().min(1),
+		status: designStatusSchema,
+	}),
+]);
+
+export type DesignChatResult = z.infer<typeof designChatResultSchema>;
+
+/**
+ * Live progress for a generating design node: which phase the agent is in and
+ * the real project files it read to ground the design (theme, config, @mentions).
+ */
+export const designActivitySchema = z.object({
+	phase: z.enum(["reading", "drafting"]),
+	files: z.array(z.string().max(400)).max(80).default([]),
+});
+
+export type DesignActivity = z.infer<typeof designActivitySchema>;
 
 export const designPatchSchema = z
 	.object({

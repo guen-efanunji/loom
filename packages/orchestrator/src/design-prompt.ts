@@ -1,4 +1,8 @@
 import type { ProjectContext } from "@loom/automation";
+import {
+	designQuestionSchema,
+	type DesignQuestion,
+} from "@loom/protocol";
 
 const OUTPUT_RULES = [
 	"You may open with a SHORT plain-text design note (max 2 sentences) that tells the user which theme and key components you matched - this note is shown in the chat panel. Never paste HTML into the note.",
@@ -27,25 +31,6 @@ export function deriveDesignTitle(brief: string): string {
 	return title.length > 60 ? `${title.slice(0, 57)}…` : title;
 }
 
-function contextLines(context?: ProjectContext): string[] {
-	if (!context) return [];
-	const lines: string[] = [];
-	if (context.stack.length) lines.push(`Stack: ${context.stack.join(", ")}`);
-	if (context.packageManager)
-		lines.push(`Package manager: ${context.packageManager}`);
-	if (context.currentBranch)
-		lines.push(`Current branch: ${context.currentBranch}`);
-	if (context.conventions)
-		lines.push("", "Project conventions:", context.conventions);
-	if (context.theme)
-		lines.push(
-			"",
-			"Project theme tokens - reuse these EXACT colors, fonts, radius and dark/light values so the mockup matches the real product:",
-			context.theme,
-		);
-	return lines;
-}
-
 function canvasOf(viewport: "desktop" | "mobile"): string {
 	return viewport === "mobile" ? "390x844" : "1440x900";
 }
@@ -57,21 +42,12 @@ export function buildDesignPrompt(input: {
 }): string {
 	const canvas = canvasOf(input.viewport);
 	const lines = [
-		"You are a senior product designer and front-end engineer. Design the screen (or the set of screens) the brief below asks for.",
-		"",
-		`Primary viewport: ${input.viewport} (${canvas}). The design is shown in a fixed ${canvas} frame, but it must also stay fully responsive and unbroken from 390px to 1440px wide.`,
-		"",
-		"Brief:",
 		input.brief.trim(),
-	];
-	const context = contextLines(input.context);
-	if (context.length) lines.push("", "Project context:", ...context);
-	lines.push(
 		"",
-		"Theme fidelity: when Project theme tokens are provided above, style the design with those exact tokens - do not invent a new palette, font or radius. Only fall back to your own taste when no tokens are given.",
-		"Craft requirements:",
-		OUTPUT_RULES,
-	);
+		`Return a single complete, self-contained HTML document for a ${input.viewport} screen (${canvas}). Put all CSS in one <style> block, use no external resources, and do not create or edit any files - reply with the HTML only.`,
+	];
+	if (input.context?.theme)
+		lines.push("", "Match these existing theme tokens:", input.context.theme);
 	return lines.join("\n");
 }
 
@@ -98,6 +74,134 @@ export function buildRefinePrompt(input: {
 		"",
 		OUTPUT_RULES,
 	].join("\n");
+}
+
+const FILE_TREE_LIMIT = 160;
+
+export function buildDesignAssistantPrompt(input: {
+	context?: ProjectContext;
+	projectName?: string;
+	projectPath?: string;
+}): string {
+	const context = input.context;
+	const name = input.projectName ?? context?.projectName;
+	const path = input.projectPath ?? context?.projectPath;
+	const identity: string[] = [];
+	if (name) identity.push(`Project name: ${name}`);
+	if (path) identity.push(`Project folder: ${path}`);
+	if (context?.stack.length) identity.push(`Stack: ${context.stack.join(", ")}`);
+	if (context?.packageManager)
+		identity.push(`Package manager: ${context.packageManager}`);
+	if (context?.currentBranch)
+		identity.push(`Current branch: ${context.currentBranch}`);
+	const tree = context?.files ?? [];
+	if (tree.length) {
+		const shown = tree.slice(0, FILE_TREE_LIMIT);
+		identity.push(
+			"",
+			"Project files (paths relative to the folder) - use this to answer what the project contains:",
+			...shown.map((file) => `- ${file}`),
+		);
+		if (tree.length > shown.length)
+			identity.push(`- ...and ${tree.length - shown.length} more files`);
+	}
+	if (context?.theme)
+		identity.push(
+			"",
+			"Project theme tokens - reuse these EXACT colors, fonts, radius and dark/light values so designs match the real product:",
+			context.theme,
+		);
+
+	const lines = [
+		`You are a UI/UX design agent helping the user design screens for their project${name ? ` "${name}"` : ""}${path ? ` at ${path}` : ""}. Every design you produce appears as a card on the canvas to the right.`,
+		"",
+		`IMPORTANT: the project you are working on is${name ? ` named "${name}"` : " the user's own project"} - it is NOT "Loom". Loom is only the tool hosting this chat. Always refer to the project by its real name and folder. You run inside an isolated scratch directory, so your shell cannot list the project directly - rely on the Project files listing below and any file the user @mentions.`,
+		"",
+		"Read the user's latest message and pick exactly ONE response mode:",
+		"1. CHAT - a greeting, question or anything that is not a request to create or change a screen: reply in short plain text (max ~3 sentences). Never output HTML for these.",
+		"2. CLARIFY - they clearly want a UI but the request is too vague to start (missing which screen, the theme, or the style). Do NOT generate. Reply with one short friendly line, then a fenced block exactly like the example below asking at most 3 questions. Only use this when genuinely blocked.",
+		"```loom-questions",
+		'{ "id": "q1", "questions": [ { "header": "Screen", "question": "Which screen should I design?", "multiple": false, "options": [ { "label": "Landing page", "description": "Marketing homepage" }, { "label": "Dashboard", "description": "App home with stats" } ] } ] }',
+		"```",
+		"3. DESIGN - a clear request to build or change a screen: you may open with a short plain-text design note, then output one or more complete, self-contained HTML documents following the Craft requirements below.",
+		"",
+		"Theme fidelity: when Project theme tokens are provided, style designs with those exact tokens - never invent a new palette, font or radius.",
+	];
+	if (identity.length) lines.push("", "Project context:", ...identity);
+	lines.push("", "Craft requirements (apply only to DESIGN replies):", OUTPUT_RULES);
+	return lines.join("\n");
+}
+
+export function buildIntentClassifierPrompt(
+	message: string,
+	opts: { hasSelectedNode: boolean },
+): string {
+	return [
+		"You are an intent classifier for a UI/UX design assistant inside a design canvas.",
+		"Decide what the user's message below asks for right now.",
+		"- DESIGN: they ask to create, build, draw or change a screen, page, component or visual mockup.",
+		"- CHAT: greeting, small talk, a question about the project, or anything that is not a request to produce or edit a visual design.",
+		opts.hasSelectedNode
+			? "A design is already selected on the canvas, so a request to change or adjust it counts as DESIGN."
+			: "No design is selected yet, so only a request to create a new design counts as DESIGN.",
+		"Reply with exactly one word, DESIGN or CHAT. No punctuation, no explanation.",
+		"",
+		"User message:",
+		'"""',
+		message.trim(),
+		'"""',
+	].join("\n");
+}
+
+const DESIGN_INTENT_PATTERN =
+	/\b(buatkan|buat|design|re-?design|build|make|create|generate|ubah|ganti|halaman|screen|landing|dashboard|mockup|wireframe|ui\/ux|uiux|\bui\b|\bux\b|component|komponen|form|login|signup|tampilan|layout)\b/i;
+
+/** Cheap fallback when the model's intent answer is unusable. */
+export function looksLikeDesignRequest(text: string): boolean {
+	return DESIGN_INTENT_PATTERN.test(text);
+}
+
+/**
+ * Detects a request that should apply to every canvas at once ("pada keduanya",
+ * "ubah warna di semua canvas", "both", "all of them", "masing-masing"). Used to
+ * fan a single refine out to all ready nodes instead of only the selected one.
+ */
+const ALL_NODES_PATTERN =
+	/\b(keduanya|kedua|ketiganya|ketiga|keempatnya|keempat|kelimanya|kelima|keenam|ketujuh|kelima\b|semuanya|semua|seluruhnya|seluruh|masing-masing|tiap|se-?kanvas|both|all|every|each|entire|across)\b|\bke[- ]?\d+\b|\b\d+\s*(canvas|kanvas|layar|halaman|design|desain|screenshot)\b/i;
+
+export function wantsAllNodes(text: string): boolean {
+	return ALL_NODES_PATTERN.test(text);
+}
+
+/** Pulls the `loom-questions` block out of a reply, if the agent asked any. */
+export function parseDesignQuestions(reply: string): DesignQuestion | null {
+	const match = /```loom-questions\s*\n([\s\S]*?)```/i.exec(reply);
+	if (!match) return null;
+	try {
+		const parsed = JSON.parse((match[1] ?? "").trim());
+		const result = designQuestionSchema.safeParse(parsed);
+		return result.success ? result.data : null;
+	} catch {
+		return null;
+	}
+}
+
+/** True when a reply carries a real design document (marker or full doc). */
+export function hasDesignDoc(reply: string): boolean {
+	return SCREEN_MARKER.test(reply) || /<!doctype html[\s\S]*<\/html>/i.test(reply);
+}
+
+/**
+ * The plain-text chat line for a conversational reply: drop any question block
+ * and stray HTML documents so raw code never reaches the chat panel.
+ */
+export function chatReplyText(reply: string): string {
+	return reply
+		.replace(/```loom-questions[\s\S]*?```/gi, " ")
+		.replace(/<!--\s*design\s*:[^\n]*?-->/gi, " ")
+		.replace(/<!doctype html[\s\S]*?<\/html>/gi, " ")
+		.replace(/<html[\s\S]*?<\/html>/gi, " ")
+		.trim();
 }
 
 const FRAGMENT_PATTERN =

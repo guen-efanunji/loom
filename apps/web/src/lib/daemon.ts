@@ -1,9 +1,12 @@
 import type {
 	AgentModelRef,
+	DesignActivity,
 	DesignAttachment,
+	DesignChatResult,
 	DesignMessage,
 	DesignNode,
 	DesignPatch,
+	DesignQuestion,
 	DesignThread,
 	DesignViewport,
 } from "@loom/protocol";
@@ -417,7 +420,23 @@ export const daemon = {
 		}),
 	listDesigns: (projectId: string) =>
 		request<DesignThread>(`/api/projects/${projectId}/designs`),
+	designChat: (
+		projectId: string,
+		input: {
+			message: string;
+			nodeId?: string;
+			model?: AgentModelRef;
+			files?: string[];
+			attachments?: DesignAttachment[];
+		},
+	) =>
+		request<DesignChatResult>(`/api/projects/${projectId}/design/chat`, {
+			method: "POST",
+			body: JSON.stringify(input),
+		}),
 	getDesign: (id: string) => request<DesignNode>(`/api/designs/${id}`),
+	designSteps: (id: string) =>
+		request<DesignActivity | null>(`/api/designs/${id}/steps`),
 	patchDesign: (id: string, patch: DesignPatch) =>
 		request<DesignNode>(`/api/designs/${id}`, {
 			method: "PATCH",
@@ -453,6 +472,8 @@ export const daemon = {
 };
 
 export type { DesignMessage, DesignNode, DesignThread, DesignViewport };
+export type { DesignChatResult, DesignQuestion };
+export type { DesignActivity };
 
 export function diffStats(diff: string) {
 	const files = [...diff.matchAll(/^diff --git a\/(.+?) b\/(.+)$/gm)].map(

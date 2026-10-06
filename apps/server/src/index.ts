@@ -43,6 +43,7 @@ import {
 import {
 	agentModelRefSchema,
 	automationPlanTaskSchema,
+	chatDesignSchema,
 	createApiError,
 	createDesignSchema,
 	createProjectInputSchema,
@@ -940,6 +941,19 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			return errorResponse(c, error);
 		}
 	});
+	app.post("/api/projects/:projectId/design/chat", async (c) => {
+		try {
+			const input = chatDesignSchema.parse(await jsonBody(c));
+			return c.json(
+				await designs.chat({
+					...input,
+					projectId: c.req.param("projectId"),
+				}),
+			);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
 	app.get("/api/projects/:projectId/designs", async (c) => {
 		try {
 			const thread = await designs.list(c.req.param("projectId"));
@@ -956,6 +970,13 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			return c.json(
 				recordToDesignNode(await designs.detail(c.req.param("id"))),
 			);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.get("/api/designs/:id/steps", async (c) => {
+		try {
+			return c.json(await designs.getSteps(c.req.param("id")));
 		} catch (error) {
 			return errorResponse(c, error);
 		}

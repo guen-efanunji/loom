@@ -4,9 +4,13 @@ import { join, sep, relative, isAbsolute } from "node:path";
 
 export type ProjectContext = {
 	projectName: string;
+	/** Absolute path to the opened project folder the agent is designing for. */
+	projectPath?: string;
 	stack: string[];
 	packageManager?: string;
 	files: string[];
+	/** Project files actually opened to build this context (theme, config, docs). */
+	readFiles?: string[];
 	scripts: Record<string, string>;
 	conventions?: string;
 	currentBranch?: string;
@@ -130,6 +134,7 @@ function cssTokens(css: string): string {
 async function collectTheme(
 	root: string,
 	files: string[],
+	read: Set<string>,
 ): Promise<string | undefined> {
 	const candidates = files.filter(
 		(file) => THEME_FILE.test(file) && !/\.min\.css$/i.test(file),
@@ -144,6 +149,7 @@ async function collectTheme(
 			root,
 		);
 		if (!raw) continue;
+		read.add(rel);
 		const body = /\.css$/i.test(rel) ? cssTokens(raw) : raw;
 		const trimmed = body.trim();
 		if (trimmed.length < 20) continue;
@@ -159,7 +165,9 @@ export async function buildAutomationContext(
 	projectPath: string,
 	projectName: string,
 ): Promise<ProjectContext> {
+	const readFiles = new Set<string>();
 	const pkgRaw = await readBounded(join(projectPath, "package.json"), 32000, projectPath);
+	if (pkgRaw) readFiles.add("package.json");
 	let pkg: Record<string, unknown> = {};
 	try {
 		if (pkgRaw) pkg = JSON.parse(pkgRaw) as Record<string, unknown>;
@@ -169,6 +177,7 @@ export async function buildAutomationContext(
 		try {
 			await stat(join(projectPath, signal.file));
 			stack.add(signal.stack);
+			readFiles.add(signal.file);
 		} catch {}
 	}
 	const deps = {
@@ -188,21 +197,25 @@ export async function buildAutomationContext(
 	const [conventions, currentBranch] = await Promise.all([
 		Promise.all(["AGENTS.md", "README.md", ".loom/conventions.md"].map(async name => {
 			const text = await readBounded(join(projectPath, name), 4000, projectPath);
+			if (text) readFiles.add(name);
 			return text ? `${name}:\n${text}` : "";
 		})).then(parts => parts.filter(Boolean).join("\n\n")),
 		git(["branch", "--show-current"], projectPath),
 	]);
 	const context: ProjectContext = {
 		projectName,
+		projectPath,
 		stack: [...stack].sort(),
 		files,
+		readFiles: [...readFiles],
 		scripts: Object.fromEntries(Object.entries(scripts).slice(0, 30)),
 	};
 	const packageManager = detectPackageManager(pkg);
 	if (packageManager) context.packageManager = packageManager;
 	if (conventions) context.conventions = conventions;
 	if (currentBranch) context.currentBranch = currentBranch;
-	const theme = await collectTheme(projectPath, files);
+	const theme = await collectTheme(projectPath, files, readFiles);
+	context.readFiles = [...readFiles];
 	if (theme) context.theme = theme;
 	return context;
 }

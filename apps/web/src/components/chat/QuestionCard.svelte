@@ -1,30 +1,72 @@
 <script lang="ts">
-import type { Question } from "$lib/chat";
-import { Button } from "$lib/components/ui/button";
-import { Input } from "$lib/components/ui/input";
+	import type { Question } from "$lib/chat";
+	import * as Questionnaire from "$lib/components/ui/questionnaire/index.js";
 
-let {
-	question,
-	onanswer,
-}: { question: Question; onanswer: (answers: string[][]) => Promise<void> } =
-	$props();
-let answers = $state<Record<number, string[]>>({});
-let custom = $state<Record<number, string>>({});
-let sending = $state(false);
-async function submit() {
-	sending = true;
-	try {
-		await onanswer(
-			question.questions.map((_, i) =>
-				custom[i]?.trim() ? [custom[i].trim()] : (answers[i] ?? []),
-			),
-		);
-	} finally {
-		sending = false;
+	let {
+		question,
+		onanswer,
+	}: { question: Question; onanswer: (answers: string[][]) => Promise<void> } =
+		$props();
+
+	// Each clarifying question becomes one wizard item. Choice values reuse the
+	// option label so the answer text we send back reads naturally to the agent.
+	const items = $derived(
+		question.questions.map((item, index) => ({
+			name: `q${index}`,
+			required: true,
+			choices: item.options.map((option) => ({ value: option.label })),
+		})),
+	);
+
+	function handleSubmit(event: SubmitEvent) {
+		event.preventDefault();
+		const form = new FormData(event.currentTarget as HTMLFormElement);
+		const answers = question.questions.map((item, index) => {
+			const key = `q${index}`;
+			return item.multiple
+				? form.getAll(key).map(String).filter(Boolean)
+				: [form.get(key)].map((v) => (v == null ? "" : String(v))).filter(Boolean);
+		});
+		void onanswer(answers);
 	}
-}
 </script>
-<form class="space-y-4 rounded-xl border bg-card p-4" onsubmit={(event) => { event.preventDefault(); void submit(); }}>
-  {#each question.questions as item, i}<fieldset class="space-y-2"><legend class="mb-2 text-sm font-medium">{item.question}</legend><div class="flex flex-wrap gap-2">{#each item.options as option}<Button type="button" variant={answers[i]?.includes(option.label) ? "secondary" : "outline"} title={option.description} aria-pressed={answers[i]?.includes(option.label) ?? false} onclick={() => { custom[i] = ""; answers[i] = item.multiple ? (answers[i]?.includes(option.label) ? answers[i].filter((v) => v !== option.label) : [...(answers[i] ?? []), option.label]) : [option.label]; }}>{option.label}</Button>{/each}</div><Input aria-label={`Custom answer: ${item.header}`} placeholder="Or type your answer…" bind:value={custom[i]} /></fieldset>{/each}
-  <Button type="submit" disabled={sending || question.questions.some((_, i) => !custom[i]?.trim() && !answers[i]?.length)}>{sending ? "Sending…" : "Submit answers"}</Button>
-</form>
+
+<Questionnaire.Root
+	class="rounded-xl border bg-card p-4"
+	defaultItem="q0"
+	items={items}
+	shortcuts="numbers"
+	onSubmit={handleSubmit}
+>
+	<Questionnaire.Progress />
+	{#each question.questions as item, index (index)}
+		<Questionnaire.Item name={`q${index}`} required>
+			<Questionnaire.Title>{item.question}</Questionnaire.Title>
+			{#if item.header}
+				<Questionnaire.Description>{item.header}</Questionnaire.Description>
+			{/if}
+			<Questionnaire.Choices>
+				{#each item.options as option (option.label)}
+					<Questionnaire.Choice value={option.label}>
+						<span class="font-medium">{option.label}</span>
+						{#if option.description}
+							<Questionnaire.ChoiceDescription>
+								{option.description}
+							</Questionnaire.ChoiceDescription>
+						{/if}
+					</Questionnaire.Choice>
+				{/each}
+				<Questionnaire.Input
+					aria-label={`Custom answer: ${item.header || item.question}`}
+					placeholder="Or type your answer…"
+				/>
+			</Questionnaire.Choices>
+			<Questionnaire.Error />
+		</Questionnaire.Item>
+	{/each}
+	<Questionnaire.Actions>
+		<Questionnaire.Previous />
+		<Questionnaire.Next>Next</Questionnaire.Next>
+		<Questionnaire.Submit>Send answers</Questionnaire.Submit>
+	</Questionnaire.Actions>
+</Questionnaire.Root>

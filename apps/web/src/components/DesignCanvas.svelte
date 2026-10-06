@@ -17,12 +17,15 @@ import {
 } from "@lucide/svelte";
 import { onDestroy, onMount, tick } from "svelte";
 import { toast } from "svelte-sonner";
-import type { Catalog, ChatAttachment } from "$lib/chat";
+import type { Catalog, ChatAttachment, Question } from "$lib/chat";
 import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
 import Composer from "./chat/Composer.svelte";
+import Markdown from "./chat/Markdown.svelte";
+import QuestionCard from "./chat/QuestionCard.svelte";
 import { Badge } from "$lib/components/ui/badge";
 import { Button } from "$lib/components/ui/button";
 import {
+	type DesignActivity,
 	type DesignMessage,
 	type DesignNode,
 	type DesignViewport,
@@ -41,6 +44,10 @@ let {
 
 let nodes = $state<DesignNode[]>([]);
 let messages = $state<DesignMessage[]>([]);
+// Optimistic messages shown while a turn is in flight. The background poll
+// replaces `messages` with the (lagging) server list, so keeping these apart
+// stops the user's own bubble from vanishing mid-turn.
+let pending = $state<DesignMessage[]>([]);
 let loading = $state(true);
 let error = $state("");
 let selectedId = $state("");
@@ -54,6 +61,10 @@ let deleteTarget = $state<DesignNode | null>(null);
 let deleteOpen = $state(false);
 let publishing = $state(false);
 let sending = $state(false);
+let thinking = $state(false);
+let pendingQuestion = $state<Question | null>(null);
+/** Live "what is the agent reading/doing" per generating node, keyed by id. */
+let activity = $state<Record<string, DesignActivity>>({});
 let surface = $state<HTMLDivElement>();
 let scroller = $state<HTMLDivElement>();
 let disposed = false;
@@ -73,9 +84,7 @@ const activeNodeId = $derived(
 	selected?.status === "ready" ? selected.id : (busyNodes[0]?.id ?? ""),
 );
 const threadMessages = $derived(
-	messages
-		.filter((message) => !activeNodeId || message.nodeId === activeNodeId)
-		.sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+	[...messages, ...pending].sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
 );
 const selectedModel = $derived(
 	catalog.models.find((item) => `${item.providerID}/${item.modelID}` === model),
@@ -148,6 +157,7 @@ async function load() {
 	if (!projectId) {
 		nodes = [];
 		messages = [];
+		pending = [];
 		loading = false;
 		return;
 	}
@@ -208,6 +218,36 @@ $effect(() => {
 	})();
 });
 
+// Poll each generating node's activity so the chat can say what it is reading.
+$effect(() => {
+	const ids = busyNodes.map((node) => node.id).join(",");
+	if (!ids) {
+		activity = {};
+		return;
+	}
+	let stop = false;
+	const poll = async () => {
+		const next: Record<string, DesignActivity> = {};
+		await Promise.all(
+			busyNodes.map(async (node) => {
+				try {
+					const found = await daemon.designSteps(node.id);
+					if (found) next[node.id] = found;
+				} catch {
+					/* ignore transient poll errors */
+				}
+			}),
+		);
+		if (!stop) activity = next;
+	};
+	void poll();
+	const interval = setInterval(() => void poll(), 1200);
+	return () => {
+		stop = true;
+		clearInterval(interval);
+	};
+});
+
 type DesignSend = {
 	text: string;
 	files: string[];
@@ -222,82 +262,76 @@ function toAttachments(items?: ChatAttachment[]) {
 	}));
 }
 
-async function createDesign(
-	brief: string,
-	files: string[],
-	attachments: ChatAttachment[],
-): Promise<boolean> {
+/**
+ * The composer is now a real chat: every message goes through the design agent,
+ * which decides whether to answer, ask a clarifying question, or draw a node.
+ */
+async function handleSend(input: DesignSend): Promise<boolean> {
 	if (!projectId) {
-		toast.error("Add a project before generating designs.");
+		toast.error("Add a project before using the design agent.");
 		return false;
 	}
+	const text = input.text.trim();
+	if (!text) return false;
 	if (unsupportedModel) {
 		toast.error("This model is not supported by the OpenCode design agent.");
 		return false;
 	}
-	const text = brief.trim();
-	if (!text) return false;
+	const target =
+		selected && selected.html && selected.status === "ready" ? selected : null;
+	const optimistic: DesignMessage = {
+		id: `pending-${Date.now()}`,
+		projectId,
+		nodeId: target?.id ?? null,
+		role: "user",
+		text,
+		model: model || null,
+		errorMessage: null,
+		durationMs: null,
+		createdAt: new Date().toISOString(),
+	};
+	pending = [...pending, optimistic];
 	sending = true;
+	thinking = true;
+	pendingQuestion = null;
 	try {
-		const created = await daemon.createDesign({
-			projectId,
-			brief: text,
-			viewport: "desktop",
-			files,
-			attachments: toAttachments(attachments),
+		const result = await daemon.designChat(projectId, {
+			message: text,
+			...(target ? { nodeId: target.id } : {}),
+			files: input.files,
+			attachments: toAttachments(input.attachments),
 			...(modelRef() ? { model: modelRef() } : {}),
 		});
-		selectedId = created.nodeId;
+		if (result.kind === "design") selectedId = result.nodeId;
+		else if (result.kind === "question") pendingQuestion = result.question;
 		await load();
+		pending = [];
 		return true;
 	} catch (reason) {
 		toast.error(
-			reason instanceof Error ? reason.message : "Design failed to start",
+			reason instanceof Error
+				? reason.message
+				: "The design agent could not respond",
 		);
-		return false;
-	} finally {
-		sending = false;
-	}
-}
-
-async function refineDesign(
-	node: DesignNode,
-	message: string,
-	files: string[],
-	attachments: ChatAttachment[],
-): Promise<boolean> {
-	if (unsupportedModel) {
-		toast.error("This model is not supported by the OpenCode design agent.");
-		return false;
-	}
-	sending = true;
-	try {
-		const created = await daemon.refineDesign(node.id, {
-			message: message.trim(),
-			files,
-			attachments: toAttachments(attachments),
-			...(modelRef() ? { model: modelRef() } : {}),
-		});
-		selectedId = created.nodeId;
 		await load();
-		return true;
-	} catch (reason) {
-		toast.error(reason instanceof Error ? reason.message : "Refine failed");
+		pending = [];
 		return false;
 	} finally {
 		sending = false;
+		thinking = false;
 	}
 }
 
-/** Composer hands us text plus @-mentioned files and pasted/uploaded photos. */
-async function handleSend(input: DesignSend): Promise<boolean> {
-	const target = selected;
-	if (target?.html) {
-		if (target.status === "queued" || target.status === "generating")
-			return false;
-		return refineDesign(target, input.text, input.files, input.attachments ?? []);
-	}
-	return createDesign(input.text, input.files, input.attachments ?? []);
+/** A questionnaire answer is sent back as the user's next message. */
+async function answerQuestion(answers: string[][]): Promise<void> {
+	const question = pendingQuestion;
+	pendingQuestion = null;
+	if (!question) return;
+	const text = question.questions
+		.map((item, index) => `${item.question} ${(answers[index] ?? []).join(", ")}`)
+		.filter((line) => line.trim())
+		.join("\n");
+	if (text) await handleSend({ text, files: [], attachments: [] });
 }
 
 async function retry(node: DesignNode) {
@@ -681,7 +715,7 @@ function wheel(event: WheelEvent) {
 		</div>
 		<div bind:this={scroller} class="nice-scroll min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
 			{#if !threadMessages.length}
-				<p class="rounded-lg border border-dashed p-4 text-xs leading-5 text-muted-foreground">Ask for a UI: “checkout flow for a coffee subscription”, “dashboard for a logistics app”. The result lands on the canvas as a new node, and follow-up messages refine it.</p>
+				<p class="rounded-lg border border-dashed p-4 text-xs leading-5 text-muted-foreground">Chat with the design agent. Say hi, ask about your project, or ask it to build something — “design a checkout flow for a coffee subscription”. It only draws a canvas node when you ask for a screen.</p>
 			{/if}
 			{#each threadMessages as message (message.id)}
 				{#if message.role === "user"}
@@ -692,8 +726,8 @@ function wheel(event: WheelEvent) {
 						{#if message.errorMessage}
 							<div class="rounded-lg border border-destructive/40 bg-destructive/10 p-2.5 text-xs leading-5 text-destructive">{message.errorMessage}</div>
 						{:else}
-							<div class="rounded-2xl rounded-bl-sm border bg-background px-3 py-2">
-								<pre class="nice-scroll max-h-72 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-muted-foreground">{message.text}</pre>
+							<div class="rounded-2xl rounded-bl-sm border bg-background px-3 py-2 text-sm">
+								<Markdown text={message.text} />
 							</div>
 							{#if message.durationMs}<p class="mt-1 text-[11px] text-muted-foreground">{durationLabel(message.durationMs)}</p>{/if}
 						{/if}
@@ -701,11 +735,37 @@ function wheel(event: WheelEvent) {
 				{/if}
 			{/each}
 			{#if workingNode}
+				{@const act = activity[workingNode.id]}
+				<div class="max-w-[90%]">
+					<p class="mb-1 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">OpenCode agent</p>
+					<div class="rounded-2xl rounded-bl-sm border bg-background px-3 py-2 text-xs text-muted-foreground">
+						<div class="flex items-center gap-2">
+							<LoaderCircle size={13} class="shrink-0 animate-spin" />
+							<span>{act?.phase === "drafting" ? "Drafting the design with your model…" : "Reading your project files and matching its theme…"}</span>
+						</div>
+						{#if act?.files?.length}
+							<p class="mt-2 text-[10px] font-medium uppercase tracking-wider">Read {act.files.length} file{act.files.length === 1 ? "" : "s"}</p>
+							<ul class="mt-1 flex flex-wrap gap-1">
+								{#each act.files.slice(0, 12) as file (file)}
+									<li class="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-foreground" title={file}>{file.split("/").pop() ?? file}</li>
+								{/each}
+								{#if act.files.length > 12}<li class="px-1 text-[10px]">+{act.files.length - 12} more</li>{/if}
+							</ul>
+						{/if}
+					</div>
+				</div>
+			{/if}
+			{#if pendingQuestion}
+				<div class="max-w-[95%]">
+					<p class="mb-1 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">OpenCode agent needs a detail</p>
+					<QuestionCard question={pendingQuestion} onanswer={answerQuestion} />
+				</div>
+			{:else if thinking && !workingNode}
 				<div class="max-w-[90%]">
 					<p class="mb-1 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">OpenCode agent</p>
 					<div class="flex items-center gap-2 rounded-2xl rounded-bl-sm border bg-background px-3 py-2 text-xs text-muted-foreground">
 						<LoaderCircle size={13} class="shrink-0 animate-spin" />
-						<span>Reading your project files and matching its theme…</span>
+						<span>Thinking…</span>
 					</div>
 				</div>
 			{/if}
@@ -713,9 +773,9 @@ function wheel(event: WheelEvent) {
 		</div>
 		<div class="shrink-0 border-t p-3">
 			{#if selected?.html}
-				<p class="mb-2 truncate text-[11px] text-muted-foreground">Refining “{selected.title}” — changes update this design in place.</p>
+				<p class="mb-2 truncate text-[11px] text-muted-foreground">Chat or ask for changes to “{selected.title}” — the agent refines it in place.</p>
 			{:else}
-				<p class="mb-2 text-[11px] text-muted-foreground">Describe a screen. Use @ to reference project files, or paste a screenshot.</p>
+				<p class="mb-2 text-[11px] text-muted-foreground">Chat with the design agent. Ask for a screen to draw one; use @ for files or paste a screenshot.</p>
 			{/if}
 			<Composer
 				{projectId}
