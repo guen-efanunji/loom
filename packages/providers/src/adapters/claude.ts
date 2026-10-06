@@ -42,23 +42,15 @@ export class ClaudeProviderAdapter extends CliProviderAdapter {
 }
 
 async function knownModels(): Promise<AgentModel[]> {
-	const result = await runCli("claude", ["models"], { timeoutMs: 5_000 });
-	if (result?.exitCode === 0) {
-		const models = result.stdout
-			.split("\n")
-			.map((line) => line.trim())
-			.filter((line) => line && !/^usage:|^claude code/i.test(line))
-			.map((line) => {
-				const [modelId, ...label] = line.split(/\s{2,}|\t/);
-				return modelFromId(
-					"claude",
-					modelId ?? line,
-					label.join(" ") || modelId,
-				);
-			});
-		if (models.length) return models;
-	}
-	return [];
+	const aliases = [
+		["sonnet", "Sonnet"],
+		["opus", "Opus"],
+		["haiku", "Haiku"],
+		["fable", "Fable"],
+	] as const;
+	return aliases.map(([id, name]) =>
+		modelFromId("claude", id, `Claude ${name}`),
+	);
 }
 
 async function claudeAuthStatus(): Promise<AuthStatus> {

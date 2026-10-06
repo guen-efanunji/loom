@@ -194,9 +194,7 @@ export function createChatRoutes(options: {
 				...normalizedModels.filter(
 					(model) =>
 						!providers.providers.some(
-							(provider) =>
-								provider.id === model.providerID &&
-								model.providerID === "opencode",
+							(provider) => provider.id === model.providerID,
 						),
 				),
 			],

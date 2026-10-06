@@ -40,27 +40,24 @@ async function knownModels(): Promise<AgentModel[]> {
 	const result = await runCli("codex", ["debug", "models"], {
 		timeoutMs: 30_000,
 	});
-	if (result?.exitCode === 0) {
-		try {
-			const body = JSON.parse(result.stdout) as {
-				models?: Array<{
-					slug?: string;
-					display_name?: string;
-					visibility?: string;
-				}>;
-			};
-			const models = (body.models ?? [])
-				.filter((model) => model.slug && model.visibility !== "hide")
-				.map((model) =>
-					modelFromId("codex", model.slug as string, model.display_name),
-				);
-			if (models.length) return models;
-		} catch {}
+	if (result?.exitCode !== 0) return [];
+	try {
+		const body = JSON.parse(result.stdout) as {
+			models?: Array<{
+				slug?: string;
+				display_name?: string;
+				visibility?: string;
+			}>;
+		};
+		return (body.models ?? [])
+			.filter((model) => model.slug && model.visibility !== "hide")
+			.map((model) => ({
+				...modelFromId("codex", model.slug as string, model.display_name),
+				metadata: { experimental: true, visibility: model.visibility },
+			}));
+	} catch {
+		return [];
 	}
-	return [
-		modelFromId("codex", "gpt-6.1-sol"),
-		modelFromId("codex", "gpt-6-astra"),
-	];
 }
 
 async function codexAuthStatus(): Promise<AuthStatus> {

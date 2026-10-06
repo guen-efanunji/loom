@@ -40,7 +40,7 @@ export class AgyProviderAdapter extends CliProviderAdapter {
 
 async function listAgyModels(): Promise<AgentModel[]> {
 	const result = await runCli("agy", ["models"], { timeoutMs: 30_000 });
-	if (result?.exitCode !== 0) return [modelFromId("antigravity", "default")];
+	if (result?.exitCode !== 0) return [];
 	const lines = result.stdout
 		.split("\n")
 		.map((line) => line.trim())
@@ -53,7 +53,7 @@ async function listAgyModels(): Promise<AgentModel[]> {
 			label.join(" ") || modelId,
 		);
 	});
-	return models.length ? models : [modelFromId("antigravity", "default")];
+	return models;
 }
 
 async function agyAuthStatus(): Promise<AuthStatus> {
