@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { access } from "node:fs/promises";
+import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import {
 	type AgentEvent,
@@ -29,19 +30,12 @@ class UnsupportedProviderAdapter implements CliProviderAdapter {
 
 	async detect(): Promise<ProviderDetectionResult> {
 		const executablePath = await findExecutable(this.definition.executable);
+		// Finding the binary is enough to call it installed. Some CLIs (agy,
+		// certain builds) do not answer `--version` cleanly, so we never downgrade
+		// a located executable to "not installed" just because the probe failed.
 		if (!executablePath) return { installed: false };
-		const version = await run(executablePath, ["--version"]);
-		if (version?.exitCode !== 0)
-			return {
-				installed: false,
-				executablePath,
-				error: "Executable did not respond to --version",
-			};
-		return {
-			installed: true,
-			executablePath,
-			version: version.stdout.trim() || undefined,
-		};
+		const version = await readVersion(executablePath);
+		return { installed: true, executablePath, version };
 	}
 
 	async getVersion(): Promise<string | null> {
@@ -137,21 +131,85 @@ class UnsupportedProviderAdapter implements CliProviderAdapter {
 async function findExecutable(command: string): Promise<string | null> {
 	const configuredPath =
 		process.env[`${command.toUpperCase().replaceAll("-", "_")}_BIN`]?.trim();
-	const candidates = configuredPath
-		? [configuredPath]
-		: (process.env.PATH?.split(delimiter) ?? []).map((directory) =>
-				join(
-					directory,
-					process.platform === "win32" ? `${command}.exe` : command,
-				),
-			);
-	for (const candidate of candidates) {
+	if (configuredPath) {
+		try {
+			await access(configuredPath);
+			return configuredPath;
+		} catch {}
+	}
+	const name = process.platform === "win32" ? `${command}.exe` : command;
+	for (const directory of staticSearchDirs()) {
+		const candidate = join(directory, name);
+		try {
+			await access(candidate);
+			return candidate;
+		} catch {}
+	}
+	// The daemon is often launched from a GUI/service context whose PATH omits
+	// the user's shell additions, so fall back to the login shell's PATH.
+	for (const directory of await loginShellDirs()) {
+		const candidate = join(directory, name);
 		try {
 			await access(candidate);
 			return candidate;
 		} catch {}
 	}
 	return null;
+}
+
+function staticSearchDirs(): string[] {
+	const home = homedir();
+	const extra =
+		process.platform === "win32"
+			? []
+			: [
+					join(home, ".local", "bin"),
+					join(home, "bin"),
+					join(home, ".bun", "bin"),
+					join(home, ".npm-global", "bin"),
+					join(home, ".npm", "bin"),
+					join(home, ".pnpm"),
+					join(home, ".claude", "local"),
+					join(home, ".volta", "bin"),
+					join(home, ".cargo", "bin"),
+					join(home, ".deno", "bin"),
+					"/opt/homebrew/bin",
+					"/usr/local/bin",
+				];
+	const pathDirs = process.env.PATH?.split(delimiter) ?? [];
+	return [...new Set([...pathDirs, ...extra].filter(Boolean))];
+}
+
+let loginShellPathPromise: Promise<string[]> | null = null;
+function loginShellDirs(): Promise<string[]> {
+	if (process.platform === "win32") return Promise.resolve([]);
+	if (!loginShellPathPromise) {
+		loginShellPathPromise = (async () => {
+			const shell = process.env.SHELL?.trim() || "/bin/bash";
+			const result = await run(shell, ["-lc", 'printf "%s" "$PATH"']);
+			if (result?.exitCode !== 0 || !result.stdout) return [];
+			const line = result.stdout.trim().split("\n").at(-1) ?? "";
+			return line.split(delimiter).filter(Boolean);
+		})().catch(() => [] as string[]);
+	}
+	return loginShellPathPromise;
+}
+
+async function readVersion(
+	executablePath: string,
+): Promise<string | undefined> {
+	for (const args of [["--version"], ["-v"], ["version"]]) {
+		const result = await run(executablePath, args);
+		if (!result) continue;
+		const text = `${result.stdout}\n${result.stderr}`.trim();
+		if (!text) continue;
+		const line =
+			text.split("\n").find((value) => /\d/.test(value)) ??
+			(text.split("\n")[0] ?? "");
+		const value = line.trim();
+		if (value) return value;
+	}
+	return undefined;
 }
 
 function run(

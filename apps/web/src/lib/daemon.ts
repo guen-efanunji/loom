@@ -233,6 +233,23 @@ export const daemon = {
 				capabilities: string[];
 			}>
 		>("/api/providers"),
+	refreshProviders: () =>
+		request<
+			Array<{
+				id: string;
+				providerId: string;
+				name: string;
+				command: string;
+				install: string | null;
+				auth: string;
+				authCommand: string[] | null;
+				installed: boolean;
+				version: string | null;
+				status: string;
+				authenticated: boolean;
+				capabilities: string[];
+			}>
+		>("/api/providers/refresh-all", { method: "POST" }),
 	authProvider: (id: string) =>
 		request<{
 			launched: boolean;

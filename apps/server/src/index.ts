@@ -705,24 +705,38 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		await repos.projects.delete(project.id);
 		return c.body(null, 204);
 	});
-	app.get("/api/providers", async (c) => {
+	// Serializes every known provider (from the registry) merged with its last
+	// detected state. Reading this never touches the CLIs, so opening the
+	// Providers page is instant; only an explicit refresh runs detection.
+	const serializeProviders = () =>
+		providerManager.registry.list().map((adapter) => {
+			const connection = providerManager.get(adapter.definition.id);
+			return {
+				id: connection?.id ?? `${adapter.definition.id}:local`,
+				providerId: adapter.definition.id,
+				name: adapter.definition.name,
+				status: connection?.status ?? "disconnected",
+				executablePath: connection?.executablePath ?? null,
+				version: connection?.version ?? null,
+				authenticated: connection?.authenticated ?? false,
+				authCommand:
+					connection?.authCommand ?? adapter.definition.authCommand ?? null,
+				lastCheckedAt: connection?.lastCheckedAt ?? null,
+				capabilities:
+					connection?.capabilities ?? [...adapter.definition.capabilities],
+				command: adapter.definition.executable,
+				install: adapter.definition.homepage ?? null,
+				auth: adapter.definition.authStrategy,
+				installed: connection
+					? connection.status !== "disconnected" ||
+						Boolean(connection.executablePath)
+					: false,
+			};
+		});
+	app.get("/api/providers", async (c) => c.json(serializeProviders()));
+	app.post("/api/providers/refresh-all", async (c) => {
 		await providerManager.refreshAll();
-		return c.json(
-			providerManager.list().map((connection) => {
-				const adapter = providerManager.registry.require(connection.providerId);
-				return {
-					...connection,
-					command: adapter.definition.executable,
-					install: adapter.definition.homepage ?? null,
-					auth: adapter.definition.authStrategy,
-					authCommand: connection.authCommand,
-					installed:
-						connection.status !== "disconnected" ||
-						Boolean(connection.executablePath),
-					version: connection.version,
-				};
-			}),
-		);
+		return c.json(serializeProviders());
 	});
 	app.get("/api/providers/:id", async (c) => {
 		const connection = await providerManager.refresh(c.req.param("id"));
