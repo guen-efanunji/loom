@@ -35,6 +35,12 @@ let {
 const role = $derived(messages[0]?.info.role ?? "assistant");
 const first = $derived(messages[0]);
 const agent = $derived(messages.find((m) => m.info.agent)?.info.agent);
+const providerID = $derived(messages.find((m) => m.info.providerID)?.info.providerID);
+const providerLabel = $derived(
+	providerID === "agy" || providerID === "antigravity" ? "Agy"
+		: providerID === "claude" ? "Claude"
+			: providerID === "codex" ? "Codex" : "OpenCode",
+);
 const modelID = $derived(messages.find((m) => m.info.modelID)?.info.modelID);
 const time = $derived(first ? first.info.time.created : Date.now());
 const error = $derived(messages.find((m) => m.info.error)?.info.error);
@@ -193,9 +199,9 @@ async function copy() {
 }
 </script>
 
-<article class="group min-w-0" aria-label={role === "user" ? "Your message" : "OpenCode response"}>
+<article class="group min-w-0" aria-label={role === "user" ? "Your message" : `${providerLabel} response`}>
 	<div class="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
-		<span class="font-medium text-foreground">{role === "user" ? "You" : "OpenCode"}</span>
+		<span class="font-medium text-foreground">{role === "user" ? "You" : providerLabel}</span>
 		{#if agent}<span>{agent}</span>{/if}
 		{#if modelID}<span class="truncate">{modelID}</span>{/if}
 		<time class="ml-auto shrink-0">{new Date(time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>

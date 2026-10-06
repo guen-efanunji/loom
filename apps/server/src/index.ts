@@ -645,6 +645,12 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			request: openCodeChatRequest,
 			sessionScope: (id) => orchestrator.sessionScope(id),
 			providerManager,
+			runtimes: new Map(
+				providerManager.registry.list().flatMap((adapter) => {
+					const runtime = adapter.getRuntime?.();
+					return runtime ? [[adapter.definition.id, runtime] as const] : [];
+				}),
+			),
 		}),
 	);
 

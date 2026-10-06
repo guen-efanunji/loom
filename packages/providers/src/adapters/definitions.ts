@@ -23,7 +23,7 @@ export const codexDefinition: ProviderDefinition = {
 };
 
 export const antigravityDefinition: ProviderDefinition = {
-	id: "antigravity",
+	id: "agy",
 	name: "Antigravity CLI",
 	executable: "agy",
 	homepage: "https://antigravity.google/product/antigravity-cli/",

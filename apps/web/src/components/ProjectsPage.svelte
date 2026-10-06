@@ -126,6 +126,18 @@ const turns = $derived.by(() => {
 	}
 	return groups;
 });
+const activeProvider = $derived(
+	catalog.models.find((item) => `${item.providerID}/${item.modelID}` === model)
+		?.providerID ??
+		(model.split("/")[0] || "opencode"),
+);
+const providerLabel = $derived(
+	activeProvider === "agy"
+		? "Agy"
+		: activeProvider === "opencode"
+			? "OpenCode"
+			: activeProvider[0]?.toUpperCase() + activeProvider.slice(1),
+);
 const busy = $derived(
 	sending ||
 		!!optimistic ||
@@ -621,7 +633,7 @@ async function answer(requestId: string, answers: string[][]) {
         {#if loading || sessionLoading}<div role="status" class="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground"><LoaderCircle size={17} class="animate-spin" />Loading {loading ? "workspace" : "conversation"}…</div>
         {:else if !sessionId}<div class="mb-8 text-center"><div class="mx-auto mb-5 flex size-10 items-center justify-center rounded-xl border bg-card"><Sparkles size={20} class="text-teal-300" /></div><h1 class="text-2xl font-medium tracking-tight sm:text-3xl">What are we working on?</h1><p class="mt-3 text-sm text-muted-foreground">A little context. A clear idea. Let's build something.</p></div>{/if}
          {#if sessionId}<div class="space-y-8" aria-live="polite" aria-relevant="additions text">{#each turns as turn (turn.key)}<Turn messages={turn.messages} {sessionId} projectId={selectedProjectId} onfile={showFiles} />{/each}</div>
-           {#if busy}<Marker.Root variant="border" class="mt-5 flex items-center"><Marker.Icon><LoaderCircle size={14} class="animate-spin" /></Marker.Icon><Marker.Content>{conversation?.permissions.length ? "Waiting for permission" : conversation?.questions.length ? "Waiting for your answer" : conversation?.status.message || "OpenCode is working…"}</Marker.Content></Marker.Root>{/if}
+           {#if busy}<Marker.Root variant="border" class="mt-5 flex items-center"><Marker.Icon><LoaderCircle size={14} class="animate-spin" /></Marker.Icon><Marker.Content>{conversation?.permissions.length ? "Waiting for permission" : conversation?.questions.length ? "Waiting for your answer" : conversation?.status.message || `${providerLabel} is working…`}</Marker.Content></Marker.Root>{/if}
           {#each conversation?.permissions ?? [] as request}<div class="mt-5 space-y-3 rounded-xl border border-amber-500/30 bg-card p-4"><p class="flex items-center gap-2 text-sm font-medium"><ShieldCheck size={16} />Permission required: {request.permission}</p><pre class="overflow-auto whitespace-pre-wrap text-xs text-muted-foreground">{request.patterns.join("\n")}</pre><div class="flex flex-wrap gap-2"><Button size="sm" onclick={() => permission(request.id, "once")}>Allow once</Button><Button variant="outline" size="sm" onclick={() => permission(request.id, "always")}>Always allow</Button><Button variant="ghost" size="sm" onclick={() => permission(request.id, "reject")}>Deny</Button></div></div>{/each}
           {#each conversation?.questions ?? [] as question}<div class="mt-5"><QuestionCard {question} onanswer={(answers) => answer(question.id, answers)} /></div>{/each}
         {/if}

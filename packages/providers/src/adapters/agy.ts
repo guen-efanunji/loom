@@ -8,7 +8,7 @@ export class AgyProviderAdapter extends CliProviderAdapter {
 			codingPrompt: "coding.md",
 			definition: {
 				...antigravityDefinition,
-				id: "antigravity",
+				id: "agy",
 				name: "Antigravity CLI",
 				capabilities: [
 					"chat",
@@ -24,11 +24,12 @@ export class AgyProviderAdapter extends CliProviderAdapter {
 			buildPrompt: async ({ prompt, model }) => ({
 				command: "agy",
 				args: [
-					"--print",
 					"--output-format",
 					"stream-json",
+					"--mode",
+					"accept-edits",
 					...(model ? ["--model", model] : []),
-					`${await readPrompt("coding.md")}\n\n${prompt}`,
+					`--print=${await readPrompt("coding.md")}\n\n${prompt}`,
 				],
 			}),
 			getAuthStatus: agyAuthStatus,
@@ -47,11 +48,7 @@ async function listAgyModels(): Promise<AgentModel[]> {
 		.filter((line) => line && !/^fetching available models/i.test(line));
 	const models = lines.map((line) => {
 		const [modelId, ...label] = line.split(/\s{2,}|\t/);
-		return modelFromId(
-			"antigravity",
-			modelId ?? line,
-			label.join(" ") || modelId,
-		);
+		return modelFromId("agy", modelId ?? line, label.join(" ") || modelId);
 	});
 	return models;
 }

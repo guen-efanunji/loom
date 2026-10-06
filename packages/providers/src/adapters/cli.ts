@@ -1,7 +1,9 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { access } from "node:fs/promises";
 import { homedir } from "node:os";
-import { delimiter, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
 	AgentEvent,
 	AgentModel,
@@ -210,10 +212,19 @@ class CliRuntime implements AgentRuntime {
 			session.status = "failed";
 			session.error = error.message;
 		});
-		child.once("exit", (code, signal) => {
+		child.once("close", (code, signal) => {
 			session.process = null;
 			if (session.status === "cancelled") return;
-			session.status = code === 0 ? "completed" : "failed";
+			const result =
+				this.options.definition.id === "claude"
+					? { output: session.output.trim(), error: undefined }
+					: parseCliOutput(session.output);
+			const emptyResponse = code === 0 && !result.output.trim();
+			session.status =
+				code === 0 && !result.error && !emptyResponse ? "completed" : "failed";
+			if (result.error) session.error = result.error;
+			else if (emptyResponse && !session.error)
+				session.error = `${this.options.definition.name} finished without a text response. Check the provider's permissions and authentication, then retry.`;
 			if (code !== 0 && !session.error)
 				session.error = `${this.options.definition.name} exited with ${signal ?? `code ${code}`}`;
 		});
@@ -229,7 +240,12 @@ class CliRuntime implements AgentRuntime {
 
 	async readOutput(sessionId: string) {
 		const session = this.requireSession(sessionId);
-		return { output: session.output };
+		return {
+			output:
+				this.options.definition.id === "claude"
+					? session.output.trim()
+					: normalizeCliOutput(session.output),
+		};
 	}
 
 	async wait(
@@ -357,9 +373,21 @@ export async function readVersion(
 }
 
 export function promptPath(name: string): string {
-	const root =
-		process.env.LOOM_PROMPTS_DIR?.trim() || resolve(process.cwd(), "prompts");
-	return join(root, name);
+	const configured = process.env.LOOM_PROMPTS_DIR?.trim();
+	const candidates = [
+		...(configured ? [join(configured, name)] : []),
+		join(process.cwd(), "prompts", name),
+		resolve(
+			dirname(fileURLToPath(import.meta.url)),
+			"../../../../prompts",
+			name,
+		),
+	];
+	return (
+		candidates.find((path) => existsSync(path)) ??
+		candidates[0] ??
+		join(process.cwd(), "prompts", name)
+	);
 }
 
 export async function readPrompt(name: string): Promise<string> {
@@ -369,6 +397,80 @@ export async function readPrompt(name: string): Promise<string> {
 	} catch {
 		throw new Error(`Prompt file is missing: ${path}`);
 	}
+}
+
+export function normalizeCliOutput(output: string): string {
+	return parseCliOutput(output).output;
+}
+
+export function parseCliOutput(output: string): {
+	output: string;
+	error?: string;
+} {
+	const text: string[] = [];
+	const agySteps = new Map<number, number>();
+	let error: string | undefined;
+	let finalResponse: string | undefined;
+	for (const line of output.split("\n").filter(Boolean)) {
+		try {
+			const event = JSON.parse(line);
+			if (!event || typeof event !== "object") {
+				text.push(line);
+				continue;
+			}
+			if (event.event === "result" && event.result) {
+				const denied = event.result.denied_actions;
+				if (Array.isArray(denied) && denied.length) {
+					const actions = denied
+						.map((action) => action.display_name || action.action)
+						.filter((action) => typeof action === "string");
+					error = `Agy could not complete the request because tool permission was denied${actions.length ? `: ${actions.join(", ")}` : ""}. Noninteractive mode cannot ask for approval. Configure a specific allow-rule in Agy settings or run the task interactively, then retry.`;
+				} else if (event.result.status && event.result.status !== "SUCCESS") {
+					error =
+						typeof event.result.error === "string"
+							? event.result.error
+							: event.result.error?.message ||
+								`Agy finished with status ${event.result.status}`;
+				}
+			}
+			if (typeof event.result?.response === "string") {
+				if (event.result.response.trim()) finalResponse = event.result.response;
+			} else if (event.type === "result" && typeof event.result === "string")
+				finalResponse = event.result;
+			else if (
+				event.step_update?.step_type === "agent_response" &&
+				typeof event.step_update.text_delta === "string"
+			) {
+				const step = event.step_update.step_index ?? 0;
+				let index = agySteps.get(step);
+				if (index === undefined) {
+					index = text.length;
+					agySteps.set(step, index);
+					text.push("");
+				}
+				text[index] += event.step_update.text_delta;
+			} else if (typeof event.step_update?.agent_response?.text === "string")
+				text.push(event.step_update.agent_response.text);
+			else if (
+				event.type === "item.completed" &&
+				event.item?.type === "agent_message" &&
+				typeof event.item.text === "string"
+			)
+				text.push(event.item.text);
+			else if (
+				event.type === "assistant" &&
+				Array.isArray(event.message?.content)
+			) {
+				for (const block of event.message.content)
+					if (block.type === "text" && typeof block.text === "string")
+						text.push(block.text);
+			} else if (!event.type && !event.event) text.push(line);
+		} catch {
+			// A partial JSON event will be parsed on the next output poll.
+			if (!line.trimStart().startsWith("{")) text.push(line);
+		}
+	}
+	return { output: (finalResponse ?? text.join("\n")).trim(), error };
 }
 
 export function modelFromId(

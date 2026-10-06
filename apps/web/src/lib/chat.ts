@@ -83,6 +83,7 @@ export type Catalog = {
 	commands: Array<{ name: string; description?: string }>;
 };
 const root = "/api/chat";
+const catalogCache = new Map<string, Catalog>();
 const post = <T>(path: string, body: unknown = {}) =>
 	request<T>(root + path, { method: "POST", body: JSON.stringify(body) });
 export const chat = {
@@ -114,10 +115,15 @@ export const chat = {
 		}),
 	diff: (id: string) =>
 		request<FileDiff[]>(`${root}/sessions/${encodeURIComponent(id)}/diff`),
-	catalog: (projectId: string) =>
-		request<Catalog>(
+	catalog: async (projectId: string) => {
+		const cached = catalogCache.get(projectId);
+		if (cached) return cached;
+		const result = await request<Catalog>(
 			`${root}/catalog?projectId=${encodeURIComponent(projectId)}`,
-		),
+		);
+		catalogCache.set(projectId, result);
+		return result;
+	},
 	files: (projectId: string, query: string) =>
 		request<string[]>(
 			`${root}/files?${new URLSearchParams({ projectId, query })}`,

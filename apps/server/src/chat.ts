@@ -1,6 +1,6 @@
 import { realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
-import type { ProviderManager } from "@loom/providers";
+import type { AgentRuntime, ProviderManager } from "@loom/providers";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
@@ -37,6 +37,39 @@ type Session = {
 	time: { updated: number; archived?: number };
 };
 
+type ProviderMessage = {
+	info: {
+		id: string;
+		role: string;
+		providerID?: string;
+		modelID?: string;
+		error?: { name: string; data: { message: string } };
+		time: { created: number; completed?: number };
+	};
+	parts: Array<{ id: string; type: string; text: string }>;
+};
+type ProviderTurn = {
+	runtime: AgentRuntime;
+	id: string;
+	providerId: string;
+	messages: ProviderMessage[];
+	assistant: ProviderMessage;
+	finished: boolean;
+	openCodeActive?: boolean;
+	status: { type: string; message?: string };
+};
+
+function mergeMessages(
+	previous: ProviderMessage[],
+	current: ProviderMessage[],
+) {
+	return [
+		...new Map(
+			[...previous, ...current].map((message) => [message.info.id, message]),
+		).values(),
+	].sort((a, b) => a.info.time.created - b.info.time.created);
+}
+
 export type ChatRequestOptions = {
 	directory?: string;
 	body?: unknown;
@@ -55,11 +88,104 @@ export function createChatRoutes(options: {
 	};
 	request: ChatRequestGateway;
 	providerManager?: ProviderManager;
+	runtimes?: Map<string, AgentRuntime>;
 	sessionScope?: (
 		sessionId: string,
 	) => Promise<{ directory: string; projectId: string } | undefined>;
 }) {
 	const app = new Hono();
+	const providerSessions = new Map<string, ProviderTurn>();
+	async function updateProviderTurn(turn: ProviderTurn) {
+		if (turn.finished) return;
+		const status = await turn.runtime.status(turn.id);
+		const output = await turn.runtime.readOutput?.(turn.id);
+		turn.assistant.parts = output?.output
+			? [
+					{
+						id: `${turn.assistant.info.id}-text`,
+						type: "text",
+						text: output.output,
+					},
+				]
+			: [];
+		turn.finished = [
+			"completed",
+			"failed",
+			"cancelled",
+			"interrupted",
+		].includes(status);
+		turn.status = { type: turn.finished ? "idle" : "busy" };
+		if (turn.finished) turn.assistant.info.time.completed = Date.now();
+		if (
+			status === "failed" ||
+			status === "interrupted" ||
+			(status === "completed" && !output?.output.trim())
+		) {
+			const message =
+				(await turn.runtime.lastError?.(turn.id)) ||
+				(status === "completed"
+					? `${turn.providerId} finished without a text response. Check provider permissions and retry.`
+					: `${turn.providerId} ${status}`);
+			turn.status = { type: "error", message };
+			turn.assistant.info.error = { name: "ProviderError", data: { message } };
+		}
+	}
+	let cachedCatalog: Awaited<ReturnType<typeof buildCatalog>> | null = null;
+	let catalogPromise: Promise<Awaited<ReturnType<typeof buildCatalog>>> | null =
+		null;
+	async function buildCatalog(projectId: string) {
+		const root = await directory(projectId);
+		const [providers, agents, commands] = await Promise.all([
+			request<{
+				providers: Array<{
+					id: string;
+					name: string;
+					models: Record<string, { id: string; name: string }>;
+				}>;
+				default: Record<string, string>;
+			}>("/config/providers", root),
+			request<
+				Array<{
+					name: string;
+					description?: string;
+					mode: string;
+					hidden?: boolean;
+				}>
+			>("/agent", root),
+			request<Array<{ name: string; description?: string }>>("/command", root),
+		]);
+		const normalizedModels =
+			options.providerManager?.catalog.listAvailable().map((model) => ({
+				providerID: model.providerId,
+				modelID: String(model.metadata?.modelId ?? model.name),
+				name: model.displayName,
+				provider: model.providerId,
+				providerId: model.providerId,
+				connectionId: model.connectionId,
+				capabilities: model.capabilities,
+			})) ?? [];
+		return {
+			models: [
+				...providers.providers.flatMap((provider) =>
+					Object.entries(provider.models).map(([modelId, model]) => ({
+						providerID: provider.id,
+						modelID: modelId,
+						name: model.name || modelId,
+						provider: provider.name,
+					})),
+				),
+				...normalizedModels.filter(
+					(model) =>
+						!providers.providers.some(
+							(provider) => provider.id === model.providerID,
+						),
+				),
+			],
+			defaults: providers.default,
+			agents: agents.filter((agent) => !agent.hidden),
+			commands,
+		};
+	}
 	const request = <T>(
 		path: string,
 		directory?: string,
@@ -134,74 +260,19 @@ export function createChatRoutes(options: {
 		);
 	});
 	app.get("/catalog", async (c) => {
-		const root = await directory(c.req.query("projectId"));
-		if (options.providerManager)
-			await options.providerManager.refreshAll({ refreshModels: true });
-		const [providers, agents, commands] = await Promise.all([
-			request<{
-				providers: Array<{
-					id: string;
-					name: string;
-					models: Record<string, { id: string; name: string }>;
-				}>;
-				default: Record<string, string>;
-			}>("/config/providers", root),
-			request<
-				Array<{
-					name: string;
-					description?: string;
-					mode: string;
-					hidden?: boolean;
-				}>
-			>("/agent", root),
-			request<Array<{ name: string; description?: string }>>("/command", root),
-		]);
-		const normalizedModels =
-			options.providerManager?.catalog.listAvailable().map((model) => ({
-				providerID: model.providerId,
-				modelID: String(model.metadata?.modelId ?? model.name),
-				name: model.displayName,
-				provider: model.providerId,
-				providerId: model.providerId,
-				connectionId: model.connectionId,
-				capabilities: model.capabilities,
-				designSupported:
-					model.providerId === "opencode" &&
-					typeof model.metadata?.upstreamProviderId === "string" &&
-					typeof model.metadata?.providerModelId === "string",
-				openCodeProviderID:
-					typeof model.metadata?.upstreamProviderId === "string"
-						? model.metadata.upstreamProviderId
-						: undefined,
-				openCodeModelID:
-					typeof model.metadata?.providerModelId === "string"
-						? model.metadata.providerModelId
-						: undefined,
-			})) ?? [];
-		return c.json({
-			models: [
-				...providers.providers.flatMap((p) =>
-					Object.entries(p.models).map(([key, m]) => ({
-						providerID: p.id,
-						modelID: key,
-						name: m.name || key,
-						provider: p.name,
-						designSupported: true,
-						openCodeProviderID: p.id,
-						openCodeModelID: key,
-					})),
-				),
-				...normalizedModels.filter(
-					(model) =>
-						!providers.providers.some(
-							(provider) => provider.id === model.providerID,
-						),
-				),
-			],
-			defaults: providers.default,
-			agents: agents.filter((a) => !a.hidden),
-			commands,
-		});
+		const projectId = c.req.query("projectId") ?? "";
+		if (cachedCatalog) return c.json(cachedCatalog);
+		if (!catalogPromise) {
+			catalogPromise = (async () => {
+				if (options.providerManager)
+					await options.providerManager.refreshAll({ refreshModels: true });
+				return buildCatalog(projectId);
+			})().finally(() => {
+				catalogPromise = null;
+			});
+		}
+		cachedCatalog = await catalogPromise;
+		return c.json(cachedCatalog);
 	});
 	app.get("/files", async (c) => {
 		const root = await directory(c.req.query("projectId"));
@@ -224,8 +295,22 @@ export function createChatRoutes(options: {
 	});
 	app.get("/sessions/:id", async (c) => {
 		const current = await session(c.req.param("id"));
+		const providerSession = providerSessions.get(current.id);
+		if (providerSession && !providerSession.openCodeActive) {
+			await updateProviderTurn(providerSession);
+			return c.json({
+				session: current,
+				messages: providerSession.messages,
+				status: providerSession.status,
+				permissions: [],
+				questions: [],
+			});
+		}
 		const [messages, statuses, permissions, questions] = await Promise.all([
-			request(`/session/${current.id}/message`, current.directory),
+			request<ProviderMessage[]>(
+				`/session/${current.id}/message`,
+				current.directory,
+			),
 			request<Record<string, { type: string; message?: string }>>(
 				"/session/status",
 				current.directory,
@@ -235,7 +320,7 @@ export function createChatRoutes(options: {
 		]);
 		return c.json({
 			session: current,
-			messages,
+			messages: mergeMessages(providerSession?.messages ?? [], messages),
 			status: statuses[current.id] ?? { type: "idle" },
 			permissions: permissions.filter((p) => p.sessionID === current.id),
 			questions: questions.filter((q) => q.sessionID === current.id),
@@ -244,6 +329,107 @@ export function createChatRoutes(options: {
 	app.post("/sessions/:id/messages", async (c) => {
 		const current = await session(c.req.param("id"));
 		const input = promptSchema.parse(await c.req.json());
+		const providerId = input.model?.providerID;
+		const runtime = providerId ? options.runtimes?.get(providerId) : undefined;
+		const existing = providerSessions.get(current.id);
+		if (existing) {
+			await updateProviderTurn(existing);
+			if (!existing.finished)
+				throw new HTTPException(409, { message: "Session is already running" });
+		}
+		if (
+			providerId &&
+			providerId !== "opencode" &&
+			options.providerManager?.registry.get(providerId) &&
+			!runtime
+		)
+			throw new HTTPException(409, {
+				message: `Provider runtime is unavailable: ${providerId}`,
+			});
+		if (runtime && providerId && providerId !== "opencode") {
+			const connection = options.providerManager?.get(providerId);
+			if (connection?.status !== "connected")
+				throw new HTTPException(409, {
+					message: `Provider is not connected: ${providerId}`,
+				});
+			if (input.attachments.length || input.agents.length)
+				throw new HTTPException(400, {
+					message:
+						"This provider does not support attachments or agent mentions in chat yet",
+				});
+			const files = await Promise.all(
+				input.files.map((path) => filePath(current.directory, path)),
+			);
+			const history = mergeMessages(
+				existing?.messages ?? [],
+				await request<ProviderMessage[]>(
+					`/session/${current.id}/message`,
+					current.directory,
+				),
+			);
+			const created = await runtime.createSession({
+				cwd: current.directory,
+				title: current.title,
+			});
+			const now = Date.now();
+			const messageId = `provider-${crypto.randomUUID()}`;
+			const assistant: ProviderMessage = {
+				info: {
+					id: `${messageId}-assistant`,
+					role: "assistant",
+					providerID: providerId,
+					modelID: input.model?.modelID,
+					time: { created: now },
+				},
+				parts: [],
+			};
+			const user: ProviderMessage = {
+				info: { id: `${messageId}-user`, role: "user", time: { created: now } },
+				parts: [{ id: `${messageId}-text`, type: "text", text: input.text }],
+			};
+			const turn: ProviderTurn = {
+				runtime,
+				id: created.id,
+				providerId,
+				messages: [...history, user, assistant],
+				assistant,
+				finished: false,
+				status: { type: "busy" },
+			};
+			providerSessions.set(current.id, turn);
+			// CLI runtimes start a new process each turn; carry forward the conversation.
+			const context = history
+				.map(
+					(message) =>
+						`${message.info.role}: ${message.parts
+							.filter((part) => part.type === "text")
+							.map((part) => part.text)
+							.join("\n")}`,
+				)
+				.join("\n\n");
+			const prompt = [
+				context ? `Previous conversation:\n${context}` : "",
+				input.text,
+				files.length ? `Referenced project files:\n${files.join("\n")}` : "",
+			]
+				.filter(Boolean)
+				.join("\n\n");
+			try {
+				await runtime.prompt({
+					sessionId: created.id,
+					prompt,
+					model: input.model,
+				});
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				turn.finished = true;
+				turn.status = { type: "error", message };
+				assistant.info.time.completed = Date.now();
+				assistant.info.error = { name: "ProviderError", data: { message } };
+				throw error;
+			}
+			return c.body(null, 204);
+		}
 		const files = await Promise.all(
 			input.files.map(async (path) => {
 				const local = await filePath(current.directory, path);
@@ -272,10 +458,16 @@ export function createChatRoutes(options: {
 				...input.agents.map((name) => ({ type: "agent", name })),
 			],
 		});
+		if (existing) existing.openCodeActive = true;
 		return c.body(null, 204);
 	});
 	app.post("/sessions/:id/abort", async (c) => {
 		const current = await session(c.req.param("id"));
+		const providerSession = providerSessions.get(current.id);
+		if (providerSession && !providerSession.finished) {
+			await providerSession.runtime.abort(providerSession.id);
+			return c.json({ aborted: true });
+		}
 		await request(
 			`/session/${current.id}/abort`,
 			current.directory,
@@ -287,6 +479,7 @@ export function createChatRoutes(options: {
 	app.delete("/sessions/:id", async (c) => {
 		const current = await session(c.req.param("id"));
 		await request(`/session/${current.id}`, current.directory, {}, "DELETE");
+		providerSessions.delete(current.id);
 		return c.body(null, 204);
 	});
 	app.post("/sessions/:id/rename", async (c) => {
