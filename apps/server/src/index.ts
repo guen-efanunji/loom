@@ -747,7 +747,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		const connection = await providerManager.connect(c.req.param("id"));
 		return c.json({
 			...connection,
-			launched: connection.status === "connected",
+			launched: false,
 			connected: connection.status === "connected",
 			configured: connection.authenticated,
 			command: connection.authCommand

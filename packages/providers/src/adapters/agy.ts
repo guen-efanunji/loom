@@ -33,38 +33,33 @@ export class AgyProviderAdapter extends CliProviderAdapter {
 			}),
 			getAuthStatus: agyAuthStatus,
 			probeAuth: agyAuthStatus,
-			listModels: async () => listAgyModels(),
+			listModels: listAgyModels,
 		});
 	}
 }
 
 async function listAgyModels(): Promise<AgentModel[]> {
-	const result = await runCli("agy", ["models", "--output-format", "json"]);
-	if (result?.exitCode === 0) {
-		try {
-			const body = JSON.parse(result.stdout) as unknown;
-			if (Array.isArray(body))
-				return body.flatMap((item) => {
-					if (typeof item === "string")
-						return [modelFromId("antigravity", item)];
-					if (
-						typeof item === "object" &&
-						item !== null &&
-						"id" in item &&
-						typeof item.id === "string"
-					)
-						return [modelFromId("antigravity", item.id)];
-					return [];
-				});
-		} catch {}
-	}
-	return [modelFromId("antigravity", "default")];
+	const result = await runCli("agy", ["models"]);
+	if (result?.exitCode !== 0) return [modelFromId("antigravity", "default")];
+	const lines = result.stdout
+		.split("\n")
+		.map((line) => line.trim())
+		.filter((line) => line && !/^fetching available models/i.test(line));
+	const models = lines.map((line) => {
+		const [modelId, ...label] = line.split(/\s{2,}|\t/);
+		return modelFromId(
+			"antigravity",
+			modelId ?? line,
+			label.join(" ") || modelId,
+		);
+	});
+	return models.length ? models : [modelFromId("antigravity", "default")];
 }
 
 async function agyAuthStatus(): Promise<AuthStatus> {
 	const result = await runCli(
 		"agy",
-		["--print", "--output-format", "json", "ping"],
+		["--output-format", "json", "--print=ping"],
 		{
 			timeoutMs: 15_000,
 		},

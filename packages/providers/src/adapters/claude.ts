@@ -36,17 +36,29 @@ export class ClaudeProviderAdapter extends CliProviderAdapter {
 			}),
 			getAuthStatus: claudeAuthStatus,
 			probeAuth: claudeAuthStatus,
-			listModels: async () => knownModels(),
+			listModels: knownModels,
 		});
 	}
 }
 
-function knownModels(): AgentModel[] {
-	return [
-		modelFromId("claude", "claude-sonnet-4-5"),
-		modelFromId("claude", "claude-opus-4-1"),
-		modelFromId("claude", "claude-haiku-4-5"),
-	];
+async function knownModels(): Promise<AgentModel[]> {
+	const result = await runCli("claude", ["models"], { timeoutMs: 30_000 });
+	if (result?.exitCode === 0) {
+		const models = result.stdout
+			.split("\n")
+			.map((line) => line.trim())
+			.filter((line) => line && !/^usage:|^claude code/i.test(line))
+			.map((line) => {
+				const [modelId, ...label] = line.split(/\s{2,}|\t/);
+				return modelFromId(
+					"claude",
+					modelId ?? line,
+					label.join(" ") || modelId,
+				);
+			});
+		if (models.length) return models;
+	}
+	return [];
 }
 
 async function claudeAuthStatus(): Promise<AuthStatus> {

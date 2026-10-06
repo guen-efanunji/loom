@@ -35,9 +35,7 @@ const lastCheckedLabel = $derived(
 			: "never",
 );
 
-// Opening the page only reads the last-known state; it never probes the CLIs.
-// Detection runs solely when the user clicks "Check now".
-onMount(() => void loadProviders());
+onMount(() => void checkProviders());
 
 async function loadProviders() {
 	loading = true;
@@ -93,9 +91,11 @@ async function connect(provider: Provider) {
 			toast.info(`Run ${command} in a terminal`);
 			return;
 		}
-		if (provider.install)
-			window.open(provider.install, "_blank", "noopener,noreferrer");
-		toast.info(`Install ${provider.name}, then return here and re-check`);
+		toast.info(
+			provider.installed
+				? `${provider.name} is installed but not connected`
+				: `Install ${provider.name}, then return here and re-check`,
+		);
 	} catch (reason) {
 		toast.error(
 			reason instanceof Error

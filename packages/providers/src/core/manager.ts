@@ -188,6 +188,15 @@ export class ProviderManager {
 		}
 		if (!adapter.definition.capabilities.includes("models")) return [];
 		const models = await adapter.listModels();
+		if (!models.length) {
+			this.catalog.replaceConnection(connection.id, []);
+			await this.emit({
+				type: "provider.modelsUpdated",
+				providerId,
+				models: [],
+			});
+			return [];
+		}
 		this.catalog.replaceConnection(connection.id, models);
 		await this.emit({ type: "provider.modelsUpdated", providerId, models });
 		return models;

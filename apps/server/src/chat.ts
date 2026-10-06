@@ -135,6 +135,7 @@ export function createChatRoutes(options: {
 	});
 	app.get("/catalog", async (c) => {
 		const root = await directory(c.req.query("projectId"));
+		if (options.providerManager) await options.providerManager.refreshAll();
 		const [providers, agents, commands] = await Promise.all([
 			request<{
 				providers: Array<{

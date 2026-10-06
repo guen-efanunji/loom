@@ -31,13 +31,36 @@ export class CodexProviderAdapter extends CliProviderAdapter {
 			}),
 			getAuthStatus: codexAuthStatus,
 			probeAuth: codexAuthStatus,
-			listModels: async () => knownModels(),
+			listModels: knownModels,
 		});
 	}
 }
 
-function knownModels(): AgentModel[] {
-	return [modelFromId("codex", "gpt-5-codex"), modelFromId("codex", "gpt-5")];
+async function knownModels(): Promise<AgentModel[]> {
+	const result = await runCli("codex", ["debug", "models"], {
+		timeoutMs: 30_000,
+	});
+	if (result?.exitCode === 0) {
+		try {
+			const body = JSON.parse(result.stdout) as {
+				models?: Array<{
+					slug?: string;
+					display_name?: string;
+					visibility?: string;
+				}>;
+			};
+			const models = (body.models ?? [])
+				.filter((model) => model.slug && model.visibility !== "hide")
+				.map((model) =>
+					modelFromId("codex", model.slug as string, model.display_name),
+				);
+			if (models.length) return models;
+		} catch {}
+	}
+	return [
+		modelFromId("codex", "gpt-6.1-sol"),
+		modelFromId("codex", "gpt-6-astra"),
+	];
 }
 
 async function codexAuthStatus(): Promise<AuthStatus> {

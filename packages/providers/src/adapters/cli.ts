@@ -296,6 +296,8 @@ export async function findExecutable(command: string): Promise<string | null> {
 		join(homedir(), ".claude", "local"),
 		"/usr/local/bin",
 	];
+	const loginPath = process.env.PATH?.trim();
+	if (loginPath) directories.push(...loginPath.split(delimiter));
 	const candidates = configured
 		? [configured]
 		: directories.map((directory) => join(directory, command));
@@ -369,13 +371,17 @@ export async function readPrompt(name: string): Promise<string> {
 	}
 }
 
-export function modelFromId(providerId: string, modelId: string): AgentModel {
+export function modelFromId(
+	providerId: string,
+	modelId: string,
+	name = modelId,
+): AgentModel {
 	return normalizeModel({
 		providerId,
 		connectionId: connectionId(providerId),
 		modelId,
-		name: modelId,
-		displayName: modelId,
+		name,
+		displayName: name,
 		capabilities: ["text", "coding"],
 		isAvailable: true,
 	});
