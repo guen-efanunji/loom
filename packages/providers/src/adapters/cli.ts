@@ -14,6 +14,8 @@ import type {
 	CreateSessionInput,
 	ProviderDefinition,
 	ProviderDetectionResult,
+	RuntimeActivity,
+	RuntimePermission,
 	SendMessageInput,
 } from "../core";
 import { connectionId, normalizeModel, ProviderError } from "../core";
@@ -21,9 +23,15 @@ import { connectionId, normalizeModel, ProviderError } from "../core";
 export type CliAdapterOptions = {
 	definition: ProviderDefinition;
 	codingPrompt?: string;
-	buildPrompt: (input: { prompt: string; model?: string }) => Promise<{
+	buildPrompt: (input: {
+		prompt: string;
+		model?: string;
+		permission?: RuntimePermission;
+	}) => Promise<{
 		command: string;
 		args: string[];
+		/** Optional stdin payload. Supplying an empty string sends EOF immediately. */
+		stdin?: string;
 	}>;
 	getAuthStatus: () => Promise<AuthStatus>;
 	listModels?: () => Promise<AgentModel[]>;
@@ -39,6 +47,7 @@ type SessionState = {
 	status: "queued" | "running" | "completed" | "failed" | "cancelled";
 	output: string;
 	error: string | null;
+	permission?: RuntimePermission;
 };
 
 export class CliProviderAdapter implements CliProviderAdapterContract {
@@ -174,13 +183,16 @@ class CliRuntime implements AgentRuntime {
 		sessionId: string;
 		prompt: string;
 		model?: { providerID: string; modelID: string };
+		permission?: RuntimePermission;
 	}): Promise<void> {
 		const session = this.requireSession(input.sessionId);
 		if (session.process)
 			throw new ProviderError("PROCESS_FAILED", "Session is already running");
+		if (input.permission) session.permission = input.permission;
 		const command = await this.options.buildPrompt({
 			prompt: input.prompt,
 			model: input.model?.modelID,
+			permission: input.permission ?? session.permission,
 		});
 		const executable = await findExecutable(command.command);
 		if (!executable)
@@ -194,7 +206,8 @@ class CliRuntime implements AgentRuntime {
 		session.executablePath = executable;
 		const child = spawn(executable, command.args, {
 			cwd: session.cwd,
-			stdio: ["ignore", "pipe", "pipe"],
+			stdio: [command.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+			env: { ...process.env, ...session.permission?.env },
 			windowsHide: true,
 		});
 		session.process = child;
@@ -207,6 +220,7 @@ class CliRuntime implements AgentRuntime {
 		child.stderr.on("data", (chunk: Buffer) => {
 			session.error = `${session.error ?? ""}${chunk.toString()}`.trim();
 		});
+		if (command.stdin !== undefined) child.stdin?.end(command.stdin);
 		child.once("error", (error) => {
 			session.process = null;
 			session.status = "failed";
@@ -215,6 +229,11 @@ class CliRuntime implements AgentRuntime {
 		child.once("close", (code, signal) => {
 			session.process = null;
 			if (session.status === "cancelled") return;
+			// Codex prints this informational notice while consuming non-TTY stdin.
+			// It is not a failure reason and should not become the chat error message.
+			session.error = session.error
+				?.replace(/Reading additional input from stdin\.\.\.\s*/g, "")
+				.trim() || null;
 			const result =
 				this.options.definition.id === "claude"
 					? { output: session.output.trim(), error: undefined }
@@ -240,12 +259,7 @@ class CliRuntime implements AgentRuntime {
 
 	async readOutput(sessionId: string) {
 		const session = this.requireSession(sessionId);
-		return {
-			output:
-				this.options.definition.id === "claude"
-					? session.output.trim()
-					: normalizeCliOutput(session.output),
-		};
+		return parseCliOutput(session.output);
 	}
 
 	async wait(
@@ -406,9 +420,11 @@ export function normalizeCliOutput(output: string): string {
 export function parseCliOutput(output: string): {
 	output: string;
 	error?: string;
+	activities: RuntimeActivity[];
 } {
 	const text: string[] = [];
 	const agySteps = new Map<number, number>();
+	const activities = new Map<string, RuntimeActivity>();
 	let error: string | undefined;
 	let finalResponse: string | undefined;
 	for (const line of output.split("\n").filter(Boolean)) {
@@ -433,6 +449,141 @@ export function parseCliOutput(output: string): {
 								`Agy finished with status ${event.result.status}`;
 				}
 			}
+			if (event.type === "error" || event.type === "turn.failed") {
+				const message =
+					typeof event.error === "string"
+						? event.error
+						: event.error?.message ?? event.message;
+				if (typeof message === "string" && message.trim()) error = message.trim();
+			}
+			const step = event.step_update;
+		if (step?.step_type === "tool") {
+			const toolInfo = step.tool_info ?? {};
+			const name = step.tool_name ?? toolInfo.name ?? "tool";
+			const params = toolInfo.parameters;
+			const input = params && typeof params === "object" && !Array.isArray(params)
+				? params as Record<string, unknown>
+				: undefined;
+			const stepId = `agy-${step.step_index ?? activities.size}`;
+			const patch = typeof toolInfo.diff === "string" ? toolInfo.diff : undefined;
+			const file = input?.TargetFile ?? input?.filePath ?? input?.path;
+			const activity: RuntimeActivity = {
+				id: stepId,
+				tool: String(name),
+				status: toolInfo.error ? "error" : step.state === "ACTIVE" ? "running" : "completed",
+				...(input ? { input } : {}),
+				...(typeof toolInfo.output === "string" ? { output: toolInfo.output } : {}),
+				...(typeof toolInfo.error?.message === "string" ? { error: toolInfo.error.message } : {}),
+				...(toolInfo.filediff || toolInfo.files || toolInfo.diff
+					? { metadata: {
+							...(toolInfo.filediff ? { filediff: toolInfo.filediff } : patch && file ? {
+								filediff: {
+									file,
+									patch,
+									additions: patch.split("\n").filter((line: string) => line.startsWith("+") && !line.startsWith("+++")).length,
+									deletions: patch.split("\n").filter((line: string) => line.startsWith("-") && !line.startsWith("---")).length,
+								},
+							} : {}),
+							...(toolInfo.files ? { files: toolInfo.files } : {}),
+							...(toolInfo.diff ? { diff: toolInfo.diff } : {}),
+						} }
+					: {}),
+			};
+			activities.set(stepId, activity);
+		}
+		const item = event.item;
+		if (
+			(event.type === "item.started" || event.type === "item.completed") &&
+			item &&
+			typeof item === "object"
+		) {
+			const itemType = String(item.type ?? "");
+			const itemId = String(item.id ?? `${itemType}-${activities.size}`);
+			if (itemType === "file_change" && Array.isArray(item.changes)) {
+				for (const [index, change] of item.changes.entries()) {
+					if (!change || typeof change !== "object") continue;
+					const file = change.path ?? change.filePath ?? change.file;
+					const changeId = `codex-${itemId}-${index}`;
+					activities.set(changeId, {
+						id: changeId,
+						tool: "file_change",
+						status: event.type === "item.started" ? "running" : "completed",
+						input: { ...(typeof file === "string" ? { path: file } : {}), kind: change.kind },
+						...(typeof change.diff === "string"
+							? {
+									metadata: {
+										filediff: {
+											file,
+											patch: change.diff,
+											additions: change.diff
+												.split("\n")
+												.filter((line: string) => line.startsWith("+") && !line.startsWith("+++"))
+												.length,
+											deletions: change.diff
+												.split("\n")
+												.filter((line: string) => line.startsWith("-") && !line.startsWith("---"))
+												.length,
+										},
+									},
+								}
+							: {}),
+					});
+				}
+			} else if (["command_execution", "shell", "tool_call"].includes(itemType)) {
+				const activity: RuntimeActivity = {
+					id: `codex-${itemId}`,
+					tool: itemType,
+					status:
+						event.type === "item.started"
+							? "running"
+							: item.exit_code && item.exit_code !== 0
+								? "error"
+								: "completed",
+					input: {
+						...(typeof item.command === "string" ? { command: item.command } : {}),
+						...(typeof item.cwd === "string" ? { cwd: item.cwd } : {}),
+					},
+					...(typeof item.aggregated_output === "string" ? { output: item.aggregated_output } : {}),
+				};
+				activities.set(activity.id, activity);
+			}
+		}
+		if (event.type === "assistant" && Array.isArray(event.message?.content)) {
+			for (const block of event.message.content) {
+				if (block.type === "tool_use" && typeof block.name === "string") {
+					const input =
+						block.input && typeof block.input === "object" && !Array.isArray(block.input)
+							? block.input as Record<string, unknown>
+							: undefined;
+					const activityId = `claude-${block.id ?? activities.size}`;
+					activities.set(activityId, {
+						id: activityId,
+						tool: block.name,
+						status: "running",
+						...(input ? { input } : {}),
+					});
+				}
+			}
+		}
+		if (event.type === "user" && Array.isArray(event.message?.content)) {
+			for (const block of event.message.content) {
+				if (block.type !== "tool_result" || typeof block.tool_use_id !== "string") continue;
+				const activityId = `claude-${block.tool_use_id}`;
+				const activity = activities.get(activityId);
+			if (activity)
+				activities.set(activityId, {
+					...activity,
+					status: block.is_error ? "error" : "completed",
+					...(typeof block.content === "string" ? { output: block.content } : {}),
+				});
+			}
+		}
+		if (
+			event.type === "result" &&
+			typeof event.result === "object" &&
+			typeof event.result?.response === "string"
+		)
+			finalResponse = event.result.response;
 			if (typeof event.result?.response === "string") {
 				if (event.result.response.trim()) finalResponse = event.result.response;
 			} else if (event.type === "result" && typeof event.result === "string")
@@ -470,7 +621,11 @@ export function parseCliOutput(output: string): {
 			if (!line.trimStart().startsWith("{")) text.push(line);
 		}
 	}
-	return { output: (finalResponse ?? text.join("\n")).trim(), error };
+	return {
+		output: (finalResponse ?? text.join("\n")).trim(),
+		error,
+		activities: [...activities.values()],
+	};
 }
 
 export function modelFromId(

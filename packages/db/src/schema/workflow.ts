@@ -14,6 +14,9 @@ export const projects = sqliteTable(
 		name: text("name").notNull(),
 		path: text("path").notNull(),
 		defaultBranch: text("default_branch").notNull(),
+		autoAccept: integer("auto_accept", { mode: "boolean" })
+			.notNull()
+			.default(false),
 		createdAt: integer("created_at", { mode: "timestamp_ms" })
 			.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
 			.notNull(),

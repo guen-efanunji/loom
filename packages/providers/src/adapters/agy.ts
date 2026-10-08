@@ -1,6 +1,14 @@
-import type { AgentModel, AuthStatus } from "../core";
+import type { AgentModel, AuthStatus, RuntimePermission } from "../core";
 import { CliProviderAdapter, modelFromId, readPrompt, runCli } from "./cli";
 import { antigravityDefinition } from "./definitions";
+
+// Headless Agy denies native "ask" prompts before Loom can answer them. The
+// registered PreToolUse hook makes the decision for both modes instead.
+export function agyPermissionArgs(permission?: RuntimePermission): string[] {
+	if (permission?.mode === "auto" || permission?.mode === "ask")
+		return ["--dangerously-skip-permissions"];
+	return ["--mode", "accept-edits"];
+}
 
 export class AgyProviderAdapter extends CliProviderAdapter {
 	constructor() {
@@ -21,17 +29,19 @@ export class AgyProviderAdapter extends CliProviderAdapter {
 				],
 				authCommand: undefined,
 			},
-			buildPrompt: async ({ prompt, model }) => ({
-				command: "agy",
-				args: [
-					"--output-format",
-					"stream-json",
-					"--mode",
-					"accept-edits",
-					...(model ? ["--model", model] : []),
-					`--print=${await readPrompt("coding.md")}\n\n${prompt}`,
-				],
-			}),
+			buildPrompt: async ({ prompt, model, permission }) => {
+				const permissionArgs = agyPermissionArgs(permission);
+				return {
+					command: "agy",
+					args: [
+						"--output-format",
+						"stream-json",
+						...permissionArgs,
+						...(model ? ["--model", model] : []),
+						`--print=${await readPrompt("coding.md")}\n\n${prompt}`,
+					],
+				};
+			},
 			getAuthStatus: agyAuthStatus,
 			probeAuth: agyAuthStatus,
 			listModels: listAgyModels,

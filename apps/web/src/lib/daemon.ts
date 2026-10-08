@@ -23,6 +23,7 @@ export type Project = {
 	name: string;
 	path: string;
 	defaultBranch: string;
+	autoAccept?: boolean;
 	createdAt: string;
 };
 
@@ -204,7 +205,10 @@ export async function request<T>(path: string, init: RequestInit = {}) {
 export const daemon = {
 	listProjects: () => request<Project[]>("/api/projects"),
 	getProject: (id: string) => request<Project>(`/api/projects/${id}`),
-	updateProject: (id: string, input: { name?: string; path?: string }) =>
+	updateProject: (
+		id: string,
+		input: { name?: string; path?: string; autoAccept?: boolean },
+	) =>
 		request<Project>(`/api/projects/${id}`, {
 			method: "PATCH",
 			body: JSON.stringify(input),

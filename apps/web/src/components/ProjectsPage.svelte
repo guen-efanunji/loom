@@ -103,6 +103,7 @@ let timer: ReturnType<typeof setTimeout>;
 let projectRequest = 0;
 let fileRequest = 0;
 let sending = $state(false);
+let permissionReplying = $state<string | null>(null);
 const selectedProject = $derived(
 	projects.find((p) => p.id === selectedProjectId),
 );
@@ -191,7 +192,10 @@ async function refreshSession(id: string) {
 	const result = await chat.state(id);
 	if (disposed || sessionId !== id) return;
 	const changed =
-		JSON.stringify(result.messages) !== JSON.stringify(conversation?.messages);
+		JSON.stringify(result.messages) !==
+			JSON.stringify(conversation?.messages) ||
+		JSON.stringify(result.permissions) !==
+			JSON.stringify(conversation?.permissions);
 	conversation = result;
 	connected = true;
 	const project = projects.find(
@@ -552,10 +556,30 @@ async function permission(
 	requestId: string,
 	reply: "once" | "always" | "reject",
 ) {
+	if (permissionReplying === requestId) return;
+	permissionReplying = requestId;
 	try {
 		await chat.permission(sessionId, requestId, reply);
 		await refreshSession(sessionId);
 	} catch (reason) {
+		report(reason);
+	} finally {
+		permissionReplying = null;
+	}
+}
+async function setAutoAccept(value: boolean) {
+	const project = selectedProject;
+	if (!project) return;
+	// Optimistically reflect the toggle, then persist; roll back on failure.
+	project.autoAccept = value;
+	try {
+		const updated = await daemon.updateProject(project.id, {
+			autoAccept: value,
+		});
+		const index = projects.findIndex((p) => p.id === project.id);
+		if (index >= 0) projects[index] = { ...projects[index], ...updated };
+	} catch (reason) {
+		project.autoAccept = !value;
 		report(reason);
 	}
 }
@@ -615,8 +639,7 @@ async function answer(requestId: string, answers: string[][]) {
     <header class="flex h-14 shrink-0 items-center gap-3 border-b px-4">
       {#if !sidebarOpen}<Button variant="ghost" size="icon" aria-label="Open sidebar" onclick={() => sidebarOpen = true}><PanelLeft size={16} /></Button>{/if}
       <div class="min-w-0 flex-1"><p class="truncate text-sm font-medium">{viewMode === "chat" ? (conversation?.session.title ?? "New session") : `Tasks · ${selectedProject?.name ?? "No project"}`}</p>{#if selectedProject}<p class="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground"><span class="truncate">{selectedProject.name}</span><GitBranch size={11} />{selectedProject.defaultBranch}</p>{/if}</div>
-      <Tabs.Root bind:value={viewMode} onValueChange={(value) => syncViewParam(value as ViewMode)} aria-label="Workspace mode"><Tabs.List class="h-8"><Tabs.Trigger value="chat" class="h-6 px-3 text-xs">Chat</Tabs.Trigger><Tabs.Trigger value="kanban" class="h-6 px-3 text-xs">Kanban</Tabs.Trigger></Tabs.List></Tabs.Root>{#if selectedProject}<Button href={`/project/${selectedProject.id}/canvas`} variant="outline" size="sm"><Sparkles size={14} />Canvas</Button>{/if}
-      {#if sessionId && viewMode === "chat"}<Button variant="ghost" size="icon" title="Rename session" aria-label="Rename session" onclick={() => openRename(sessionId, conversation?.session.title ?? "")}><Pencil size={15} /></Button><Button variant="outline" size="sm" onclick={() => showFiles()}><FileCode size={14} /><span class="hidden sm:inline">Changes</span></Button>{/if}
+      <Tabs.Root bind:value={viewMode} onValueChange={(value) => syncViewParam(value as ViewMode)} aria-label="Workspace mode"><Tabs.List class="h-8"><Tabs.Trigger value="chat" class="h-6 px-3 text-xs">Chat</Tabs.Trigger><Tabs.Trigger value="kanban" class="h-6 px-3 text-xs">Kanban</Tabs.Trigger>{#if selectedProject}<a href={`/project/${selectedProject.id}/canvas`} class="inline-flex h-6 items-center gap-1.5 rounded-md px-3 text-xs font-medium text-foreground/60 transition-all hover:text-foreground" aria-label="Design canvas"><Sparkles size={12} />Canvas</a>{/if}</Tabs.List></Tabs.Root>
     </header>
     {#if viewMode === "kanban"}
       <div class="min-h-0 flex-1 overflow-y-auto px-5 py-5">
@@ -634,20 +657,20 @@ async function answer(requestId: string, answers: string[][]) {
         {:else if !sessionId}<div class="mb-8 text-center"><div class="mx-auto mb-5 flex size-10 items-center justify-center rounded-xl border bg-card"><Sparkles size={20} class="text-teal-300" /></div><h1 class="text-2xl font-medium tracking-tight sm:text-3xl">What are we working on?</h1><p class="mt-3 text-sm text-muted-foreground">A little context. A clear idea. Let's build something.</p></div>{/if}
          {#if sessionId}<div class="space-y-8" aria-live="polite" aria-relevant="additions text">{#each turns as turn (turn.key)}<Turn messages={turn.messages} {sessionId} projectId={selectedProjectId} onfile={showFiles} />{/each}</div>
            {#if busy}<Marker.Root variant="border" class="mt-5 flex items-center"><Marker.Icon><LoaderCircle size={14} class="animate-spin" /></Marker.Icon><Marker.Content>{conversation?.permissions.length ? "Waiting for permission" : conversation?.questions.length ? "Waiting for your answer" : conversation?.status.message || `${providerLabel} is working…`}</Marker.Content></Marker.Root>{/if}
-          {#each conversation?.permissions ?? [] as request}<div class="mt-5 space-y-3 rounded-xl border border-amber-500/30 bg-card p-4"><p class="flex items-center gap-2 text-sm font-medium"><ShieldCheck size={16} />Permission required: {request.permission}</p><pre class="overflow-auto whitespace-pre-wrap text-xs text-muted-foreground">{request.patterns.join("\n")}</pre><div class="flex flex-wrap gap-2"><Button size="sm" onclick={() => permission(request.id, "once")}>Allow once</Button><Button variant="outline" size="sm" onclick={() => permission(request.id, "always")}>Always allow</Button><Button variant="ghost" size="sm" onclick={() => permission(request.id, "reject")}>Deny</Button></div></div>{/each}
+          {#each conversation?.permissions ?? [] as request}<div role="group" aria-label={`Permission required: ${request.permission}`} class="mt-5 space-y-3 rounded-xl border border-amber-500/30 bg-card p-4"><p class="flex items-center gap-2 text-sm font-medium"><ShieldCheck size={16} />Permission required: {request.permission}</p>{#if request.patterns.length}<pre class="overflow-auto whitespace-pre-wrap break-words text-xs text-muted-foreground">{request.patterns.join("\n")}</pre>{/if}<div class="flex flex-wrap gap-2"><Button size="sm" disabled={permissionReplying === request.id} onclick={() => permission(request.id, "once")}>Accept once</Button><Button variant="outline" size="sm" disabled={permissionReplying === request.id} onclick={() => permission(request.id, "always")}>Always allow</Button><Button variant="ghost" size="sm" disabled={permissionReplying === request.id} onclick={() => permission(request.id, "reject")}>Decline</Button></div></div>{/each}
           {#each conversation?.questions ?? [] as question}<div class="mt-5"><QuestionCard {question} onanswer={(answers) => answer(question.id, answers)} /></div>{/each}
         {/if}
 
         {#if error}<div role="alert" class="my-4 flex items-start gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm"><p class="min-w-0 flex-1 break-words text-destructive">{error}</p><Button variant="ghost" size="sm" onclick={retryConnection}><RefreshCw size={13} />Retry</Button><Button variant="ghost" size="icon" class="size-7" aria-label="Dismiss error" onclick={() => error = ""}><X size={13} /></Button></div>{/if}
         {#if !sessionId && !loading}
           {#if !projects.length}<div class="mb-5 text-center"><p class="mb-3 text-sm text-muted-foreground">Add a local Git project to start chatting with OpenCode.</p><Button onclick={() => addProjectOpen = true}><FolderPlus size={16} />Add project</Button></div>{:else}<div class="mb-3"><Select.Root type="single" bind:value={selectedProjectId}><Select.Trigger class="w-auto min-w-40 border-0 bg-transparent shadow-none" aria-label="Choose project"><Folder size={14} />{selectedProject?.name ?? "Choose project"}</Select.Trigger><Select.Content>{#each projects as project}<Select.Item value={project.id}>{project.name}</Select.Item>{/each}</Select.Content></Select.Root></div>{/if}
-           <Composer projectId={selectedProjectId} {catalog} {busy} disabled={!selectedProjectId || loading} onsend={send} onstop={stop} bind:draft bind:model bind:agent />
+           <Composer projectId={selectedProjectId} {catalog} {busy} disabled={!selectedProjectId || loading} onsend={send} onstop={stop} bind:draft bind:model bind:agent autoAccept={selectedProject?.autoAccept ?? false} onAutoAcceptChange={selectedProject ? (value) => void setAutoAccept(value) : undefined} />
 
           <div class="mt-5 flex flex-wrap justify-center gap-2">{#each prompts as prompt}<Button variant="outline" size="sm" class="rounded-full text-xs text-muted-foreground" onclick={() => draft = prompt.text}>{prompt.label}</Button>{/each}</div>
         {/if}
       </div>
     </div>
-    {#if sessionId && viewMode === "chat"}<div class="shrink-0 border-t bg-background px-5 py-4"><div class="mx-auto max-w-3xl"><Composer projectId={selectedProjectId} {catalog} {busy} disabled={!conversation || sessionLoading} onsend={send} onstop={stop} bind:draft bind:model bind:agent /></div></div>{/if}
+    {#if sessionId && viewMode === "chat"}<div class="shrink-0 border-t bg-background px-5 py-4"><div class="mx-auto max-w-3xl"><Composer projectId={selectedProjectId} {catalog} {busy} disabled={!conversation || sessionLoading} onsend={send} onstop={stop} bind:draft bind:model bind:agent autoAccept={selectedProject?.autoAccept ?? false} onAutoAcceptChange={selectedProject ? (value) => void setAutoAccept(value) : undefined} /></div></div>{/if}
     {/if}
   </main>
 </div>

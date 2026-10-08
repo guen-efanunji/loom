@@ -17,6 +17,7 @@ import { Button } from "$lib/components/ui/button";
 import * as Command from "$lib/components/ui/command";
 import * as Popover from "$lib/components/ui/popover";
 import * as Select from "$lib/components/ui/select";
+import { Switch } from "$lib/components/ui/switch";
 import { Textarea } from "$lib/components/ui/textarea";
 
 let {
@@ -31,6 +32,8 @@ let {
 	agent = $bindable("build"),
 	showAgents = true,
 	inputId,
+	autoAccept = false,
+	onAutoAcceptChange,
 }: {
 	projectId: string;
 	catalog: Catalog;
@@ -50,6 +53,9 @@ let {
 	agent?: string;
 	showAgents?: boolean;
 	inputId?: string;
+	/** Per-project auto-accept toggle. Rendered only when `onAutoAcceptChange` is provided. */
+	autoAccept?: boolean;
+	onAutoAcceptChange?: (value: boolean) => void;
 } = $props();
 let textarea = $state<HTMLTextAreaElement | null>(null);
 let files = $state<string[]>([]);
@@ -280,7 +286,10 @@ function keydown(event: KeyboardEvent) {
   <input bind:this={attachmentInput} type="file" accept="image/*,.txt,.md,.json,.ts,.tsx,.js,.jsx,.css,.html,.pdf" multiple onchange={addAttachments} class="sr-only" aria-label="Attach files or images" />
    <Textarea id={inputId} bind:ref={textarea} bind:value={draft} oninput={input} onclick={input} onpaste={onpaste} onkeydown={keydown} aria-label="Message agent" aria-controls={query !== null ? "mention-list" : undefined} aria-activedescendant={query !== null ? `mention-${active}` : undefined} placeholder="Ask anything… @ for files and agents" rows={3} class="max-h-56 min-h-24 resize-none border-0 bg-transparent p-4 text-sm shadow-none focus-visible:ring-0" disabled={disabled || sending} />
   <div class="flex flex-wrap items-center justify-between gap-2 px-3 pb-3">
+    <div class="flex items-center gap-1">
      <Popover.Root bind:open={attachmentOpen}><Popover.Trigger class="inline-flex size-9 items-center justify-center rounded-md border border-transparent text-sm hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50" title="Add to message" aria-label="Add to message" disabled={sending}><Plus size={16} /></Popover.Trigger><Popover.Content class="w-64 p-1" align="start"><Command.Root><Command.List><Command.Group><Command.Item value="Add photos & files" onSelect={() => { attachmentOpen = false; attachmentInput?.click(); }}><ImageIcon size={15} /><span>Add photos &amp; files</span></Command.Item><Command.Item value="@ for mentions" disabled={!projectId} onSelect={() => { attachmentOpen = false; void attach(); }}><AtSign size={15} /><span>@ for mentions</span></Command.Item></Command.Group></Command.List></Command.Root></Popover.Content></Popover.Root>
+      {#if onAutoAcceptChange}<label class="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:bg-accent" title="Auto-approve tool permissions for this project. When off, each tool asks for your approval."><Switch checked={autoAccept} onCheckedChange={(value) => onAutoAcceptChange(value)} size="sm" /><span>Auto-accept</span></label>{/if}
+    </div>
     <div class="flex min-w-0 items-center gap-1">
       <Popover.Root bind:open={modelOpen}><Popover.Trigger class="flex max-w-44 items-center gap-1 rounded-md px-2 py-1.5 text-xs hover:bg-accent" aria-label="Select model"><span class="truncate">{selectedModel?.name ?? "Default model"}</span><ChevronDown size={12} /></Popover.Trigger>
         <Popover.Content class="w-80 p-0" align="end"><Command.Root><Command.Input placeholder="Search models…" /><Command.List><Command.Empty>No configured models found.</Command.Empty><Command.Group heading="Models"><Command.Item value="default" onSelect={() => { model = ""; modelOpen = false; }}>Default model</Command.Item>{#each catalog.models as item}<Command.Item value={`${item.providerID}/${item.modelID} ${item.name}`} onSelect={() => { model = `${item.providerID}/${item.modelID}`; modelOpen = false; }}><div><p>{item.name}</p><p class="text-xs text-muted-foreground">{item.provider} · {item.providerId ?? item.providerID}{item.connectionId ? ` · ${item.connectionId}` : ""}</p></div></Command.Item>{/each}</Command.Group></Command.List></Command.Root></Popover.Content>

@@ -75,9 +75,11 @@ import { Hono } from "hono";
 import { createBunWebSocket } from "hono/bun";
 import { cors } from "hono/cors";
 import { z } from "zod";
+import { registerAgyPermissionHook } from "./agy-hooks";
 import { type ChatRequestGateway, createChatRoutes } from "./chat";
 import { type DaemonConfig, loadDaemonConfig } from "./config";
 import { createContext } from "./context";
+import { createAgyPermissionStore } from "./permissions";
 import {
 	createProjectValidationService,
 	ProjectValidationError,
@@ -101,6 +103,7 @@ function recordToProject(
 				name: string;
 				path: string;
 				defaultBranch: string;
+				autoAccept?: boolean;
 				createdAt: Date;
 		  }
 		| null
@@ -276,6 +279,7 @@ export type DaemonAppOptions = {
 	projectValidation?: ReturnType<typeof createProjectValidationService>;
 	plannerRuntime?: AgentRuntime;
 	designRuntime?: AgentRuntime;
+	registerAgyHook?: boolean;
 };
 
 export async function createApp(options: DaemonAppOptions = {}) {
@@ -463,6 +467,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	app.use("/api/*", async (c, next) => {
 		if (
 			c.req.path.startsWith("/api/auth/") ||
+			c.req.path.startsWith("/api/agy/permission/") ||
 			c.req.path === "/api/events" ||
 			c.req.path === "/api/bootstrap"
 		)
@@ -638,6 +643,20 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			},
 			options.directory,
 		);
+	const agyPermissions = createAgyPermissionStore();
+	const agyPermissionBase = `http://127.0.0.1:${config.port}/api/agy/permission`;
+	let agyPermissionError = "Agy permission hook is not configured";
+	if (options.registerAgyHook) {
+		try {
+			const registration = await registerAgyPermissionHook();
+			agyPermissionError = registration.reason
+				? `Agy permission hook unavailable: ${registration.reason}`
+				: "";
+		} catch (error) {
+			agyPermissionError = `Agy permission hook unavailable: ${error instanceof Error ? error.message : String(error)}`;
+			log("agy", "hook-registration-failed", { error: agyPermissionError }, "warn");
+		}
+	}
 	app.route(
 		"/api/chat",
 		createChatRoutes({
@@ -645,6 +664,9 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			request: openCodeChatRequest,
 			sessionScope: (id) => orchestrator.sessionScope(id),
 			providerManager,
+			permissions: agyPermissions,
+			agyPermissionUrl: agyPermissionError ? undefined : agyPermissionBase,
+			agyPermissionError,
 			runtimes: new Map(
 				providerManager.registry.list().flatMap((adapter) => {
 					const runtime = adapter.getRuntime?.();
@@ -653,6 +675,35 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			),
 		}),
 	);
+
+	// PreToolUse hook endpoints. The spawned Agy hook subprocess authenticates
+	// with its per-run token (minted at prompt time) rather than the daemon
+	// bearer token, so these are exempt from the /api/* guard and validated here.
+	app.post("/api/agy/permission/request", async (c) => {
+		const input = z
+			.object({
+				token: z.string().min(1),
+				conversationId: z.string().default(""),
+				toolName: z.string().min(1),
+				args: z.record(z.string(), z.unknown()).default({}),
+				stepIdx: z.number().int().min(0).default(0),
+			})
+			.parse(await c.req.json());
+		const result = agyPermissions.submit(
+			{
+				token: input.token,
+				conversationId: input.conversationId,
+				toolName: input.toolName,
+				args: input.args,
+				stepIdx: input.stepIdx,
+			},
+			1_800_000,
+		);
+		if (result.status === "unknown") return c.json({ decision: "deny" });
+		if (result.status === "auto") return c.json({ decision: "allow" });
+		const decision = await result.decision;
+		return c.json({ decision });
+	});
 
 	app.post("/api/projects", async (c) => {
 		try {
@@ -689,14 +740,23 @@ export async function createApp(options: DaemonAppOptions = {}) {
 				.object({
 					name: z.string().trim().min(1).max(120).optional(),
 					path: z.string().trim().min(1).optional(),
+					autoAccept: z.boolean().optional(),
 				})
-				.refine((value) => value.name !== undefined || value.path !== undefined)
+				.refine(
+					(value) =>
+						value.name !== undefined ||
+						value.path !== undefined ||
+						value.autoAccept !== undefined,
+				)
 				.parse(await jsonBody(c));
 			const path = input.path
 				? (await projectValidation.validate(input.path)).path
 				: project.path;
 			const [updated] = await repos.projects.update(c.req.param("id"), {
 				...(input.name ? { name: input.name } : {}),
+				...(input.autoAccept === undefined
+					? {}
+					: { autoAccept: input.autoAccept }),
 				path,
 			});
 			if (!updated) throw new Error("Project not found");
@@ -1381,7 +1441,7 @@ export const apiHandler = new OpenAPIHandler(appRouter, {
 export const rpcHandler = new RPCHandler(appRouter);
 
 if (import.meta.main || process.env.LOOM_DAEMON === "true") {
-	const daemon = await createApp();
+	const daemon = await createApp({ registerAgyHook: true });
 	const server = Bun.serve({
 		fetch: daemon.app.fetch,
 		port: daemon.config.port,

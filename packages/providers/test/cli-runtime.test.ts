@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { CliProviderAdapter, parseCliOutput } from "../src/adapters/cli";
+import { agyPermissionArgs } from "../src/adapters/agy";
 
 // Captured from Agy: a denied command exits 0 and reports SUCCESS with no response.
 const deniedResult = JSON.stringify({
@@ -77,4 +78,50 @@ test("Agy result errors retain partial assistant text", () => {
 	);
 	expect(parsed.output).toBe("Working");
 	expect(parsed.error).toBe("Model unavailable");
+});
+
+test("agyPermissionArgs toggles the skip flag by permission mode", () => {
+	expect(agyPermissionArgs({ mode: "auto" })).toEqual([
+		"--dangerously-skip-permissions",
+	]);
+	expect(agyPermissionArgs({ mode: "ask" })).toEqual([
+		"--dangerously-skip-permissions",
+	]);
+	// Undefined preserves the legacy accept-edits behavior.
+	expect(agyPermissionArgs(undefined)).toEqual(["--mode", "accept-edits"]);
+});
+
+test("CliRuntime threads the permission env into the spawned process", async () => {
+	// The child echoes LOOM_PERMISSION_TOKEN back through the stream-json result,
+	// proving the per-run secret reaches Agy (and therefore its PreToolUse hook).
+	const runtime = new CliProviderAdapter({
+		definition: {
+			id: "agy",
+			name: "Agy",
+			executable: process.execPath,
+			capabilities: ["chat"],
+			install: { supported: false },
+			authStrategy: "none",
+		},
+		getAuthStatus: async () => ({ authenticated: true, strategy: "none" }),
+		buildPrompt: async () => ({
+			command: process.execPath,
+			args: [
+				"-e",
+				'process.stdout.write(JSON.stringify({event:"result",result:{status:"SUCCESS",response:process.env.LOOM_PERMISSION_TOKEN||"none"}}))',
+			],
+		}),
+	}).getRuntime();
+	const session = await runtime.createSession({ cwd: "/tmp", title: "Test" });
+	await runtime.prompt({
+		sessionId: session.id,
+		prompt: "Test",
+		permission: { mode: "ask", env: { LOOM_PERMISSION_TOKEN: "secret-token" } },
+	});
+	expect(
+		await runtime.wait(session.id, { timeoutMs: 5000, pollIntervalMs: 10 }),
+	).toBe("completed");
+	expect(await runtime.readOutput?.(session.id)).toEqual({
+		output: "secret-token",
+	});
 });

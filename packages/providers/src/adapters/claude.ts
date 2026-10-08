@@ -27,7 +27,8 @@ export class ClaudeProviderAdapter extends CliProviderAdapter {
 				args: [
 					"--print",
 					"--output-format",
-					"text",
+					"stream-json",
+					"--verbose",
 					"--append-system-prompt-file",
 					promptPath("coding.md"),
 					...(model ? ["--model", model] : []),

@@ -124,11 +124,13 @@ async function togglePreview(file: string) {
 	}
 }
 
-type ToolKind = "shell" | "edit" | "other";
+type ToolKind = "shell" | "read" | "search" | "edit" | "other";
 function kindOf(part: ChatPart): ToolKind {
 	const name = `${part.tool ?? ""} ${part.state?.title ?? ""}`.toLowerCase();
 	if (/shell|bash|command|exec/.test(name)) return "shell";
-	if (/edit|write|patch|apply/.test(name)) return "edit";
+	if (/search|grep|glob|find|list/.test(name)) return "search";
+	if (/read|view|open|cat/.test(name)) return "read";
+	if (/edit|write|patch|apply|file_change|create|delete|replace/.test(name)) return "edit";
 	return "other";
 }
 function commandOf(part: ChatPart) {
@@ -141,7 +143,17 @@ function commandOf(part: ChatPart) {
 }
 function fileOf(part: ChatPart) {
 	const input = part.state?.input as Record<string, unknown> | undefined;
-	for (const key of ["filePath", "path", "file", "filename"]) {
+	for (const key of [
+		"filePath",
+		"TargetFile",
+		"target_file",
+		"file_path",
+		"AbsolutePath",
+		"DirectoryPath",
+		"path",
+		"file",
+		"filename",
+	]) {
 		if (typeof input?.[key] === "string" && input[key])
 			return input[key] as string;
 	}
@@ -231,17 +243,18 @@ async function copy() {
 						<div class="my-2 overflow-hidden rounded-lg border bg-card/50">
 							<details>
 								<summary class="flex cursor-pointer list-none items-center gap-2 p-3 text-xs [&::-webkit-details-marker]:hidden">
-									{#if kind === "shell"}<Terminal size={14} class="shrink-0 text-muted-foreground" />
-									{:else if kind === "edit"}<Pencil size={14} class="shrink-0 text-muted-foreground" />
-									{:else}<Wrench size={14} class="shrink-0 text-muted-foreground" />{/if}
-									<span class="shrink-0 font-medium">{kind === "shell" ? "Shell Command" : kind === "edit" ? "Edit File" : (part.state.title || part.tool || "Tool")}</span>
-									<span class="min-w-0 flex-1 truncate text-muted-foreground">{kind === "edit" && file ? file : commandOf(part)}</span>
+					{#if kind === "shell"}<Terminal size={14} class="shrink-0 text-muted-foreground" />
+					{:else if kind === "read" || kind === "search"}<FileCode size={14} class="shrink-0 text-muted-foreground" />
+					{:else if kind === "edit"}<Pencil size={14} class="shrink-0 text-muted-foreground" />
+					{:else}<Wrench size={14} class="shrink-0 text-muted-foreground" />{/if}
+					<span class="shrink-0 font-medium">{kind === "shell" ? "Shell Command" : kind === "read" ? "Read File" : kind === "search" ? "Search Files" : kind === "edit" ? "Edit File" : (part.state.title || part.tool || "Tool")}</span>
+					<span class="min-w-0 flex-1 truncate text-muted-foreground">{(kind === "edit" || kind === "read") && file ? file : commandOf(part)}</span>
 									{#if stats}<span class="shrink-0 font-mono text-[11px]"><span class="text-emerald-400">+{stats.additions}</span><span class="text-red-400">−{stats.deletions}</span></span>{/if}
 									<Marker.Root class="shrink-0 text-[11px]"><Marker.Content>{statusOf(part)}</Marker.Content></Marker.Root>
 									<ChevronDown size={14} class="shrink-0 text-muted-foreground" />
 								</summary>
 								<div class="space-y-2 border-t p-3">
-									{#if kind !== "edit" && part.state.input}<CodeBlock code={JSON.stringify(part.state.input, null, 2)} language="json" maxHeight="max-h-60" />{/if}
+									{#if part.state.input}<CodeBlock code={JSON.stringify(part.state.input, null, 2)} language="json" maxHeight="max-h-60" />{/if}
 									{#if part.state.output}<CodeBlock code={part.state.output} maxHeight="max-h-80" />{/if}
 									{#if part.state.error}<p class="text-sm text-destructive" role="alert">{part.state.error}</p>{/if}
 								</div>

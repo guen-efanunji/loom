@@ -6,6 +6,7 @@ export type {
 	RuntimeAgentModel,
 	RuntimeModel,
 	RuntimeOutput,
+	RuntimePermission,
 } from "./runtime";
 
 export type ProviderCapability =

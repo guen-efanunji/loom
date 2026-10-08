@@ -10,7 +10,7 @@ const schemaStatements = [
 	"CREATE INDEX IF NOT EXISTS account_userId_idx ON account (user_id)",
 	"CREATE TABLE IF NOT EXISTS verification (id text PRIMARY KEY NOT NULL, identifier text NOT NULL, value text NOT NULL, expires_at integer NOT NULL, created_at integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL, updated_at integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL)",
 	"CREATE INDEX IF NOT EXISTS verification_identifier_idx ON verification (identifier)",
-	"CREATE TABLE IF NOT EXISTS projects (id text PRIMARY KEY NOT NULL, name text NOT NULL, path text NOT NULL, default_branch text NOT NULL, created_at integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL)",
+	"CREATE TABLE IF NOT EXISTS projects (id text PRIMARY KEY NOT NULL, name text NOT NULL, path text NOT NULL, default_branch text NOT NULL, auto_accept integer DEFAULT 0 NOT NULL, created_at integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL)",
 	"CREATE UNIQUE INDEX IF NOT EXISTS projects_path_uidx ON projects (path)",
 	"CREATE TABLE IF NOT EXISTS tasks (id text PRIMARY KEY NOT NULL, project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE, title text NOT NULL, prompt text NOT NULL, status text DEFAULT 'queued' NOT NULL, workspace_id text, session_id text, created_at integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL, started_at integer, completed_at integer, error_message text, merge_conflict_files text, position integer, plan_id text REFERENCES plans(id) ON DELETE SET NULL, description text NOT NULL DEFAULT '', priority text NOT NULL DEFAULT 'medium', acceptance_criteria text NOT NULL DEFAULT '[]', suggested_files text NOT NULL DEFAULT '[]', source text NOT NULL DEFAULT 'manual')",
 	"CREATE TABLE IF NOT EXISTS plans (id text PRIMARY KEY NOT NULL, project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE, source_message_id text NOT NULL DEFAULT '', source_message text NOT NULL DEFAULT '', source_session_id text, automation_mode text NOT NULL DEFAULT 'review', title text NOT NULL, summary text NOT NULL DEFAULT '', status text NOT NULL DEFAULT 'draft', converted_at integer, approved_at integer, started_at integer, cancelled_at integer, error_message text, created_at integer NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)))",
@@ -39,6 +39,19 @@ export function bootstrapDatabase(path: string): void {
 	try {
 		database.exec("BEGIN");
 		for (const statement of schemaStatements) database.exec(statement);
+		for (const column of [
+			"auto_accept integer NOT NULL DEFAULT 0",
+		]) {
+			try {
+				database.exec(`ALTER TABLE projects ADD COLUMN ${column}`);
+			} catch (error) {
+				if (
+					!(error instanceof Error) ||
+					!error.message.includes("duplicate column")
+				)
+					throw error;
+			}
+		}
 		for (const column of [
 			"source_message text NOT NULL DEFAULT ''",
 			"source_session_id text",

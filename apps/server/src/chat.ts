@@ -1,9 +1,11 @@
+import { randomBytes } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { AgentRuntime, ProviderManager } from "@loom/providers";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
+import type { AgyPermissionStore } from "./permissions";
 
 const id = z.string().regex(/^ses_[\w-]+$/);
 const promptSchema = z
@@ -46,16 +48,31 @@ type ProviderMessage = {
 		error?: { name: string; data: { message: string } };
 		time: { created: number; completed?: number };
 	};
-	parts: Array<{ id: string; type: string; text: string }>;
+	parts: Array<{
+		id: string;
+		type: string;
+		text?: string;
+		tool?: string;
+		state?: {
+			status: string;
+			title?: string;
+			input?: Record<string, unknown>;
+			output?: string;
+			error?: string;
+			metadata?: Record<string, unknown>;
+		};
+	}>;
 };
 type ProviderTurn = {
 	runtime: AgentRuntime;
 	id: string;
+	loomSessionId: string;
 	providerId: string;
 	messages: ProviderMessage[];
 	assistant: ProviderMessage;
 	finished: boolean;
 	openCodeActive?: boolean;
+	permissionToken?: string;
 	status: { type: string; message?: string };
 };
 
@@ -68,6 +85,31 @@ function mergeMessages(
 			[...previous, ...current].map((message) => [message.info.id, message]),
 		).values(),
 	].sort((a, b) => a.info.time.created - b.info.time.created);
+}
+
+// Extract the command/path an Agy tool wants to run so the permission card can
+// show what is being approved, mirroring the OpenCode permission `patterns` field.
+function permissionPatterns(
+	toolName: string,
+	args: Record<string, unknown>,
+): string[] {
+	const candidates =
+		toolName.toLowerCase().replaceAll("_", "") === "runcommand"
+			? ["CommandLine", "command", "cmd", "script"]
+			: ["TargetFile", "file_path", "filePath", "path", "filename"];
+	for (const key of candidates) {
+		const value = args[key];
+		if (typeof value === "string" && value.trim()) {
+			const description = args.Description ?? args.description;
+			return typeof description === "string" && description.trim()
+				? [value, description]
+				: [value];
+		}
+	}
+	const description = args.Description ?? args.description;
+	return typeof description === "string" && description.trim()
+		? [description]
+		: [];
 }
 
 export type ChatRequestOptions = {
@@ -84,30 +126,46 @@ export type ChatRequestGateway = <T>(
 export function createChatRoutes(options: {
 	projects: {
 		list(): Promise<Array<{ id: string; path: string }>>;
-		getById(id: string): Promise<{ path: string } | null | undefined>;
+		getById(
+			id: string,
+		): Promise<{ path: string; autoAccept?: boolean } | null | undefined>;
 	};
 	request: ChatRequestGateway;
 	providerManager?: ProviderManager;
 	runtimes?: Map<string, AgentRuntime>;
+	permissions?: AgyPermissionStore;
+	agyPermissionUrl?: string;
+	agyPermissionError?: string;
 	sessionScope?: (
 		sessionId: string,
 	) => Promise<{ directory: string; projectId: string } | undefined>;
 }) {
 	const app = new Hono();
 	const providerSessions = new Map<string, ProviderTurn>();
+	const agyEnabled =
+		options.permissions !== undefined && !!options.agyPermissionUrl;
 	async function updateProviderTurn(turn: ProviderTurn) {
 		if (turn.finished) return;
 		const status = await turn.runtime.status(turn.id);
 		const output = await turn.runtime.readOutput?.(turn.id);
-		turn.assistant.parts = output?.output
-			? [
-					{
-						id: `${turn.assistant.info.id}-text`,
-						type: "text",
-						text: output.output,
-					},
-				]
-			: [];
+		turn.assistant.parts = [
+			...(output?.activities ?? []).map((activity) => ({
+				id: `${turn.assistant.info.id}-${activity.id}`,
+				type: "tool",
+				tool: activity.tool,
+				state: {
+					status: activity.status,
+					title: activity.tool,
+					input: activity.input,
+					output: activity.output,
+					error: activity.error,
+					metadata: activity.metadata,
+				},
+			})),
+			...(output?.output
+				? [{ id: `${turn.assistant.info.id}-text`, type: "text", text: output.output }]
+				: []),
+		];
 		turn.finished = [
 			"completed",
 			"failed",
@@ -115,7 +173,16 @@ export function createChatRoutes(options: {
 			"interrupted",
 		].includes(status);
 		turn.status = { type: turn.finished ? "idle" : "busy" };
-		if (turn.finished) turn.assistant.info.time.completed = Date.now();
+		if (turn.finished) {
+			turn.assistant.info.time.completed = Date.now();
+			// Release the hook: deny anything still waiting and drop the run token so
+			// late hook calls cannot execute after the run finishes.
+			options.permissions?.denySession(turn.loomSessionId);
+			if (turn.permissionToken) {
+				options.permissions?.unregisterRun(turn.permissionToken);
+				turn.permissionToken = undefined;
+			}
+		}
 		if (
 			status === "failed" ||
 			status === "interrupted" ||
@@ -208,21 +275,49 @@ export function createChatRoutes(options: {
 	async function session(sessionId: string) {
 		id.parse(sessionId);
 		const scope = await options.sessionScope?.(sessionId);
-		const found = await request<Session>(
-			`/session/${sessionId}`,
-			scope?.directory,
-		);
 		const projects = await options.projects.list();
-		if (
-			!(scope && resolve(scope.directory) === resolve(found.directory)) &&
-			!projects.some(
-				(project) => resolve(project.path) === resolve(found.directory),
-			)
-		)
-			throw new HTTPException(404, {
-				message: "Session is not in a Loom project",
-			});
-		return { ...found, projectId: scope?.projectId };
+		const candidates = scope
+			? [{ directory: scope.directory, projectId: scope.projectId }]
+			: projects.map((project) => ({
+					directory: project.path,
+					projectId: project.id,
+				}));
+		let notFound = false;
+		for (const candidate of candidates) {
+			let found: Session;
+			try {
+				found = await request<Session>(
+					`/session/${sessionId}`,
+					candidate.directory,
+				);
+			} catch (error) {
+				const details =
+					error && typeof error === "object" && "details" in error
+						? (error as { details?: { status?: string } }).details
+						: undefined;
+				if (details?.status === "404") {
+					notFound = true;
+					continue;
+				}
+				throw error;
+			}
+
+			const project = projects.find(
+				(item) => resolve(item.path) === resolve(found.directory),
+			);
+			const isScopedWorkspace =
+				scope && resolve(scope.directory) === resolve(found.directory);
+			if (!isScopedWorkspace && !project) continue;
+			return {
+				...found,
+				projectId: scope?.projectId ?? project?.id ?? candidate.projectId,
+			};
+		}
+		throw new HTTPException(404, {
+			message: notFound
+				? "Session was not found in a Loom project"
+				: "Session is not in a Loom project",
+		});
 	}
 	async function filePath(root: string, path: string) {
 		const [base, file] = await Promise.all([
@@ -298,11 +393,20 @@ export function createChatRoutes(options: {
 		const providerSession = providerSessions.get(current.id);
 		if (providerSession && !providerSession.openCodeActive) {
 			await updateProviderTurn(providerSession);
+			const pending =
+				options.permissions?.pendingFor(current.id).map((request) => ({
+					id: request.id,
+					permission: request.toolName,
+					patterns: permissionPatterns(request.toolName, request.args),
+					sessionID: current.id,
+				})) ?? [];
 			return c.json({
 				session: current,
 				messages: providerSession.messages,
-				status: providerSession.status,
-				permissions: [],
+				status: pending.length
+					? { type: "busy", message: "Waiting for permission" }
+					: providerSession.status,
+				permissions: pending,
 				questions: [],
 			});
 		}
@@ -357,6 +461,12 @@ export function createChatRoutes(options: {
 					message:
 						"This provider does not support attachments or agent mentions in chat yet",
 				});
+			if ((providerId === "agy" || providerId === "antigravity") && !agyEnabled)
+				throw new HTTPException(503, {
+					message:
+						options.agyPermissionError ??
+						"Agy permission approval is unavailable",
+				});
 			const files = await Promise.all(
 				input.files.map((path) => filePath(current.directory, path)),
 			);
@@ -390,12 +500,28 @@ export function createChatRoutes(options: {
 			const turn: ProviderTurn = {
 				runtime,
 				id: created.id,
+				loomSessionId: current.id,
 				providerId,
 				messages: [...history, user, assistant],
 				assistant,
 				finished: false,
 				status: { type: "busy" },
 			};
+			const isAgy = providerId === "agy" || providerId === "antigravity";
+			const permissionToken =
+				isAgy && agyEnabled ? randomBytes(24).toString("hex") : undefined;
+			const autoAccept =
+				permissionToken && current.projectId
+					? (await options.projects.getById(current.projectId))?.autoAccept ===
+						true
+					: false;
+			if (permissionToken && options.permissions)
+				options.permissions.registerRun({
+					token: permissionToken,
+					sessionId: current.id,
+					autoAccept,
+				});
+			turn.permissionToken = permissionToken;
 			providerSessions.set(current.id, turn);
 			// CLI runtimes start a new process each turn; carry forward the conversation.
 			const context = history
@@ -419,10 +545,24 @@ export function createChatRoutes(options: {
 					sessionId: created.id,
 					prompt,
 					model: input.model,
+					...(permissionToken && options.agyPermissionUrl
+						? {
+								permission: {
+									mode: autoAccept ? ("auto" as const) : ("ask" as const),
+									env: {
+										LOOM_PERMISSION_URL: options.agyPermissionUrl,
+										LOOM_PERMISSION_TOKEN: permissionToken,
+									},
+								},
+							}
+						: {}),
 				});
 			} catch (error) {
+				if (permissionToken && options.permissions)
+					options.permissions.unregisterRun(permissionToken);
 				const message = error instanceof Error ? error.message : String(error);
 				turn.finished = true;
+				turn.permissionToken = undefined;
 				turn.status = { type: "error", message };
 				assistant.info.time.completed = Date.now();
 				assistant.info.error = { name: "ProviderError", data: { message } };
@@ -465,6 +605,9 @@ export function createChatRoutes(options: {
 		const current = await session(c.req.param("id"));
 		const providerSession = providerSessions.get(current.id);
 		if (providerSession && !providerSession.finished) {
+			options.permissions?.denySession(current.id);
+			if (providerSession.permissionToken)
+				options.permissions?.unregisterRun(providerSession.permissionToken);
 			await providerSession.runtime.abort(providerSession.id);
 			return c.json({ aborted: true });
 		}
@@ -478,6 +621,10 @@ export function createChatRoutes(options: {
 	});
 	app.delete("/sessions/:id", async (c) => {
 		const current = await session(c.req.param("id"));
+		const providerSession = providerSessions.get(current.id);
+		options.permissions?.denySession(current.id);
+		if (providerSession?.permissionToken)
+			options.permissions?.unregisterRun(providerSession.permissionToken);
 		await request(`/session/${current.id}`, current.directory, {}, "DELETE");
 		providerSessions.delete(current.id);
 		return c.body(null, 204);
@@ -506,6 +653,31 @@ export function createChatRoutes(options: {
 			additions: number;
 			deletions: number;
 		};
+		const providerTurn = providerSessions.get(current.id);
+		if (providerTurn) {
+			const activityDiffs = providerTurn.assistant.parts.flatMap((part) => {
+				const metadata = part.state?.metadata;
+				if (!metadata) return [];
+				const filediff = metadata.filediff as Diff | undefined;
+				if (filediff?.file) return [filediff];
+				const files = metadata.files;
+				return Array.isArray(files)
+					? files.flatMap((file) => {
+							if (!file || typeof file !== "object") return [];
+							const item = file as Diff & {
+								filePath?: string;
+								relativePath?: string;
+								diff?: string;
+							};
+							const path = item.file ?? item.relativePath ?? item.filePath;
+							return path
+								? [{ ...item, file: path, patch: item.patch ?? item.diff }]
+								: [];
+						})
+					: [];
+			});
+			return c.json(activityDiffs);
+		}
 		let diffs = await request<Diff[]>(
 			`/session/${current.id}/diff`,
 			current.directory,
@@ -573,11 +745,29 @@ export function createChatRoutes(options: {
 	for (const kind of ["permission", "question"] as const) {
 		app.post(`/sessions/:id/${kind}/:requestId`, async (c) => {
 			const current = await session(c.req.param("id"));
+			const requestId = c.req.param("requestId");
+			// Agy runs gate tools through the in-memory hook store rather than
+			// OpenCode, so resolve those requests locally before proxying.
+			if (
+				kind === "permission" &&
+				options.permissions?.get(requestId)?.sessionId === current.id
+			) {
+				const input = z
+					.object({ reply: z.enum(["once", "always", "reject"]) })
+					.parse(await c.req.json());
+				if (input.reply === "always")
+					options.permissions.enableAutoAccept(current.id);
+				const decision = input.reply === "reject" ? "deny" : "allow";
+				if (!options.permissions.decide(requestId, decision))
+					throw new HTTPException(404, {
+						message: "Request no longer pending",
+					});
+				return c.json({ decided: true });
+			}
 			const pending = await request<Array<{ id: string; sessionID: string }>>(
 				`/${kind}`,
 				current.directory,
 			);
-			const requestId = c.req.param("requestId");
 			if (
 				!pending.some((p) => p.id === requestId && p.sessionID === current.id)
 			)

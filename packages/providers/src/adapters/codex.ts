@@ -20,6 +20,9 @@ export class CodexProviderAdapter extends CliProviderAdapter {
 			},
 			buildPrompt: async ({ prompt, model }) => ({
 				command: "codex",
+				// codex exec may wait for more stdin in non-TTY environments even
+				// when the prompt is an argument. Send EOF explicitly to avoid that.
+				stdin: "",
 				args: [
 					"exec",
 					"--json",
