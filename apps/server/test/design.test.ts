@@ -3,13 +3,13 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDb, designRepository, repositories } from "@loom/db";
-import { DesignService } from "@loom/orchestrator";
 import type {
 	AgentModel,
 	AgentRunStatus,
 	AgentRuntime,
 	RuntimeOutput,
 } from "@loom/opencode";
+import { DesignService } from "@loom/orchestrator";
 import type {
 	DesignChatResult,
 	DesignMessage,
@@ -211,8 +211,7 @@ describe("design canvas API", () => {
 			expect(
 				thread.messages.some(
 					(message) =>
-						message.role === "assistant" &&
-						message.text.includes("ready"),
+						message.role === "assistant" && message.text.includes("ready"),
 				),
 			).toBe(true);
 		});
@@ -501,14 +500,11 @@ describe("design agent chat", () => {
 				message: "halo",
 			});
 			expect(result.kind).toBe("chat");
-			if (result.kind === "chat")
-				expect(result.text).toContain("Halo");
+			if (result.kind === "chat") expect(result.text).toContain("Halo");
 			const thread = await readThread(setup.daemon.app, setup.project.id);
 			expect(thread.nodes).toEqual([]);
 			expect(
-				thread.messages.some(
-					(m) => m.role === "user" && m.text === "halo",
-				),
+				thread.messages.some((m) => m.role === "user" && m.text === "halo"),
 			).toBe(true);
 			expect(
 				thread.messages.some(
@@ -526,6 +522,11 @@ describe("design agent chat", () => {
 			});
 			expect(result.kind).toBe("design");
 			if (result.kind !== "design") return;
+			expect(
+				setup.runtime.prompts.some((prompt) =>
+					/intent classifier/i.test(prompt),
+				),
+			).toBe(false);
 			expect(result.status).toBe("queued");
 			const node = await waitForNode(setup.daemon.app, result.nodeId);
 			expect(node.status).toBe("ready");
@@ -542,9 +543,7 @@ describe("design agent chat", () => {
 					{
 						header: "Screen",
 						question: "Layar mana yang mau dibuat?",
-						options: [
-							{ label: "Landing", description: "Halaman utama" },
-						],
+						options: [{ label: "Landing", description: "Halaman utama" }],
 					},
 				],
 			};
@@ -626,7 +625,8 @@ describe("design agent chat", () => {
 			// One shared user turn, not a duplicate per node.
 			expect(
 				thread.messages.filter(
-					(m) => m.role === "user" && m.text === "pada keduanya tambahkan animasi",
+					(m) =>
+						m.role === "user" && m.text === "pada keduanya tambahkan animasi",
 				),
 			).toHaveLength(1);
 		});

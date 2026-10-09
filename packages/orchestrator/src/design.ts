@@ -317,11 +317,10 @@ export class DesignService {
 				previousHtml: node.html,
 			});
 		else {
-			const context: ProjectContext | undefined =
-				await buildAutomationContext(
-					project.path,
-					project.name,
-				).catch(() => undefined);
+			const context: ProjectContext | undefined = await buildAutomationContext(
+				project.path,
+				project.name,
+			).catch(() => undefined);
 			for (const file of context?.readFiles ?? []) read.add(file);
 			prompt = buildDesignPrompt({ brief: node.brief, viewport, context });
 		}
@@ -433,7 +432,7 @@ export class DesignService {
 		if (status !== "completed") {
 			const detail =
 				status === "failed"
-				? await runtime.lastError?.(sessionId).catch(() => null)
+					? await runtime.lastError?.(sessionId).catch(() => null)
 					: null;
 			if (detail)
 				throw new Error(
@@ -464,8 +463,7 @@ export class DesignService {
 	) {
 		const screens = extractDesignScreens(reply);
 		const primary = screens[0];
-		if (!primary)
-			throw new Error("Design agent returned no usable document");
+		if (!primary) throw new Error("Design agent returned no usable document");
 		const model = await this.storedModel(node);
 		await this.store.updateNode(nodeId, {
 			status: "ready",
@@ -547,7 +545,7 @@ export class DesignService {
 		const project = await this.requireProject(node.projectId);
 		const message = input.message.trim();
 		if (!message) throw new Error("Describe what to change");
-		
+
 		const model = input.model ?? (await this.storedModel(node));
 		await this.store.addMessage({
 			projectId: project.id,
@@ -557,7 +555,14 @@ export class DesignService {
 			model: modelLabel(model),
 		});
 
-		this.launchRefine(node, project, message, model, input.files, input.attachments);
+		this.launchRefine(
+			node,
+			project,
+			message,
+			model,
+			input.files,
+			input.attachments,
+		);
 		return { nodeId, status: "queued" };
 	}
 
@@ -614,19 +619,15 @@ export class DesignService {
 		const intent =
 			target?.html || isExplicitNewDesignRequest(message)
 				? "design"
-				: await this.classifyIntent(
-						project,
-						message,
-						false,
-						input.model,
-					);
+				: await this.classifyIntent(project, message, false, input.model);
 
 		if (intent === "design") {
 			// A change request that names the whole set ("pada keduanya", "ubah warna
 			// di semua canvas") refines every ready node at once - one message, one
 			// shared turn - instead of forcing the user to iterate card by card.
 			const readyNodes = (await this.store.listNodes(project.id)).filter(
-				(node) => node.html && node.status === "ready" && !this.busy.has(node.id),
+				(node) =>
+					node.html && node.status === "ready" && !this.busy.has(node.id),
 			);
 			if (readyNodes.length >= 2 && wantsAllNodes(message)) {
 				const primary =
@@ -653,7 +654,7 @@ export class DesignService {
 					return { kind: "design", nodeId: primary.id, status: "queued" };
 				}
 			}
-			if (target && target.html) {
+			if (target?.html) {
 				const refined = await this.refine(target.id, {
 					message,
 					model: input.model,
@@ -851,7 +852,7 @@ export class DesignService {
 		if (status !== "completed") {
 			const detail =
 				status === "failed"
-				? await runtime.lastError?.(sessionId).catch(() => null)
+					? await runtime.lastError?.(sessionId).catch(() => null)
 					: null;
 			throw new Error(
 				detail
@@ -974,9 +975,7 @@ export class DesignService {
 		const conversationPrefix = `${projectId}\0`;
 		for (const [key, conversation] of this.chatSessions) {
 			if (!key.startsWith(conversationPrefix)) continue;
-			await conversation.runtime
-				.abort(conversation.id)
-				.catch(() => undefined);
+			await conversation.runtime.abort(conversation.id).catch(() => undefined);
 			this.chatSessions.delete(key);
 		}
 		await this.store.clearProject(projectId);

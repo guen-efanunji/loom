@@ -17,8 +17,16 @@ type ChatState = {
 			time: { created: number; completed?: number };
 			error: { data: { message: string } };
 		};
-		parts: Array<{ text: string }>;
+		parts: Array<{ type?: string; text?: string; tool?: string }>;
 	}>;
+};
+type TestRuntimeOutput = {
+	output: string;
+	parts?: Array<
+		| { type: "text"; id: string; text: string }
+		| { type: "activity"; id: string }
+	>;
+	activities?: Array<{ id: string; tool: string; status: "completed" }>;
 };
 
 async function setup(
@@ -36,6 +44,8 @@ async function setup(
 ) {
 	let status: Awaited<ReturnType<AgentRuntime["status"]>> = "running";
 	let output = "";
+	let outputParts: TestRuntimeOutput["parts"];
+	let outputActivities: TestRuntimeOutput["activities"];
 	let failure: string | null = null;
 	let count = 0;
 	const prompts: Parameters<AgentRuntime["prompt"]>[0][] = [];
@@ -50,7 +60,8 @@ async function setup(
 			output = "";
 		},
 		status: async () => status,
-		readOutput: async () => ({ output }),
+		readOutput: async () =>
+			({ output, parts: outputParts, activities: outputActivities }) as never,
 		lastError: async () => "CLI authentication expired",
 		abort: async () => {
 			status = "cancelled";
@@ -95,10 +106,7 @@ async function setup(
 		providerManager,
 		designs: { listNodes: async () => designNodes },
 		runtimes: new Map([[providerId, runtime]]),
-		request: async <T>(
-			path: string,
-			options?: { body?: unknown },
-		) => {
+		request: async <T>(path: string, options?: { body?: unknown }) => {
 			calls.push(path);
 			if (path.endsWith("/prompt_async")) openCodePrompts.push(options?.body);
 			if (path === "/session/ses_test")
@@ -120,11 +128,29 @@ async function setup(
 		finish: (next = "completed" as typeof status, text = "Hello") => {
 			status = next;
 			output = text;
+			outputParts = undefined;
+			outputActivities = undefined;
+		},
+		finishWithParts: (parts: NonNullable<typeof outputParts>) => {
+			status = "completed";
+			output = parts
+				.flatMap((part) => (part.type === "text" ? [part.text] : []))
+				.join("\n");
+			outputParts = parts;
+			outputActivities = parts.flatMap((part) =>
+				part.type === "activity"
+					? [{ id: part.id, tool: part.id, status: "completed" as const }]
+					: [],
+			);
 		},
 		failSpawn: () => {
 			failure = "Binary unavailable";
 		},
-		send: (text = "Hello", provider = providerId, designNodeIds: string[] = []) =>
+		send: (
+			text = "Hello",
+			provider = providerId,
+			designNodeIds: string[] = [],
+		) =>
 			app.request("/sessions/ses_test/messages", {
 				method: "POST",
 				body: JSON.stringify({
@@ -139,6 +165,39 @@ async function setup(
 }
 
 describe("provider chat", () => {
+	test("renders assistant text and tools in the order emitted by the provider", async () => {
+		const fixture = await setup("codex");
+		await fixture.send();
+		fixture.finishWithParts([
+			{
+				type: "text",
+				id: "explain-1",
+				text: "Saya mulai dengan memeriksa file.",
+			},
+			{ type: "activity", id: "read-1" },
+			{ type: "text", id: "explain-2", text: "Strukturnya sudah jelas." },
+			{ type: "activity", id: "edit-1" },
+			{ type: "text", id: "explain-3", text: "Perubahan selesai." },
+		]);
+		const state = await fixture.state();
+		expect(state.messages[1]?.parts.map((part) => part.type)).toEqual([
+			"text",
+			"tool",
+			"text",
+			"tool",
+			"text",
+		]);
+		expect(
+			state.messages[1]?.parts.map((part) => part.text ?? part.tool),
+		).toEqual([
+			"Saya mulai dengan memeriksa file.",
+			"read-1",
+			"Strukturnya sudah jelas.",
+			"edit-1",
+			"Perubahan selesai.",
+		]);
+	});
+
 	test("embeds selected Canvas design HTML in the provider prompt", async () => {
 		const { app, prompts, send } = await setup("agy", new Map(), [
 			{
@@ -148,7 +207,7 @@ describe("provider chat", () => {
 				brief: "Warm coffee shop login page",
 				viewport: "desktop",
 				status: "ready",
-				html: "<main class=\"login\">Sign in</main>",
+				html: '<main class="login">Sign in</main>',
 			},
 		]);
 		const response = await send("Implement this design", "agy", ["design-1"]);
@@ -173,13 +232,24 @@ describe("provider chat", () => {
 				html: "<main>Checkout</main>",
 			},
 		]);
-		const response = await send("Slice this screen", "opencode", ["design-open-code"]);
+		const response = await send("Slice this screen", "opencode", [
+			"design-open-code",
+		]);
 		expect(response.status).toBe(204);
 		const payload = openCodePrompts[0] as {
-			parts: Array<{ type: string; text?: string; filename?: string; url?: string }>;
+			parts: Array<{
+				type: string;
+				text?: string;
+				filename?: string;
+				url?: string;
+			}>;
 		};
-		expect(payload.parts[0]?.text).toContain("authoritative visual specification");
-		const attachment = payload.parts.find((part) => part.filename?.startsWith("canvas-design:"));
+		expect(payload.parts[0]?.text).toContain(
+			"authoritative visual specification",
+		);
+		const attachment = payload.parts.find((part) =>
+			part.filename?.startsWith("canvas-design:"),
+		);
 		expect(attachment?.filename).toBe("canvas-design:design-open-code.html");
 		expect(attachment?.url).toContain("PG1haW4+");
 	});

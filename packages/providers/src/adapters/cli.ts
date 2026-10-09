@@ -15,6 +15,7 @@ import type {
 	ProviderDefinition,
 	ProviderDetectionResult,
 	RuntimeActivity,
+	RuntimeOutput,
 	RuntimePermission,
 	SendMessageInput,
 } from "../core";
@@ -231,9 +232,10 @@ class CliRuntime implements AgentRuntime {
 			if (session.status === "cancelled") return;
 			// Codex prints this informational notice while consuming non-TTY stdin.
 			// It is not a failure reason and should not become the chat error message.
-			session.error = session.error
-				?.replace(/Reading additional input from stdin\.\.\.\s*/g, "")
-				.trim() || null;
+			session.error =
+				session.error
+					?.replace(/Reading additional input from stdin\.\.\.\s*/g, "")
+					.trim() || null;
 			const result =
 				this.options.definition.id === "claude"
 					? { output: session.output.trim(), error: undefined }
@@ -421,10 +423,30 @@ export function parseCliOutput(output: string): {
 	output: string;
 	error?: string;
 	activities: RuntimeActivity[];
+	parts: NonNullable<RuntimeOutput["parts"]>;
 } {
 	const text: string[] = [];
 	const agySteps = new Map<number, number>();
 	const activities = new Map<string, RuntimeActivity>();
+	const orderedParts: Array<
+		{ type: "text"; id: string } | { type: "activity"; id: string }
+	> = [];
+	const orderedText = new Map<string, string>();
+	const orderedActivityIds = new Set<string>();
+	function setActivity(activity: RuntimeActivity) {
+		activities.set(activity.id, activity);
+		if (!orderedActivityIds.has(activity.id)) {
+			orderedActivityIds.add(activity.id);
+			orderedParts.push({ type: "activity", id: activity.id });
+		}
+	}
+	function setText(id: string, value: string, append = false) {
+		if (!orderedText.has(id)) orderedParts.push({ type: "text", id });
+		orderedText.set(
+			id,
+			append ? `${orderedText.get(id) ?? ""}${value}` : value,
+		);
+	}
 	let error: string | undefined;
 	let finalResponse: string | undefined;
 	for (const line of output.split("\n").filter(Boolean)) {
@@ -432,6 +454,7 @@ export function parseCliOutput(output: string): {
 			const event = JSON.parse(line);
 			if (!event || typeof event !== "object") {
 				text.push(line);
+				setText(`plain-${orderedParts.length}`, line);
 				continue;
 			}
 			if (event.event === "result" && event.result) {
@@ -453,137 +476,194 @@ export function parseCliOutput(output: string): {
 				const message =
 					typeof event.error === "string"
 						? event.error
-						: event.error?.message ?? event.message;
-				if (typeof message === "string" && message.trim()) error = message.trim();
+						: (event.error?.message ?? event.message);
+				if (typeof message === "string" && message.trim())
+					error = message.trim();
 			}
 			const step = event.step_update;
-		if (step?.step_type === "tool") {
-			const toolInfo = step.tool_info ?? {};
-			const name = step.tool_name ?? toolInfo.name ?? "tool";
-			const params = toolInfo.parameters;
-			const input = params && typeof params === "object" && !Array.isArray(params)
-				? params as Record<string, unknown>
-				: undefined;
-			const stepId = `agy-${step.step_index ?? activities.size}`;
-			const patch = typeof toolInfo.diff === "string" ? toolInfo.diff : undefined;
-			const file = input?.TargetFile ?? input?.filePath ?? input?.path;
-			const activity: RuntimeActivity = {
-				id: stepId,
-				tool: String(name),
-				status: toolInfo.error ? "error" : step.state === "ACTIVE" ? "running" : "completed",
-				...(input ? { input } : {}),
-				...(typeof toolInfo.output === "string" ? { output: toolInfo.output } : {}),
-				...(typeof toolInfo.error?.message === "string" ? { error: toolInfo.error.message } : {}),
-				...(toolInfo.filediff || toolInfo.files || toolInfo.diff
-					? { metadata: {
-							...(toolInfo.filediff ? { filediff: toolInfo.filediff } : patch && file ? {
-								filediff: {
-									file,
-									patch,
-									additions: patch.split("\n").filter((line: string) => line.startsWith("+") && !line.startsWith("+++")).length,
-									deletions: patch.split("\n").filter((line: string) => line.startsWith("-") && !line.startsWith("---")).length,
-								},
-							} : {}),
-							...(toolInfo.files ? { files: toolInfo.files } : {}),
-							...(toolInfo.diff ? { diff: toolInfo.diff } : {}),
-						} }
-					: {}),
-			};
-			activities.set(stepId, activity);
-		}
-		const item = event.item;
-		if (
-			(event.type === "item.started" || event.type === "item.completed") &&
-			item &&
-			typeof item === "object"
-		) {
-			const itemType = String(item.type ?? "");
-			const itemId = String(item.id ?? `${itemType}-${activities.size}`);
-			if (itemType === "file_change" && Array.isArray(item.changes)) {
-				for (const [index, change] of item.changes.entries()) {
-					if (!change || typeof change !== "object") continue;
-					const file = change.path ?? change.filePath ?? change.file;
-					const changeId = `codex-${itemId}-${index}`;
-					activities.set(changeId, {
-						id: changeId,
-						tool: "file_change",
-						status: event.type === "item.started" ? "running" : "completed",
-						input: { ...(typeof file === "string" ? { path: file } : {}), kind: change.kind },
-						...(typeof change.diff === "string"
-							? {
-									metadata: {
-										filediff: {
-											file,
-											patch: change.diff,
-											additions: change.diff
-												.split("\n")
-												.filter((line: string) => line.startsWith("+") && !line.startsWith("+++"))
-												.length,
-											deletions: change.diff
-												.split("\n")
-												.filter((line: string) => line.startsWith("-") && !line.startsWith("---"))
-												.length,
-										},
-									},
-								}
-							: {}),
-					});
-				}
-			} else if (["command_execution", "shell", "tool_call"].includes(itemType)) {
+			if (step?.step_type === "tool") {
+				const toolInfo = step.tool_info ?? {};
+				const name = step.tool_name ?? toolInfo.name ?? "tool";
+				const params = toolInfo.parameters;
+				const input =
+					params && typeof params === "object" && !Array.isArray(params)
+						? (params as Record<string, unknown>)
+						: undefined;
+				const stepId = `agy-${step.step_index ?? activities.size}`;
+				const patch =
+					typeof toolInfo.diff === "string" ? toolInfo.diff : undefined;
+				const file = input?.TargetFile ?? input?.filePath ?? input?.path;
 				const activity: RuntimeActivity = {
-					id: `codex-${itemId}`,
-					tool: itemType,
-					status:
-						event.type === "item.started"
+					id: stepId,
+					tool: String(name),
+					status: toolInfo.error
+						? "error"
+						: step.state === "ACTIVE"
 							? "running"
-							: item.exit_code && item.exit_code !== 0
-								? "error"
-								: "completed",
-					input: {
-						...(typeof item.command === "string" ? { command: item.command } : {}),
-						...(typeof item.cwd === "string" ? { cwd: item.cwd } : {}),
-					},
-					...(typeof item.aggregated_output === "string" ? { output: item.aggregated_output } : {}),
+							: "completed",
+					...(input ? { input } : {}),
+					...(typeof toolInfo.output === "string"
+						? { output: toolInfo.output }
+						: {}),
+					...(typeof toolInfo.error?.message === "string"
+						? { error: toolInfo.error.message }
+						: {}),
+					...(toolInfo.filediff || toolInfo.files || toolInfo.diff
+						? {
+								metadata: {
+									...(toolInfo.filediff
+										? { filediff: toolInfo.filediff }
+										: patch && file
+											? {
+													filediff: {
+														file,
+														patch,
+														additions: patch
+															.split("\n")
+															.filter(
+																(line: string) =>
+																	line.startsWith("+") &&
+																	!line.startsWith("+++"),
+															).length,
+														deletions: patch
+															.split("\n")
+															.filter(
+																(line: string) =>
+																	line.startsWith("-") &&
+																	!line.startsWith("---"),
+															).length,
+													},
+												}
+											: {}),
+									...(toolInfo.files ? { files: toolInfo.files } : {}),
+									...(toolInfo.diff ? { diff: toolInfo.diff } : {}),
+								},
+							}
+						: {}),
 				};
-				activities.set(activity.id, activity);
+				setActivity(activity);
 			}
-		}
-		if (event.type === "assistant" && Array.isArray(event.message?.content)) {
-			for (const block of event.message.content) {
-				if (block.type === "tool_use" && typeof block.name === "string") {
-					const input =
-						block.input && typeof block.input === "object" && !Array.isArray(block.input)
-							? block.input as Record<string, unknown>
-							: undefined;
-					const activityId = `claude-${block.id ?? activities.size}`;
-					activities.set(activityId, {
-						id: activityId,
-						tool: block.name,
-						status: "running",
-						...(input ? { input } : {}),
-					});
+			const item = event.item;
+			if (
+				(event.type === "item.started" || event.type === "item.completed") &&
+				item &&
+				typeof item === "object"
+			) {
+				const itemType = String(item.type ?? "");
+				const itemId = String(item.id ?? `${itemType}-${activities.size}`);
+				if (itemType === "file_change" && Array.isArray(item.changes)) {
+					for (const [index, change] of item.changes.entries()) {
+						if (!change || typeof change !== "object") continue;
+						const file = change.path ?? change.filePath ?? change.file;
+						const changeId = `codex-${itemId}-${index}`;
+						setActivity({
+							id: changeId,
+							tool: "file_change",
+							status: event.type === "item.started" ? "running" : "completed",
+							input: {
+								...(typeof file === "string" ? { path: file } : {}),
+								kind: change.kind,
+							},
+							...(typeof change.diff === "string"
+								? {
+										metadata: {
+											filediff: {
+												file,
+												patch: change.diff,
+												additions: change.diff
+													.split("\n")
+													.filter(
+														(line: string) =>
+															line.startsWith("+") && !line.startsWith("+++"),
+													).length,
+												deletions: change.diff
+													.split("\n")
+													.filter(
+														(line: string) =>
+															line.startsWith("-") && !line.startsWith("---"),
+													).length,
+											},
+										},
+									}
+								: {}),
+						});
+					}
+				} else if (
+					["command_execution", "shell", "tool_call"].includes(itemType)
+				) {
+					const activity: RuntimeActivity = {
+						id: `codex-${itemId}`,
+						tool: itemType,
+						status:
+							event.type === "item.started"
+								? "running"
+								: item.exit_code && item.exit_code !== 0
+									? "error"
+									: "completed",
+						input: {
+							...(typeof item.command === "string"
+								? { command: item.command }
+								: {}),
+							...(typeof item.cwd === "string" ? { cwd: item.cwd } : {}),
+						},
+						...(typeof item.aggregated_output === "string"
+							? { output: item.aggregated_output }
+							: {}),
+					};
+					setActivity(activity);
 				}
 			}
-		}
-		if (event.type === "user" && Array.isArray(event.message?.content)) {
-			for (const block of event.message.content) {
-				if (block.type !== "tool_result" || typeof block.tool_use_id !== "string") continue;
-				const activityId = `claude-${block.tool_use_id}`;
-				const activity = activities.get(activityId);
-			if (activity)
-				activities.set(activityId, {
-					...activity,
-					status: block.is_error ? "error" : "completed",
-					...(typeof block.content === "string" ? { output: block.content } : {}),
-				});
+			if (event.type === "assistant" && Array.isArray(event.message?.content)) {
+				for (const [index, block] of event.message.content.entries()) {
+					if (block.type === "text" && typeof block.text === "string") {
+						text.push(block.text);
+						setText(
+							`claude-${event.message.id ?? orderedParts.length}-${index}`,
+							block.text,
+						);
+					}
+					if (block.type === "tool_use" && typeof block.name === "string") {
+						const input =
+							block.input &&
+							typeof block.input === "object" &&
+							!Array.isArray(block.input)
+								? (block.input as Record<string, unknown>)
+								: undefined;
+						const activityId = `claude-${block.id ?? activities.size}`;
+						setActivity({
+							id: activityId,
+							tool: block.name,
+							status: "running",
+							...(input ? { input } : {}),
+						});
+					}
+				}
 			}
-		}
-		if (
-			event.type === "result" &&
-			typeof event.result === "object" &&
-			typeof event.result?.response === "string"
-		)
-			finalResponse = event.result.response;
+			if (event.type === "user" && Array.isArray(event.message?.content)) {
+				for (const block of event.message.content) {
+					if (
+						block.type !== "tool_result" ||
+						typeof block.tool_use_id !== "string"
+					)
+						continue;
+					const activityId = `claude-${block.tool_use_id}`;
+					const activity = activities.get(activityId);
+					if (activity)
+						setActivity({
+							...activity,
+							status: block.is_error ? "error" : "completed",
+							...(typeof block.content === "string"
+								? { output: block.content }
+								: {}),
+						});
+				}
+			}
+			if (
+				event.type === "result" &&
+				typeof event.result === "object" &&
+				typeof event.result?.response === "string"
+			)
+				finalResponse = event.result.response;
 			if (typeof event.result?.response === "string") {
 				if (event.result.response.trim()) finalResponse = event.result.response;
 			} else if (event.type === "result" && typeof event.result === "string")
@@ -600,31 +680,49 @@ export function parseCliOutput(output: string): {
 					text.push("");
 				}
 				text[index] += event.step_update.text_delta;
-			} else if (typeof event.step_update?.agent_response?.text === "string")
+				setText(`agy-${step}`, event.step_update.text_delta, true);
+			} else if (typeof event.step_update?.agent_response?.text === "string") {
+				const step = event.step_update.step_index ?? orderedParts.length;
 				text.push(event.step_update.agent_response.text);
-			else if (
+				setText(`agy-${step}`, event.step_update.agent_response.text);
+			} else if (
 				event.type === "item.completed" &&
 				event.item?.type === "agent_message" &&
 				typeof event.item.text === "string"
-			)
-				text.push(event.item.text);
-			else if (
-				event.type === "assistant" &&
-				Array.isArray(event.message?.content)
 			) {
-				for (const block of event.message.content)
-					if (block.type === "text" && typeof block.text === "string")
-						text.push(block.text);
-			} else if (!event.type && !event.event) text.push(line);
+				text.push(event.item.text);
+				setText(
+					`codex-${event.item.id ?? orderedParts.length}`,
+					event.item.text,
+				);
+			} else if (!event.type && !event.event) {
+				text.push(line);
+				setText(`plain-${orderedParts.length}`, line);
+			}
 		} catch {
 			// A partial JSON event will be parsed on the next output poll.
-			if (!line.trimStart().startsWith("{")) text.push(line);
+			if (!line.trimStart().startsWith("{")) {
+				text.push(line);
+				setText(`plain-${orderedParts.length}`, line);
+			}
+		}
+	}
+	if (!orderedText.size && finalResponse?.trim())
+		setText("final-response", finalResponse);
+	const parts: NonNullable<RuntimeOutput["parts"]> = [];
+	for (const part of orderedParts) {
+		if (part.type === "text") {
+			const value = orderedText.get(part.id) ?? "";
+			if (value.trim()) parts.push({ ...part, text: value });
+		} else {
+			parts.push(part);
 		}
 	}
 	return {
 		output: (finalResponse ?? text.join("\n")).trim(),
 		error,
 		activities: [...activities.values()],
+		parts,
 	};
 }
 

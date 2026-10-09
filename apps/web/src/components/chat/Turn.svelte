@@ -16,9 +16,9 @@ import {
 	chat,
 	type FileDiff,
 } from "$lib/chat";
-import { type DesignNode, daemon } from "$lib/daemon";
 import { Button } from "$lib/components/ui/button";
 import * as Marker from "$lib/components/ui/marker";
+import { type DesignNode, daemon } from "$lib/daemon";
 import CodeBlock from "./CodeBlock.svelte";
 import Markdown from "./Markdown.svelte";
 
@@ -37,11 +37,17 @@ let {
 const role = $derived(messages[0]?.info.role ?? "assistant");
 const first = $derived(messages[0]);
 const agent = $derived(messages.find((m) => m.info.agent)?.info.agent);
-const providerID = $derived(messages.find((m) => m.info.providerID)?.info.providerID);
+const providerID = $derived(
+	messages.find((m) => m.info.providerID)?.info.providerID,
+);
 const providerLabel = $derived(
-	providerID === "agy" || providerID === "antigravity" ? "Agy"
-		: providerID === "claude" ? "Claude"
-			: providerID === "codex" ? "Codex" : "OpenCode",
+	providerID === "agy" || providerID === "antigravity"
+		? "Agy"
+		: providerID === "claude"
+			? "Claude"
+			: providerID === "codex"
+				? "Codex"
+				: "OpenCode",
 );
 const modelID = $derived(messages.find((m) => m.info.modelID)?.info.modelID);
 const time = $derived(first ? first.info.time.created : Date.now());
@@ -79,13 +85,18 @@ function designIdOf(part: ChatPart) {
 function visibleText(part: ChatPart) {
 	const text = part.text ?? "";
 	if (!text.startsWith("IMPLEMENTATION PRIORITY:")) return text;
-	return text.match(/\n\nUser request:\n([\s\S]*?)(?=\n\nAttached Canvas nodes:|$)/)?.[1] ?? "";
+	return (
+		text.match(
+			/\n\nUser request:\n([\s\S]*?)(?=\n\nAttached Canvas nodes:|$)/,
+		)?.[1] ?? ""
+	);
 }
 
 function thumbnailStyle(node: DesignNode, boxWidth: number, boxHeight: number) {
-	const frame = node.viewport === "mobile"
-		? { width: 390, height: 844 }
-		: { width: 1440, height: 900 };
+	const frame =
+		node.viewport === "mobile"
+			? { width: 390, height: 844 }
+			: { width: 1440, height: 900 };
 	const scale = Math.min(boxWidth / frame.width, boxHeight / frame.height);
 	const left = (boxWidth - frame.width * scale) / 2;
 	const top = (boxHeight - frame.height * scale) / 2;
@@ -101,7 +112,8 @@ $effect(() => {
 				.filter(
 					(part) =>
 						part.type === "design" ||
-						(part.type === "file" && part.filename?.startsWith("canvas-design:")),
+						(part.type === "file" &&
+							part.filename?.startsWith("canvas-design:")),
 				)
 				.map(designIdOf)
 				.filter(Boolean),
@@ -194,7 +206,8 @@ function kindOf(part: ChatPart): ToolKind {
 	if (/shell|bash|command|exec/.test(name)) return "shell";
 	if (/search|grep|glob|find|list/.test(name)) return "search";
 	if (/read|view|open|cat/.test(name)) return "read";
-	if (/edit|write|patch|apply|file_change|create|delete|replace/.test(name)) return "edit";
+	if (/edit|write|patch|apply|file_change|create|delete|replace/.test(name))
+		return "edit";
 	return "other";
 }
 function commandOf(part: ChatPart) {

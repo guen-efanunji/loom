@@ -11,6 +11,10 @@ export type RuntimeOutput = {
 	output: string;
 	truncated?: boolean;
 	activities?: RuntimeActivity[];
+	parts?: Array<
+		| { type: "text"; id: string; text: string }
+		| { type: "activity"; id: string }
+	>;
 };
 
 /** A normalized provider tool invocation that can be shown in chat. */

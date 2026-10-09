@@ -188,7 +188,9 @@ const DESIGN_SCREEN_PATTERN =
 
 /** Avoid a slow model-based intent pass when the user clearly asks for a new screen. */
 export function isExplicitNewDesignRequest(text: string): boolean {
-	return EXPLICIT_NEW_DESIGN_PATTERN.test(text) && DESIGN_SCREEN_PATTERN.test(text);
+	return (
+		EXPLICIT_NEW_DESIGN_PATTERN.test(text) && DESIGN_SCREEN_PATTERN.test(text)
+	);
 }
 
 /**

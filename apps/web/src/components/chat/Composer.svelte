@@ -3,11 +3,11 @@ import {
 	ArrowUp,
 	AtSign,
 	Bot,
+	Check,
 	ChevronDown,
 	File as FileIcon,
 	Image as ImageIcon,
 	LoaderCircle,
-	Check,
 	PanelsTopLeft,
 	Plus,
 	Square,
@@ -15,13 +15,13 @@ import {
 } from "@lucide/svelte";
 import { tick } from "svelte";
 import { type Catalog, type ChatAttachment, chat } from "$lib/chat";
-import { type DesignNode, daemon } from "$lib/daemon";
 import { Button } from "$lib/components/ui/button";
 import * as Command from "$lib/components/ui/command";
 import * as Popover from "$lib/components/ui/popover";
 import * as Select from "$lib/components/ui/select";
 import { Switch } from "$lib/components/ui/switch";
 import { Textarea } from "$lib/components/ui/textarea";
+import { type DesignNode, daemon } from "$lib/daemon";
 
 let {
 	projectId,
@@ -84,9 +84,10 @@ let cursor = 0;
 let previousProject = "";
 let sending = $state(false);
 function thumbnailStyle(node: DesignNode, boxWidth: number, boxHeight: number) {
-	const frame = node.viewport === "mobile"
-		? { width: 390, height: 844 }
-		: { width: 1440, height: 900 };
+	const frame =
+		node.viewport === "mobile"
+			? { width: 390, height: 844 }
+			: { width: 1440, height: 900 };
 	const scale = Math.min(boxWidth / frame.width, boxHeight / frame.height);
 	const left = (boxWidth - frame.width * scale) / 2;
 	const top = (boxHeight - frame.height * scale) / 2;
@@ -156,9 +157,12 @@ async function loadDesigns() {
 	designError = "";
 	try {
 		const thread = await daemon.listDesigns(projectId);
-		designNodes = thread.nodes.filter((node) => node.status === "ready" && node.html.trim());
+		designNodes = thread.nodes.filter(
+			(node) => node.status === "ready" && node.html.trim(),
+		);
 	} catch (error) {
-		designError = error instanceof Error ? error.message : "Could not load Canvas designs";
+		designError =
+			error instanceof Error ? error.message : "Could not load Canvas designs";
 	} finally {
 		loadingDesigns = false;
 	}
@@ -234,7 +238,10 @@ async function send() {
 		sending ||
 		busy ||
 		disabled ||
-		(!draft.trim() && !files.length && !attachments.length && !selectedDesignIds.length)
+		(!draft.trim() &&
+			!files.length &&
+			!attachments.length &&
+			!selectedDesignIds.length)
 	)
 		return;
 	sending = true;

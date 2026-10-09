@@ -19,9 +19,6 @@ import { onDestroy, onMount, tick } from "svelte";
 import { toast } from "svelte-sonner";
 import type { Catalog, ChatAttachment, Question } from "$lib/chat";
 import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
-import Composer from "./chat/Composer.svelte";
-import Markdown from "./chat/Markdown.svelte";
-import QuestionCard from "./chat/QuestionCard.svelte";
 import { Badge } from "$lib/components/ui/badge";
 import { Button } from "$lib/components/ui/button";
 import {
@@ -31,6 +28,9 @@ import {
 	type DesignViewport,
 	daemon,
 } from "$lib/daemon";
+import Composer from "./chat/Composer.svelte";
+import Markdown from "./chat/Markdown.svelte";
+import QuestionCard from "./chat/QuestionCard.svelte";
 
 let {
 	projectId,
@@ -86,7 +86,9 @@ const activeNodeId = $derived(
 	selected?.status === "ready" ? selected.id : (busyNodes[0]?.id ?? ""),
 );
 const threadMessages = $derived(
-	[...messages, ...pending].sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+	[...messages, ...pending].sort((a, b) =>
+		a.createdAt.localeCompare(b.createdAt),
+	),
 );
 const selectedModel = $derived(
 	catalog.models.find((item) => `${item.providerID}/${item.modelID}` === model),
@@ -292,9 +294,7 @@ async function handleSend(input: DesignSend): Promise<boolean> {
 	const target =
 		nodes.find(
 			(node) =>
-				node.id === refiningNodeId &&
-				node.html &&
-				node.status === "ready",
+				node.id === refiningNodeId && node.html && node.status === "ready",
 		) ?? null;
 	const optimistic: DesignMessage = {
 		id: `pending-${Date.now()}`,
@@ -323,8 +323,7 @@ async function handleSend(input: DesignSend): Promise<boolean> {
 			selectedId = result.nodeId;
 			selectedByUser = Boolean(target);
 			refiningNodeId = "";
-		}
-		else if (result.kind === "question") pendingQuestion = result.question;
+		} else if (result.kind === "question") pendingQuestion = result.question;
 		await load();
 		pending = [];
 		return true;
@@ -349,7 +348,9 @@ async function answerQuestion(answers: string[][]): Promise<void> {
 	pendingQuestion = null;
 	if (!question) return;
 	const text = question.questions
-		.map((item, index) => `${item.question} ${(answers[index] ?? []).join(", ")}`)
+		.map(
+			(item, index) => `${item.question} ${(answers[index] ?? []).join(", ")}`,
+		)
 		.filter((line) => line.trim())
 		.join("\n");
 	if (text) await handleSend({ text, files: [], attachments: [] });

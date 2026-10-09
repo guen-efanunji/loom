@@ -175,8 +175,12 @@ export function createChatRoutes(options: {
 		if (turn.finished) return;
 		const status = await turn.runtime.status(turn.id);
 		const output = await turn.runtime.readOutput?.(turn.id);
-		turn.assistant.parts = [
-			...(output?.activities ?? []).map((activity) => ({
+		const activityParts: Array<{
+			id: string;
+			part: ProviderMessage["parts"][number];
+		}> = (output?.activities ?? []).map((activity) => ({
+			id: activity.id,
+			part: {
 				id: `${turn.assistant.info.id}-${activity.id}`,
 				type: "tool",
 				tool: activity.tool,
@@ -188,17 +192,39 @@ export function createChatRoutes(options: {
 					error: activity.error,
 					metadata: activity.metadata,
 				},
-			})),
-			...(output?.output
-				? [
-						{
-							id: `${turn.assistant.info.id}-text`,
-							type: "text",
-							text: output.output,
-						},
-					]
-				: []),
-		];
+			},
+		}));
+		const activityById = new Map(
+			activityParts.map(({ id, part }) => [id, part] as const),
+		);
+		const orderedParts: ProviderMessage["parts"] = output?.parts?.length
+			? output.parts.flatMap<ProviderMessage["parts"][number]>((part) => {
+					if (part.type === "text")
+						return part.text.trim()
+							? [
+									{
+										id: `${turn.assistant.info.id}-${part.id}`,
+										type: "text",
+										text: part.text,
+									},
+								]
+							: [];
+					const activity = activityById.get(part.id);
+					return activity ? [activity] : [];
+				})
+			: [
+					...activityParts.map(({ part }) => part),
+					...(output?.output
+						? [
+								{
+									id: `${turn.assistant.info.id}-text`,
+									type: "text",
+									text: output.output,
+								},
+							]
+						: []),
+				];
+		turn.assistant.parts = orderedParts;
 		turn.finished = [
 			"completed",
 			"failed",
@@ -487,7 +513,8 @@ export function createChatRoutes(options: {
 						const node = byId.get(nodeId);
 						if (!node || node.projectId !== current.projectId)
 							throw new HTTPException(400, {
-								message: "A selected Canvas design does not belong to this project",
+								message:
+									"A selected Canvas design does not belong to this project",
 							});
 						if (node.status !== "ready" || !node.html.trim())
 							throw new HTTPException(409, {
@@ -509,17 +536,19 @@ export function createChatRoutes(options: {
 		const promptText = [
 			designInstruction,
 			input.text,
-			designContext
-				? `Canvas visual reference(s):\n${designContext}`
-				: "",
-		].filter(Boolean).join("\n\n");
+			designContext ? `Canvas visual reference(s):\n${designContext}` : "",
+		]
+			.filter(Boolean)
+			.join("\n\n");
 		const openCodePromptText = [
 			designInstruction,
 			input.text ? `User request:\n${input.text}` : "",
 			designNodes.length
 				? `Attached Canvas nodes: ${designNodes.map((node) => `${node.title} (${node.viewport}): ${node.brief}`).join("; ")}. Inspect the attached HTML files as the visual source of truth.`
 				: "",
-		].filter(Boolean).join("\n\n");
+		]
+			.filter(Boolean)
+			.join("\n\n");
 		const providerId = input.model?.providerID;
 		const runtime = providerId ? options.runtimes?.get(providerId) : undefined;
 		const runtimeModel =

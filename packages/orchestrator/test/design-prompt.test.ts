@@ -120,7 +120,9 @@ describe("design agent chat helpers", () => {
 	});
 
 	test("recognizes explicit new-screen requests without an intent-model round trip", () => {
-		expect(isExplicitNewDesignRequest("buatkan halaman login dan register")).toBe(true);
+		expect(
+			isExplicitNewDesignRequest("buatkan halaman login dan register"),
+		).toBe(true);
 		expect(isExplicitNewDesignRequest("design a dashboard")).toBe(true);
 		expect(isExplicitNewDesignRequest("apa fungsi halaman login?")).toBe(false);
 	});
@@ -151,7 +153,9 @@ describe("design agent chat helpers", () => {
 	});
 
 	test("wantsAllNodes flags whole-set change requests only", () => {
-		expect(wantsAllNodes("pada keduanya bisa tambahkan animasi ga?")).toBe(true);
+		expect(wantsAllNodes("pada keduanya bisa tambahkan animasi ga?")).toBe(
+			true,
+		);
 		expect(wantsAllNodes("ubah warna di semua canvas")).toBe(true);
 		expect(wantsAllNodes("make both pages darker")).toBe(true);
 		expect(wantsAllNodes("apply this to all 5 designs")).toBe(true);

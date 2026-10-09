@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
+import { agyPermissionArgs, agyPromptText } from "../src/adapters/agy";
 import { CliProviderAdapter, parseCliOutput } from "../src/adapters/cli";
-import { agyPermissionArgs } from "../src/adapters/agy";
 
 // Captured from Agy: a denied command exits 0 and reports SUCCESS with no response.
 const deniedResult = JSON.stringify({
@@ -80,6 +80,69 @@ test("Agy result errors retain partial assistant text", () => {
 	expect(parsed.error).toBe("Model unavailable");
 });
 
+test("CLI output preserves the provider order between text and tool events", () => {
+	const parsed = parseCliOutput(
+		[
+			{
+				type: "item.completed",
+				item: {
+					type: "agent_message",
+					id: "msg-1",
+					text: "Saya mulai dengan memeriksa file.",
+				},
+			},
+			{
+				type: "item.started",
+				item: { type: "command_execution", id: "cmd-1", command: "pwd" },
+			},
+			{
+				type: "item.completed",
+				item: {
+					type: "command_execution",
+					id: "cmd-1",
+					command: "pwd",
+					exit_code: 0,
+				},
+			},
+			{
+				type: "item.completed",
+				item: {
+					type: "agent_message",
+					id: "msg-2",
+					text: "Saya menemukan struktur proyeknya.",
+				},
+			},
+			{
+				type: "item.started",
+				item: { type: "command_execution", id: "cmd-2", command: "rg --files" },
+			},
+			{
+				type: "item.completed",
+				item: { type: "agent_message", id: "msg-3", text: "Berikut hasilnya." },
+			},
+			{ type: "result", result: { response: "Berikut hasilnya." } },
+		]
+			.map((event) => JSON.stringify(event))
+			.join("\n"),
+	);
+	expect(parsed.parts.map((part) => part.type)).toEqual([
+		"text",
+		"activity",
+		"text",
+		"activity",
+		"text",
+	]);
+	expect(
+		parsed.parts
+			.filter((part) => part.type === "text")
+			.map((part) => part.text),
+	).toEqual([
+		"Saya mulai dengan memeriksa file.",
+		"Saya menemukan struktur proyeknya.",
+		"Berikut hasilnya.",
+	]);
+});
+
 test("agyPermissionArgs toggles the skip flag by permission mode", () => {
 	expect(agyPermissionArgs({ mode: "auto" })).toEqual([
 		"--dangerously-skip-permissions",
@@ -89,6 +152,29 @@ test("agyPermissionArgs toggles the skip flag by permission mode", () => {
 	]);
 	// Undefined preserves the legacy accept-edits behavior.
 	expect(agyPermissionArgs(undefined)).toEqual(["--mode", "accept-edits"]);
+});
+
+test("design-only Agy prompt excludes coding instructions that invite tools", () => {
+	expect(
+		agyPromptText(
+			"Please implement a feature",
+			"Use shell tools to inspect the project",
+		),
+	).toBe(
+		"Use shell tools to inspect the project\n\nPlease implement a feature",
+	);
+	expect(
+		agyPromptText(
+			"Do not call tools, run shell commands, read or write files. Generate HTML only.",
+			"Use shell tools to inspect the project",
+		),
+	).toContain("Generate HTML only.");
+	expect(
+		agyPromptText(
+			"Do not call tools, run shell commands, read or write files. Generate HTML only.",
+			"Use shell tools to inspect the project",
+		),
+	).not.toContain("Use shell tools");
 });
 
 test("CliRuntime threads the permission env into the spawned process", async () => {
@@ -121,7 +207,5 @@ test("CliRuntime threads the permission env into the spawned process", async () 
 	expect(
 		await runtime.wait(session.id, { timeoutMs: 5000, pollIntervalMs: 10 }),
 	).toBe("completed");
-	expect(await runtime.readOutput?.(session.id)).toEqual({
-		output: "secret-token",
-	});
+	expect((await runtime.readOutput?.(session.id))?.output).toBe("secret-token");
 });
