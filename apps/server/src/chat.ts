@@ -163,7 +163,13 @@ export function createChatRoutes(options: {
 				},
 			})),
 			...(output?.output
-				? [{ id: `${turn.assistant.info.id}-text`, type: "text", text: output.output }]
+				? [
+						{
+							id: `${turn.assistant.info.id}-text`,
+							type: "text",
+							text: output.output,
+						},
+					]
 				: []),
 		];
 		turn.finished = [
@@ -231,22 +237,22 @@ export function createChatRoutes(options: {
 				connectionId: model.connectionId,
 				capabilities: model.capabilities,
 			})) ?? [];
+		const managedProviderIds = new Set(
+			normalizedModels.map((model) => model.providerID),
+		);
 		return {
 			models: [
 				...providers.providers.flatMap((provider) =>
-					Object.entries(provider.models).map(([modelId, model]) => ({
-						providerID: provider.id,
-						modelID: modelId,
-						name: model.name || modelId,
-						provider: provider.name,
-					})),
+					managedProviderIds.has(provider.id)
+						? []
+						: Object.entries(provider.models).map(([modelId, model]) => ({
+								providerID: provider.id,
+								modelID: modelId,
+								name: model.name || modelId,
+								provider: provider.name,
+							})),
 				),
-				...normalizedModels.filter(
-					(model) =>
-						!providers.providers.some(
-							(provider) => provider.id === model.providerID,
-						),
-				),
+				...normalizedModels,
 			],
 			defaults: providers.default,
 			agents: agents.filter((agent) => !agent.hidden),
@@ -435,6 +441,30 @@ export function createChatRoutes(options: {
 		const input = promptSchema.parse(await c.req.json());
 		const providerId = input.model?.providerID;
 		const runtime = providerId ? options.runtimes?.get(providerId) : undefined;
+		const runtimeModel =
+			providerId && input.model
+				? (() => {
+						const requestedId = input.model?.modelID.toLowerCase();
+						const found = options.providerManager?.catalog
+							.listByProvider(providerId)
+							.find((candidate) => {
+								const modelId = candidate.metadata?.modelId;
+								return [candidate.name, candidate.displayName, modelId].some(
+									(value) =>
+										typeof value === "string" &&
+										value.toLowerCase() === requestedId,
+								);
+							});
+						const modelId = found?.metadata?.modelId;
+						return {
+							providerID: providerId,
+							modelID:
+								typeof modelId === "string"
+									? modelId
+									: (input.model?.modelID ?? ""),
+						};
+					})()
+				: input.model;
 		const existing = providerSessions.get(current.id);
 		if (existing) {
 			await updateProviderTurn(existing);
@@ -488,7 +518,7 @@ export function createChatRoutes(options: {
 					id: `${messageId}-assistant`,
 					role: "assistant",
 					providerID: providerId,
-					modelID: input.model?.modelID,
+					modelID: runtimeModel?.modelID,
 					time: { created: now },
 				},
 				parts: [],
@@ -544,7 +574,7 @@ export function createChatRoutes(options: {
 				await runtime.prompt({
 					sessionId: created.id,
 					prompt,
-					model: input.model,
+					model: runtimeModel,
 					...(permissionToken && options.agyPermissionUrl
 						? {
 								permission: {

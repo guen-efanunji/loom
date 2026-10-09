@@ -28,7 +28,7 @@ export class CodexProviderAdapter extends CliProviderAdapter {
 					"--json",
 					"--sandbox",
 					"workspace-write",
-					...(model ? ["--model", model] : []),
+					...(model ? ["--model", codexModelSlug(model)] : []),
 					`${await readPrompt("coding.md")}\n\n${prompt}`,
 				],
 			}),
@@ -37,6 +37,12 @@ export class CodexProviderAdapter extends CliProviderAdapter {
 			listModels: knownModels,
 		});
 	}
+}
+
+function codexModelSlug(model: string): string {
+	// The UI/catalog can expose a display label such as "GPT-5.6-Sol", while
+	// `codex exec --model` expects the CLI slug (`gpt-5.6-sol`).
+	return model.trim().toLowerCase().replace(/\s+/g, "-");
 }
 
 async function knownModels(): Promise<AgentModel[]> {

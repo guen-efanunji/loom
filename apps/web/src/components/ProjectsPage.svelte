@@ -132,6 +132,27 @@ const activeProvider = $derived(
 		?.providerID ??
 		(model.split("/")[0] || "opencode"),
 );
+$effect(() => {
+	const selected = model;
+	const models = catalog.models;
+	if (!selected || !models.length) return;
+	const [providerID, ...modelParts] = selected.split("/");
+	const selectedId = modelParts.join("/");
+	const providerModels = models.filter(
+		(item) => item.providerID === providerID,
+	);
+	if (
+		!providerModels.length ||
+		providerModels.some((item) => item.modelID === selectedId)
+	)
+		return;
+	const canonical = providerModels.find(
+		(item) =>
+			item.name.toLowerCase() === selectedId.toLowerCase() ||
+			item.modelID.toLowerCase() === selectedId.toLowerCase(),
+	);
+	model = canonical ? `${providerID}/${canonical.modelID}` : "";
+});
 const providerLabel = $derived(
 	activeProvider === "agy"
 		? "Agy"
@@ -310,15 +331,6 @@ $effect(() => {
 			if (disposed || request !== projectRequest) return;
 			catalog = result;
 			catalogLoaded = true;
-			if (
-				!sessionId &&
-				model &&
-				result.models.length &&
-				!result.models.some(
-					(item) => `${item.providerID}/${item.modelID}` === model,
-				)
-			)
-				model = "";
 		})
 		.catch((reason) => {
 			if (!disposed && request === projectRequest) report(reason);

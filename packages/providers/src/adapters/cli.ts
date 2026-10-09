@@ -214,10 +214,10 @@ class CliRuntime implements AgentRuntime {
 		session.status = "running";
 		session.output = "";
 		session.error = null;
-		child.stdout.on("data", (chunk: Buffer) => {
+		child.stdout?.on("data", (chunk: Buffer) => {
 			session.output += chunk.toString();
 		});
-		child.stderr.on("data", (chunk: Buffer) => {
+		child.stderr?.on("data", (chunk: Buffer) => {
 			session.error = `${session.error ?? ""}${chunk.toString()}`.trim();
 		});
 		if (command.stdin !== undefined) child.stdin?.end(command.stdin);
