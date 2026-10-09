@@ -369,10 +369,17 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		orchestrator,
 		options.plannerRuntime ?? agentRuntime,
 	);
+	const designRuntimes = new Map(
+		providerManager.registry.list().flatMap((adapter) => {
+			const runtime = options.designRuntime ?? adapter.getRuntime?.();
+			return runtime ? [[adapter.definition.id, runtime] as const] : [];
+		}),
+	);
 	const designs = new DesignService(
 		designRepository(db),
 		repos,
 		options.designRuntime ?? agentRuntime,
+		designRuntimes,
 	);
 	orchestrator.setLifecycle(combineHooks(automation.hooks()));
 	await orchestrator.reconcile();

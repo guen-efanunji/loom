@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createDb, repositories } from "@loom/db";
+import { createDb, designRepository, repositories } from "@loom/db";
+import { DesignService } from "@loom/orchestrator";
 import type {
 	AgentModel,
 	AgentRunStatus,
@@ -112,7 +113,7 @@ async function createDesignSetup() {
 		designRuntime: runtime,
 		startOpenCode: false,
 	});
-	return { daemon, home, project, root, runtime };
+	return { daemon, database, repos, home, project, root, runtime };
 }
 
 async function waitForNode(
@@ -152,6 +153,29 @@ async function withSetup(
 }
 
 describe("design canvas API", () => {
+	test("runs Canvas generation through the selected provider runtime", async () => {
+		await withSetup(async (setup) => {
+			const defaultRuntime = new FakeDesignRuntime();
+			const codexRuntime = new FakeDesignRuntime();
+			const service = new DesignService(
+				designRepository(setup.database),
+				setup.repos,
+				defaultRuntime,
+				new Map([["codex", codexRuntime]]),
+			);
+			const result = await service.create({
+				projectId: setup.project.id,
+				brief: "A login screen",
+				model: { providerID: "codex", modelID: "gpt-6-sol" },
+			});
+			await service.idle(result.nodeId);
+			expect(codexRuntime.models).toEqual([
+				{ providerID: "codex", modelID: "gpt-6-sol" },
+			]);
+			expect(defaultRuntime.prompts).toHaveLength(0);
+		});
+	});
+
 	test("generates a design node from a brief", async () => {
 		await withSetup(async (setup) => {
 			const created = await setup.daemon.app.request("/api/designs", {

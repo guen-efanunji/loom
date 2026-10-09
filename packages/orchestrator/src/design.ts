@@ -62,13 +62,13 @@ function modelLabel(model?: RuntimeModel): string | null {
 function friendlyRuntimeError(error: unknown): string {
 	const message = error instanceof Error ? error.message : String(error);
 	if (/unable to reach opencode/i.test(message))
-		return `${message}. The OpenCode server is not running — start Loom with \`loom\` (or restart the daemon) and try again.`;
+		return `${message}. Check that the selected provider runtime is available, then retry.`;
 	if (
 		/rejected a provider credential|auth login|invalid api key|unauthorized/i.test(
 			message,
 		)
 	)
-		return `${message}. Configure a working provider with \`opencode auth login\`, then retry.`;
+		return `${message}. Check authentication for the selected provider, then retry.`;
 	if (/did not finish before timeout/i.test(message))
 		return "The design agent took too long and was stopped. Retry with a shorter brief or a faster model.";
 	return message;
@@ -134,8 +134,11 @@ export type DesignThreadRecord = {
 
 export class DesignService {
 	private readonly busy = new Map<string, Promise<unknown>>();
-	/** One live OpenCode session per project so the design chat keeps its memory. */
-	private readonly chatSessions = new Map<string, string>();
+	/** Separate conversation sessions per project and selected provider. */
+	private readonly chatSessions = new Map<
+		string,
+		{ id: string; runtime: AgentRuntime }
+	>();
 	/** Transient "what is it doing" feed per generating node (never persisted). */
 	private readonly activity = new Map<string, DesignActivity>();
 
@@ -143,7 +146,13 @@ export class DesignService {
 		private readonly store: DesignRepository,
 		private readonly repos: Repos,
 		private readonly runtime: AgentRuntime,
+		private readonly providerRuntimes: Map<string, AgentRuntime> = new Map(),
 	) {}
+
+	private runtimeFor(model?: RuntimeModel): AgentRuntime {
+		if (!model) return this.runtime;
+		return this.providerRuntimes.get(model.providerID) ?? this.runtime;
+	}
 
 	private async requireProject(projectId: string): Promise<ProjectRecord> {
 		const project = await this.repos.projects.getById(projectId);
@@ -194,10 +203,6 @@ export class DesignService {
 		this.activity.set(nodeId, activity);
 	}
 
-	/**
-	 * Live "what is the agent doing" for a generating node: the current phase and
-	 * the real project files it read to ground the design. Null once idle.
-	 */
 	async getSteps(nodeId: string): Promise<DesignActivity | null> {
 		await this.requireNode(nodeId);
 		return this.activity.get(nodeId) ?? null;
@@ -375,13 +380,14 @@ export class DesignService {
 			mime: attachment.mime,
 			data: attachment.data,
 		}));
+		const runtime = this.runtimeFor(model);
 		// Design generation is only a preview step: the agent drafts its HTML in
 		// an isolated temp working directory and never writes into the user's
 		// project (even via bash). Only an explicit "Publish" copies a finished
 		// design into the repo, after the user has reviewed the mockup.
 		const workdir = join(tmpdir(), "loom-design", project.id, nodeId);
 		mkdirSync(workdir, { recursive: true });
-		const session = await this.runtime.createSession({
+		const session = await runtime.createSession({
 			cwd: workdir,
 			title: `Loom design · ${node.title}`,
 			readOnly: true,
@@ -389,6 +395,7 @@ export class DesignService {
 		await this.store.updateNode(nodeId, { sessionId: session.id });
 		const startedAt = Date.now();
 		const reply = await this.runSession(
+			runtime,
 			session.id,
 			prompt,
 			model ?? (await this.storedModel(node)),
@@ -405,18 +412,19 @@ export class DesignService {
 	}
 
 	private async runSession(
+		runtime: AgentRuntime,
 		sessionId: string,
 		prompt: string,
 		model?: RuntimeModel,
 		images?: Array<{ mime: string; data: string }>,
 	): Promise<string> {
-		await this.runtime.prompt({
+		await runtime.prompt({
 			sessionId,
 			prompt,
 			model,
 			images: images?.length ? images : undefined,
 		});
-		const status = await this.runtime.wait(sessionId, {
+		const status = await runtime.wait(sessionId, {
 			timeoutMs: DESIGN_TIMEOUT_MS,
 		});
 		if (status === "cancelled")
@@ -424,7 +432,7 @@ export class DesignService {
 		if (status !== "completed") {
 			const detail =
 				status === "failed"
-					? await this.runtime.lastError?.(sessionId).catch(() => null)
+				? await runtime.lastError?.(sessionId).catch(() => null)
 					: null;
 			if (detail)
 				throw new Error(
@@ -436,7 +444,7 @@ export class DesignService {
 					: "";
 			throw new Error(`Design agent ended with status: ${status}.${hint}`);
 		}
-		const output = await this.runtime.readOutput?.(sessionId);
+		const output = await runtime.readOutput?.(sessionId);
 		return output?.output ?? "";
 	}
 
@@ -560,6 +568,7 @@ export class DesignService {
 		const project = await this.requireProject(node.projectId);
 		if (this.busy.has(nodeId))
 			throw new Error("This design is still generating");
+		const selectedModel = model ?? (await this.storedModel(node));
 		const instruction = node.html ? await this.lastInstruction(node) : null;
 		const mode: "create" | "refine" =
 			instruction && node.html ? "refine" : "create";
@@ -569,7 +578,13 @@ export class DesignService {
 			sessionId: null,
 		});
 		this.launch(nodeId, () =>
-			this.generate(nodeId, project, model, mode, instruction ?? undefined),
+			this.generate(
+				nodeId,
+				project,
+				selectedModel,
+				mode,
+				instruction ?? undefined,
+			),
 		);
 		return { nodeId, status: "queued" };
 	}
@@ -727,12 +742,14 @@ export class DesignService {
 		try {
 			const workdir = join(tmpdir(), "loom-design", "intent", project.id);
 			mkdirSync(workdir, { recursive: true });
-			const session = await this.runtime.createSession({
+			const runtime = this.runtimeFor(model);
+			const session = await runtime.createSession({
 				cwd: workdir,
 				title: "Loom design intent",
 				readOnly: true,
 			});
 			const reply = await this.runChatPrompt(
+				runtime,
 				session.id,
 				buildIntentClassifierPrompt(message, { hasSelectedNode }),
 				model,
@@ -748,7 +765,7 @@ export class DesignService {
 		return looksLikeDesignRequest(message) ? "design" : "chat";
 	}
 
-	/** Reuses one OpenCode session per project; seeds the assistant role once. */
+	/** Reuses one conversation session per project and selected provider. */
 	private async runChatTurn(
 		project: ProjectRecord,
 		userText: string,
@@ -757,20 +774,38 @@ export class DesignService {
 	): Promise<string> {
 		const workdir = join(tmpdir(), "loom-design", "chat", project.id);
 		mkdirSync(workdir, { recursive: true });
-		let sessionId = this.chatSessions.get(project.id);
+		const runtime = this.runtimeFor(model);
+		const conversationKey = `${project.id}\0${model?.providerID ?? "default"}`;
+		let conversation = this.chatSessions.get(conversationKey);
 		let seed = false;
-		if (!sessionId) {
-			const created = await this.runtime.createSession({
+		if (!conversation) {
+			const created = await runtime.createSession({
 				cwd: workdir,
 				title: `Loom design chat \u00b7 ${project.name}`,
 				readOnly: true,
 			});
-			sessionId = created.id;
-			this.chatSessions.set(project.id, sessionId);
+			conversation = { id: created.id, runtime };
+			this.chatSessions.set(conversationKey, conversation);
 			seed = true;
 		}
 		let prompt = userText;
-		if (seed) {
+		const isStatelessProvider = Boolean(model && runtime !== this.runtime);
+		if (isStatelessProvider) {
+			const context = await buildAutomationContext(
+				project.path,
+				project.name,
+			).catch(() => undefined);
+			const previous = (await this.store.listMessages(project.id))
+				.filter((item) => item.nodeId === null && item.text.trim())
+				.slice(-20)
+				.map((item) => `${item.role}: ${item.text}`)
+				.join("\n\n");
+			prompt = `${buildDesignAssistantPrompt({
+				context,
+				projectName: project.name,
+				projectPath: project.path,
+			})}\n\n${previous ? `Conversation so far:\n${previous}\n\n` : ""}User message:\n${userText}`;
+		} else if (seed) {
 			const context = await buildAutomationContext(
 				project.path,
 				project.name,
@@ -781,23 +816,30 @@ export class DesignService {
 				projectPath: project.path,
 			})}\n\nUser message:\n${userText}`;
 		}
-		return this.runChatPrompt(sessionId, prompt, model, images);
+		return this.runChatPrompt(
+			conversation.runtime,
+			conversation.id,
+			prompt,
+			model,
+			images,
+		);
 	}
 
 	/** One blocking assistant turn; returns raw text without requiring HTML. */
 	private async runChatPrompt(
+		runtime: AgentRuntime,
 		sessionId: string,
 		prompt: string,
 		model?: RuntimeModel,
 		images?: Array<{ mime: string; data: string }>,
 	): Promise<string> {
-		await this.runtime.prompt({
+		await runtime.prompt({
 			sessionId,
 			prompt,
 			model,
 			images: images?.length ? images : undefined,
 		});
-		const status = await this.runtime.wait(sessionId, {
+		const status = await runtime.wait(sessionId, {
 			timeoutMs: CHAT_TIMEOUT_MS,
 		});
 		if (status === "cancelled")
@@ -805,7 +847,7 @@ export class DesignService {
 		if (status !== "completed") {
 			const detail =
 				status === "failed"
-					? await this.runtime.lastError?.(sessionId).catch(() => null)
+				? await runtime.lastError?.(sessionId).catch(() => null)
 					: null;
 			throw new Error(
 				detail
@@ -813,7 +855,7 @@ export class DesignService {
 					: `Design agent ended with status: ${status}.`,
 			);
 		}
-		const output = await this.runtime.readOutput?.(sessionId);
+		const output = await runtime.readOutput?.(sessionId);
 		return output?.output ?? "";
 	}
 
@@ -919,11 +961,20 @@ export class DesignService {
 	async clear(projectId: string): Promise<void> {
 		await this.requireProject(projectId);
 		const nodes = await this.store.listNodes(projectId);
-		for (const node of nodes)
-			await this.runtime.abort(node.sessionId ?? "").catch(() => undefined);
-		const chatSession = this.chatSessions.get(projectId);
-		if (chatSession) await this.runtime.abort(chatSession).catch(() => undefined);
-		this.chatSessions.delete(projectId);
+		for (const node of nodes) {
+			const model = await this.storedModel(node);
+			await this.runtimeFor(model)
+				.abort(node.sessionId ?? "")
+				.catch(() => undefined);
+		}
+		const conversationPrefix = `${projectId}\0`;
+		for (const [key, conversation] of this.chatSessions) {
+			if (!key.startsWith(conversationPrefix)) continue;
+			await conversation.runtime
+				.abort(conversation.id)
+				.catch(() => undefined);
+			this.chatSessions.delete(key);
+		}
 		await this.store.clearProject(projectId);
 	}
 

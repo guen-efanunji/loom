@@ -89,8 +89,9 @@ const threadMessages = $derived(
 const selectedModel = $derived(
 	catalog.models.find((item) => `${item.providerID}/${item.modelID}` === model),
 );
-const unsupportedModel = $derived(
-	Boolean(model && (!selectedModel || selectedModel.designSupported === false)),
+const unavailableModel = $derived(Boolean(model && !selectedModel));
+const designAgentLabel = $derived(
+	selectedModel?.provider ?? selectedModel?.providerID ?? "Design assistant",
 );
 const workingNode = $derived(
 	nodes.find(
@@ -101,7 +102,7 @@ const workingNode = $derived(
 );
 
 function modelRef() {
-	if (unsupportedModel) return undefined;
+	if (unavailableModel) return undefined;
 	if (selectedModel?.openCodeProviderID && selectedModel.openCodeModelID)
 		return {
 			providerID: selectedModel.openCodeProviderID,
@@ -273,8 +274,8 @@ async function handleSend(input: DesignSend): Promise<boolean> {
 	}
 	const text = input.text.trim();
 	if (!text) return false;
-	if (unsupportedModel) {
-		toast.error("This model is not supported by the OpenCode design agent.");
+	if (unavailableModel) {
+		toast.error("Selected model is no longer available. Choose another model.");
 		return false;
 	}
 	const target =
@@ -722,7 +723,7 @@ function wheel(event: WheelEvent) {
 					<div class="ml-auto max-w-[85%] rounded-2xl rounded-br-sm bg-primary px-3 py-2 text-sm text-primary-foreground">{message.text}</div>
 				{:else}
 					<div class="max-w-[90%]">
-						<p class="mb-1 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">OpenCode agent{message.model ? ` · ${message.model}` : ""}</p>
+						<p class="mb-1 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{message.model ?? designAgentLabel}</p>
 						{#if message.errorMessage}
 							<div class="rounded-lg border border-destructive/40 bg-destructive/10 p-2.5 text-xs leading-5 text-destructive">{message.errorMessage}</div>
 						{:else}
@@ -737,7 +738,7 @@ function wheel(event: WheelEvent) {
 			{#if workingNode}
 				{@const act = activity[workingNode.id]}
 				<div class="max-w-[90%]">
-					<p class="mb-1 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">OpenCode agent</p>
+					<p class="mb-1 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{designAgentLabel}</p>
 					<div class="rounded-2xl rounded-bl-sm border bg-background px-3 py-2 text-xs text-muted-foreground">
 						<div class="flex items-center gap-2">
 							<LoaderCircle size={13} class="shrink-0 animate-spin" />
@@ -757,12 +758,12 @@ function wheel(event: WheelEvent) {
 			{/if}
 			{#if pendingQuestion}
 				<div class="max-w-[95%]">
-					<p class="mb-1 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">OpenCode agent needs a detail</p>
+					<p class="mb-1 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{designAgentLabel} needs a detail</p>
 					<QuestionCard question={pendingQuestion} onanswer={answerQuestion} />
 				</div>
 			{:else if thinking && !workingNode}
 				<div class="max-w-[90%]">
-					<p class="mb-1 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">OpenCode agent</p>
+					<p class="mb-1 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{designAgentLabel}</p>
 					<div class="flex items-center gap-2 rounded-2xl rounded-bl-sm border bg-background px-3 py-2 text-xs text-muted-foreground">
 						<LoaderCircle size={13} class="shrink-0 animate-spin" />
 						<span>Thinking…</span>
@@ -789,7 +790,7 @@ function wheel(event: WheelEvent) {
 				onsend={handleSend}
 				onstop={() => {}}
 			/>
-			{#if unsupportedModel}<p class="mt-2 text-[11px] text-destructive" role="alert">Selected model is unavailable for the OpenCode design agent.</p>{/if}
+			{#if unavailableModel}<p class="mt-2 text-[11px] text-destructive" role="alert">Selected model is no longer available. Choose another model.</p>{/if}
 		</div>
 	</aside>
 </div>
