@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { AgentRuntime, ProviderManager } from "@loom/providers";
@@ -12,6 +12,7 @@ const promptSchema = z
 	.object({
 		text: z.string().max(100_000),
 		agent: z.string().optional(),
+		customAgentId: z.string().min(1).optional(),
 		model: z.object({ providerID: z.string(), modelID: z.string() }).optional(),
 		files: z.array(z.string()).max(50).default([]),
 		designNodeIds: z.array(z.string().min(1)).max(5).default([]),
@@ -81,6 +82,7 @@ type ProviderTurn = {
 	finished: boolean;
 	openCodeActive?: boolean;
 	permissionToken?: string;
+	agentRunId?: string;
 	persistedMessages?: string;
 	status: { type: string; message?: string };
 };
@@ -149,6 +151,48 @@ export function createChatRoutes(options: {
 		get<T>(sessionId: string): Promise<T | undefined>;
 		save(sessionId: string, messages: unknown[]): Promise<unknown>;
 		delete(sessionId: string): Promise<unknown>;
+	};
+	agents?: {
+		get(id: string): Promise<
+			| {
+					id: string;
+					projectId: string | null;
+					label: string;
+					role: string;
+					roleDescription: string | null;
+					provider: string;
+					modelId: string | null;
+					systemInstructions: string;
+					status: string;
+					allowChat: boolean;
+					approvalPolicy: string;
+					skills: Array<{
+						name: string;
+						instructions: string;
+						enabled: boolean;
+						allowChat: boolean;
+						canWriteFiles: boolean;
+					}>;
+			  }
+			| undefined
+		>;
+	};
+	agentRunStore?: {
+		start(input: {
+			id: string;
+			agentId: string;
+			projectId: string;
+			sessionId: string;
+			provider: string;
+			modelId: string | null;
+			inputSummary: string;
+		}): Promise<void>;
+		finish(input: {
+			id: string;
+			status: "completed" | "failed" | "cancelled";
+			outputSummary: string | null;
+			errorMessage: string | null;
+		}): Promise<void>;
 	};
 	designs?: {
 		listNodes(projectId: string): Promise<
@@ -254,6 +298,23 @@ export function createChatRoutes(options: {
 					: `${turn.providerId} ${status}`);
 			turn.status = { type: "error", message };
 			turn.assistant.info.error = { name: "ProviderError", data: { message } };
+		}
+		if (turn.finished && turn.agentRunId && options.agentRunStore) {
+			const outputText = output?.output ?? "";
+			const errorMessage =
+				turn.status.type === "error"
+					? (turn.status.message ?? "Agent failed")
+					: null;
+			await options.agentRunStore.finish({
+				id: turn.agentRunId,
+				status: errorMessage
+					? "failed"
+					: status === "cancelled"
+						? "cancelled"
+						: "completed",
+				outputSummary: outputText ? outputText.slice(-4000) : null,
+				errorMessage,
+			});
 		}
 		const serialized = JSON.stringify(turn.messages);
 		if (serialized !== turn.persistedMessages) {
@@ -501,6 +562,54 @@ export function createChatRoutes(options: {
 	app.post("/sessions/:id/messages", async (c) => {
 		const current = await session(c.req.param("id"));
 		const input = promptSchema.parse(await c.req.json());
+		const customAgent = input.customAgentId
+			? await options.agents?.get(input.customAgentId)
+			: undefined;
+		if (input.customAgentId && !customAgent)
+			throw new HTTPException(404, { message: "Custom agent not found" });
+		if (customAgent) {
+			if (!customAgent.allowChat || customAgent.status !== "active")
+				throw new HTTPException(403, {
+					message: "This custom agent is disabled for Chat",
+				});
+			if (customAgent.projectId && customAgent.projectId !== current.projectId)
+				throw new HTTPException(403, {
+					message: "This custom agent is scoped to another project",
+				});
+			if (
+				options.providerManager?.get(customAgent.provider)?.status !==
+				"connected"
+			)
+				throw new HTTPException(409, {
+					message: `Custom agent provider is not connected: ${customAgent.provider}`,
+				});
+			const supportsCustomModel = options.providerManager?.registry
+				.get(customAgent.provider)
+				?.definition.capabilities.includes("custom-model");
+			if (
+				customAgent.modelId &&
+				!options.providerManager?.catalog
+					.listByProvider(customAgent.provider)
+					.some((model) =>
+						[model.name, model.displayName, model.metadata?.modelId].some(
+							(id) =>
+								typeof id === "string" &&
+								id.toLowerCase() === customAgent.modelId?.toLowerCase(),
+						),
+					) &&
+				!supportsCustomModel
+			) {
+				throw new HTTPException(409, {
+					message:
+						"The custom agent model is no longer available. Update the agent's runtime settings.",
+				});
+			}
+		}
+		const customAgentCanWriteFiles =
+			customAgent?.approvalPolicy === "ask_before_write" &&
+			customAgent.skills.some(
+				(skill) => skill.enabled && skill.allowChat && skill.canWriteFiles,
+			);
 		const designNodes = input.designNodeIds.length
 			? await (async () => {
 					if (!current.projectId || !options.designs)
@@ -534,6 +643,14 @@ export function createChatRoutes(options: {
 			? `IMPLEMENTATION PRIORITY: The attached Canvas design node(s) are the authoritative visual specification for this request. When the user asks to implement, slice, or recreate them, match their layout, colors, typography, spacing, sizing, and component treatment as closely as possible. Do not replace or restyle the Canvas design to match the existing project's theme; inspect the project only to determine its framework, entry points, and integration needs. Follow the user's requested behavior and scope. Adapt the design to the project theme only if the user explicitly asks for that.`
 			: "";
 		const promptText = [
+			customAgent
+				? `You are the custom agent “${customAgent.label}” (${customAgent.role}).\n${customAgent.roleDescription ?? ""}\n${customAgent.systemInstructions}\n${customAgent.skills
+						.filter((skill) => skill.enabled && skill.allowChat)
+						.map((skill) => `## ${skill.name}\n${skill.instructions}`)
+						.join(
+							"\n\n",
+						)}\n\nFollow the configured agent role and skills while respecting Loom's permission and project-scope policies.`
+				: "",
 			designInstruction,
 			input.text,
 			designContext ? `Canvas visual reference(s):\n${designContext}` : "",
@@ -541,6 +658,14 @@ export function createChatRoutes(options: {
 			.filter(Boolean)
 			.join("\n\n");
 		const openCodePromptText = [
+			customAgent
+				? `Custom agent: ${customAgent.label} (${customAgent.role})\n${customAgent.roleDescription ?? ""}\n${customAgent.systemInstructions}\n${customAgent.skills
+						.filter((skill) => skill.enabled && skill.allowChat)
+						.map((skill) => `## ${skill.name}\n${skill.instructions}`)
+						.join(
+							"\n\n",
+						)}\n\nRespect the Loom approval policy and project boundary.`
+				: "",
 			designInstruction,
 			input.text ? `User request:\n${input.text}` : "",
 			designNodes.length
@@ -549,12 +674,17 @@ export function createChatRoutes(options: {
 		]
 			.filter(Boolean)
 			.join("\n\n");
-		const providerId = input.model?.providerID;
+		const providerId = customAgent?.provider ?? input.model?.providerID;
 		const runtime = providerId ? options.runtimes?.get(providerId) : undefined;
+		const requestedModel = customAgent
+			? customAgent.modelId
+				? { providerID: customAgent.provider, modelID: customAgent.modelId }
+				: undefined
+			: input.model;
 		const runtimeModel =
-			providerId && input.model
+			providerId && requestedModel
 				? (() => {
-						const requestedId = input.model?.modelID.toLowerCase();
+						const requestedId = requestedModel.modelID.toLowerCase();
 						const found = options.providerManager?.catalog
 							.listByProvider(providerId)
 							.find((candidate) => {
@@ -571,10 +701,10 @@ export function createChatRoutes(options: {
 							modelID:
 								typeof modelId === "string"
 									? modelId
-									: (input.model?.modelID ?? ""),
+									: (requestedModel.modelID ?? ""),
 						};
 					})()
-				: input.model;
+				: requestedModel;
 		const existing = providerSessions.get(current.id);
 		if (existing) {
 			await updateProviderTurn(existing);
@@ -662,13 +792,29 @@ export function createChatRoutes(options: {
 				finished: false,
 				status: { type: "busy" },
 			};
+			if (customAgent && options.agentRunStore) {
+				turn.agentRunId = randomUUID();
+				await options.agentRunStore.start({
+					id: turn.agentRunId,
+					agentId: customAgent.id,
+					projectId: current.projectId ?? "",
+					sessionId: current.id,
+					provider: providerId,
+					modelId: runtimeModel?.modelID ?? null,
+					inputSummary: input.text
+						.replace(/(?:sk-[A-Za-z0-9_-]{16,}|Bearer\s+\S+)/gi, "[redacted]")
+						.slice(0, 500),
+				});
+			}
 			turn.persistedMessages = JSON.stringify(turn.messages);
 			await options.providerHistory?.save(current.id, turn.messages);
 			const isAgy = providerId === "agy" || providerId === "antigravity";
 			const permissionToken =
-				isAgy && agyEnabled ? randomBytes(24).toString("hex") : undefined;
+				isAgy && agyEnabled && (!customAgent || customAgentCanWriteFiles)
+					? randomBytes(24).toString("hex")
+					: undefined;
 			const autoAccept =
-				permissionToken && current.projectId
+				!customAgent && permissionToken && current.projectId
 					? (await options.projects.getById(current.projectId))?.autoAccept ===
 						true
 					: false;
@@ -702,17 +848,33 @@ export function createChatRoutes(options: {
 					sessionId: created.id,
 					prompt,
 					model: runtimeModel,
-					...(permissionToken && options.agyPermissionUrl
+					...(customAgent
 						? {
 								permission: {
-									mode: autoAccept ? ("auto" as const) : ("ask" as const),
-									env: {
-										LOOM_PERMISSION_URL: options.agyPermissionUrl,
-										LOOM_PERMISSION_TOKEN: permissionToken,
-									},
+						mode: customAgentCanWriteFiles
+							? ("ask" as const)
+							: ("read-only" as const),
+									...(permissionToken && options.agyPermissionUrl
+										? {
+												env: {
+													LOOM_PERMISSION_URL: options.agyPermissionUrl,
+													LOOM_PERMISSION_TOKEN: permissionToken,
+												},
+											}
+										: {}),
 								},
 							}
-						: {}),
+						: permissionToken && options.agyPermissionUrl
+							? {
+									permission: {
+										mode: autoAccept ? ("auto" as const) : ("ask" as const),
+										env: {
+											LOOM_PERMISSION_URL: options.agyPermissionUrl,
+											LOOM_PERMISSION_TOKEN: permissionToken,
+										},
+									},
+								}
+							: {}),
 				});
 			} catch (error) {
 				if (permissionToken && options.permissions)
@@ -721,6 +883,13 @@ export function createChatRoutes(options: {
 				turn.finished = true;
 				turn.permissionToken = undefined;
 				turn.status = { type: "error", message };
+				if (turn.agentRunId && options.agentRunStore)
+					await options.agentRunStore.finish({
+						id: turn.agentRunId,
+						status: "failed",
+						outputSummary: null,
+						errorMessage: message.slice(0, 1000),
+					});
 				assistant.info.time.completed = Date.now();
 				assistant.info.error = { name: "ProviderError", data: { message } };
 				throw error;
@@ -742,7 +911,9 @@ export function createChatRoutes(options: {
 		);
 		await request(`/session/${current.id}/prompt_async`, current.directory, {
 			agent: input.agent,
-			model: input.model,
+			model: customAgent?.modelId
+				? { providerID: customAgent.provider, modelID: customAgent.modelId }
+				: input.model,
 			parts: [
 				{ type: "text", text: openCodePromptText },
 				...designNodes.flatMap((node) => [

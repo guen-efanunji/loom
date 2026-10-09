@@ -48,7 +48,8 @@ let refreshing = false;
 const id = $derived(page.params.id ?? "");
 const editable = $derived(
 	detail !== null &&
-		!detail.plan.convertedAt && !detail.plan.cancelledAt &&
+		!detail.plan.convertedAt &&
+		!detail.plan.cancelledAt &&
 		["draft", "validated", "failed"].includes(detail.plan.status),
 );
 const approved = $derived(
@@ -140,7 +141,7 @@ onMount(() => {
 		<p class="text-muted-foreground">Loading plan…</p>
 		<Button variant="outline" onclick={refresh}>Refresh</Button>
 	{:else}
-		<a href={`/project/${detail.plan.projectId}`} class="text-sm text-muted-foreground">← Project board</a>
+		<a href={`/?project=${detail.plan.projectId}&view=kanban`} class="text-sm text-muted-foreground">← Project board</a>
 		{#if detail.plan.sourceMessage}<details class="my-4 rounded-lg border p-4"><summary class="cursor-pointer text-sm">View original brief</summary><p class="mt-3 whitespace-pre-wrap text-sm text-muted-foreground">{detail.plan.sourceMessage}</p><Button class="mt-3" variant="outline" href={`/?project=${detail.plan.projectId}${detail.plan.sourceSessionId ? `&session=${encodeURIComponent(detail.plan.sourceSessionId)}` : ""}`}>View original chat</Button></details>{/if}
 		<header class="my-6 flex flex-wrap items-center justify-between gap-4">
 			<div>

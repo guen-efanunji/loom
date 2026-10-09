@@ -290,8 +290,62 @@ export const daemon = {
 				name: string;
 				displayName: string;
 				capabilities: string[];
+				metadata?: Record<string, unknown>;
 			}>
 		>("/api/models"),
+	listCustomAgents: (projectId?: string) =>
+		request<Array<Record<string, unknown>>>(
+			`/api/agents${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`,
+		),
+	getAgentPromptPresets: () =>
+		request<Record<string, string>>("/api/agents/prompt-presets"),
+	createCustomAgent: (input: Record<string, unknown>) =>
+		request<Record<string, unknown>>("/api/agents", {
+			method: "POST",
+			body: JSON.stringify(input),
+		}),
+	updateCustomAgent: (id: string, input: Record<string, unknown>) =>
+		request<Record<string, unknown>>(`/api/agents/${encodeURIComponent(id)}`, {
+			method: "PUT",
+			body: JSON.stringify(input),
+		}),
+	deleteCustomAgent: (id: string) =>
+		request<void>(`/api/agents/${encodeURIComponent(id)}`, {
+			method: "DELETE",
+		}),
+	runCustomAgent: (input: {
+		agentId: string;
+		projectId: string;
+		chatSessionId?: string;
+		message: string;
+	}) =>
+		request<{ runId: string; status: string }>("/api/agents/runs/chat", {
+			method: "POST",
+			body: JSON.stringify(input),
+		}),
+	getCustomAgentRun: (id: string) =>
+		request<Record<string, unknown>>(
+			`/api/agents/runs/${encodeURIComponent(id)}`,
+		),
+	listCustomAgentRuns: (projectId?: string) =>
+		request<Array<{ agentId: string; createdAt: string | number }>>(
+			`/api/agents/runs${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`,
+		),
+	assignCustomAgent: (input: {
+		agentId: string;
+		projectId: string;
+		taskId: string;
+		continuousEnabled?: false;
+	}) =>
+		request<Record<string, unknown>>("/api/agents/assignments", {
+			method: "POST",
+			body: JSON.stringify(input),
+		}),
+	continueCustomAgentAssignment: (id: string) =>
+		request<Record<string, unknown>>(
+			`/api/agents/assignments/${encodeURIComponent(id)}/continue`,
+			{ method: "POST" },
+		),
 	rebuildProjectIndex: (id: string) =>
 		request<{ status: string; files: number; indexedAt: string }>(
 			`/api/projects/${id}/index/rebuild`,

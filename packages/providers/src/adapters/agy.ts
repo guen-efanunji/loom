@@ -5,6 +5,7 @@ import { antigravityDefinition } from "./definitions";
 // Headless Agy denies native "ask" prompts before Loom can answer them. The
 // registered PreToolUse hook makes the decision for both modes instead.
 export function agyPermissionArgs(permission?: RuntimePermission): string[] {
+	if (permission?.mode === "read-only") return ["--mode", "plan"];
 	if (permission?.mode === "auto" || permission?.mode === "ask")
 		return ["--dangerously-skip-permissions"];
 	return ["--mode", "accept-edits"];

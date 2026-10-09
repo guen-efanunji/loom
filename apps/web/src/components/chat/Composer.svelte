@@ -33,6 +33,8 @@ let {
 	draft = $bindable(""),
 	model = $bindable(""),
 	agent = $bindable("build"),
+	customAgentId = $bindable(""),
+	customAgents = [],
 	showAgents = true,
 	inputId,
 	autoAccept = false,
@@ -49,12 +51,20 @@ let {
 		designNodeIds: string[];
 		agents: string[];
 		agent?: string;
+		customAgentId?: string;
 		model?: { providerID: string; modelID: string };
 	}) => Promise<boolean>;
 	onstop: () => void;
 	draft?: string;
 	model?: string;
 	agent?: string;
+	customAgentId?: string;
+	customAgents?: Array<{
+		id: string;
+		label: string;
+		provider: string;
+		modelId: string | null;
+	}>;
 	showAgents?: boolean;
 	inputId?: string;
 	/** Per-project auto-accept toggle. Rendered only when `onAutoAcceptChange` is provided. */
@@ -105,6 +115,9 @@ const choices = $derived([
 ]);
 const selectedModel = $derived(
 	catalog.models.find((m) => `${m.providerID}/${m.modelID}` === model),
+);
+const selectedCustomAgent = $derived(
+	customAgents.find((item) => item.id === customAgentId),
 );
 $effect(() => {
 	if (projectId !== previousProject) {
@@ -268,6 +281,7 @@ async function send() {
 			designNodeIds: selectedDesignIds,
 			agents,
 			agent,
+			customAgentId: customAgentId || undefined,
 			model: selectedModel
 				? {
 						providerID: selectedModel.providerID,
@@ -349,11 +363,12 @@ function keydown(event: KeyboardEvent) {
       {#if onAutoAcceptChange}<label class="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:bg-accent" title="Auto-approve tool permissions for this project. When off, each tool asks for your approval."><Switch checked={autoAccept} onCheckedChange={(value) => onAutoAcceptChange(value)} size="sm" /><span>Auto-accept</span></label>{/if}
     </div>
     <div class="flex min-w-0 items-center gap-1">
-      <Popover.Root bind:open={modelOpen}><Popover.Trigger class="flex max-w-44 items-center gap-1 rounded-md px-2 py-1.5 text-xs hover:bg-accent" aria-label="Select model"><span class="truncate">{selectedModel?.name ?? "Default model"}</span><ChevronDown size={12} /></Popover.Trigger>
+      <Popover.Root bind:open={modelOpen}><Popover.Trigger class="flex max-w-44 items-center gap-1 rounded-md px-2 py-1.5 text-xs hover:bg-accent" aria-label="Select model" disabled={!!selectedCustomAgent}><span class="truncate">{selectedCustomAgent ? `${selectedCustomAgent.provider} / ${selectedCustomAgent.modelId ?? "default"}` : selectedModel?.name ?? "Default model"}</span><ChevronDown size={12} /></Popover.Trigger>
         <Popover.Content class="w-80 p-0" align="end"><Command.Root><Command.Input placeholder="Search models…" /><Command.List><Command.Empty>No configured models found.</Command.Empty><Command.Group heading="Models"><Command.Item value="default" onSelect={() => { model = ""; modelOpen = false; }}>Default model</Command.Item>{#each catalog.models as item}<Command.Item value={`${item.providerID}/${item.modelID} ${item.name}`} onSelect={() => { model = `${item.providerID}/${item.modelID}`; modelOpen = false; }}><div><p>{item.name}</p><p class="text-xs text-muted-foreground">{item.provider} · {item.providerId ?? item.providerID}{item.connectionId ? ` · ${item.connectionId}` : ""}</p></div></Command.Item>{/each}</Command.Group></Command.List></Command.Root></Popover.Content>
       </Popover.Root>
 
       {#if showAgents}<Select.Root type="single" bind:value={agent}><Select.Trigger class="h-8 w-auto border-0 text-xs shadow-none" aria-label="Select agent">{agent}</Select.Trigger><Select.Content>{#each catalog.agents.filter((a) => a.mode !== "subagent") as item}<Select.Item value={item.name}>{item.name}</Select.Item>{/each}</Select.Content></Select.Root>{/if}
+      {#if customAgents.length}<Select.Root type="single" bind:value={customAgentId}><Select.Trigger class="h-8 w-auto border-0 text-xs shadow-none" aria-label="Select custom agent">{customAgents.find((item) => item.id === customAgentId)?.label ?? "Custom agent"}</Select.Trigger><Select.Content><Select.Item value="">Default agent</Select.Item>{#each customAgents as item}<Select.Item value={item.id}>{item.label}</Select.Item>{/each}</Select.Content></Select.Root>{/if}
       {#if busy}<Button type="button" size="icon" variant="secondary" aria-label="Stop response" title="Stop response" onclick={onstop}><Square size={14} /></Button>{:else}<Button type="submit" size="icon" class="rounded-full" aria-label="Send message" title="Send message" disabled={disabled || sending || (!draft.trim() && !files.length && !attachments.length && !selectedDesignIds.length)}>{#if sending}<LoaderCircle size={16} class="animate-spin" />{:else}<ArrowUp size={17} />{/if}</Button>{/if}
     </div>
   </div>

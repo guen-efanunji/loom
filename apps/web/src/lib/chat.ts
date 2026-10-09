@@ -103,6 +103,7 @@ export const chat = {
 		input: {
 			text: string;
 			agent?: string;
+			customAgentId?: string;
 			model?: { providerID: string; modelID: string };
 			files: string[];
 			attachments?: ChatAttachment[];

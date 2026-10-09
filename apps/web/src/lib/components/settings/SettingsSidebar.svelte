@@ -16,7 +16,7 @@ import {
 import { Button } from "$lib/components/ui/button";
 import { Input } from "$lib/components/ui/input";
 
-type ActiveSection = "general" | "providers";
+type ActiveSection = "general" | "providers" | "agents";
 type Props = {
 	active: ActiveSection;
 	search?: string;
@@ -35,7 +35,7 @@ const sections = [
 	{
 		label: "Agents",
 		items: [
-			{ label: "Agents", href: "/settings#agents", icon: Bot },
+			{ label: "Agents", href: "/settings/agents", icon: Bot, key: "agents" },
 			{
 				label: "Providers",
 				href: "/settings/providers",

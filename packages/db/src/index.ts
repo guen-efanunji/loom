@@ -1,7 +1,7 @@
+import { Database as SQLite } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { Database as SQLite } from "bun:sqlite";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 
 import { bootstrapDatabase } from "./bootstrap";
@@ -13,7 +13,10 @@ function databaseUrl(config: DatabaseConfig): string {
 		return config.DATABASE_URL;
 	}
 
-	const path = join(process.env.LOOM_HOME || join(homedir(), ".loom"), "state.db");
+	const path = join(
+		process.env.LOOM_HOME || join(homedir(), ".loom"),
+		"state.db",
+	);
 	mkdirSync(dirname(path), { recursive: true });
 	return `file:${path}`;
 }
@@ -42,17 +45,23 @@ export function createDb(env: DatabaseConfig = {}) {
 		try {
 			client.exec(`ALTER TABLE plans ADD COLUMN ${column}`);
 		} catch (error) {
-			if (!(error instanceof Error) || !error.message.includes("duplicate column"))
+			if (
+				!(error instanceof Error) ||
+				!error.message.includes("duplicate column")
+			)
 				throw error;
 		}
 	}
-	client.exec("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;");
+	client.exec(
+		"PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;",
+	);
 
 	return drizzle({ client, schema });
 }
 
 export type Database = ReturnType<typeof createDb>;
 
+export { and, desc, eq, isNull, or } from "drizzle-orm";
 export * from "./automation";
 export * from "./bootstrap";
 export * from "./design";

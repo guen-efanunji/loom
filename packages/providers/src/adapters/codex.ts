@@ -18,7 +18,7 @@ export class CodexProviderAdapter extends CliProviderAdapter {
 					"models",
 				],
 			},
-			buildPrompt: async ({ prompt, model }) => ({
+			buildPrompt: async ({ prompt, model, permission }) => ({
 				command: "codex",
 				// codex exec may wait for more stdin in non-TTY environments even
 				// when the prompt is an argument. Send EOF explicitly to avoid that.
@@ -27,7 +27,9 @@ export class CodexProviderAdapter extends CliProviderAdapter {
 					"exec",
 					"--json",
 					"--sandbox",
-					"workspace-write",
+					permission?.mode === "read-only" ? "read-only" : "workspace-write",
+					"--ask-for-approval",
+					permission?.mode === "auto" ? "never" : "on-request",
 					...(model ? ["--model", codexModelSlug(model)] : []),
 					`${await readPrompt("coding.md")}\n\n${prompt}`,
 				],

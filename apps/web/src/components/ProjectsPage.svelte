@@ -2,6 +2,7 @@
 import {
 	ChevronDown,
 	CircleHelp,
+	Columns3,
 	FileCode,
 	Folder,
 	FolderPlus,
@@ -77,6 +78,17 @@ let viewMode = $state<ViewMode>(initialView());
 let draft = $state("");
 let model = $state("");
 let agent = $state("build");
+let customAgentId = $state("");
+let customAgents = $state<
+	Array<{
+		id: string;
+		label: string;
+		allowChat: boolean;
+		status: string;
+		provider: string;
+		modelId: string | null;
+	}>
+>([]);
 let automationMode = $state<"review" | "auto-create" | "auto-start">("review");
 let catalog = $state<Catalog>({
 	models: [],
@@ -334,6 +346,23 @@ $effect(() => {
 		})
 		.catch((reason) => {
 			if (!disposed && request === projectRequest) report(reason);
+		});
+	void daemon
+		.listCustomAgents(projectId)
+		.then((items) => {
+			if (disposed || request !== projectRequest) return;
+			customAgents = (items as typeof customAgents).filter(
+				(item) => item.status === "active" && item.allowChat,
+			);
+			if (
+				customAgentId &&
+				!customAgents.some((item) => item.id === customAgentId)
+			)
+				customAgentId = "";
+		})
+		.catch(() => {
+			customAgents = [];
+			customAgentId = "";
 		});
 });
 const noModels = $derived(
@@ -627,7 +656,7 @@ async function answer(requestId: string, answers: string[][]) {
         {#if !filteredSessions.length}<p class="px-2 py-2 text-xs text-muted-foreground">{search ? "No matching conversations." : "Your conversations will appear here."}</p>{/if}
         {#each projects as project}
           {@const selected = project.id === selectedProjectId}
-          <section class="mt-5"><div class={`flex items-center rounded-md ${selected ? "bg-accent/40" : ""}`}><Button variant="ghost" size="icon" class="size-6" aria-label={`Toggle ${project.name}`} aria-expanded={!collapsed.includes(project.id)} onclick={() => collapsed = collapsed.includes(project.id) ? collapsed.filter((id) => id !== project.id) : [...collapsed, project.id]}><ChevronDown size={13} class={collapsed.includes(project.id) ? "-rotate-90" : ""} /></Button><Button variant="ghost" class="h-8 min-w-0 flex-1 justify-start bg-transparent px-1 text-xs font-medium hover:bg-transparent" onclick={() => newSession(project.id)}><Folder size={14} class="text-teal-400" /><span class="truncate">{project.name}</span></Button><Button href={`/project/${project.id}/canvas`} variant="ghost" size="icon" class="size-6" aria-label={`Open canvas for ${project.name}`} title="Design canvas"><Sparkles size={12} /></Button><Button href={`/project/${project.id}`} variant="ghost" size="icon" class="size-6" aria-label={`Settings for ${project.name}`} title="Project tasks and settings"><Settings size={12} /></Button></div>
+          <section class="mt-5"><div class={`flex items-center rounded-md ${selected ? "bg-accent/40" : ""}`}><Button variant="ghost" size="icon" class="size-6" aria-label={`Toggle ${project.name}`} aria-expanded={!collapsed.includes(project.id)} onclick={() => collapsed = collapsed.includes(project.id) ? collapsed.filter((id) => id !== project.id) : [...collapsed, project.id]}><ChevronDown size={13} class={collapsed.includes(project.id) ? "-rotate-90" : ""} /></Button><Button variant="ghost" class="h-8 min-w-0 flex-1 justify-start bg-transparent px-1 text-xs font-medium hover:bg-transparent" onclick={() => newSession(project.id)}><Folder size={14} class="text-teal-400" /><span class="truncate">{project.name}</span></Button><Button href={`/project/${project.id}/canvas`} variant="ghost" size="icon" class="size-6" aria-label={`Open canvas for ${project.name}`} title="Design canvas"><Sparkles size={12} /></Button><Button href={`/?project=${project.id}&view=kanban`} variant="ghost" size="icon" class="size-6" aria-label={`Open task board for ${project.name}`} title="Task board"><Columns3 size={12} /></Button></div>
             {#if !collapsed.includes(project.id)}<div class="ml-3 border-l pl-3">{#each filteredSessions.filter((s) => s.projectId === project.id) as session}
               {@const active = session.id === sessionId}
               <div class={`group flex h-8 items-center rounded-md pr-1 ${active ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-accent/50"}`}>
@@ -641,7 +670,7 @@ async function answer(requestId: string, answers: string[][]) {
             {/each}{#if !sessions.some((s) => s.projectId === project.id)}<p class="py-2 text-xs text-muted-foreground">No chats yet.</p>{/if}</div>{/if}
           </section>
         {/each}
-        {#if legacyTasks.length}<section class="mt-6"><p class="px-2 py-2 text-[11px] uppercase tracking-wider text-muted-foreground">Task boards</p>{#each projects.filter(p => legacyTasks.some(t => t.projectId === p.id)) as project}<Button href={`/project/${project.id}`} variant="ghost" class="h-8 w-full justify-start text-xs text-muted-foreground">{project.name}<Badge variant="outline" class="ml-auto">{legacyTasks.filter(t => t.projectId === project.id).length}</Badge></Button>{/each}</section>{/if}
+        {#if legacyTasks.length}<section class="mt-6"><p class="px-2 py-2 text-[11px] uppercase tracking-wider text-muted-foreground">Task boards</p>{#each projects.filter(p => legacyTasks.some(t => t.projectId === p.id)) as project}<Button href={`/?project=${project.id}&view=kanban`} variant="ghost" class="h-8 w-full justify-start text-xs text-muted-foreground">{project.name}<Badge variant="outline" class="ml-auto">{legacyTasks.filter(t => t.projectId === project.id).length}</Badge></Button>{/each}</section>{/if}
       </nav>
       <div class="flex items-center gap-1 border-t p-3"><Button href="/settings" variant="ghost" size="icon" title="Settings" aria-label="Settings"><Settings size={16} /></Button><Button variant="ghost" size="icon" title="About Loom" aria-label="About Loom" onclick={() => aboutOpen = true}><CircleHelp size={16} /></Button><Button variant="ghost" size="sm" class="ml-auto text-xs text-muted-foreground" onclick={retryConnection} title="Refresh connection"><span class={`size-1.5 rounded-full ${connected ? "bg-emerald-400" : "bg-amber-400"}`}></span>{connected ? "Connected" : "Reconnect"}</Button></div>
     </aside>
@@ -676,13 +705,13 @@ async function answer(requestId: string, answers: string[][]) {
         {#if error}<div role="alert" class="my-4 flex items-start gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm"><p class="min-w-0 flex-1 break-words text-destructive">{error}</p><Button variant="ghost" size="sm" onclick={retryConnection}><RefreshCw size={13} />Retry</Button><Button variant="ghost" size="icon" class="size-7" aria-label="Dismiss error" onclick={() => error = ""}><X size={13} /></Button></div>{/if}
         {#if !sessionId && !loading}
           {#if !projects.length}<div class="mb-5 text-center"><p class="mb-3 text-sm text-muted-foreground">Add a local Git project to start chatting with OpenCode.</p><Button onclick={() => addProjectOpen = true}><FolderPlus size={16} />Add project</Button></div>{:else}<div class="mb-3"><Select.Root type="single" bind:value={selectedProjectId}><Select.Trigger class="w-auto min-w-40 border-0 bg-transparent shadow-none" aria-label="Choose project"><Folder size={14} />{selectedProject?.name ?? "Choose project"}</Select.Trigger><Select.Content>{#each projects as project}<Select.Item value={project.id}>{project.name}</Select.Item>{/each}</Select.Content></Select.Root></div>{/if}
-           <Composer projectId={selectedProjectId} {catalog} {busy} disabled={!selectedProjectId || loading} onsend={send} onstop={stop} bind:draft bind:model bind:agent autoAccept={selectedProject?.autoAccept ?? false} onAutoAcceptChange={selectedProject ? (value) => void setAutoAccept(value) : undefined} />
+           <Composer projectId={selectedProjectId} {catalog} {customAgents} {busy} disabled={!selectedProjectId || loading} onsend={send} onstop={stop} bind:draft bind:model bind:agent bind:customAgentId autoAccept={selectedProject?.autoAccept ?? false} onAutoAcceptChange={selectedProject ? (value) => void setAutoAccept(value) : undefined} />
 
           <div class="mt-5 flex flex-wrap justify-center gap-2">{#each prompts as prompt}<Button variant="outline" size="sm" class="rounded-full text-xs text-muted-foreground" onclick={() => draft = prompt.text}>{prompt.label}</Button>{/each}</div>
         {/if}
       </div>
     </div>
-    {#if sessionId && viewMode === "chat"}<div class="shrink-0 border-t bg-background px-5 py-4"><div class="mx-auto max-w-3xl"><Composer projectId={selectedProjectId} {catalog} {busy} disabled={!conversation || sessionLoading} onsend={send} onstop={stop} bind:draft bind:model bind:agent autoAccept={selectedProject?.autoAccept ?? false} onAutoAcceptChange={selectedProject ? (value) => void setAutoAccept(value) : undefined} /></div></div>{/if}
+    {#if sessionId && viewMode === "chat"}<div class="shrink-0 border-t bg-background px-5 py-4"><div class="mx-auto max-w-3xl"><Composer projectId={selectedProjectId} {catalog} {customAgents} {busy} disabled={!conversation || sessionLoading} onsend={send} onstop={stop} bind:draft bind:model bind:agent bind:customAgentId autoAccept={selectedProject?.autoAccept ?? false} onAutoAcceptChange={selectedProject ? (value) => void setAutoAccept(value) : undefined} /></div></div>{/if}
     {/if}
   </main>
 </div>

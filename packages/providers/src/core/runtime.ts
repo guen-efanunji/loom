@@ -42,7 +42,7 @@ export type RuntimeAgentModel = RuntimeModel;
  *   provider's PreToolUse hook can reach the Loom daemon and hold a tool until the user decides.
  */
 export type RuntimePermission = {
-	mode: "auto" | "ask";
+	mode: "auto" | "ask" | "read-only";
 	env?: Record<string, string>;
 };
 

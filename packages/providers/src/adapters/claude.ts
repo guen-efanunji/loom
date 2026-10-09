@@ -22,10 +22,12 @@ export class ClaudeProviderAdapter extends CliProviderAdapter {
 					"models",
 				],
 			},
-			buildPrompt: async ({ prompt, model }) => ({
+			buildPrompt: async ({ prompt, model, permission }) => ({
 				command: "claude",
 				args: [
 					"--print",
+					"--permission-mode",
+					permission?.mode === "read-only" ? "plan" : "default",
 					"--output-format",
 					"stream-json",
 					"--verbose",

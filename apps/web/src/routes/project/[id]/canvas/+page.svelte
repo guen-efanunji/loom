@@ -45,7 +45,7 @@ async function load() {
 {:else if project}
 	<div class="flex h-svh flex-col bg-background text-foreground">
 		<header class="flex h-14 shrink-0 items-center gap-3 border-b px-4">
-			<Button href="/" variant="ghost" size="sm">← Back to workspace</Button>
+			<Button href={`/?project=${project.id}`} variant="ghost" size="sm">← Back to workspace</Button>
 			<div class="min-w-0 flex-1">
 				<p class="truncate text-sm font-medium">{project.name} · Design canvas</p>
 				<p class="truncate text-[11px] text-muted-foreground">{project.path}</p>

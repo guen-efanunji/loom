@@ -19,6 +19,7 @@ export type {
 	AgentRunStatus,
 	AgentRuntime,
 	RuntimeOutput,
+	RuntimePermission,
 } from "./core/runtime";
 
 import type { OpenCodeManager } from "@loom/opencode";

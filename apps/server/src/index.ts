@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import {
 	basename,
@@ -11,9 +12,14 @@ import {
 import { appRouter } from "@loom/api/routers/index";
 import type { Database } from "@loom/db";
 import {
+	customAgentRunEvents,
+	customAgentRuns,
+	customAgentSkills,
+	customAgents,
 	type DesignMessageRecord,
 	type DesignNodeRecord,
 	designRepository,
+	eq,
 	planRepository,
 	repositories,
 } from "@loom/db";
@@ -75,6 +81,7 @@ import { Hono } from "hono";
 import { createBunWebSocket } from "hono/bun";
 import { cors } from "hono/cors";
 import { z } from "zod";
+import { createAgentSettingsRoutes } from "./agents";
 import { registerAgyPermissionHook } from "./agy-hooks";
 import { type ChatRequestGateway, createChatRoutes } from "./chat";
 import { type DaemonConfig, loadDaemonConfig } from "./config";
@@ -684,6 +691,15 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	);
 	await designs.recover();
 	app.route(
+		"/api/agents",
+		createAgentSettingsRoutes({
+			db,
+			projects: repos.projects,
+			tasks: repos.tasks,
+			providers: providerManager,
+		}),
+	);
+	app.route(
 		"/api/chat",
 		createChatRoutes({
 			projects: repos.projects,
@@ -694,6 +710,72 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			agyPermissionUrl: agyPermissionError ? undefined : agyPermissionBase,
 			agyPermissionError,
 			providerHistory: repos.providerChatHistory,
+			agents: {
+				async get(id) {
+					const agent = await db.query.customAgents.findFirst({
+						where: eq(customAgents.id, id),
+					});
+					if (!agent) return undefined;
+					const skills = await db
+						.select()
+						.from(customAgentSkills)
+						.where(eq(customAgentSkills.agentId, id));
+					return { ...agent, skills };
+				},
+			},
+			agentRunStore: {
+				async start(input) {
+					await db
+						.update(customAgents)
+						.set({ lastUsedAt: new Date(), updatedAt: new Date() })
+						.where(eq(customAgents.id, input.agentId));
+					await db.insert(customAgentRuns).values({
+						id: input.id,
+						agentId: input.agentId,
+						projectId: input.projectId,
+						chatSessionId: input.sessionId,
+						provider: input.provider,
+						modelId: input.modelId,
+						status: "running",
+						trigger: "chat",
+						inputSummary: input.inputSummary,
+						startedAt: new Date(),
+					});
+					await db.insert(customAgentRunEvents).values({
+						id: randomUUID(),
+						runId: input.id,
+						type: "started",
+						message: `Started ${input.provider}`,
+					});
+				},
+				async finish(input) {
+					const safe = (value: string | null) =>
+						value
+							?.replace(
+								/(?:sk-[A-Za-z0-9_-]{16,}|Bearer\s+\S+|LOOM_PERMISSION_TOKEN=\S+)/gi,
+								"[redacted]",
+							)
+							.slice(-4000) ?? null;
+					await db
+						.update(customAgentRuns)
+						.set({
+							status: input.status,
+							outputSummary: safe(input.outputSummary),
+							errorMessage: safe(input.errorMessage),
+							finishedAt: new Date(),
+						})
+						.where(eq(customAgentRuns.id, input.id));
+					await db.insert(customAgentRunEvents).values({
+						id: randomUUID(),
+						runId: input.id,
+						type: input.status,
+						message:
+							safe(input.errorMessage) ??
+							safe(input.outputSummary) ??
+							input.status,
+					});
+				},
+			},
 			designs: designRepo,
 			runtimes: new Map(
 				providerManager.registry.list().flatMap((adapter) => {

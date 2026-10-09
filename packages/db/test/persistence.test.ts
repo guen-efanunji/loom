@@ -48,6 +48,11 @@ test("bootstraps an empty database and is idempotent", async () => {
 		expect(tables.map((table) => table.name)).toEqual([
 			"account",
 			"agent_runs",
+			"custom_agent_assignments",
+			"custom_agent_run_events",
+			"custom_agent_runs",
+			"custom_agent_skills",
+			"custom_agents",
 			"design_messages",
 			"design_nodes",
 			"permission_requests",

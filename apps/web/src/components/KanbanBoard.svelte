@@ -5,6 +5,7 @@ import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
 import { Badge } from "$lib/components/ui/badge";
 import { Button } from "$lib/components/ui/button";
 import { Input } from "$lib/components/ui/input";
+import * as Select from "$lib/components/ui/select/index.js";
 import { Textarea } from "$lib/components/ui/textarea";
 import { daemon, type Task } from "$lib/daemon";
 
@@ -56,6 +57,11 @@ let busy = $state(false);
 let addOpen = $state(false);
 let addTitle = $state("");
 let addPrompt = $state("");
+let addAgentId = $state("");
+let availableAgents = $state<
+	Array<{ id: string; label: string; provider: string; modelId: string | null }>
+>([]);
+let agentsLoading = $state(false);
 let editTask = $state<Task | null>(null);
 let editTitle = $state("");
 let editPrompt = $state("");
@@ -63,6 +69,34 @@ let deleteTask = $state<Task | null>(null);
 
 async function refresh() {
 	await onChanged?.();
+}
+
+async function openAddTask() {
+	addTitle = "";
+	addPrompt = "";
+	addAgentId = "";
+	addOpen = true;
+	agentsLoading = true;
+	try {
+		const agents = await daemon.listCustomAgents(projectId);
+		availableAgents = agents
+			.filter(
+				(agent) => agent.status === "active" && agent.allowKanban === true,
+			)
+			.map((agent) => ({
+				id: String(agent.id),
+				label: String(agent.label),
+				provider: String(agent.provider),
+				modelId: typeof agent.modelId === "string" ? agent.modelId : null,
+			}));
+	} catch (reason) {
+		availableAgents = [];
+		toast.error(
+			reason instanceof Error ? reason.message : "Unable to load agents",
+		);
+	} finally {
+		agentsLoading = false;
+	}
 }
 
 async function persist(order: Task[]) {
@@ -117,16 +151,39 @@ function onDragEnd() {
 async function doAdd() {
 	if (!addTitle.trim() || !addPrompt.trim() || busy) return;
 	busy = true;
+	const agentAssigned = !!addAgentId;
 	try {
-		await daemon.createTask({
+		const task = await daemon.createTask({
 			projectId,
 			title: addTitle.trim(),
 			prompt: addPrompt.trim(),
 		});
+		if (addAgentId) {
+			try {
+				await daemon.assignCustomAgent({
+					agentId: addAgentId,
+					projectId,
+					taskId: task.id,
+				});
+			} catch (reason) {
+				addTitle = "";
+				addPrompt = "";
+				addAgentId = "";
+				addOpen = false;
+				await refresh();
+				toast.error(
+					`Task was created, but agent assignment failed: ${reason instanceof Error ? reason.message : "Unable to assign agent"}`,
+				);
+				return;
+			}
+		}
 		addTitle = "";
 		addPrompt = "";
+		addAgentId = "";
 		addOpen = false;
-		toast.success("Task added");
+		toast.success(
+			agentAssigned ? "Task added and agent assigned" : "Task added",
+		);
 		await refresh();
 	} catch (reason) {
 		toast.error(
@@ -229,7 +286,7 @@ async function doCancel(task: Task) {
 <div class="flex h-full flex-col gap-4">
 	<div class="flex items-center justify-between gap-2">
 		<p class="text-sm text-muted-foreground">{tasks.length} tasks · drag cards to reorder</p>
-		<Button size="sm" onclick={() => { addTitle = ""; addPrompt = ""; addOpen = true; }} disabled={busy}><Plus size={15} />Add task</Button>
+		<Button size="sm" onclick={() => void openAddTask()} disabled={busy}><Plus size={15} />Add task</Button>
 	</div>
 	<div class="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-x-auto md:grid-cols-3 xl:grid-cols-6">
 		{#each columns as item}
@@ -300,11 +357,28 @@ async function doCancel(task: Task) {
 	<AlertDialog.Content>
 		<AlertDialog.Header>
 			<AlertDialog.Title>Add task</AlertDialog.Title>
-			<AlertDialog.Description>Create a queued task for this project.</AlertDialog.Description>
+		<AlertDialog.Description>Create a queued task for this project and optionally assign an agent.</AlertDialog.Description>
 		</AlertDialog.Header>
 		<div class="space-y-3">
 			<Input aria-label="Task title" bind:value={addTitle} maxlength={200} placeholder="Task title" />
 			<Textarea aria-label="Task prompt" bind:value={addPrompt} rows={4} placeholder="What should the agent do?" />
+			<div class="space-y-2">
+				<label class="text-sm font-medium" for="task-agent-select">Agent <span class="font-normal text-muted-foreground">(Optional)</span></label>
+				<Select.Root type="single" value={addAgentId} onValueChange={(value) => addAgentId = value}>
+					<Select.Trigger id="task-agent-select" class="w-full" disabled={agentsLoading}>
+						<Select.Value placeholder={agentsLoading ? "Loading agents…" : "No agent assigned"} />
+					</Select.Trigger>
+					<Select.Content>
+						<Select.Item value="">No agent assigned</Select.Item>
+						{#each availableAgents as agent}
+							<Select.Item value={agent.id}>{agent.label} · {agent.provider}{agent.modelId ? ` / ${agent.modelId}` : ""}</Select.Item>
+						{/each}
+					</Select.Content>
+				</Select.Root>
+				{#if !agentsLoading && !availableAgents.length}
+					<p class="text-xs text-muted-foreground">No active Kanban agents. Create one in <a class="underline underline-offset-4" href="/settings/agents">Agent settings</a>.</p>
+				{/if}
+			</div>
 		</div>
 		<AlertDialog.Footer>
 			<AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
