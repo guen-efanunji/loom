@@ -73,6 +73,7 @@ type ProviderTurn = {
 	finished: boolean;
 	openCodeActive?: boolean;
 	permissionToken?: string;
+	persistedMessages?: string;
 	status: { type: string; message?: string };
 };
 
@@ -136,6 +137,11 @@ export function createChatRoutes(options: {
 	permissions?: AgyPermissionStore;
 	agyPermissionUrl?: string;
 	agyPermissionError?: string;
+	providerHistory?: {
+		get<T>(sessionId: string): Promise<T | undefined>;
+		save(sessionId: string, messages: unknown[]): Promise<unknown>;
+		delete(sessionId: string): Promise<unknown>;
+	};
 	sessionScope?: (
 		sessionId: string,
 	) => Promise<{ directory: string; projectId: string } | undefined>;
@@ -201,6 +207,11 @@ export function createChatRoutes(options: {
 					: `${turn.providerId} ${status}`);
 			turn.status = { type: "error", message };
 			turn.assistant.info.error = { name: "ProviderError", data: { message } };
+		}
+		const serialized = JSON.stringify(turn.messages);
+		if (serialized !== turn.persistedMessages) {
+			await options.providerHistory?.save(turn.loomSessionId, turn.messages);
+			turn.persistedMessages = serialized;
 		}
 	}
 	let cachedCatalog: Awaited<ReturnType<typeof buildCatalog>> | null = null;
@@ -428,9 +439,13 @@ export function createChatRoutes(options: {
 			request<Array<{ sessionID: string }>>("/permission", current.directory),
 			request<Array<{ sessionID: string }>>("/question", current.directory),
 		]);
+		const providerMessages =
+			providerSession?.messages ??
+			(await options.providerHistory?.get<ProviderMessage[]>(current.id)) ??
+			[];
 		return c.json({
 			session: current,
-			messages: mergeMessages(providerSession?.messages ?? [], messages),
+			messages: mergeMessages(providerMessages, messages),
 			status: statuses[current.id] ?? { type: "idle" },
 			permissions: permissions.filter((p) => p.sessionID === current.id),
 			questions: questions.filter((q) => q.sessionID === current.id),
@@ -500,8 +515,12 @@ export function createChatRoutes(options: {
 			const files = await Promise.all(
 				input.files.map((path) => filePath(current.directory, path)),
 			);
+			const storedHistory =
+				existing?.messages ??
+				(await options.providerHistory?.get<ProviderMessage[]>(current.id)) ??
+				[];
 			const history = mergeMessages(
-				existing?.messages ?? [],
+				storedHistory,
 				await request<ProviderMessage[]>(
 					`/session/${current.id}/message`,
 					current.directory,
@@ -537,6 +556,8 @@ export function createChatRoutes(options: {
 				finished: false,
 				status: { type: "busy" },
 			};
+			turn.persistedMessages = JSON.stringify(turn.messages);
+			await options.providerHistory?.save(current.id, turn.messages);
 			const isAgy = providerId === "agy" || providerId === "antigravity";
 			const permissionToken =
 				isAgy && agyEnabled ? randomBytes(24).toString("hex") : undefined;
@@ -657,6 +678,7 @@ export function createChatRoutes(options: {
 			options.permissions?.unregisterRun(providerSession.permissionToken);
 		await request(`/session/${current.id}`, current.directory, {}, "DELETE");
 		providerSessions.delete(current.id);
+		await options.providerHistory?.delete(current.id);
 		return c.body(null, 204);
 	});
 	app.post("/sessions/:id/rename", async (c) => {

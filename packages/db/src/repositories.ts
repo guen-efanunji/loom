@@ -7,6 +7,7 @@ import {
 	agentRuns,
 	permissionRequests,
 	projects,
+	providerChatHistory,
 	tasks,
 	workspaces,
 } from "./schema";
@@ -244,6 +245,32 @@ export function permissionRequestRepository(db: Database) {
 	};
 }
 
+export function providerChatHistoryRepository(db: Database) {
+	return {
+		async get<T>(sessionId: string): Promise<T | undefined> {
+			const record = await db.query.providerChatHistory.findFirst({
+				where: eq(providerChatHistory.sessionId, sessionId),
+			});
+			return record ? (JSON.parse(record.messages) as T) : undefined;
+		},
+		save(sessionId: string, messages: unknown[]) {
+			const serialized = JSON.stringify(messages);
+			return db
+				.insert(providerChatHistory)
+				.values({ sessionId, messages: serialized })
+				.onConflictDoUpdate({
+					target: providerChatHistory.sessionId,
+					set: { messages: serialized, updatedAt: new Date() },
+				});
+		},
+		delete(sessionId: string) {
+			return db
+				.delete(providerChatHistory)
+				.where(eq(providerChatHistory.sessionId, sessionId));
+		},
+	};
+}
+
 export function repositories(db: Database) {
 	return {
 		projects: projectRepository(db),
@@ -251,5 +278,6 @@ export function repositories(db: Database) {
 		workspaces: workspaceRepository(db),
 		agentRuns: agentRunRepository(db),
 		permissionRequests: permissionRequestRepository(db),
+		providerChatHistory: providerChatHistoryRepository(db),
 	};
 }

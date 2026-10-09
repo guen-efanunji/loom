@@ -654,7 +654,12 @@ export async function createApp(options: DaemonAppOptions = {}) {
 				: "";
 		} catch (error) {
 			agyPermissionError = `Agy permission hook unavailable: ${error instanceof Error ? error.message : String(error)}`;
-			log("agy", "hook-registration-failed", { error: agyPermissionError }, "warn");
+			log(
+				"agy",
+				"hook-registration-failed",
+				{ error: agyPermissionError },
+				"warn",
+			);
 		}
 	}
 	app.route(
@@ -667,6 +672,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			permissions: agyPermissions,
 			agyPermissionUrl: agyPermissionError ? undefined : agyPermissionBase,
 			agyPermissionError,
+			providerHistory: repos.providerChatHistory,
 			runtimes: new Map(
 				providerManager.registry.list().flatMap((adapter) => {
 					const runtime = adapter.getRuntime?.();

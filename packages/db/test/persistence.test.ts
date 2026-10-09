@@ -10,6 +10,7 @@ import { createDb, databaseSchemaStatements } from "../src/index";
 import {
 	agentRunRepository,
 	projectRepository,
+	providerChatHistoryRepository,
 	taskRepository,
 	workspaceRepository,
 } from "../src/repositories";
@@ -53,6 +54,7 @@ test("bootstraps an empty database and is idempotent", async () => {
 			"plan_tasks",
 			"plans",
 			"projects",
+			"provider_chat_history",
 			"session",
 			"task_dependencies",
 			"tasks",
@@ -62,6 +64,31 @@ test("bootstraps an empty database and is idempotent", async () => {
 		]);
 		createDb({ DATABASE_URL: `file:${path}` });
 		for (const statement of databaseSchemaStatements()) await db.run(statement);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("persists provider chat history when the database is reopened", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "loom-provider-chat-"));
+	const path = join(directory, "state.db");
+	try {
+		const firstDb = createDb({ DATABASE_URL: `file:${path}` });
+		const firstHistory = providerChatHistoryRepository(firstDb);
+		await firstHistory.save("ses_provider", [
+			{ role: "user", text: "Keep this after restart" },
+		]);
+		firstDb.$client.close();
+
+		const restartedDb = createDb({ DATABASE_URL: `file:${path}` });
+		const history =
+			await providerChatHistoryRepository(restartedDb).get<
+				Array<{ role: string; text: string }>
+			>("ses_provider");
+		expect(history).toEqual([
+			{ role: "user", text: "Keep this after restart" },
+		]);
+		restartedDb.$client.close();
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}

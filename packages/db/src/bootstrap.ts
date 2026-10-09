@@ -32,6 +32,7 @@ const schemaStatements = [
 	"CREATE INDEX IF NOT EXISTS design_nodes_project_id_idx ON design_nodes (project_id)",
 	"CREATE TABLE IF NOT EXISTS design_messages (id text PRIMARY KEY NOT NULL, project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE, node_id text, role text NOT NULL, text text NOT NULL DEFAULT '', model text, error_message text, duration_ms integer, created_at integer NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)))",
 	"CREATE INDEX IF NOT EXISTS design_messages_project_id_idx ON design_messages (project_id)",
+	"CREATE TABLE IF NOT EXISTS provider_chat_history (session_id text PRIMARY KEY NOT NULL, messages text NOT NULL, updated_at integer NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)))",
 ];
 
 export function bootstrapDatabase(path: string): void {
@@ -39,9 +40,7 @@ export function bootstrapDatabase(path: string): void {
 	try {
 		database.exec("BEGIN");
 		for (const statement of schemaStatements) database.exec(statement);
-		for (const column of [
-			"auto_accept integer NOT NULL DEFAULT 0",
-		]) {
+		for (const column of ["auto_accept integer NOT NULL DEFAULT 0"]) {
 			try {
 				database.exec(`ALTER TABLE projects ADD COLUMN ${column}`);
 			} catch (error) {

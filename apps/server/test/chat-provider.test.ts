@@ -6,6 +6,7 @@ import {
 } from "@loom/providers";
 import { CliProviderAdapter } from "../../../packages/providers/src/adapters/cli";
 import { createChatRoutes } from "../src/chat";
+import { createAgyPermissionStore } from "../src/permissions";
 
 type ChatState = {
 	status: { type: string; message?: string };
@@ -20,7 +21,10 @@ type ChatState = {
 	}>;
 };
 
-async function setup(providerId = "agy") {
+async function setup(
+	providerId = "agy",
+	storedHistory = new Map<string, unknown[]>(),
+) {
 	let status: Awaited<ReturnType<AgentRuntime["status"]>> = "running";
 	let output = "";
 	let failure: string | null = null;
@@ -62,6 +66,18 @@ async function setup(providerId = "agy") {
 	});
 	await providerManager.refresh(providerId);
 	const app = createChatRoutes({
+		permissions: createAgyPermissionStore(),
+		agyPermissionUrl: "http://localhost/permission",
+		providerHistory: {
+			get: async <T>(sessionId: string) =>
+				storedHistory.get(sessionId) as T | undefined,
+			save: async (sessionId, messages) => {
+				storedHistory.set(sessionId, structuredClone(messages));
+			},
+			delete: async (sessionId) => {
+				storedHistory.delete(sessionId);
+			},
+		},
 		projects: {
 			list: async () => [{ id: "project", path: "/tmp" }],
 			getById: async () => ({ path: "/tmp" }),
@@ -168,6 +184,31 @@ describe("provider chat", () => {
 		expect((await fixture.send()).status).toBe(502);
 		expect((await fixture.state()).status.type).toBe("error");
 		expect((await fixture.send()).status).toBe(502);
+	});
+	test("provider conversation history survives a server restart", async () => {
+		const storedHistory = new Map<string, unknown[]>();
+		const firstServer = await setup("codex", storedHistory);
+		expect((await firstServer.send("Persist this conversation")).status).toBe(
+			204,
+		);
+		firstServer.finish("completed", "Saved reply");
+		await firstServer.state();
+
+		const restartedServer = await setup("codex", storedHistory);
+		const restored = await restartedServer.state();
+		expect(restored.messages.map((message) => message.parts[0]?.text)).toEqual([
+			"Persist this conversation",
+			"Saved reply",
+		]);
+		expect((await restartedServer.send("Continue after restart")).status).toBe(
+			204,
+		);
+		expect(restartedServer.prompts[0]?.prompt).toContain(
+			"user: Persist this conversation",
+		);
+		expect(restartedServer.prompts[0]?.prompt).toContain(
+			"assistant: Saved reply",
+		);
 	});
 	test("cancellation permits another turn", async () => {
 		const fixture = await setup();
