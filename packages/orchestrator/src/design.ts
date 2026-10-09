@@ -29,6 +29,7 @@ import {
 	designChatSummary,
 	extractDesignScreens,
 	hasDesignDoc,
+	isExplicitNewDesignRequest,
 	looksLikeDesignRequest,
 	parseDesignQuestions,
 	wantsAllNodes,
@@ -610,12 +611,15 @@ export class DesignService {
 			? await this.store.getNode(input.nodeId).catch(() => null)
 			: null;
 
-		const intent = await this.classifyIntent(
-			project,
-			message,
-			Boolean(target?.html),
-			input.model,
-		);
+		const intent =
+			target?.html || isExplicitNewDesignRequest(message)
+				? "design"
+				: await this.classifyIntent(
+						project,
+						message,
+						false,
+						input.model,
+					);
 
 		if (intent === "design") {
 			// A change request that names the whole set ("pada keduanya", "ubah warna

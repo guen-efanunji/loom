@@ -7,12 +7,15 @@ import {
 	File as FileIcon,
 	Image as ImageIcon,
 	LoaderCircle,
+	Check,
+	PanelsTopLeft,
 	Plus,
 	Square,
 	X,
 } from "@lucide/svelte";
 import { tick } from "svelte";
 import { type Catalog, type ChatAttachment, chat } from "$lib/chat";
+import { type DesignNode, daemon } from "$lib/daemon";
 import { Button } from "$lib/components/ui/button";
 import * as Command from "$lib/components/ui/command";
 import * as Popover from "$lib/components/ui/popover";
@@ -43,6 +46,7 @@ let {
 		text: string;
 		files: string[];
 		attachments?: ChatAttachment[];
+		designNodeIds: string[];
 		agents: string[];
 		agent?: string;
 		model?: { providerID: string; modelID: string };
@@ -60,6 +64,12 @@ let {
 let textarea = $state<HTMLTextAreaElement | null>(null);
 let files = $state<string[]>([]);
 let attachments = $state<globalThis.File[]>([]);
+let designNodes = $state<DesignNode[]>([]);
+let selectedDesignIds = $state<string[]>([]);
+let designOpen = $state(false);
+let loadingDesigns = $state(false);
+let designError = $state("");
+let designNotice = $state("");
 let attachmentInput = $state<HTMLInputElement | null>(null);
 let agents = $state<string[]>([]);
 let attachmentOpen = $state(false);
@@ -73,6 +83,15 @@ let mentionStart = 0;
 let cursor = 0;
 let previousProject = "";
 let sending = $state(false);
+function thumbnailStyle(node: DesignNode, boxWidth: number, boxHeight: number) {
+	const frame = node.viewport === "mobile"
+		? { width: 390, height: 844 }
+		: { width: 1440, height: 900 };
+	const scale = Math.min(boxWidth / frame.width, boxHeight / frame.height);
+	const left = (boxWidth - frame.width * scale) / 2;
+	const top = (boxHeight - frame.height * scale) / 2;
+	return `width:${frame.width}px;height:${frame.height}px;left:${left}px;top:${top}px;transform:scale(${scale})`;
+}
 const choices = $derived([
 	...catalog.agents
 		.filter(
@@ -91,6 +110,8 @@ $effect(() => {
 		previousProject = projectId;
 		files = [];
 		attachments = [];
+		selectedDesignIds = [];
+		designNodes = [];
 		agents = [];
 		query = null;
 	}
@@ -128,6 +149,32 @@ function input() {
 	const match = draft.slice(0, cursor).match(/(?:^|\s)@([^\s@]*)$/);
 	query = match ? match[1] : null;
 	if (match) mentionStart = cursor - match[1].length - 1;
+}
+async function loadDesigns() {
+	if (!projectId || loadingDesigns) return;
+	loadingDesigns = true;
+	designError = "";
+	try {
+		const thread = await daemon.listDesigns(projectId);
+		designNodes = thread.nodes.filter((node) => node.status === "ready" && node.html.trim());
+	} catch (error) {
+		designError = error instanceof Error ? error.message : "Could not load Canvas designs";
+	} finally {
+		loadingDesigns = false;
+	}
+}
+function toggleDesign(node: DesignNode) {
+	if (selectedDesignIds.includes(node.id)) {
+		selectedDesignIds = selectedDesignIds.filter((id) => id !== node.id);
+		designNotice = "";
+		return;
+	}
+	if (selectedDesignIds.length >= 5) {
+		designNotice = "You can attach up to 5 Canvas designs per message.";
+		return;
+	}
+	designNotice = "";
+	selectedDesignIds = [...selectedDesignIds, node.id];
 }
 async function choose(item: { value: string; type: string }) {
 	if (item.type === "file") files = [...new Set([...files, item.value])];
@@ -187,7 +234,7 @@ async function send() {
 		sending ||
 		busy ||
 		disabled ||
-		(!draft.trim() && !files.length && !attachments.length)
+		(!draft.trim() && !files.length && !attachments.length && !selectedDesignIds.length)
 	)
 		return;
 	sending = true;
@@ -211,6 +258,7 @@ async function send() {
 					}),
 				),
 			),
+			designNodeIds: selectedDesignIds,
 			agents,
 			agent,
 			model: selectedModel
@@ -224,6 +272,7 @@ async function send() {
 			draft = "";
 			files = [];
 			attachments = [];
+			selectedDesignIds = [];
 			agents = [];
 		}
 	} finally {
@@ -278,16 +327,18 @@ function keydown(event: KeyboardEvent) {
       </div>
     </div>
   {/if}
-  {#if files.length || agents.length || attachments.length}<div class="flex flex-wrap gap-1 px-3 pt-3">
+  {#if files.length || agents.length || attachments.length || selectedDesignIds.length}<div class="flex flex-wrap gap-1 px-3 pt-3">
     {#each files as file}<Button variant="secondary" size="sm" class="max-w-full text-xs" onclick={() => files = files.filter((f) => f !== file)} title={`Remove ${file}`} aria-label={`Remove ${file}`}><FileIcon size={12} /><span class="truncate">{file}</span><X size={12} /></Button>{/each}
     {#each agents as name}<Button variant="secondary" size="sm" class="text-xs" onclick={() => agents = agents.filter((a) => a !== name)} title={`Remove ${name}`}><Bot size={12} />{name}<X size={12} /></Button>{/each}
      {#each attachments as file}<Button variant="secondary" size="sm" class="max-w-full text-xs" onclick={() => removeAttachment(file)} title={`Remove ${file.name}`} aria-label={`Remove ${file.name}`}><ImageIcon size={12} /><span class="truncate">{file.name}</span><X size={12} /></Button>{/each}
+     {#each designNodes.filter((node) => selectedDesignIds.includes(node.id)) as node}<Button variant="secondary" size="sm" class="max-w-full gap-2 text-xs" onclick={() => toggleDesign(node)} title={`Remove Canvas design ${node.title}`} aria-label={`Remove Canvas design ${node.title}`}><span class="relative h-8 w-12 shrink-0 overflow-hidden rounded border bg-background"><iframe title={`Preview of ${node.title}`} srcdoc={node.html} sandbox="" tabindex="-1" aria-hidden="true" style={thumbnailStyle(node, 48, 32)} class="pointer-events-none absolute origin-top-left border-0"></iframe></span><span class="max-w-48 truncate">{node.title}</span><X size={12} /></Button>{/each}
   </div>{/if}
   <input bind:this={attachmentInput} type="file" accept="image/*,.txt,.md,.json,.ts,.tsx,.js,.jsx,.css,.html,.pdf" multiple onchange={addAttachments} class="sr-only" aria-label="Attach files or images" />
    <Textarea id={inputId} bind:ref={textarea} bind:value={draft} oninput={input} onclick={input} onpaste={onpaste} onkeydown={keydown} aria-label="Message agent" aria-controls={query !== null ? "mention-list" : undefined} aria-activedescendant={query !== null ? `mention-${active}` : undefined} placeholder="Ask anything… @ for files and agents" rows={3} class="max-h-56 min-h-24 resize-none border-0 bg-transparent p-4 text-sm shadow-none focus-visible:ring-0" disabled={disabled || sending} />
   <div class="flex flex-wrap items-center justify-between gap-2 px-3 pb-3">
     <div class="flex items-center gap-1">
      <Popover.Root bind:open={attachmentOpen}><Popover.Trigger class="inline-flex size-9 items-center justify-center rounded-md border border-transparent text-sm hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50" title="Add to message" aria-label="Add to message" disabled={sending}><Plus size={16} /></Popover.Trigger><Popover.Content class="w-64 p-1" align="start"><Command.Root><Command.List><Command.Group><Command.Item value="Add photos & files" onSelect={() => { attachmentOpen = false; attachmentInput?.click(); }}><ImageIcon size={15} /><span>Add photos &amp; files</span></Command.Item><Command.Item value="@ for mentions" disabled={!projectId} onSelect={() => { attachmentOpen = false; void attach(); }}><AtSign size={15} /><span>@ for mentions</span></Command.Item></Command.Group></Command.List></Command.Root></Popover.Content></Popover.Root>
+      <Popover.Root bind:open={designOpen} onOpenChange={(open) => { designOpen = open; if (open) void loadDesigns(); }}><Popover.Trigger class="inline-flex size-9 items-center justify-center rounded-md border border-transparent text-sm hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50" title="Embed Canvas designs" aria-label="Embed Canvas designs" disabled={sending || !projectId}><PanelsTopLeft size={16} />{#if selectedDesignIds.length}<span class="ml-0.5 text-[10px]">{selectedDesignIds.length}</span>{/if}</Popover.Trigger><Popover.Content class="w-80 p-2" align="start"><div class="mb-2 flex items-center justify-between px-1"><p class="text-sm font-medium">Canvas designs</p><span class="text-xs text-muted-foreground">{selectedDesignIds.length}/5 selected</span></div>{#if loadingDesigns}<p class="px-1 py-3 text-xs text-muted-foreground">Loading designs…</p>{:else if designError}<p role="alert" class="px-1 py-2 text-xs text-destructive">{designError}</p>{:else if !designNodes.length}<p class="px-1 py-3 text-xs text-muted-foreground">No ready designs in this project's Canvas.</p>{:else}<div class="max-h-64 space-y-1 overflow-y-auto">{#each designNodes as node}<Button type="button" variant="ghost" class="h-auto w-full justify-start gap-2 py-2 text-left" aria-pressed={selectedDesignIds.includes(node.id)} onclick={() => toggleDesign(node)}><span class="relative h-12 w-16 shrink-0 overflow-hidden rounded border bg-background"><iframe title={`Preview of ${node.title}`} srcdoc={node.html} sandbox="" tabindex="-1" aria-hidden="true" style={thumbnailStyle(node, 64, 48)} class="pointer-events-none absolute origin-top-left border-0"></iframe></span><span class="min-w-0 flex-1"><span class="block truncate text-xs">{node.title}</span><span class="block truncate text-[10px] text-muted-foreground">{node.viewport} · {node.brief}</span></span>{#if selectedDesignIds.includes(node.id)}<Check size={14} class="shrink-0" />{/if}</Button>{/each}</div>{#if designNotice}<p class="px-1 pt-2 text-xs text-amber-300">{designNotice}</p>{/if}{/if}</Popover.Content></Popover.Root>
       {#if onAutoAcceptChange}<label class="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:bg-accent" title="Auto-approve tool permissions for this project. When off, each tool asks for your approval."><Switch checked={autoAccept} onCheckedChange={(value) => onAutoAcceptChange(value)} size="sm" /><span>Auto-accept</span></label>{/if}
     </div>
     <div class="flex min-w-0 items-center gap-1">
@@ -296,7 +347,7 @@ function keydown(event: KeyboardEvent) {
       </Popover.Root>
 
       {#if showAgents}<Select.Root type="single" bind:value={agent}><Select.Trigger class="h-8 w-auto border-0 text-xs shadow-none" aria-label="Select agent">{agent}</Select.Trigger><Select.Content>{#each catalog.agents.filter((a) => a.mode !== "subagent") as item}<Select.Item value={item.name}>{item.name}</Select.Item>{/each}</Select.Content></Select.Root>{/if}
-      {#if busy}<Button type="button" size="icon" variant="secondary" aria-label="Stop response" title="Stop response" onclick={onstop}><Square size={14} /></Button>{:else}<Button type="submit" size="icon" class="rounded-full" aria-label="Send message" title="Send message" disabled={disabled || sending || (!draft.trim() && !files.length && !attachments.length)}>{#if sending}<LoaderCircle size={16} class="animate-spin" />{:else}<ArrowUp size={17} />{/if}</Button>{/if}
+      {#if busy}<Button type="button" size="icon" variant="secondary" aria-label="Stop response" title="Stop response" onclick={onstop}><Square size={14} /></Button>{:else}<Button type="submit" size="icon" class="rounded-full" aria-label="Send message" title="Send message" disabled={disabled || sending || (!draft.trim() && !files.length && !attachments.length && !selectedDesignIds.length)}>{#if sending}<LoaderCircle size={16} class="animate-spin" />{:else}<ArrowUp size={17} />{/if}</Button>{/if}
     </div>
   </div>
 </form>

@@ -287,6 +287,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	const clients = new Set<{ send(data: string): void; close(): void }>();
 	const db = options.database ?? getDb();
 	const repos = repositories(db);
+	const designRepo = designRepository(db);
 	const eventPublisher = {
 		publish(event: unknown) {
 			const parsed = daemonEventSchema.parse(event);
@@ -376,7 +377,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		}),
 	);
 	const designs = new DesignService(
-		designRepository(db),
+		designRepo,
 		repos,
 		options.designRuntime ?? agentRuntime,
 		designRuntimes,
@@ -680,6 +681,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			agyPermissionUrl: agyPermissionError ? undefined : agyPermissionBase,
 			agyPermissionError,
 			providerHistory: repos.providerChatHistory,
+			designs: designRepo,
 			runtimes: new Map(
 				providerManager.registry.list().flatMap((adapter) => {
 					const runtime = adapter.getRuntime?.();

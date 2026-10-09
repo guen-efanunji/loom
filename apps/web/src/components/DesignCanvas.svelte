@@ -51,6 +51,8 @@ let pending = $state<DesignMessage[]>([]);
 let loading = $state(true);
 let error = $state("");
 let selectedId = $state("");
+let selectedByUser = $state(false);
+let refiningNodeId = $state("");
 let draft = $state("");
 let model = $state("");
 let zoom = $state(1);
@@ -133,7 +135,13 @@ function statusLabel(status: string) {
 
 function scaleOf(node: DesignNode) {
 	const frame = frames[node.viewport === "mobile" ? "mobile" : "desktop"];
-	return node.width / frame.width;
+	return Math.min(node.width / frame.width, node.height / frame.height);
+}
+
+function frameStyle(node: DesignNode) {
+	const frame = frames[node.viewport === "mobile" ? "mobile" : "desktop"];
+	const scale = scaleOf(node);
+	return `width:${frame.width}px;height:${frame.height}px;left:${(node.width - frame.width * scale) / 2}px;top:${(node.height - frame.height * scale) / 2}px;transform:scale(${scale})`;
 }
 
 const PREVIEW_GUARD =
@@ -167,8 +175,11 @@ async function load() {
 		if (disposed) return;
 		nodes = thread.nodes;
 		messages = thread.messages;
-		if (!nodes.some((node) => node.id === selectedId))
+		if (!nodes.some((node) => node.id === selectedId)) {
 			selectedId = nodes.at(-1)?.id ?? "";
+			selectedByUser = false;
+			refiningNodeId = "";
+		}
 		error = "";
 	} catch (reason) {
 		if (!disposed)
@@ -279,7 +290,12 @@ async function handleSend(input: DesignSend): Promise<boolean> {
 		return false;
 	}
 	const target =
-		selected && selected.html && selected.status === "ready" ? selected : null;
+		nodes.find(
+			(node) =>
+				node.id === refiningNodeId &&
+				node.html &&
+				node.status === "ready",
+		) ?? null;
 	const optimistic: DesignMessage = {
 		id: `pending-${Date.now()}`,
 		projectId,
@@ -303,7 +319,11 @@ async function handleSend(input: DesignSend): Promise<boolean> {
 			attachments: toAttachments(input.attachments),
 			...(modelRef() ? { model: modelRef() } : {}),
 		});
-		if (result.kind === "design") selectedId = result.nodeId;
+		if (result.kind === "design") {
+			selectedId = result.nodeId;
+			selectedByUser = Boolean(target);
+			refiningNodeId = "";
+		}
 		else if (result.kind === "question") pendingQuestion = result.question;
 		await load();
 		pending = [];
@@ -411,6 +431,8 @@ function nodeDown(event: PointerEvent, node: DesignNode) {
 	event.stopPropagation();
 	if (event.button !== 0) return;
 	selectedId = node.id;
+	selectedByUser = true;
+	refiningNodeId = "";
 	dragging = {
 		id: node.id,
 		x: event.clientX,
@@ -488,8 +510,16 @@ function openPreview() {
 }
 
 function focusChat() {
+	if (!selected || selected.status !== "ready" || !selected.html) return;
+	refiningNodeId = selected.id;
 	const el = document.getElementById("design-composer-input");
 	if (el) el.focus();
+}
+
+function selectNode(id: string) {
+	selectedId = id;
+	selectedByUser = true;
+	refiningNodeId = "";
 }
 
 function pointerMove(event: PointerEvent) {
@@ -583,7 +613,7 @@ function wheel(event: WheelEvent) {
 			{:else}
 				<div class="space-y-1">
 					{#each nodes as node (node.id)}
-						<Button variant="ghost" class={`h-auto w-full justify-start gap-2 rounded-md px-2 py-2 text-left ${node.id === selectedId ? "bg-accent text-accent-foreground" : "hover:bg-accent/50"}`} onclick={() => selectedId = node.id}>
+						<Button variant="ghost" class={`h-auto w-full justify-start gap-2 rounded-md px-2 py-2 text-left ${node.id === selectedId ? "bg-accent text-accent-foreground" : "hover:bg-accent/50"}`} onclick={() => selectNode(node.id)}>
 							{#if node.viewport === "mobile"}<Smartphone size={14} />{:else}<Monitor size={14} />{/if}
 							<span class="min-w-0 flex-1">
 								<span class="block truncate text-xs font-medium">{node.title}</span>
@@ -638,7 +668,7 @@ function wheel(event: WheelEvent) {
 							onpointerdown={(event) => nodeDown(event, node)}
 							role="button"
 							tabindex="0"
-							onkeydown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectedId = node.id; } }}
+							onkeydown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectNode(node.id); } }}
 							aria-label={`${node.title} · ${statusLabel(node.status)}`}
 						>
 							<!-- Floating title/status label above the card (Stitch-style) -->
@@ -655,7 +685,7 @@ function wheel(event: WheelEvent) {
 							</div>
 							<div class="relative size-full overflow-hidden rounded-xl border bg-card shadow-lg transition-colors {node.id === selectedId ? "border-primary ring-2 ring-primary/30" : "border-muted-foreground/25"}">
 								{#if node.html}
-									<div class="pointer-events-none absolute top-0 left-0 origin-top-left" style="width: {frames[node.viewport === "mobile" ? "mobile" : "desktop"].width}px; height: {frames[node.viewport === "mobile" ? "mobile" : "desktop"].height}px; transform: scale({scaleOf(node)});">
+									<div class="pointer-events-none absolute origin-top-left" style={frameStyle(node)}>
 										<iframe title={`${node.title} preview`} srcdoc={previewSrcdoc(node.html)} sandbox="allow-scripts" class="size-full border-0" loading="lazy" tabindex="-1"></iframe>
 									</div>
 									{#if node.status === "queued" || node.status === "generating"}
@@ -690,14 +720,14 @@ function wheel(event: WheelEvent) {
 				<Button variant="ghost" size="icon" class="size-7" aria-label="Zoom in" title="Zoom in" onclick={() => zoomBy(0.15)}><ZoomIn size={14} /></Button>
 				<Button variant="ghost" size="icon" class="size-7" aria-label="Fit nodes" title="Fit nodes" onclick={fit}><Scan size={14} /></Button>
 			</div>
-			{#if selected}
+			{#if selected && selectedByUser}
 				<div class="absolute top-3 left-1/2 flex max-w-[94%] -translate-x-1/2 items-center gap-1 rounded-xl border bg-card/95 py-1 pr-1 pl-2 shadow-lg backdrop-blur">
 					<span class="flex min-w-0 items-center gap-1.5 text-[11px] font-medium">
 						{#if selected.viewport === "mobile"}<Smartphone size={13} class="shrink-0 text-muted-foreground" />{:else}<Monitor size={13} class="shrink-0 text-muted-foreground" />{/if}
 						<span class="max-w-[150px] truncate">{selected.title}</span>
 					</span>
 					<span class="mx-1 h-5 w-px bg-border"></span>
-					<Button variant="secondary" size="sm" class="h-7 gap-1.5 text-[11px]" onclick={focusChat}><Sparkles size={12} />Refine</Button>
+					<Button variant="secondary" size="sm" class="h-7 gap-1.5 text-[11px]" onclick={focusChat} disabled={!selected.html || selected.status !== "ready"}><Sparkles size={12} />Refine</Button>
 					<Button variant="ghost" size="sm" class="h-7 gap-1.5 text-[11px]" onclick={openPreview}><Monitor size={12} /><span class="hidden sm:inline">Preview</span></Button>
 					<Button variant="ghost" size="sm" class="h-7 gap-1.5 text-[11px]" onclick={() => publish(selected)} disabled={publishing || selected.status !== "ready"}><Upload size={12} /><span class="hidden sm:inline">Publish</span></Button>
 					<span class="mx-1 h-5 w-px bg-border"></span>
@@ -773,10 +803,10 @@ function wheel(event: WheelEvent) {
 			{#if error}<p role="alert" class="rounded-lg border border-destructive/40 bg-destructive/10 p-2 text-xs text-destructive">{error}</p>{/if}
 		</div>
 		<div class="shrink-0 border-t p-3">
-			{#if selected?.html}
-				<p class="mb-2 truncate text-[11px] text-muted-foreground">Chat or ask for changes to “{selected.title}” — the agent refines it in place.</p>
+			{#if refiningNodeId && selected?.id === refiningNodeId}
+				<div class="mb-2 flex items-center justify-between gap-2 text-[11px] text-muted-foreground"><span class="min-w-0 truncate">Refining “{selected.title}”</span><Button variant="ghost" size="sm" class="h-6 px-2 text-[10px]" onclick={() => refiningNodeId = ""}>New design instead</Button></div>
 			{:else}
-				<p class="mb-2 text-[11px] text-muted-foreground">Chat with the design agent. Ask for a screen to draw one; use @ for files or paste a screenshot.</p>
+				<p class="mb-2 text-[11px] text-muted-foreground">Ask for a new screen to create a node. Select a ready node and click Refine to change it.</p>
 			{/if}
 			<Composer
 				{projectId}

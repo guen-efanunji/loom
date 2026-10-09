@@ -10,6 +10,13 @@ export function agyPermissionArgs(permission?: RuntimePermission): string[] {
 	return ["--mode", "accept-edits"];
 }
 
+export function agyPromptText(prompt: string, codingPrompt: string): string {
+	const designOnly = prompt.includes(
+		"Do not call tools, run shell commands, read or write files",
+	);
+	return designOnly ? prompt : `${codingPrompt}\n\n${prompt}`;
+}
+
 export class AgyProviderAdapter extends CliProviderAdapter {
 	constructor() {
 		super({
@@ -31,6 +38,10 @@ export class AgyProviderAdapter extends CliProviderAdapter {
 			},
 			buildPrompt: async ({ prompt, model, permission }) => {
 				const permissionArgs = agyPermissionArgs(permission);
+				// Canvas design requests already carry a dedicated no-tools output
+				// contract. The coding prompt encourages shell exploration, which is
+				// both unnecessary for drafting HTML and rejected by headless Agy.
+				const codingPrompt = await readPrompt("coding.md");
 				return {
 					command: "agy",
 					args: [
@@ -38,7 +49,7 @@ export class AgyProviderAdapter extends CliProviderAdapter {
 						"stream-json",
 						...permissionArgs,
 						...(model ? ["--model", model] : []),
-						`--print=${await readPrompt("coding.md")}\n\n${prompt}`,
+						`--print=${agyPromptText(prompt, codingPrompt)}`,
 					],
 				};
 			},

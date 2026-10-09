@@ -57,6 +57,7 @@ export function buildDesignPrompt(input: {
 		DESIGN_SYSTEM_PROMPT,
 		"",
 		`Return a single complete, self-contained HTML document for a ${input.viewport} screen (${canvas}). Put all CSS in one <style> block, use no external resources, and do not create or edit any files.`,
+		"Do not call tools, run shell commands, read or write files, or inspect the project. Loom already supplied the relevant project context and references; produce the visual design directly from those inputs and return the HTML document.",
 		DESIGN_CRAFT_PROMPT,
 	];
 	if (input.context?.theme)
@@ -85,6 +86,7 @@ export function buildRefinePrompt(input: {
 		"Current design:",
 		input.previousHtml.trim(),
 		"",
+		"Do not call tools, run shell commands, read or write files, or inspect the project. Revise the supplied HTML directly and return the complete document.",
 		DESIGN_CRAFT_PROMPT,
 	].join("\n");
 }
@@ -177,6 +179,16 @@ const DESIGN_INTENT_PATTERN =
 /** Cheap fallback when the model's intent answer is unusable. */
 export function looksLikeDesignRequest(text: string): boolean {
 	return DESIGN_INTENT_PATTERN.test(text);
+}
+
+const EXPLICIT_NEW_DESIGN_PATTERN =
+	/\b(buatkan|rancang|desainkan|design|redesign|re-design|create|generate|build|draw|gambarkan|buat)\b/i;
+const DESIGN_SCREEN_PATTERN =
+	/\b(halaman|page|screen|layar|landing|dashboard|mockup|wireframe|ui\s*\/?\s*ux|uiux|tampilan|layout|form|login|register|signup|checkout|komponen|component)\b/i;
+
+/** Avoid a slow model-based intent pass when the user clearly asks for a new screen. */
+export function isExplicitNewDesignRequest(text: string): boolean {
+	return EXPLICIT_NEW_DESIGN_PATTERN.test(text) && DESIGN_SCREEN_PATTERN.test(text);
 }
 
 /**

@@ -11,6 +11,9 @@ export type ChatPart = {
 	type: string;
 	text?: string;
 	filename?: string;
+	designId?: string;
+	viewport?: string;
+	brief?: string;
 	url?: string;
 	tool?: string;
 	state?: {
@@ -103,6 +106,7 @@ export const chat = {
 			model?: { providerID: string; modelID: string };
 			files: string[];
 			attachments?: ChatAttachment[];
+			designNodeIds?: string[];
 			agents: string[];
 		},
 	) => post<void>(`/sessions/${encodeURIComponent(id)}/messages`, input),

@@ -14,6 +14,7 @@ const promptSchema = z
 		agent: z.string().optional(),
 		model: z.object({ providerID: z.string(), modelID: z.string() }).optional(),
 		files: z.array(z.string()).max(50).default([]),
+		designNodeIds: z.array(z.string().min(1)).max(5).default([]),
 		attachments: z
 			.array(
 				z.object({
@@ -28,7 +29,10 @@ const promptSchema = z
 	})
 	.refine(
 		(value) =>
-			value.text.trim() || value.files.length || value.attachments.length,
+			value.text.trim() ||
+			value.files.length ||
+			value.attachments.length ||
+			value.designNodeIds.length,
 		"Message cannot be empty",
 	);
 type Session = {
@@ -52,6 +56,10 @@ type ProviderMessage = {
 		id: string;
 		type: string;
 		text?: string;
+		filename?: string;
+		designId?: string;
+		viewport?: string;
+		brief?: string;
 		tool?: string;
 		state?: {
 			status: string;
@@ -141,6 +149,19 @@ export function createChatRoutes(options: {
 		get<T>(sessionId: string): Promise<T | undefined>;
 		save(sessionId: string, messages: unknown[]): Promise<unknown>;
 		delete(sessionId: string): Promise<unknown>;
+	};
+	designs?: {
+		listNodes(projectId: string): Promise<
+			Array<{
+				id: string;
+				projectId: string;
+				title: string;
+				brief: string;
+				viewport: string;
+				status: string;
+				html: string;
+			}>
+		>;
 	};
 	sessionScope?: (
 		sessionId: string,
@@ -454,6 +475,51 @@ export function createChatRoutes(options: {
 	app.post("/sessions/:id/messages", async (c) => {
 		const current = await session(c.req.param("id"));
 		const input = promptSchema.parse(await c.req.json());
+		const designNodes = input.designNodeIds.length
+			? await (async () => {
+					if (!current.projectId || !options.designs)
+						throw new HTTPException(400, {
+							message: "Canvas designs are unavailable for this project",
+						});
+					const nodes = await options.designs.listNodes(current.projectId);
+					const byId = new Map(nodes.map((node) => [node.id, node]));
+					return input.designNodeIds.map((nodeId) => {
+						const node = byId.get(nodeId);
+						if (!node || node.projectId !== current.projectId)
+							throw new HTTPException(400, {
+								message: "A selected Canvas design does not belong to this project",
+							});
+						if (node.status !== "ready" || !node.html.trim())
+							throw new HTTPException(409, {
+								message: `Canvas design is not ready: ${node.title}`,
+							});
+						return node;
+					});
+				})()
+			: [];
+		const designContext = designNodes
+			.map(
+				(node, index) =>
+					`Canvas design ${index + 1}: ${node.title}\nViewport: ${node.viewport}\nDesign brief: ${node.brief}\nGenerated HTML:\n${node.html}`,
+			)
+			.join("\n\n---\n\n");
+		const designInstruction = designNodes.length
+			? `IMPLEMENTATION PRIORITY: The attached Canvas design node(s) are the authoritative visual specification for this request. When the user asks to implement, slice, or recreate them, match their layout, colors, typography, spacing, sizing, and component treatment as closely as possible. Do not replace or restyle the Canvas design to match the existing project's theme; inspect the project only to determine its framework, entry points, and integration needs. Follow the user's requested behavior and scope. Adapt the design to the project theme only if the user explicitly asks for that.`
+			: "";
+		const promptText = [
+			designInstruction,
+			input.text,
+			designContext
+				? `Canvas visual reference(s):\n${designContext}`
+				: "",
+		].filter(Boolean).join("\n\n");
+		const openCodePromptText = [
+			designInstruction,
+			input.text ? `User request:\n${input.text}` : "",
+			designNodes.length
+				? `Attached Canvas nodes: ${designNodes.map((node) => `${node.title} (${node.viewport}): ${node.brief}`).join("; ")}. Inspect the attached HTML files as the visual source of truth.`
+				: "",
+		].filter(Boolean).join("\n\n");
 		const providerId = input.model?.providerID;
 		const runtime = providerId ? options.runtimes?.get(providerId) : undefined;
 		const runtimeModel =
@@ -544,7 +610,18 @@ export function createChatRoutes(options: {
 			};
 			const user: ProviderMessage = {
 				info: { id: `${messageId}-user`, role: "user", time: { created: now } },
-				parts: [{ id: `${messageId}-text`, type: "text", text: input.text }],
+				parts: [
+					{ id: `${messageId}-text`, type: "text", text: input.text },
+					...designNodes.map((node) => ({
+						id: `${messageId}-design-${node.id}`,
+						type: "design",
+						designId: node.id,
+						text: node.title,
+						filename: `${node.viewport} · ${node.brief}`,
+						viewport: node.viewport,
+						brief: node.brief,
+					})),
+				],
 			};
 			const turn: ProviderTurn = {
 				runtime,
@@ -586,7 +663,7 @@ export function createChatRoutes(options: {
 				.join("\n\n");
 			const prompt = [
 				context ? `Previous conversation:\n${context}` : "",
-				input.text,
+				promptText,
 				files.length ? `Referenced project files:\n${files.join("\n")}` : "",
 			]
 				.filter(Boolean)
@@ -638,7 +715,19 @@ export function createChatRoutes(options: {
 			agent: input.agent,
 			model: input.model,
 			parts: [
-				{ type: "text", text: input.text },
+				{ type: "text", text: openCodePromptText },
+				...designNodes.flatMap((node) => [
+					{
+						type: "text",
+						text: `Canvas design attached: ${node.title} (${node.viewport}) — ${node.brief}`,
+					},
+					{
+						type: "file",
+						mime: "text/html",
+						filename: `canvas-design:${node.id}.html`,
+						url: `data:text/html;base64,${Buffer.from(node.html).toString("base64")}`,
+					},
+				]),
 				...files,
 				...input.attachments.map((attachment) => ({
 					type: "file",

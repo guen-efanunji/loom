@@ -4,6 +4,7 @@ import {
 	ChevronDown,
 	Copy,
 	FileCode,
+	PanelsTopLeft,
 	Pencil,
 	Terminal,
 	Wrench,
@@ -15,6 +16,7 @@ import {
 	chat,
 	type FileDiff,
 } from "$lib/chat";
+import { type DesignNode, daemon } from "$lib/daemon";
 import { Button } from "$lib/components/ui/button";
 import * as Marker from "$lib/components/ui/marker";
 import CodeBlock from "./CodeBlock.svelte";
@@ -58,12 +60,74 @@ type FilePreview = {
 	content: string;
 };
 let previews = $state<Record<string, FilePreview>>({});
+let designPreviews = $state<Record<string, DesignNode>>({});
 let sessionDiffs = $state<FileDiff[] | null>(null);
 
 $effect(() => {
 	sessionId;
 	previews = {};
 	sessionDiffs = null;
+});
+
+function designIdOf(part: ChatPart) {
+	if (part.designId) return part.designId;
+	const legacyId = part.id.match(/-design-(.+)$/)?.[1];
+	if (part.type === "design" && legacyId) return legacyId;
+	return part.filename?.match(/^canvas-design:(.+)\.html$/)?.[1] ?? "";
+}
+
+function visibleText(part: ChatPart) {
+	const text = part.text ?? "";
+	if (!text.startsWith("IMPLEMENTATION PRIORITY:")) return text;
+	return text.match(/\n\nUser request:\n([\s\S]*?)(?=\n\nAttached Canvas nodes:|$)/)?.[1] ?? "";
+}
+
+function thumbnailStyle(node: DesignNode, boxWidth: number, boxHeight: number) {
+	const frame = node.viewport === "mobile"
+		? { width: 390, height: 844 }
+		: { width: 1440, height: 900 };
+	const scale = Math.min(boxWidth / frame.width, boxHeight / frame.height);
+	const left = (boxWidth - frame.width * scale) / 2;
+	const top = (boxHeight - frame.height * scale) / 2;
+	return `width:${frame.width}px;height:${frame.height}px;left:${left}px;top:${top}px;transform:scale(${scale})`;
+}
+
+$effect(() => {
+	const project = projectId;
+	const ids = [
+		...new Set(
+			messages
+				.flatMap((message) => message.parts)
+				.filter(
+					(part) =>
+						part.type === "design" ||
+						(part.type === "file" && part.filename?.startsWith("canvas-design:")),
+				)
+				.map(designIdOf)
+				.filter(Boolean),
+		),
+	];
+	let cancelled = false;
+	if (!project || !ids.length) {
+		designPreviews = {};
+		return;
+	}
+	void Promise.all(
+		ids.map(async (id) => {
+			try {
+				const node = await daemon.getDesign(id);
+				return node.projectId === project ? ([id, node] as const) : null;
+			} catch {
+				return null;
+			}
+		}),
+	).then((nodes) => {
+		if (cancelled) return;
+		designPreviews = Object.fromEntries(nodes.filter((node) => node !== null));
+	});
+	return () => {
+		cancelled = true;
+	};
 });
 
 async function togglePreview(file: string) {
@@ -222,7 +286,16 @@ async function copy() {
 		{#each messages as message (message.info.id)}
 			<div class="rounded-xl border bg-muted/40 px-4 py-3">
 				{#each message.parts as part (part.id)}
-					{#if part.type === "text" && part.text}<Markdown text={part.text} />
+					{#if part.type === "text" && visibleText(part)}<Markdown text={visibleText(part)} />
+					{:else if part.type === "design" || (part.type === "file" && part.filename?.startsWith("canvas-design:"))}
+						{@const designId = designIdOf(part)}
+						{@const design = designPreviews[designId]}
+						<div class="my-2 flex max-w-full items-center gap-3 rounded-lg border bg-background/60 p-2 text-xs">
+							<div class="relative h-[84px] w-[126px] shrink-0 overflow-hidden rounded border bg-background">
+								{#if design?.html}<iframe title={`Preview of ${design.title}`} srcdoc={design.html} sandbox="" tabindex="-1" aria-hidden="true" style={thumbnailStyle(design, 126, 84)} class="pointer-events-none absolute origin-top-left border-0"></iframe>{:else}<div class="flex h-full items-center justify-center text-muted-foreground"><PanelsTopLeft size={18} /></div>{/if}
+							</div>
+							<span class="min-w-0"><span class="block font-medium">Canvas design · {design?.title ?? part.text ?? "Attached design"}</span><span class="block truncate text-muted-foreground">{design ? `${design.viewport} · ${design.brief}` : part.filename ?? part.brief ?? "Loading preview…"}</span></span>
+						</div>
 					{:else if part.type === "file" && part.filename}
 						<Button variant="outline" size="sm" class="my-2 max-w-full" onclick={() => onfile(part.filename!)}><FileCode size={14} /><span class="truncate">{part.filename}</span></Button>
 					{/if}

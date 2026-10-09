@@ -24,6 +24,15 @@ type ChatState = {
 async function setup(
 	providerId = "agy",
 	storedHistory = new Map<string, unknown[]>(),
+	designNodes: Array<{
+		id: string;
+		projectId: string;
+		title: string;
+		brief: string;
+		viewport: string;
+		status: string;
+		html: string;
+	}> = [],
 ) {
 	let status: Awaited<ReturnType<AgentRuntime["status"]>> = "running";
 	let output = "";
@@ -31,6 +40,7 @@ async function setup(
 	let count = 0;
 	const prompts: Parameters<AgentRuntime["prompt"]>[0][] = [];
 	const calls: string[] = [];
+	const openCodePrompts: unknown[] = [];
 	const runtime: AgentRuntime = {
 		createSession: async () => ({ id: `${providerId}-${++count}` }),
 		prompt: async (input) => {
@@ -83,9 +93,14 @@ async function setup(
 			getById: async () => ({ path: "/tmp" }),
 		},
 		providerManager,
+		designs: { listNodes: async () => designNodes },
 		runtimes: new Map([[providerId, runtime]]),
-		request: async <T>(path: string) => {
+		request: async <T>(
+			path: string,
+			options?: { body?: unknown },
+		) => {
 			calls.push(path);
+			if (path.endsWith("/prompt_async")) openCodePrompts.push(options?.body);
 			if (path === "/session/ses_test")
 				return {
 					id: "ses_test",
@@ -101,6 +116,7 @@ async function setup(
 		app,
 		prompts,
 		calls,
+		openCodePrompts,
 		finish: (next = "completed" as typeof status, text = "Hello") => {
 			status = next;
 			output = text;
@@ -108,12 +124,13 @@ async function setup(
 		failSpawn: () => {
 			failure = "Binary unavailable";
 		},
-		send: (text = "Hello", provider = providerId) =>
+		send: (text = "Hello", provider = providerId, designNodeIds: string[] = []) =>
 			app.request("/sessions/ses_test/messages", {
 				method: "POST",
 				body: JSON.stringify({
 					text,
 					model: { providerID: provider, modelID: "custom-model" },
+					designNodeIds,
 				}),
 			}),
 		state: async () =>
@@ -122,6 +139,67 @@ async function setup(
 }
 
 describe("provider chat", () => {
+	test("embeds selected Canvas design HTML in the provider prompt", async () => {
+		const { app, prompts, send } = await setup("agy", new Map(), [
+			{
+				id: "design-1",
+				projectId: "project",
+				title: "Login desktop",
+				brief: "Warm coffee shop login page",
+				viewport: "desktop",
+				status: "ready",
+				html: "<main class=\"login\">Sign in</main>",
+			},
+		]);
+		const response = await send("Implement this design", "agy", ["design-1"]);
+		expect(response.status).toBe(204);
+		expect(prompts[0]?.prompt).toContain("Implement this design");
+		expect(prompts[0]?.prompt).toContain("Warm coffee shop login page");
+		expect(prompts[0]?.prompt).toContain('<main class="login">Sign in</main>');
+		expect(prompts[0]?.prompt).toContain("authoritative visual specification");
+		const state = (await app.request("/sessions/ses_test")).json();
+		expect(JSON.stringify(await state)).toContain("Login desktop");
+	});
+
+	test("sends Canvas HTML as a named attachment to OpenCode", async () => {
+		const { openCodePrompts, send } = await setup("agy", new Map(), [
+			{
+				id: "design-open-code",
+				projectId: "project",
+				title: "Checkout",
+				brief: "Minimal checkout flow",
+				viewport: "desktop",
+				status: "ready",
+				html: "<main>Checkout</main>",
+			},
+		]);
+		const response = await send("Slice this screen", "opencode", ["design-open-code"]);
+		expect(response.status).toBe(204);
+		const payload = openCodePrompts[0] as {
+			parts: Array<{ type: string; text?: string; filename?: string; url?: string }>;
+		};
+		expect(payload.parts[0]?.text).toContain("authoritative visual specification");
+		const attachment = payload.parts.find((part) => part.filename?.startsWith("canvas-design:"));
+		expect(attachment?.filename).toBe("canvas-design:design-open-code.html");
+		expect(attachment?.url).toContain("PG1haW4+");
+	});
+
+	test("rejects Canvas designs outside the active project", async () => {
+		const { send } = await setup("agy", new Map(), [
+			{
+				id: "design-foreign",
+				projectId: "another-project",
+				title: "Other project design",
+				brief: "",
+				viewport: "desktop",
+				status: "ready",
+				html: "<main />",
+			},
+		]);
+		const response = await send("Implement", "agy", ["design-foreign"]);
+		expect(response.status).toBe(400);
+	});
+
 	for (const provider of ["agy", "claude", "codex"]) {
 		test(`${provider}: acknowledges user messages, retains replies and allows follow-ups`, async () => {
 			const fixture = await setup(provider);

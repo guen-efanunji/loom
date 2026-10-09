@@ -9,6 +9,7 @@ import {
 	deriveDesignTitle,
 	extractDesignHtml,
 	hasDesignDoc,
+	isExplicitNewDesignRequest,
 	looksLikeDesignRequest,
 	parseDesignQuestions,
 	wantsAllNodes,
@@ -48,6 +49,7 @@ describe("design prompts", () => {
 		expect(prompt).toContain("390x844");
 		expect(prompt).toContain("self-contained HTML document");
 		expect(prompt).toContain("do not create or edit any files");
+		expect(prompt).toContain("Do not call tools, run shell commands");
 		// No heavy context/lecture is injected anymore.
 		expect(prompt).not.toContain("Stack: Svelte");
 		expect(prompt).not.toContain("Use tabs.");
@@ -115,6 +117,12 @@ describe("design agent chat helpers", () => {
 		expect(looksLikeDesignRequest("design a dashboard")).toBe(true);
 		expect(looksLikeDesignRequest("halo")).toBe(false);
 		expect(looksLikeDesignRequest("apa itu svelte?")).toBe(false);
+	});
+
+	test("recognizes explicit new-screen requests without an intent-model round trip", () => {
+		expect(isExplicitNewDesignRequest("buatkan halaman login dan register")).toBe(true);
+		expect(isExplicitNewDesignRequest("design a dashboard")).toBe(true);
+		expect(isExplicitNewDesignRequest("apa fungsi halaman login?")).toBe(false);
 	});
 
 	test("parses a loom-questions block into a questionnaire", () => {
