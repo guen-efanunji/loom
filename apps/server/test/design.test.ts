@@ -15,8 +15,10 @@ import type {
 	DesignMessage,
 	DesignNode,
 } from "@loom/protocol";
+import type { RuntimePermission } from "@loom/providers/core";
 import type { DaemonConfig } from "../src/config";
 import { createApp } from "../src/index";
+import { createAgyPermissionStore } from "../src/permissions";
 
 const config: DaemonConfig = {
 	port: 4317,
@@ -42,10 +44,13 @@ const headers = {
 class FakeDesignRuntime implements AgentRuntime {
 	readonly prompts: string[] = [];
 	readonly models: Array<AgentModel | undefined> = [];
+	readonly permissions: Array<RuntimePermission | undefined> = [];
 	failNext = false;
 	/** Canned answers for the design-chat intent + assistant turns. */
 	intent = "CHAT";
 	chatReply = "Halo! Ada yang bisa saya bantu?";
+	holdWait = false;
+	private releaseWait?: () => void;
 	private readonly sessions = new Map<string, string>();
 	private nextId = 0;
 
@@ -59,11 +64,13 @@ class FakeDesignRuntime implements AgentRuntime {
 		sessionId: string;
 		prompt: string;
 		model?: AgentModel;
+		permission?: RuntimePermission;
 	}) {
 		if (!this.sessions.has(input.sessionId))
 			throw new Error("Fake session not found");
 		this.prompts.push(input.prompt);
 		this.models.push(input.model);
+		this.permissions.push(input.permission);
 	}
 
 	async status(): Promise<AgentRunStatus> {
@@ -80,11 +87,19 @@ class FakeDesignRuntime implements AgentRuntime {
 	}
 
 	async wait(): Promise<DesignRuntime> {
+		if (this.holdWait)
+			await new Promise<void>((resolve) => {
+				this.releaseWait = resolve;
+			});
 		if (this.failNext) {
 			this.failNext = false;
 			return "failed";
 		}
 		return "completed";
+	}
+
+	finishWait() {
+		this.releaseWait?.();
 	}
 
 	async abort(): Promise<void> {}
@@ -214,6 +229,65 @@ describe("design canvas API", () => {
 						message.role === "assistant" && message.text.includes("ready"),
 				),
 			).toBe(true);
+		});
+	});
+
+	test("Agy canvas generation routes tool approvals through Loom", async () => {
+		await withSetup(async (setup) => {
+			const runtime = new FakeDesignRuntime();
+			runtime.holdWait = true;
+			const permissions = createAgyPermissionStore();
+			const service = new DesignService(
+				designRepository(setup.database),
+				setup.repos,
+				new FakeDesignRuntime(),
+				new Map([["agy", runtime]]),
+				{ store: permissions, url: "http://127.0.0.1:4317/api/agy/permission" },
+			);
+			const created = await service.create({
+				projectId: setup.project.id,
+				brief: "Roasting schedule dashboard",
+				model: { providerID: "agy", modelID: "gemini-3.8-flash-high" },
+			});
+			for (
+				let attempt = 0;
+				attempt < 100 && !runtime.permissions.length;
+				attempt++
+			)
+				await new Promise((resolve) => setTimeout(resolve, 5));
+
+			expect(runtime.permissions[0]?.mode).toBe("ask");
+			const permissionToken =
+				runtime.permissions[0]?.env?.LOOM_PERMISSION_TOKEN ?? "";
+			expect(runtime.permissions[0]?.env?.LOOM_PERMISSION_URL).toBe(
+				"http://127.0.0.1:4317/api/agy/permission",
+			);
+			expect(permissionToken).toBeTruthy();
+			permissions.submit(
+				{
+					token: permissionToken,
+					conversationId: "agy-conversation",
+					toolName: "RunCommand",
+					args: { CommandLine: "pwd" },
+					stepIdx: 1,
+				},
+				30_000,
+			);
+			const steps = await service.getSteps(created.nodeId);
+			const pending = steps?.permissions?.[0];
+			expect(pending).toMatchObject({
+				toolName: "RunCommand",
+				args: { CommandLine: "pwd" },
+			});
+			expect(
+				await service.decidePermission(
+					created.nodeId,
+					pending?.id ?? "",
+					"allow_once",
+				),
+			).toBe(true);
+			runtime.finishWait();
+			await service.idle(created.nodeId);
 		});
 	});
 

@@ -79,7 +79,10 @@ import { registerAgyPermissionHook } from "./agy-hooks";
 import { type ChatRequestGateway, createChatRoutes } from "./chat";
 import { type DaemonConfig, loadDaemonConfig } from "./config";
 import { createContext } from "./context";
-import { createAgyPermissionStore } from "./permissions";
+import {
+	type AgyPermissionStore,
+	createAgyPermissionStore,
+} from "./permissions";
 import {
 	createProjectValidationService,
 	ProjectValidationError,
@@ -279,6 +282,8 @@ export type DaemonAppOptions = {
 	projectValidation?: ReturnType<typeof createProjectValidationService>;
 	plannerRuntime?: AgentRuntime;
 	designRuntime?: AgentRuntime;
+	agyPermissionStore?: AgyPermissionStore;
+	agyPermissionUrl?: string;
 	registerAgyHook?: boolean;
 };
 
@@ -370,22 +375,9 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		orchestrator,
 		options.plannerRuntime ?? agentRuntime,
 	);
-	const designRuntimes = new Map(
-		providerManager.registry.list().flatMap((adapter) => {
-			const runtime = options.designRuntime ?? adapter.getRuntime?.();
-			return runtime ? [[adapter.definition.id, runtime] as const] : [];
-		}),
-	);
-	const designs = new DesignService(
-		designRepo,
-		repos,
-		options.designRuntime ?? agentRuntime,
-		designRuntimes,
-	);
 	orchestrator.setLifecycle(combineHooks(automation.hooks()));
 	await orchestrator.reconcile();
 	await automation.recover();
-	await designs.recover();
 	const projectValidation =
 		options.projectValidation ?? createProjectValidationService();
 	const app = new Hono();
@@ -651,10 +643,15 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			},
 			options.directory,
 		);
-	const agyPermissions = createAgyPermissionStore();
-	const agyPermissionBase = `http://127.0.0.1:${config.port}/api/agy/permission`;
+	const agyPermissions =
+		options.agyPermissionStore ?? createAgyPermissionStore();
+	const agyPermissionBase =
+		options.agyPermissionUrl ??
+		`http://127.0.0.1:${config.port}/api/agy/permission`;
 	let agyPermissionError = "Agy permission hook is not configured";
-	if (options.registerAgyHook) {
+	if (options.agyPermissionUrl) {
+		agyPermissionError = "";
+	} else if (options.registerAgyHook) {
 		try {
 			const registration = await registerAgyPermissionHook();
 			agyPermissionError = registration.reason
@@ -670,6 +667,22 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			);
 		}
 	}
+	const designRuntimes = new Map(
+		providerManager.registry.list().flatMap((adapter) => {
+			const runtime = options.designRuntime ?? adapter.getRuntime?.();
+			return runtime ? [[adapter.definition.id, runtime] as const] : [];
+		}),
+	);
+	const designs = new DesignService(
+		designRepo,
+		repos,
+		options.designRuntime ?? agentRuntime,
+		designRuntimes,
+		agyPermissionError
+			? undefined
+			: { store: agyPermissions, url: agyPermissionBase },
+	);
+	await designs.recover();
 	app.route(
 		"/api/chat",
 		createChatRoutes({
@@ -1070,6 +1083,19 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	app.get("/api/designs/:id/steps", async (c) => {
 		try {
 			return c.json(await designs.getSteps(c.req.param("id")));
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.post("/api/designs/:id/permissions/:permissionId/decision", async (c) => {
+		try {
+			const input = permissionDecisionInputSchema.parse(await jsonBody(c));
+			const decided = await designs.decidePermission(
+				c.req.param("id"),
+				c.req.param("permissionId"),
+				input.decision,
+			);
+			return c.json({ decided }, decided ? 200 : 404);
 		} catch (error) {
 			return errorResponse(c, error);
 		}

@@ -143,6 +143,104 @@ test("CLI output preserves the provider order between text and tool events", () 
 	]);
 });
 
+test("Codex item updates keep assistant text at its first streamed position", () => {
+	const parsed = parseCliOutput(
+		[
+			{
+				type: "item.started",
+				item: { type: "agent_message", id: "msg-1", text: "" },
+			},
+			{
+				type: "item.updated",
+				item: {
+					type: "agent_message",
+					id: "msg-1",
+					text: "Saya memeriksa file.",
+				},
+			},
+			{
+				type: "item.started",
+				item: { type: "command_execution", id: "cmd-1", command: "pwd" },
+			},
+			{
+				type: "item.completed",
+				item: {
+					type: "command_execution",
+					id: "cmd-1",
+					command: "pwd",
+					exit_code: 0,
+				},
+			},
+			{
+				type: "item.updated",
+				item: {
+					type: "agent_message",
+					id: "msg-1",
+					text: "Saya memeriksa file dan menemukan entry point.",
+				},
+			},
+			{
+				type: "item.completed",
+				item: {
+					type: "agent_message",
+					id: "msg-1",
+					text: "Saya memeriksa file dan menemukan entry point.",
+				},
+			},
+		]
+			.map((event) => JSON.stringify(event))
+			.join("\n"),
+	);
+
+	expect(parsed.parts.map((part) => part.type)).toEqual(["text", "activity"]);
+	expect(parsed.parts[0]).toMatchObject({
+		type: "text",
+		text: "Saya memeriksa file dan menemukan entry point.",
+	});
+	expect(parsed.output).toBe("Saya memeriksa file dan menemukan entry point.");
+});
+
+test("Codex final-only responses remain after the provider's tool events", () => {
+	const parsed = parseCliOutput(
+		[
+			{
+				type: "item.completed",
+				item: {
+					type: "command_execution",
+					id: "cmd-1",
+					command: "pwd",
+					exit_code: 0,
+				},
+			},
+			{
+				type: "item.completed",
+				item: {
+					type: "command_execution",
+					id: "cmd-2",
+					command: "rg --files",
+					exit_code: 0,
+				},
+			},
+			{
+				type: "item.completed",
+				item: {
+					type: "agent_message",
+					id: "msg-1",
+					text: "Struktur proyek sudah diperiksa.",
+				},
+			},
+		]
+			.map((event) => JSON.stringify(event))
+			.join("\n"),
+	);
+
+	expect(parsed.parts.map((part) => part.type)).toEqual([
+		"activity",
+		"activity",
+		"text",
+	]);
+});
+
 test("agyPermissionArgs toggles the skip flag by permission mode", () => {
 	expect(agyPermissionArgs({ mode: "auto" })).toEqual([
 		"--dangerously-skip-permissions",

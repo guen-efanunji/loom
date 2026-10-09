@@ -433,6 +433,7 @@ export function parseCliOutput(output: string): {
 	> = [];
 	const orderedText = new Map<string, string>();
 	const orderedActivityIds = new Set<string>();
+	const completedCodexMessages = new Set<string>();
 	function setActivity(activity: RuntimeActivity) {
 		activities.set(activity.id, activity);
 		if (!orderedActivityIds.has(activity.id)) {
@@ -545,13 +546,29 @@ export function parseCliOutput(output: string): {
 			}
 			const item = event.item;
 			if (
-				(event.type === "item.started" || event.type === "item.completed") &&
+				["item.started", "item.updated", "item.completed"].includes(
+					event.type,
+				) &&
 				item &&
 				typeof item === "object"
 			) {
 				const itemType = String(item.type ?? "");
 				const itemId = String(item.id ?? `${itemType}-${activities.size}`);
-				if (itemType === "file_change" && Array.isArray(item.changes)) {
+				if (
+					itemType === "agent_message" &&
+					typeof item.text === "string" &&
+					item.text.trim()
+				) {
+					const messageId = `codex-${itemId}`;
+					setText(messageId, item.text);
+					if (
+						event.type === "item.completed" &&
+						!completedCodexMessages.has(messageId)
+					) {
+						completedCodexMessages.add(messageId);
+						text.push(item.text);
+					}
+				} else if (itemType === "file_change" && Array.isArray(item.changes)) {
 					for (const [index, change] of item.changes.entries()) {
 						if (!change || typeof change !== "object") continue;
 						const file = change.path ?? change.filePath ?? change.file;
@@ -559,7 +576,7 @@ export function parseCliOutput(output: string): {
 						setActivity({
 							id: changeId,
 							tool: "file_change",
-							status: event.type === "item.started" ? "running" : "completed",
+							status: event.type === "item.completed" ? "completed" : "running",
 							input: {
 								...(typeof file === "string" ? { path: file } : {}),
 								kind: change.kind,
@@ -595,7 +612,7 @@ export function parseCliOutput(output: string): {
 						id: `codex-${itemId}`,
 						tool: itemType,
 						status:
-							event.type === "item.started"
+							event.type !== "item.completed"
 								? "running"
 								: item.exit_code && item.exit_code !== 0
 									? "error"
@@ -685,16 +702,6 @@ export function parseCliOutput(output: string): {
 				const step = event.step_update.step_index ?? orderedParts.length;
 				text.push(event.step_update.agent_response.text);
 				setText(`agy-${step}`, event.step_update.agent_response.text);
-			} else if (
-				event.type === "item.completed" &&
-				event.item?.type === "agent_message" &&
-				typeof event.item.text === "string"
-			) {
-				text.push(event.item.text);
-				setText(
-					`codex-${event.item.id ?? orderedParts.length}`,
-					event.item.text,
-				);
 			} else if (!event.type && !event.event) {
 				text.push(line);
 				setText(`plain-${orderedParts.length}`, line);

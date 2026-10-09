@@ -16,9 +16,37 @@ import type {
 	DesignAttachment,
 	DesignChatResult,
 	DesignPatch,
+	DesignPermissionRequest,
 	DesignViewport,
 } from "@loom/protocol";
 import type { AgentRuntime, RuntimeModel } from "@loom/providers/core";
+
+type DesignPermissionGate = {
+	url: string;
+	store: {
+		registerRun(input: {
+			token: string;
+			sessionId: string;
+			autoAccept: boolean;
+		}): void;
+		unregisterRun(token: string): void;
+		denySession(sessionId: string): void;
+		pendingFor(sessionId: string): Array<{
+			id: string;
+			token: string;
+			sessionId: string;
+			conversationId: string;
+			toolName: string;
+			args: Record<string, unknown>;
+			stepIdx: number;
+			createdAt: number;
+		}>;
+		get(id: string): { sessionId: string } | undefined;
+		decide(id: string, decision: "allow" | "deny"): boolean;
+		enableAutoAccept(sessionId: string): void;
+	};
+};
+
 import {
 	buildDesignAssistantPrompt,
 	buildDesignPrompt,
@@ -148,6 +176,7 @@ export class DesignService {
 		private readonly repos: Repos,
 		private readonly runtime: AgentRuntime,
 		private readonly providerRuntimes: Map<string, AgentRuntime> = new Map(),
+		private readonly permissionGate?: DesignPermissionGate,
 	) {}
 
 	private runtimeFor(model?: RuntimeModel): AgentRuntime {
@@ -205,8 +234,46 @@ export class DesignService {
 	}
 
 	async getSteps(nodeId: string): Promise<DesignActivity | null> {
-		await this.requireNode(nodeId);
-		return this.activity.get(nodeId) ?? null;
+		const node = await this.requireNode(nodeId);
+		const activity = this.activity.get(nodeId);
+		if (!activity) return null;
+		const permissions = node.sessionId
+			? this.permissionGate?.store.pendingFor(node.sessionId).map(
+					({
+						id,
+						toolName,
+						args,
+						stepIdx,
+						createdAt,
+					}): DesignPermissionRequest => ({
+						id,
+						toolName,
+						args,
+						stepIdx,
+						createdAt,
+					}),
+				)
+			: [];
+		return { ...activity, permissions: permissions ?? [] };
+	}
+
+	async decidePermission(
+		nodeId: string,
+		permissionId: string,
+		decision: "allow_once" | "allow" | "deny",
+	): Promise<boolean> {
+		const node = await this.requireNode(nodeId);
+		if (!node.sessionId || !this.permissionGate) return false;
+		if (
+			this.permissionGate.store.get(permissionId)?.sessionId !== node.sessionId
+		)
+			return false;
+		if (decision === "allow")
+			this.permissionGate.store.enableAutoAccept(node.sessionId);
+		return this.permissionGate.store.decide(
+			permissionId,
+			decision === "deny" ? "deny" : "allow",
+		);
 	}
 
 	private async nextSlot(projectId: string) {
@@ -381,10 +448,9 @@ export class DesignService {
 			data: attachment.data,
 		}));
 		const runtime = this.runtimeFor(model);
-		// Design generation is only a preview step: the agent drafts its HTML in
-		// an isolated temp working directory and never writes into the user's
-		// project (even via bash). Only an explicit "Publish" copies a finished
-		// design into the repo, after the user has reviewed the mockup.
+		// Draft the design in a temporary working directory. Agy tool calls are
+		// gated through Loom's permission hook; publishing remains a separate,
+		// explicit action after the user reviews the mockup.
 		const workdir = join(tmpdir(), "loom-design", project.id, nodeId);
 		mkdirSync(workdir, { recursive: true });
 		const session = await runtime.createSession({
@@ -393,22 +459,52 @@ export class DesignService {
 			readOnly: true,
 		});
 		await this.store.updateNode(nodeId, { sessionId: session.id });
+		const selectedModel = model ?? (await this.storedModel(node));
+		if (selectedModel?.providerID === "agy" && !this.permissionGate?.url)
+			throw new Error(
+				"Agy permission approval is unavailable. Restart Loom and check that its Agy permission hook is configured, then retry.",
+			);
+		const permissionToken =
+			selectedModel?.providerID === "agy" && this.permissionGate?.url
+				? randomUUID()
+				: undefined;
+		if (permissionToken && this.permissionGate)
+			this.permissionGate.store.registerRun({
+				token: permissionToken,
+				sessionId: session.id,
+				autoAccept: false,
+			});
 		const startedAt = Date.now();
-		const reply = await this.runSession(
-			runtime,
-			session.id,
-			prompt,
-			model ?? (await this.storedModel(node)),
-			images,
-		);
-		await this.persist(
-			nodeId,
-			project,
-			node,
-			reply,
-			mode,
-			Date.now() - startedAt,
-		);
+		try {
+			const reply = await this.runSession(
+				runtime,
+				session.id,
+				prompt,
+				selectedModel,
+				images,
+				permissionToken && this.permissionGate
+					? {
+							mode: "ask",
+							env: {
+								LOOM_PERMISSION_URL: this.permissionGate.url,
+								LOOM_PERMISSION_TOKEN: permissionToken,
+							},
+						}
+					: undefined,
+			);
+			await this.persist(
+				nodeId,
+				project,
+				node,
+				reply,
+				mode,
+				Date.now() - startedAt,
+			);
+		} finally {
+			this.permissionGate?.store.denySession(session.id);
+			if (permissionToken)
+				this.permissionGate?.store.unregisterRun(permissionToken);
+		}
 	}
 
 	private async runSession(
@@ -417,12 +513,14 @@ export class DesignService {
 		prompt: string,
 		model?: RuntimeModel,
 		images?: Array<{ mime: string; data: string }>,
+		permission?: { mode: "auto" | "ask"; env?: Record<string, string> },
 	): Promise<string> {
 		await runtime.prompt({
 			sessionId,
 			prompt,
 			model,
 			images: images?.length ? images : undefined,
+			permission,
 		});
 		const status = await runtime.wait(sessionId, {
 			timeoutMs: DESIGN_TIMEOUT_MS,

@@ -128,6 +128,35 @@ function durationLabel(ms: number | null) {
 		: `Worked for ${Math.round(seconds / 60)}m`;
 }
 
+function permissionCommand(args: Record<string, unknown>) {
+	for (const key of ["CommandLine", "command", "cmd", "script"]) {
+		const value = args[key];
+		if (typeof value === "string" && value.trim()) return value;
+	}
+	return JSON.stringify(args, null, 2);
+}
+
+async function decideDesignPermission(
+	nodeId: string,
+	permissionId: string,
+	decision: "allow_once" | "allow" | "deny",
+) {
+	try {
+		await daemon.decideDesignPermission(nodeId, permissionId, decision);
+		toast.success(
+			decision === "deny"
+				? "Permission denied"
+				: decision === "allow"
+					? "Permission allowed for this design run"
+					: "Permission allowed once",
+		);
+	} catch (cause) {
+		toast.error(
+			cause instanceof Error ? cause.message : "Unable to update permission",
+		);
+	}
+}
+
 function statusLabel(status: string) {
 	if (status === "queued") return "Queued";
 	if (status === "generating") return "Generating";
@@ -784,6 +813,17 @@ function wheel(event: WheelEvent) {
 								{#if act.files.length > 12}<li class="px-1 text-[10px]">+{act.files.length - 12} more</li>{/if}
 							</ul>
 						{/if}
+						{#each act?.permissions ?? [] as permission (permission.id)}
+							<div class="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/5 p-2.5 text-foreground">
+								<p class="text-xs font-medium">Agy requests permission: {permission.toolName}</p>
+								<pre class="mt-2 max-h-28 overflow-auto whitespace-pre-wrap break-all rounded bg-muted p-2 font-mono text-[10px]">{permissionCommand(permission.args)}</pre>
+								<div class="mt-2 flex flex-wrap gap-1.5">
+									<Button size="sm" class="h-7 px-2 text-[10px]" onclick={() => decideDesignPermission(workingNode.id, permission.id, "allow_once")}>Allow once</Button>
+									<Button variant="outline" size="sm" class="h-7 px-2 text-[10px]" onclick={() => decideDesignPermission(workingNode.id, permission.id, "allow")}>Always allow this run</Button>
+									<Button variant="ghost" size="sm" class="h-7 px-2 text-[10px]" onclick={() => decideDesignPermission(workingNode.id, permission.id, "deny")}>Deny</Button>
+								</div>
+							</div>
+						{/each}
 					</div>
 				</div>
 			{/if}

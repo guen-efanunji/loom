@@ -460,6 +460,15 @@ export const daemon = {
 	getDesign: (id: string) => request<DesignNode>(`/api/designs/${id}`),
 	designSteps: (id: string) =>
 		request<DesignActivity | null>(`/api/designs/${id}/steps`),
+	decideDesignPermission: (
+		nodeId: string,
+		permissionId: string,
+		decision: "allow_once" | "allow" | "deny",
+	) =>
+		request<{ decided: boolean }>(
+			`/api/designs/${nodeId}/permissions/${permissionId}/decision`,
+			{ method: "POST", body: JSON.stringify({ decision }) },
+		),
 	patchDesign: (id: string, patch: DesignPatch) =>
 		request<DesignNode>(`/api/designs/${id}`, {
 			method: "PATCH",

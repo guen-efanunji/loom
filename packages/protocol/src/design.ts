@@ -94,6 +94,18 @@ export const designMessageSchema = z.object({
 
 export type DesignMessage = z.infer<typeof designMessageSchema>;
 
+export const designPermissionRequestSchema = z.object({
+	id: z.string().min(1),
+	toolName: z.string().min(1),
+	args: z.record(z.string(), z.unknown()),
+	stepIdx: z.number().int().nonnegative(),
+	createdAt: z.number().int().nonnegative(),
+});
+
+export type DesignPermissionRequest = z.infer<
+	typeof designPermissionRequestSchema
+>;
+
 export const designThreadSchema = z.object({
 	nodes: z.array(designNodeSchema),
 	messages: z.array(designMessageSchema),
@@ -155,6 +167,7 @@ export type DesignChatResult = z.infer<typeof designChatResultSchema>;
 export const designActivitySchema = z.object({
 	phase: z.enum(["reading", "drafting"]),
 	files: z.array(z.string().max(400)).max(80).default([]),
+	permissions: z.array(designPermissionRequestSchema).optional(),
 });
 
 export type DesignActivity = z.infer<typeof designActivitySchema>;
