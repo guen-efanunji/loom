@@ -28,6 +28,7 @@
 		"build": "turbo run build",
 		"check-types": "turbo run check-types",
 		"test": "bun scripts/test.ts",
+		"test:e2e": "e2e run --target web",
 		"postinstall": "tsc -b packages/api && varlock codegen --path ./apps/web/ && varlock codegen --path ./apps/server/ && varlock codegen --path ./packages/db/",
 		"dev:types": "tsc -b packages/api --watch",
 		"dev:web": "turbo run dev -F web --",
@@ -49,8 +50,10 @@
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.5.12",
+		"@e2e-dev/web": "^0.15.2",
 		"@loom/config": "workspace:*",
 		"@types/bun": "catalog:",
+		"e2e": "^0.21.2",
 		"turbo": "^2.10.12",
 		"typescript": "catalog:",
 		"varlock": "catalog:"
