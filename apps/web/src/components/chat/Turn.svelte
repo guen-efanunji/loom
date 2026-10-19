@@ -21,7 +21,7 @@ import {
 } from "$lib/chat";
 import { Button } from "$lib/components/ui/button";
 import { Badge } from "$lib/components/ui/badge";
-import * as Marker from "$lib/components/ui/marker";
+import * as Trace from "$lib/components/ui/trace";
 import { type DesignNode, daemon } from "$lib/daemon";
 import CodeBlock from "./CodeBlock.svelte";
 import Markdown from "./Markdown.svelte";
@@ -361,25 +361,31 @@ async function copy() {
 						{@const kind = kindOf(part)}
 						{@const stats = kind === "edit" ? diffStats(part) : null}
 						{@const file = fileOf(part)}
-						<div class="my-1 overflow-hidden rounded-lg border bg-card/30 transition-colors hover:bg-card/50">
-							<details>
-								<summary class="flex cursor-pointer list-none items-center gap-2 px-3 py-2.5 text-xs [&::-webkit-details-marker]:hidden">
-					{#if kind === "shell"}<Terminal size={14} class="shrink-0 text-muted-foreground" />
-					{:else if kind === "read" || kind === "search"}<FileCode size={14} class="shrink-0 text-muted-foreground" />
-					{:else if kind === "edit"}<Pencil size={14} class="shrink-0 text-muted-foreground" />
-					{:else}<Wrench size={14} class="shrink-0 text-muted-foreground" />{/if}
-					<span class="shrink-0 font-medium">{kind === "shell" ? "Shell Command" : kind === "read" ? "Read File" : kind === "search" ? "Search Files" : kind === "edit" ? "Edit File" : (part.state.title || part.tool || "Tool")}</span>
-					<span class="min-w-0 flex-1 truncate text-muted-foreground">{(kind === "edit" || kind === "read") && file ? file : commandOf(part)}</span>
-									{#if stats}<span class="shrink-0 font-mono text-[11px]"><span class="text-emerald-400">+{stats.additions}</span><span class="text-red-400">−{stats.deletions}</span></span>{/if}
-									<Marker.Root class="shrink-0 text-[11px]"><Marker.Content>{statusOf(part)}</Marker.Content></Marker.Root>
-									<ChevronDown size={14} class="shrink-0 text-muted-foreground" />
-								</summary>
-								<div class="space-y-2 border-t p-3">
+						{@const toolStatus = statusOf(part)}
+						{@const traceStatus = toolStatus === "running" ? "running" : toolStatus === "error" ? "error" : undefined}
+						<div class="my-1 min-w-0 rounded-lg border bg-card/20 px-3 py-2">
+							<Trace.Collapsible>
+								<Trace.CollapsibleTrigger class="w-full text-left">
+									<Trace.Line status={traceStatus} class="w-full">
+										<Trace.Icon>
+										{#if kind === "shell"}<Terminal size={14} />
+										{:else if kind === "read" || kind === "search"}<FileCode size={14} />
+										{:else if kind === "edit"}<Pencil size={14} />
+										{:else}<Wrench size={14} />{/if}
+										</Trace.Icon>
+										<Trace.Title class="min-w-0 flex-1 truncate">
+											{toolStatus === "running" ? "Running" : toolStatus === "error" ? "Failed" : kind === "edit" ? "Edited" : kind === "read" ? "Read" : kind === "search" ? "Searched" : "Ran"}
+											{kind === "shell" ? commandOf(part) : (kind === "edit" || kind === "read") && file ? file : commandOf(part)}
+										</Trace.Title>
+										{#if stats}<Trace.Description class="shrink-0 font-mono text-[11px]"><span class="text-emerald-400">+{stats.additions}</span> <span class="text-red-400">−{stats.deletions}</span></Trace.Description>{/if}
+									</Trace.Line>
+								</Trace.CollapsibleTrigger>
+								<Trace.CollapsibleContent class="space-y-2 pt-2">
 									{#if part.state.input}<CodeBlock code={JSON.stringify(part.state.input, null, 2)} language="json" maxHeight="max-h-60" />{/if}
 									{#if part.state.output}<CodeBlock code={part.state.output} maxHeight="max-h-80" />{/if}
 									{#if part.state.error}<p class="text-sm text-destructive" role="alert">{part.state.error}</p>{/if}
-								</div>
-							</details>
+								</Trace.CollapsibleContent>
+							</Trace.Collapsible>
 							{#if file}
 								{@const preview = previews[file]}
 								<Button variant="ghost" class="w-full justify-start rounded-none border-t text-xs" onclick={() => void togglePreview(file)} aria-expanded={!!preview?.open}><FileCode size={14} /><span class="truncate">{file}</span><span class="ml-auto flex items-center gap-1">{preview?.open ? "Hide preview" : "Open file / diff"}<ChevronDown size={13} class={preview?.open ? "rotate-180" : ""} /></span></Button>

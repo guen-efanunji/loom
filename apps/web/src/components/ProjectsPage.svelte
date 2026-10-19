@@ -67,6 +67,7 @@ import * as Marker from "$lib/components/ui/marker";
 import * as Popover from "$lib/components/ui/popover";
 import * as Select from "$lib/components/ui/select";
 import * as ScrollArea from "$lib/components/ui/scroll-area";
+import * as Resizable from "$lib/components/ui/resizable";
 import * as Tabs from "$lib/components/ui/tabs";
 import {
 	type CustomAgentMonitorItem,
@@ -1788,9 +1789,10 @@ async function answer(requestId: string, answers: string[][]) {
 {/snippet}
 
 <svelte:head><title>{conversation?.session.title ? `${conversation.session.title} · Loom` : "Loom · Workspace"}</title></svelte:head>
-<div class="flex h-svh overflow-hidden bg-background text-foreground">
+<Resizable.PaneGroup direction="horizontal" class="h-svh overflow-hidden bg-background text-foreground">
   {#if sidebarOpen}
-    <aside class="fixed inset-y-0 left-0 z-40 flex w-[280px] shrink-0 flex-col border-r bg-sidebar md:relative" aria-label="Workspace sidebar">
+    <Resizable.Pane defaultSize={22} minSize={15} maxSize={35} class="max-md:!absolute max-md:inset-y-0 max-md:left-0 max-md:!z-40 max-md:!w-[280px]">
+    <aside class="relative flex h-full w-full min-w-0 flex-col border-r bg-sidebar max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:w-[280px]" aria-label="Workspace sidebar">
       <div class="flex h-14 items-center justify-between px-4"><a href="/" class="flex items-center gap-2 text-sm font-semibold tracking-wide"><img src="/loom-mark.webp" alt="" class="size-6 object-contain" /> loom</a><Button variant="ghost" size="icon" aria-label="Collapse sidebar" onclick={() => sidebarOpen = false}><PanelLeft size={16} /></Button></div>
       <div class="space-y-2 px-3 pb-3"><Button variant="outline" class="w-full justify-start bg-background/50" onclick={() => newSession()}><MessageSquarePlus size={16} />New session<span class="ml-auto text-muted-foreground">+</span></Button><div class="flex items-center gap-1"><Button variant="ghost" size="sm" class="flex-1 justify-start text-muted-foreground" onclick={() => searchOpen = !searchOpen}><Search size={15} />Search sessions</Button><Button variant="ghost" size="icon" title="Add project" aria-label="Add project" onclick={() => addProjectOpen = true}><FolderPlus size={16} /></Button></div>{#if searchOpen}<Input aria-label="Search sessions" placeholder="Find a conversation…" bind:value={search} />{/if}</div>
       <nav class="nice-scroll min-h-0 flex-1 overflow-y-auto px-3 pb-4">
@@ -1827,8 +1829,11 @@ async function answer(requestId: string, answers: string[][]) {
       <div class="flex items-center gap-1 border-t p-3"><Button href="/settings" variant="ghost" size="icon" title="Settings" aria-label="Settings"><Settings size={16} /></Button><Button variant="ghost" size="icon" title="About Loom" aria-label="About Loom" onclick={() => aboutOpen = true}><CircleHelp size={16} /></Button><Button variant="ghost" size="sm" class="ml-auto text-xs text-muted-foreground" onclick={retryConnection} title="Refresh connection"><span class={`size-1.5 rounded-full ${connected ? "bg-emerald-400" : "bg-amber-400"}`}></span>{connected ? "Connected" : "Reconnect"}</Button></div>
     </aside>
     <Button class="fixed inset-0 z-30 h-full w-full rounded-none bg-black/50 md:hidden" variant="ghost" aria-label="Close sidebar backdrop" onclick={() => sidebarOpen = false} />
+    </Resizable.Pane>
+    <Resizable.Handle class="hidden md:flex" withHandle />
   {/if}
-  <main class="flex min-w-0 flex-1 flex-col">
+  <Resizable.Pane defaultSize={sidebarOpen ? 78 : 100} minSize={40} class="h-full min-h-0 min-w-0 flex-1">
+  <main class="flex h-full min-h-0 min-w-0 flex-col">
     <header class="flex h-[72px] shrink-0 items-center gap-3 border-b border-white/[0.08] px-5 sm:px-8">
       {#if !sidebarOpen}<Button variant="ghost" size="icon" aria-label="Open sidebar" onclick={() => sidebarOpen = true}><PanelLeft size={16} /></Button>{/if}
       <div class="flex min-w-0 flex-1 items-center gap-3"><div class="grid size-9 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/[0.06] shadow-sm"><Sparkles size={16} class="text-cyan-300" /></div><div class="min-w-0"><p class="truncate text-sm font-semibold tracking-[-0.01em]">{viewMode === "chat" ? (conversation?.session.title ?? "New session") : `Tasks · ${selectedProject?.name ?? "No project"}`}</p>{#if selectedProject}<p class="mt-1 flex items-center gap-2 text-[11px] text-white/45"><span class="truncate">{selectedProject.name}</span><span class="text-white/20">·</span><GitBranch size={12} />{selectedProject.defaultBranch}</p>{/if}</div></div>
@@ -1844,8 +1849,9 @@ async function answer(requestId: string, answers: string[][]) {
       </div>
     {:else}
     {#if noModels}<div role="alert" class="flex shrink-0 flex-wrap items-center gap-3 border-b border-amber-500/30 bg-amber-500/10 px-5 py-3 text-sm text-amber-200"><TriangleAlert size={16} class="shrink-0 text-amber-300" /><p class="min-w-0 flex-1">Connected, but no models are configured in OpenCode. Add a provider (for example, run <code class="rounded bg-black/30 px-1 py-0.5 text-xs">opencode auth login</code>), then restart the daemon.</p><Button variant="outline" size="sm" onclick={reloadModels}><RefreshCw size={13} />Reload models</Button></div>{/if}
-    <div class="flex min-h-0 flex-1">
-	<div class={`flex min-w-0 flex-1 flex-col ${activePanel === "files" && previewExpanded ? "hidden" : ""}`}>
+    <Resizable.PaneGroup direction="horizontal" class="h-full min-h-0 flex-1">
+    <Resizable.Pane defaultSize={activePanel ? (previewExpanded ? 0 : 72) : 100} minSize={0} class="flex h-full min-h-0 min-w-0 flex-col">
+	<div class={`flex min-h-0 min-w-0 flex-1 flex-col ${activePanel === "files" && previewExpanded ? "hidden" : ""}`}>
     {#if splitChat && viewMode === "chat"}
       <SplitChatWorkspace project={selectedProject} {catalog} {customAgents} primarySessionId={sessionId} primaryModel={model} primaryAgent={agent} primaryCustomAgentId={customAgentId} primaryDraft={draft} onclose={leaveSplitChat} onfile={showFiles} onSession={registerSplitSession} />
     {:else}
@@ -1886,8 +1892,11 @@ async function answer(requestId: string, answers: string[][]) {
     {#if sessionId && viewMode === "chat"}<div class="shrink-0 border-t bg-background px-5 py-4"><div class="mx-auto max-w-3xl"><Composer projectId={selectedProjectId} {catalog} {customAgents} {busy} disabled={!conversation || sessionLoading} onsend={send} onstop={stop} bind:draft bind:model bind:agent bind:customAgentId autoAccept={selectedProject?.autoAccept ?? false} onAutoAcceptChange={selectedProject ? (value) => void setAutoAccept(value) : undefined} /></div></div>{/if}
     {/if}
     </div>
+    </Resizable.Pane>
     {#if activePanel}
-      <aside class={activePanel === "files" ? (previewExpanded ? "relative flex min-w-0 flex-1 flex-col border-l bg-card/30" : "relative flex w-[min(900px,76vw)] min-w-0 shrink-0 flex-col border-l bg-card/30") : activePanel === "walkthrough" ? "flex w-[min(850px,76vw)] shrink-0 flex-col border-l bg-card/30" : activePanel === "terminal" ? "flex w-[min(760px,70vw)] min-w-[400px] shrink-0 flex-col border-l bg-card/30" : "flex w-[320px] shrink-0 flex-col border-l bg-card/30 xl:w-[360px]"} aria-label={`${activePanel} panel`}>
+      <Resizable.Handle class={previewExpanded ? "hidden" : ""} withHandle />
+      <Resizable.Pane defaultSize={previewExpanded ? 100 : 28} minSize={previewExpanded ? 30 : 18} maxSize={previewExpanded ? 100 : 65} class="flex h-full min-h-0 min-w-0 flex-col">
+      <aside class="relative flex h-full min-w-0 flex-col border-l bg-card/30" aria-label={`${activePanel} panel`}>
         {#if activePanel === "files"}
           {#key selectedProjectId}<WorkspaceCodePreview projectId={selectedProjectId} projectName={selectedProject?.name ?? "Project"} {busy} bind:hasUnsavedChanges={previewHasUnsavedChanges} bind:expanded={previewExpanded} onclose={() => { previewExpanded = false; activePanel = null; }} />{/key}
         {:else if activePanel === "terminal"}
@@ -2058,6 +2067,7 @@ async function answer(requestId: string, answers: string[][]) {
         </div>
         {/if}
       </aside>
+      </Resizable.Pane>
     {/if}
     <nav class="flex w-11 shrink-0 flex-col items-center gap-1 border-l bg-card/20 py-2" aria-label="Chat tools">
       {#each visibleChatPanels as panel (panel.id)}
@@ -2068,10 +2078,11 @@ async function answer(requestId: string, answers: string[][]) {
         <Button variant="ghost" size="icon" class="size-9 text-muted-foreground" aria-label="Configure panels" title="Configure panels" onclick={() => configurePanelsOpen = true}><SlidersHorizontal size={16} /></Button>
       </div>
     </nav>
-    </div>
+    </Resizable.PaneGroup>
     {/if}
   </main>
-</div>
+  </Resizable.Pane>
+</Resizable.PaneGroup>
 <Dialog.Root bind:open={configurePanelsOpen}>
 	<Dialog.Content class="flex max-h-[min(80svh,560px)] flex-col overflow-hidden sm:max-w-lg">
 		<Dialog.Header>
@@ -2118,7 +2129,7 @@ async function answer(requestId: string, answers: string[][]) {
 	</AlertDialog.Content>
 </AlertDialog.Root>
 <Dialog.Root bind:open={aboutOpen}><Dialog.Content><Dialog.Header><Dialog.Title>About Loom</Dialog.Title><Dialog.Description>Your local workspace for conversations with OpenCode.</Dialog.Description></Dialog.Header><p class="text-sm leading-6 text-muted-foreground">Chats are saved in OpenCode. Use @ to attach project files or agents. The Changes panel shows file edits; task worktrees are available from the sidebar.</p><Badge variant="outline">{connected ? "OpenCode connected" : "Connection unavailable"}</Badge></Dialog.Content></Dialog.Root>
-<Dialog.Root bind:open={fileOpen}><Dialog.Content class="flex max-h-[85svh] flex-col overflow-hidden sm:max-w-5xl"><Dialog.Header><Dialog.Title class="truncate pr-8">{fileName || "Session changes"}</Dialog.Title><Dialog.Description>{fileName ? "Inspect file content and changes made in this session." : `${diffs.length} changed files in this session.`}</Dialog.Description></Dialog.Header>
-  {#if fileLoading}<p class="py-6 text-sm text-muted-foreground">Loading file…</p>{:else if fileError}<p role="alert" class="text-sm text-destructive">{fileError}</p>{:else if !fileName}<div class="min-h-0 overflow-auto">{#each diffs as diff}<Button variant="ghost" class="h-auto w-full justify-start py-3" onclick={() => showFiles(diff.file)}><FileCode size={15} /><span class="min-w-0 flex-1 truncate text-left">{diff.file}</span><span class="text-xs text-emerald-400">+{diff.additions}</span><span class="text-xs text-red-400">−{diff.deletions}</span></Button>{/each}{#if !diffs.length}<p class="py-8 text-center text-sm text-muted-foreground">No file changes in this session yet.</p>{/if}</div>
-  {:else}<Tabs.Root bind:value={fileTab} class="flex min-h-0 flex-1 flex-col"><Tabs.List><Tabs.Trigger value="changes" disabled={!selectedDiff}>Changes</Tabs.Trigger><Tabs.Trigger value="content">File content</Tabs.Trigger></Tabs.List><Tabs.Content value="changes" class="min-h-0 flex-1">{#if selectedDiff?.patch}<ScrollArea.Root class="h-full min-h-0 rounded-lg border bg-background" orientation="both"><pre class="min-w-fit py-3 text-xs leading-6">{#each selectedDiff.patch.split("\n") as line}<div class={`min-h-6 px-4 ${line.startsWith("+") ? "bg-emerald-500/10 text-emerald-300" : line.startsWith("-") ? "bg-red-500/10 text-red-300" : line.startsWith("@@") ? "bg-blue-500/10 text-blue-300" : "text-muted-foreground"}`}>{line || " "}</div>{/each}</pre></ScrollArea.Root>{:else if selectedDiff}<ScrollArea.Root class="h-full min-h-0 rounded-lg border" orientation="both"><div class="grid min-w-[640px] grid-cols-2 divide-x"><div><p class="sticky top-0 border-b bg-card p-2 text-xs text-red-300">Before · −{selectedDiff.deletions}</p><pre class="bg-red-500/5 p-3 text-xs leading-6">{selectedDiff.before || "(empty)"}</pre></div><div><p class="sticky top-0 border-b bg-card p-2 text-xs text-emerald-300">After · +{selectedDiff.additions}</p><pre class="bg-emerald-500/5 p-3 text-xs leading-6">{selectedDiff.after || "(empty)"}</pre></div></div></ScrollArea.Root>{/if}</Tabs.Content><Tabs.Content value="content" class="min-h-0 flex-1"><ScrollArea.Root class="h-full min-h-0 rounded-lg" orientation="both"><CodeBlock code={fileContent || "(empty file)"} language={fileName} maxHeight="max-h-none" scrollable={false} /></ScrollArea.Root></Tabs.Content></Tabs.Root><Dialog.Footer><Button variant="outline" onclick={() => { fileName = ""; fileContent = ""; }}>All changes</Button><Button onclick={() => { draft = `Please update @${fileName}: `; fileOpen = false; }}>Discuss this file</Button></Dialog.Footer>{/if}
+<Dialog.Root bind:open={fileOpen}><Dialog.Content class="flex h-[min(85svh,56rem)] max-h-[85svh] min-h-0 flex-col overflow-hidden sm:max-w-5xl"><Dialog.Header class="shrink-0"><Dialog.Title class="truncate pr-8">{fileName || "Session changes"}</Dialog.Title><Dialog.Description>{fileName ? "Inspect file content and changes made in this session." : `${diffs.length} changed files in this session.`}</Dialog.Description></Dialog.Header>
+  {#if fileLoading}<p class="min-h-0 flex-1 py-6 text-sm text-muted-foreground">Loading file…</p>{:else if fileError}<p role="alert" class="min-h-0 flex-1 overflow-auto text-sm text-destructive">{fileError}</p>{:else if !fileName}<ScrollArea.Root class="min-h-0 flex-1 rounded-lg border" orientation="vertical"><div class="p-1">{#each diffs as diff}<Button variant="ghost" class="h-auto w-full justify-start py-3" onclick={() => showFiles(diff.file)}><FileCode size={15} /><span class="min-w-0 flex-1 truncate text-left">{diff.file}</span><span class="text-xs text-emerald-400">+{diff.additions}</span><span class="text-xs text-red-400">−{diff.deletions}</span></Button>{/each}{#if !diffs.length}<p class="py-8 text-center text-sm text-muted-foreground">No file changes in this session yet.</p>{/if}</div></ScrollArea.Root>
+  {:else}<Tabs.Root bind:value={fileTab} class="flex min-h-0 flex-1 flex-col overflow-hidden"><Tabs.List class="shrink-0"><Tabs.Trigger value="changes" disabled={!selectedDiff}>Changes</Tabs.Trigger><Tabs.Trigger value="content">File content</Tabs.Trigger></Tabs.List><Tabs.Content value="changes" class="min-h-0 flex-1 overflow-hidden">{#if selectedDiff?.patch}<ScrollArea.Root class="h-full min-h-0 rounded-lg border bg-background" orientation="both"><pre class="min-w-fit py-3 text-xs leading-6">{#each selectedDiff.patch.split("\n") as line}<div class={`min-h-6 px-4 ${line.startsWith("+") ? "bg-emerald-500/10 text-emerald-300" : line.startsWith("-") ? "bg-red-500/10 text-red-300" : line.startsWith("@@") ? "bg-blue-500/10 text-blue-300" : "text-muted-foreground"}`}>{line || " "}</div>{/each}</pre></ScrollArea.Root>{:else if selectedDiff}<ScrollArea.Root class="h-full min-h-0 rounded-lg border" orientation="both"><div class="grid min-w-[640px] grid-cols-2 divide-x"><div><p class="sticky top-0 border-b bg-card p-2 text-xs text-red-300">Before · −{selectedDiff.deletions}</p><pre class="bg-red-500/5 p-3 text-xs leading-6">{selectedDiff.before || "(empty)"}</pre></div><div><p class="sticky top-0 border-b bg-card p-2 text-xs text-emerald-300">After · +{selectedDiff.additions}</p><pre class="bg-emerald-500/5 p-3 text-xs leading-6">{selectedDiff.after || "(empty)"}</pre></div></div></ScrollArea.Root>{/if}</Tabs.Content><Tabs.Content value="content" class="min-h-0 flex-1 overflow-hidden"><ScrollArea.Root class="h-full min-h-0 rounded-lg" orientation="both"><CodeBlock code={fileContent || "(empty file)"} language={fileName} maxHeight="max-h-none" scrollable={false} /></ScrollArea.Root></Tabs.Content></Tabs.Root><Dialog.Footer class="shrink-0"><Button variant="outline" onclick={() => { fileName = ""; fileContent = ""; }}>All changes</Button><Button onclick={() => { draft = `Please update @${fileName}: `; fileOpen = false; }}>Discuss this file</Button></Dialog.Footer>{/if}
 </Dialog.Content></Dialog.Root>
