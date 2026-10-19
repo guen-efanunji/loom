@@ -4,7 +4,6 @@ import {
 	Copy,
 	FileCode,
 	MessageSquarePlus,
-	ListTodo,
 	PanelsTopLeft,
 	Pencil,
 	Sparkles,
@@ -35,9 +34,6 @@ let {
 	onfile,
 	onopenfile,
 	onbranch,
-	sourceMessageId,
-	sourceMessage,
-	oncreateplan,
 }: {
 	messages: ChatMessage[];
 	catalog: Catalog;
@@ -46,9 +42,6 @@ let {
 	onfile: (path: string) => void;
 	onopenfile?: (path: string) => void;
 	onbranch?: (answer: string) => void;
-	sourceMessageId?: string;
-	sourceMessage?: string;
-	oncreateplan?: (sourceMessageId: string, message: string) => void;
 } = $props();
 
 const role = $derived(messages[0]?.info.role ?? "assistant");
@@ -555,7 +548,6 @@ async function copy() {
 			<div class="mt-3 flex flex-wrap items-center gap-1 border-t border-white/[0.07] pt-2 text-xs text-muted-foreground">
 				<time class="mr-auto tabular-nums">{formatDuration(elapsed)}{elapsed !== null ? " · " : ""}{new Date(completedAt ?? time).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</time>
 				{#if onbranch}<Button variant="ghost" size="sm" class="h-7 gap-1.5 text-xs" onclick={() => onbranch(responseText)} title="Start a new chat from this answer"><MessageSquarePlus size={13} />New session from answer</Button>{/if}
-				{#if oncreateplan && sourceMessageId && sourceMessage?.trim()}<Button variant="ghost" size="sm" class="h-7 gap-1.5 text-xs" onclick={() => oncreateplan(sourceMessageId!, sourceMessage!)} title="Create a durable plan from this request"><ListTodo size={13} />Create plan</Button>{/if}
 				<Button variant="ghost" size="sm" class="h-7 gap-1.5 text-xs" onclick={copy}>{#if copied}<Check size={13} />{:else}<Copy size={13} />{/if}{copied ? "Copied" : "Copy response"}</Button>
 			</div>
 		{/if}

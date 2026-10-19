@@ -581,7 +581,6 @@ async function doCancel(task: Task) {
 								{#if task.status === "blocked"}<Badge variant="secondary" class="text-[10px] text-amber-300">Blocked</Badge>{/if}
 								{#if task.acceptanceCriteria.length}<span class="text-[10px] text-muted-foreground">✓ {task.acceptanceCriteria.length} checks</span>{/if}
 							</div>
-							{#if task.planId}<a class="text-[11px] text-muted-foreground hover:underline" href={`/plans/${task.planId}`}>Generated from plan →</a>{/if}
 							<div class="flex flex-wrap gap-1">
 								{#if ["queued", "ready"].includes(task.status)}<Button size="sm" variant="outline" disabled={busy} onclick={() => doRun(task)}>Run</Button>{/if}
 								{#if ["failed", "cancelled"].includes(task.status)}<Button size="sm" variant="outline" disabled={busy} onclick={() => doRetry(task)}>Retry</Button>{/if}

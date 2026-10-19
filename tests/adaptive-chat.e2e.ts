@@ -4,7 +4,6 @@ import { expect } from "e2e";
 const projectId = "e2e-project";
 const parentId = "ses_e2e_parent";
 const childId = "ses_e2e_child";
-const planId = "plan_e2e_review";
 const projectDirectory = "/tmp/loom-e2e-project";
 
 const userMessage = {
@@ -59,40 +58,6 @@ function state(sessionId: string, parentID?: string) {
 		status: { type: "idle" },
 		permissions: [],
 		questions: [],
-	};
-}
-
-function planDetail() {
-	return {
-		plan: {
-			id: planId,
-			projectId,
-			sourceMessageId: userMessage.info.id,
-			sourceSessionId: parentId,
-			sourceMessage: "Build a small feature",
-			title: "Build the feature",
-			summary: "A reviewed plan fixture.",
-			status: "draft",
-			createdAt: "2026-10-20T00:00:00.000Z",
-			updatedAt: "2026-10-20T00:00:00.000Z",
-			validatedAt: null,
-			approvedAt: null,
-			convertedAt: null,
-			cancelledAt: null,
-			errorMessage: null,
-		},
-		draft: [
-			{
-				key: "task_1",
-				title: "Implement the feature",
-				description: "Implement the reviewed feature.",
-				priority: "medium",
-				dependencies: [],
-				acceptanceCriteria: ["The feature works."],
-				suggestedFiles: [],
-			},
-		],
-		progress: { done: 0, total: 1 },
 	};
 }
 
@@ -165,8 +130,6 @@ async function stubWorkspace(browser: Browser) {
 			body = state(childId, parentId);
 		} else if (path === "/api/plans" && request.method === "POST") {
 			body = { planId, status: "draft" };
-		} else if (path === `/api/plans/${planId}`) {
-			body = planDetail();
 		} else if (path === "/api/chat/preferences") {
 			body = { favoriteModels: [] };
 		} else if (path === "/api/events/replay") {
@@ -239,34 +202,34 @@ test("does not invent todo progress when the runtime reports no structured todos
 	await app.screenshot("adaptive-no-runtime-todos");
 });
 
-test("creates a reviewed plan only after the user chooses Create plan", async ({ app, browser, screen }) => {
-	let planRequest: Record<string, unknown> | undefined;
+test("keeps planning in chat when the user selects Plan mode", async ({ app, browser, screen }) => {
+	let chatRequest: Record<string, unknown> | undefined;
 	let taskMutationCount = 0;
 	await stubWorkspace(browser);
 	await browser.route("**/api/tasks", async (route) => {
 		if (route.request.method === "POST") taskMutationCount++;
 		return route.fallback();
 	});
-	await browser.route("**/api/plans", async (route) => {
+	await browser.route(`**/api/chat/sessions/${parentId}/messages`, async (route) => {
 		if (route.request.method !== "POST") return route.fallback();
-		planRequest = JSON.parse(route.request.postData ?? "{}") as Record<string, unknown>;
-		await route.fulfill({
-			json: { planId, status: "draft" },
-		});
+		chatRequest = JSON.parse(route.request.postData ?? "{}") as Record<string, unknown>;
+		await route.fulfill({ json: {} });
 	});
 	await app.open(`/?project=${projectId}&session=${parentId}`);
 
-	await screen.getByRole("button", "Create plan").tap();
-	await expect(browser).toHaveURL(new RegExp(`/plans/${planId}$`));
-	await expect(screen.getByRole("heading", "Build the feature")).toBeVisible();
-	await expect(screen.getByText("Review proposed plan")).toBeVisible();
-	await app.screenshot("adaptive-plan-review-no-auto-tasks");
-	expect(planRequest).toMatchObject({
-		projectId,
-		sourceMessageId: userMessage.info.id,
-		sourceSessionId: parentId,
-		message: "Build a small feature",
-		mode: "plan",
+	await screen.getByRole("button", "Chat mode: build").tap();
+	await screen.getByRole("option", "plan").tap();
+	await expect(screen.getByRole("button", "Chat mode: plan")).toBeVisible();
+	await expect(screen.getByText("plan", { exact: true })).toBeVisible();
+	const composer = screen.getByRole("textbox", "Message agent");
+	await composer.fill("Build a small feature");
+	await app.screenshot("adaptive-plan-mode-stays-in-chat");
+	await screen.getByRole("button", "Send message").tap();
+	expect(chatRequest).toMatchObject({
+		text: "Build a small feature",
+		agent: "plan",
 	});
+	await expect(browser).toHaveURL(new RegExp(`session=${parentId}`));
+	await expect(screen.getByText("Review proposed plan")).not.toBeVisible();
 	expect(taskMutationCount).toBe(0);
 });

@@ -164,7 +164,7 @@ onDestroy(() => {
 				<h2 class="mb-3 text-sm font-medium">Plans</h2>
 				<div class="space-y-2">
 					{#each plans as plan}
-						<a href={`/plans/${plan.id}`} class="block rounded-xl border bg-card p-4 hover:border-muted-foreground">
+						<div class="block rounded-xl border bg-card p-4">
 							<div class="flex flex-wrap items-center gap-2">
 								<p class="min-w-0 flex-1 truncate text-sm font-medium">{plan.title}</p>
 								<Badge variant="outline">{plan.status}</Badge>
@@ -174,7 +174,7 @@ onDestroy(() => {
 								<div class="h-full rounded-full bg-emerald-400" style={`width: ${plan.progress.percent}%`}></div>
 							</div>
 							<p class="mt-2 text-xs text-muted-foreground">{plan.progress.running} running · {plan.progress.ready} ready · {plan.progress.blocked} blocked · {plan.progress.failed} failed</p>
-						</a>
+						</div>
 					{/each}
 				</div>
 			</section>

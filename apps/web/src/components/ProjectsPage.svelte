@@ -415,8 +415,6 @@ type TurnGroup = {
 	key: string;
 	role: string;
 	messages: ChatMessage[];
-	sourceMessageId?: string;
-	sourceMessage?: string;
 };
 const turns = $derived.by(() => {
 	const groups: TurnGroup[] = [];
@@ -426,26 +424,10 @@ const turns = $derived.by(() => {
 		if (message.info.role === "assistant" && last && last.role === "assistant")
 			last.messages.push(message);
 		else {
-			const sourceMessage =
-				message.info.role === "assistant"
-					? messages
-							.slice(0, index)
-							.findLast((item) => item.info.role === "user")
-					: undefined;
 			groups.push({
 				key: message.info.id,
 				role: message.info.role,
 				messages: [message],
-				...(sourceMessage
-					? {
-						sourceMessageId: sourceMessage.info.id,
-						sourceMessage: sourceMessage.parts
-							.filter((part) => part.type === "text")
-							.map((part) => part.text)
-							.join("\n\n")
-							.trim(),
-					}
-					: {}),
 			});
 		}
 	}
@@ -1808,30 +1790,6 @@ async function send(input: Parameters<typeof chat.send>[1]) {
 		sendingChatTabIds = sendingChatTabIds.filter((id) => id !== tabId);
 	}
 }
-async function createPlanFromChat(
-	sourceMessageId: string,
-	message: string,
-	sourceSessionId: string,
-) {
-	if (!selectedProjectId || !message.trim()) return;
-	try {
-		const [providerID, ...modelParts] = model.split("/");
-		const result = await daemon.createPlan({
-			projectId: selectedProjectId,
-			sourceMessageId,
-			message: message.slice(0, 20_000),
-			sourceSessionId,
-			mode: "plan",
-			...(providerID && modelParts.length
-				? { model: { providerID, modelID: modelParts.join("/") } }
-				: {}),
-		});
-		toast.success("Plan created for review. Kanban tasks are not started automatically.");
-		await goto(`/plans/${encodeURIComponent(result.planId)}`);
-	} catch (reason) {
-		toast.error(reason instanceof Error ? reason.message : "Unable to create plan");
-	}
-}
 async function stop() {
 	try {
 		await chat.abort(sessionId);
@@ -2193,7 +2151,7 @@ async function answer(requestId: string, answers: string[][]) {
                <p class="text-xs text-muted-foreground">Checking for child sessions…</p>
              {/if}
              {#each turns as turn (turn.key)}
-               <Turn messages={turn.messages} {catalog} {sessionId} projectId={selectedProjectId} sourceMessageId={turn.sourceMessageId} sourceMessage={turn.sourceMessage} oncreateplan={(sourceId, brief) => createPlanFromChat(sourceId, brief, sessionId)} onfile={showFiles} onopenfile={openProjectFile} onbranch={startNewChatFromAnswer} />
+               <Turn messages={turn.messages} {catalog} {sessionId} projectId={selectedProjectId} onfile={showFiles} onopenfile={openProjectFile} onbranch={startNewChatFromAnswer} />
              {/each}
            </div>
            {#if busy}<Marker.Root variant="border" class="mt-5 flex items-center"><Marker.Icon><LoaderCircle size={14} class="animate-spin" /></Marker.Icon><Marker.Content>{conversation?.permissions.length ? "Waiting for permission" : conversation?.questions.length ? "Waiting for your answer" : friendlyProviderStatus(catalog, conversation?.status.message) || `${providerLabel} is working…`}</Marker.Content></Marker.Root>{/if}
