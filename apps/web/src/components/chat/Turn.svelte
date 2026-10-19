@@ -7,6 +7,7 @@ import {
 	MessageSquarePlus,
 	PanelsTopLeft,
 	Pencil,
+	Sparkles,
 	Terminal,
 	Wrench,
 } from "@lucide/svelte";
@@ -79,8 +80,8 @@ const responseText = $derived(
 );
 const canCopyResponse = $derived(
 	role === "assistant" &&
-	!!responseText.trim() &&
-	messages[messages.length - 1]?.info.time.completed !== undefined,
+		!!responseText.trim() &&
+		messages[messages.length - 1]?.info.time.completed !== undefined,
 );
 
 let copied = $state(false);
@@ -356,14 +357,20 @@ async function copy() {
 				{#each message.parts as part (part.id)}
 					{#if part.type === "text" && part.text}<Markdown text={part.text} />
 					{:else if part.type === "reasoning" && part.text}
-						<details class="my-3 rounded-lg border px-3 py-2 text-xs text-muted-foreground"><summary class="cursor-pointer">Thinking</summary><div class="mt-3"><Markdown text={part.text} /></div></details>
+						<Trace.Root class="my-2 gap-0">
+							<Trace.Collapsible>
+								<Trace.CollapsibleTrigger class="w-full text-left"><Trace.Line class="w-full"><Trace.Icon><Sparkles size={14} /></Trace.Icon><Trace.Title>Thought</Trace.Title></Trace.Line></Trace.CollapsibleTrigger>
+								<Trace.CollapsibleContent class="whitespace-pre-wrap py-2 text-xs text-muted-foreground"><Markdown text={part.text} /></Trace.CollapsibleContent>
+							</Trace.Collapsible>
+						</Trace.Root>
 					{:else if part.type === "tool" && part.state}
 						{@const kind = kindOf(part)}
 						{@const stats = kind === "edit" ? diffStats(part) : null}
 						{@const file = fileOf(part)}
 						{@const toolStatus = statusOf(part)}
 						{@const traceStatus = toolStatus === "running" ? "running" : toolStatus === "error" ? "error" : undefined}
-						<div class="my-1 min-w-0 rounded-lg border bg-card/20 px-3 py-2">
+						<div class="my-0.5 min-w-0">
+							<Trace.Root class="gap-0">
 							<Trace.Collapsible>
 								<Trace.CollapsibleTrigger class="w-full text-left">
 									<Trace.Line status={traceStatus} class="w-full">
@@ -386,9 +393,10 @@ async function copy() {
 									{#if part.state.error}<p class="text-sm text-destructive" role="alert">{part.state.error}</p>{/if}
 								</Trace.CollapsibleContent>
 							</Trace.Collapsible>
+							</Trace.Root>
 							{#if file}
 								{@const preview = previews[file]}
-								<Button variant="ghost" class="w-full justify-start rounded-none border-t text-xs" onclick={() => void togglePreview(file)} aria-expanded={!!preview?.open}><FileCode size={14} /><span class="truncate">{file}</span><span class="ml-auto flex items-center gap-1">{preview?.open ? "Hide preview" : "Open file / diff"}<ChevronDown size={13} class={preview?.open ? "rotate-180" : ""} /></span></Button>
+								<Button variant="ghost" size="sm" class="mt-1 h-7 w-full justify-start text-xs text-muted-foreground" onclick={() => void togglePreview(file)} aria-expanded={!!preview?.open}><FileCode size={14} /><span class="truncate">{file}</span><span class="ml-auto flex items-center gap-1">{preview?.open ? "Hide preview" : "Open file / diff"}<ChevronDown size={13} class={preview?.open ? "rotate-180" : ""} /></span></Button>
 								{#if preview?.open}
 									<div class="border-t p-3">
 										{#if preview.loading}

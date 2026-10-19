@@ -1636,13 +1636,17 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			const entries = await readdir(directory, { withFileTypes: true });
 			return c.json({
 				path: directory,
-				parentPath: dirname(directory) === directory ? null : dirname(directory),
+				parentPath:
+					dirname(directory) === directory ? null : dirname(directory),
 				entries: entries
 					.filter((entry) => entry.isDirectory())
 					.filter((entry) => showHidden || !entry.name.startsWith("."))
 					.sort((a, b) => a.name.localeCompare(b.name))
 					.slice(0, 500)
-					.map((entry) => ({ name: entry.name, path: join(directory, entry.name) })),
+					.map((entry) => ({
+						name: entry.name,
+						path: join(directory, entry.name),
+					})),
 			});
 		} catch (error) {
 			return errorResponse(c, error);
@@ -1846,6 +1850,203 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			});
 		}
 	});
+	app.post("/api/projects/:id/git/commit-message", async (c) => {
+		try {
+			const project = await repos.projects.getById(c.req.param("id"));
+			if (!project) return errorResponse(c, new Error("Project not found"));
+			const repository = await projectValidation.validate(project.path);
+			const input = z
+				.object({
+					model: z.object({
+						providerId: z.string().min(1).max(100),
+						modelId: z.string().min(1).max(300),
+					}),
+				})
+				.parse(await jsonBody(c));
+			const snapshot = await collectWalkthroughSnapshot(repository.path);
+			if (!snapshot.files.length)
+				throw new Error("There are no uncommitted changes to summarize.");
+			const requestedProviderId = input.model.providerId;
+			const managedProvider =
+				requestedProviderId !== "opencode" &&
+				!!providerManager.registry.get(requestedProviderId);
+			const providerId = managedProvider
+				? providerManager.normalizeProviderId(requestedProviderId)
+				: requestedProviderId;
+			let candidate:
+				| ReturnType<typeof providerManager.catalog.listByProvider>[number]
+				| undefined;
+			if (managedProvider) {
+				if (providerManager.get(providerId)?.status !== "connected")
+					throw new Error(`Provider is not connected: ${providerId}`);
+				candidate = providerManager.catalog
+					.listByProvider(providerId)
+					.find((item) => {
+						const requested = input.model.modelId.toLowerCase();
+						return [item.metadata?.modelId, item.name, item.displayName].some(
+							(value) =>
+								typeof value === "string" && value.toLowerCase() === requested,
+						);
+					});
+				if (!candidate)
+					throw new Error(
+						"The selected model is no longer available. Refresh the model list and try again.",
+					);
+			}
+			const runtime = managedProvider
+				? providerManager.getRuntime(providerId)
+				: agentRuntime;
+			const runtimeModelId = String(
+				candidate?.metadata?.modelId ?? candidate?.name ?? input.model.modelId,
+			);
+			const runtimeModel =
+				providerId === "opencode"
+					? (() => {
+							const [upstreamProviderId, ...upstreamModelParts] =
+								runtimeModelId.split("/");
+							return {
+								providerID: upstreamProviderId || providerId,
+								modelID: upstreamModelParts.join("/") || runtimeModelId,
+							};
+						})()
+					: { providerID: providerId, modelID: input.model.modelId };
+			const created = await runtime.createSession({
+				cwd: repository.path,
+				title: "Loom commit message suggestion",
+				readOnly: true,
+			});
+			try {
+				await runtime.prompt({
+					sessionId: created.id,
+					model: runtimeModel,
+					permission: { mode: "read-only" },
+					system: await readPrompt("git/commit-message.md"),
+					prompt: JSON.stringify({
+						files: snapshot.files.map(({ file, status, patch }) => ({
+							file,
+							status,
+							patch,
+						})),
+					}),
+				});
+				const status = await runtime.wait(created.id, {
+					timeoutMs: 90_000,
+					pollIntervalMs: 500,
+				});
+				if (status !== "completed")
+					throw new Error(
+						(await runtime.lastError?.(created.id)) ||
+							`Commit message generation ${status}`,
+					);
+				const output = await runtime.readOutput?.(created.id);
+				const raw = output?.output.trim() ?? "";
+				const message = raw
+					.replace(/^```(?:\w+)?\s*/i, "")
+					.replace(/\s*```$/, "")
+					.replace(/^(?:commit message|subject)\s*:\s*/i, "")
+					.split(/\r?\n/)[0]
+					?.replace(/^['"`]|['"`]$/g, "")
+					.trim();
+				if (!message) throw new Error("The selected model returned an empty commit message.");
+				return c.json({ message, provider: { providerId, modelId: runtimeModelId } });
+			} catch (error) {
+				await runtime.abort(created.id).catch(() => undefined);
+				throw error;
+			} finally {
+				await runtime.deleteSession?.(created.id).catch(() => undefined);
+			}
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Unable to generate commit message";
+			return errorResponse(c, new Error(message.replace(/\bBearer\s+\S+/gi, "Bearer [redacted]").slice(0, 600)));
+		}
+	});
+	app.post("/api/projects/:id/git/commit", async (c) => {
+		try {
+			const project = await repos.projects.getById(c.req.param("id"));
+			if (!project) return errorResponse(c, new Error("Project not found"));
+			const repository = await projectValidation.validate(project.path);
+			const { message, push } = z
+				.object({
+					message: z.string().trim().min(1).max(500),
+					push: z.boolean().default(false),
+				})
+				.parse(await jsonBody(c));
+			const status = await runWorkspaceCommand(
+				"git",
+				["status", "--porcelain", "--untracked-files=all"],
+				repository.path,
+			);
+			if (status.exitCode !== 0)
+				throw new Error(status.stderr.trim() || "Unable to read Git status");
+			if (!status.stdout.trim())
+				throw new Error("There are no changes to commit.");
+			if (push) {
+				const remote = await runWorkspaceCommand(
+					"git",
+					["remote", "get-url", "origin"],
+					repository.path,
+				);
+				if (remote.exitCode !== 0 || !remote.stdout.trim())
+					throw new Error(
+						"This repository has no origin remote. Add a remote before syncing.",
+					);
+			}
+			const staged = await runWorkspaceCommand(
+				"git",
+				["add", "-A"],
+				repository.path,
+			);
+			if (staged.exitCode !== 0)
+				throw new Error(staged.stderr.trim() || "Unable to stage changes");
+			const committed = await runWorkspaceCommand(
+				"git",
+				["commit", "-m", message],
+				repository.path,
+				30_000,
+			);
+			if (committed.exitCode !== 0)
+				throw new Error(committed.stderr.trim() || "Unable to create commit");
+			let synced = false;
+			if (push) {
+				const branch = await runWorkspaceCommand(
+					"git",
+					["branch", "--show-current"],
+					repository.path,
+				);
+				if (branch.exitCode !== 0 || !branch.stdout.trim())
+					throw new Error(
+						"Commit created, but this detached HEAD cannot be synced. Check out a branch and push it.",
+					);
+				const upstream = await runWorkspaceCommand(
+					"git",
+					["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+					repository.path,
+				);
+				const args =
+					upstream.exitCode === 0
+						? ["push"]
+						: ["push", "--set-upstream", "origin", branch.stdout.trim()];
+				const pushed = await runWorkspaceCommand(
+					"git",
+					args,
+					repository.path,
+					60_000,
+				);
+				if (pushed.exitCode !== 0)
+					throw new Error(
+						`Commit created, but push failed: ${pushed.stderr.trim() || "Git push failed"}`,
+					);
+				synced = true;
+			}
+			return c.json({
+				committed: true,
+				synced,
+				output: committed.stdout.trim(),
+			});
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
 	app.post("/api/projects/:id/git/checkout", async (c) => {
 		try {
 			const project = await repos.projects.getById(c.req.param("id"));
@@ -1990,6 +2191,57 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			const message =
 				error instanceof Error ? error.message : "GitHub CLI is unavailable";
 			return c.json({ available: false, message, pullRequests: [] });
+		}
+	});
+	app.post("/api/projects/:id/pull-requests", async (c) => {
+		try {
+			const project = await repos.projects.getById(c.req.param("id"));
+			if (!project) return errorResponse(c, new Error("Project not found"));
+			const repository = await projectValidation.validate(project.path);
+			const input = z
+				.object({
+					title: z.string().trim().min(1).max(256),
+					body: z.string().max(20_000).default(""),
+					base: z.string().trim().min(1).max(240).optional(),
+					draft: z.boolean().default(false),
+				})
+				.parse(await jsonBody(c));
+			const remote = await runWorkspaceCommand(
+				"git",
+				["remote", "get-url", "origin"],
+				repository.path,
+			);
+			if (
+				remote.exitCode !== 0 ||
+				!/^(?:https?:\/\/github\.com\/|ssh:\/\/git@github\.com\/|git@github\.com:)/i.test(
+					remote.stdout.trim(),
+				)
+			)
+				throw new Error("Pull requests require a GitHub origin remote.");
+			const args = [
+				"pr",
+				"create",
+				"--title",
+				input.title,
+				"--body",
+				input.body,
+			];
+			if (input.base) args.push("--base", input.base);
+			if (input.draft) args.push("--draft");
+			const result = await runWorkspaceCommand(
+				"gh",
+				args,
+				repository.path,
+				60_000,
+			);
+			if (result.exitCode !== 0)
+				throw new Error(
+					result.stderr.trim() ||
+						"Unable to create pull request. Check that gh is installed, authenticated, and the branch is pushed.",
+				);
+			return c.json({ url: result.stdout.trim() }, 201);
+		} catch (error) {
+			return errorResponse(c, error);
 		}
 	});
 	app.get("/api/projects/:id/walkthrough/snapshot", async (c) => {
@@ -2351,9 +2603,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			);
 		return { ...input, baseUrl: url.toString().replace(/\/$/, "") };
 	};
-	const persistCustomProviders = async (
-		providers: CustomProviderConfig[],
-	) => {
+	const persistCustomProviders = async (providers: CustomProviderConfig[]) => {
 		await mkdir(dirname(customProviderPath), { recursive: true, mode: 0o700 });
 		await writeFile(
 			customProviderPath,

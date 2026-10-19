@@ -1544,8 +1544,7 @@ export function createChatRoutes(options: {
 									relativePath?: string;
 									diff?: string;
 								};
-								const path =
-									item.file ?? item.relativePath ?? item.filePath;
+								const path = item.file ?? item.relativePath ?? item.filePath;
 								return path
 									? [{ ...item, file: path, patch: item.patch ?? item.diff }]
 									: [];
@@ -1556,6 +1555,43 @@ export function createChatRoutes(options: {
 		const providerMessages =
 			(await options.providerHistory?.get<ProviderMessage[]>(current.id)) ?? [];
 		const providerDiffs = readMessageDiffs(providerMessages);
+		const messageFileCandidates = new Set<string>();
+		const rememberToolFiles = (
+			parts: Array<{
+				type: string;
+				tool?: string;
+				state?: {
+					input?: Record<string, unknown>;
+					metadata?: Record<string, unknown>;
+				};
+			}>,
+		) => {
+			for (const part of parts) {
+				if (
+					part.type !== "tool" ||
+					!/edit|write|patch|apply|file_change|create|delete|replace/i.test(
+						part.tool ?? "",
+					)
+				)
+					continue;
+				const input = part.state?.input;
+				for (const key of [
+					"filePath",
+					"TargetFile",
+					"target_file",
+					"file_path",
+					"AbsolutePath",
+					"path",
+					"file",
+					"filename",
+				]) {
+					const value = input?.[key];
+					if (typeof value === "string" && value.trim())
+						messageFileCandidates.add(value.trim());
+				}
+			}
+		};
+		for (const message of providerMessages) rememberToolFiles(message.parts);
 		let diffs = await request<Diff[]>(
 			`/session/${current.id}/diff`,
 			current.directory,
@@ -1566,8 +1602,10 @@ export function createChatRoutes(options: {
 				Array<{
 					parts: Array<{
 						type: string;
+						tool?: string;
 						state?: {
 							status: string;
+							input?: Record<string, unknown>;
 							metadata?: {
 								filediff?: Diff;
 								files?: Array<
@@ -1582,6 +1620,7 @@ export function createChatRoutes(options: {
 					}>;
 				}>
 			>(`/session/${current.id}/message`, current.directory);
+			messages.forEach((message) => rememberToolFiles(message.parts));
 			diffs = messages.flatMap((message) =>
 				message.parts.flatMap((part) => {
 					if (part.type !== "tool" || part.state?.status !== "completed")
@@ -1609,6 +1648,105 @@ export function createChatRoutes(options: {
 			);
 		}
 		diffs = [...providerDiffs, ...diffs];
+		// OpenCode's session diff omits newly-created, still-untracked files.
+		// Include those working-tree files so the session Changes preview can
+		// show their contents before the first Git add/commit.
+		try {
+			const statusProcess = Bun.spawn(
+				["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+				{ cwd: current.directory, stdout: "pipe", stderr: "ignore" },
+			);
+			const [statusCode, statusText] = await Promise.all([
+				statusProcess.exited,
+				new Response(statusProcess.stdout).text(),
+			]);
+			if (statusCode === 0) {
+				const root = await realpath(current.directory);
+				const changed = statusText
+					.split("\0")
+					.filter((entry) => entry.length > 3 && entry[2] === " ")
+					.map((entry) => ({ status: entry.slice(0, 2), file: entry.slice(3) }))
+					.filter(
+						({ file }) =>
+							!/(^|\/)(\.env(?:\.|$)|\.netrc|\.npmrc|\.pypirc|id_rsa|id_ed25519|credentials?(?:\.[^/]*)?|secrets?(?:\.[^/]*)?|.*\.(?:pem|key|p12|pfx))$/i.test(
+								file,
+							) && !/(^|\/)(\.ssh|\.aws|\.gnupg|credentials)(\/|$)/i.test(file),
+					);
+				const candidatePaths = new Set<string>();
+				for (const candidate of messageFileCandidates) {
+					const absolute = resolve(root, candidate);
+					const file = relative(root, absolute);
+					if (!file.startsWith("../") && file !== "..")
+						candidatePaths.add(file);
+				}
+				const relevant = changed
+					.filter(
+						({ status, file }) =>
+							status === "??" ||
+							(candidatePaths.size > 0 && candidatePaths.has(file)),
+					)
+					.slice(0, 30);
+				for (const { status, file } of relevant) {
+					try {
+						const absolute = resolve(root, file);
+						const real = await realpath(absolute);
+						const relativeFile = relative(root, real);
+						if (relativeFile.startsWith("../") || relativeFile === "..")
+							continue;
+						const content = await readFile(real);
+						if (content.length > 1_000_000 || content.includes(0)) continue;
+						const text = content.toString("utf8");
+						let patch: string;
+						let additions: number;
+						let deletions = 0;
+						if (status !== "??") {
+							const gitDiff = Bun.spawn(
+								[
+									"git",
+									"--no-pager",
+									"diff",
+									"--no-ext-diff",
+									"--no-textconv",
+									"--no-color",
+									"--unified=4",
+									"HEAD",
+									"--",
+									file,
+								],
+								{ cwd: root, stdout: "pipe", stderr: "ignore" },
+							);
+							const [code, output] = await Promise.all([
+								gitDiff.exited,
+								new Response(gitDiff.stdout).text(),
+							]);
+							if (code === 0 && output.trim()) {
+								patch = output;
+								const patchLines = output.split(/\r?\n/);
+								additions = patchLines.filter(
+									(line) => line.startsWith("+") && !line.startsWith("+++"),
+								).length;
+								deletions = patchLines.filter(
+									(line) => line.startsWith("-") && !line.startsWith("---"),
+								).length;
+							} else {
+								continue;
+							}
+						} else {
+							const lines = text ? text.split(/\r?\n/) : [];
+							if (text.endsWith("\n")) lines.pop();
+							additions = lines.length;
+							patch = `diff --git a/${file} b/${file}\nnew file mode 100644\n--- /dev/null\n+++ b/${file}\n@@ -0,0 +1,${additions} @@\n${lines.map((line) => `+${line}`).join("\n")}`;
+						}
+						if (!diffs.some((diff) => diff.file === file))
+							diffs.push({ file, patch, additions, deletions });
+					} catch {
+						// A file may be removed or replaced while the preview is loading.
+					}
+				}
+			}
+		} catch {
+			// Keep provider/session diffs available if the working-tree lookup fails.
+		}
 		const grouped = new Map<string, Diff>();
 		for (const diff of diffs) {
 			if (!diff.file) continue;

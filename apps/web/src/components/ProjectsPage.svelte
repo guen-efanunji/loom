@@ -212,6 +212,16 @@ let configurePanelsOpen = $state(false);
 let previewExpanded = $state(false);
 let previewHasUnsavedChanges = $state(false);
 let gitOverview = $state<ProjectGitOverview | null>(null);
+let gitCommitMessage = $state("");
+let gitBusy = $state(false);
+let gitGeneratingMessage = $state(false);
+const commitModelSelection = $derived(model);
+let pullRequestTitle = $state("");
+let pullRequestBody = $state("");
+let pullRequestBase = $state("");
+let pullRequestDraft = $state(false);
+let pullRequestBusy = $state(false);
+let createdPullRequestUrl = $state("");
 let workspaceOverview = $state<ProjectGitOverview | null>(null);
 let workspaceLoading = $state(false);
 let pullRequestData = $state<ProjectPullRequests | null>(null);
@@ -257,6 +267,7 @@ let follow = true;
 let disposed = false;
 let timer: ReturnType<typeof setTimeout>;
 let projectRequest = 0;
+let panelProjectId = "";
 let fileRequest = 0;
 let sendingChatTabIds = $state<string[]>([]);
 const sending = $derived(sendingChatTabIds.includes(activeChatTabId));
@@ -264,6 +275,63 @@ let permissionReplying = $state<string | null>(null);
 const selectedProject = $derived(
 	projects.find((p) => p.id === selectedProjectId),
 );
+$effect(() => {
+	const projectId = selectedProjectId;
+	const panel = activePanel;
+	if (!projectId || projectId === panelProjectId) return;
+	panelProjectId = projectId;
+	panelRequest += 1;
+	panelLoading = false;
+	panelError = "";
+	gitOverview = null;
+	gitCommitMessage = "";
+	pullRequestData = null;
+	pullRequestTitle = "";
+	pullRequestBody = "";
+	pullRequestBase = "";
+	createdPullRequestUrl = "";
+	diffs = [];
+	walkthroughProjectId = "";
+	walkthroughSnapshot = null;
+	walkthroughDocument = null;
+	walkthroughDocumentFingerprint = "";
+	walkthroughStepId = "";
+	if (panel === "agents") void refreshAgentMonitor();
+	if (
+		panel === "git" ||
+		panel === "pull-requests" ||
+		panel === "walkthrough"
+	)
+		void showPanel(panel, true);
+});
+$effect(() => {
+	const panel = activePanel;
+	const currentSession = sessionId;
+	const projectId = selectedProjectId;
+	if (panel !== "changes") return;
+	const request = ++panelRequest;
+	diffs = [];
+	if (!currentSession) {
+		panelLoading = false;
+		return;
+	}
+	panelLoading = true;
+	void chat.diff(currentSession).then((result) => {
+		if (
+			!disposed &&
+			request === panelRequest &&
+			activePanel === "changes" &&
+			currentSession === sessionId &&
+			projectId === selectedProjectId
+		)
+			diffs = result;
+	}).catch((reason) => {
+		if (request === panelRequest)
+			panelError = reason instanceof Error ? reason.message : "Unable to load session changes";
+	}).finally(() => {
+		if (request === panelRequest) panelLoading = false;
+	});
+});
 $effect(() => {
 	const id = selectedProjectId;
 	if (!id) {
@@ -1398,6 +1466,83 @@ async function showPanel(panel: ChatPanelId, force = false) {
 		if (request === panelRequest) panelLoading = false;
 	}
 }
+async function generateCommitMessage() {
+	if (!selectedProjectId || !gitOverview?.files.length || gitGeneratingMessage)
+		return;
+	const separator = commitModelSelection.indexOf("/");
+	if (separator < 1 || separator === commitModelSelection.length - 1) {
+		toast.error("Choose a model to generate a commit message.");
+		return;
+	}
+	gitGeneratingMessage = true;
+	try {
+		const result = await daemon.generateProjectCommitMessage(selectedProjectId, {
+			providerId: commitModelSelection.slice(0, separator),
+			modelId: commitModelSelection.slice(separator + 1),
+		});
+		gitCommitMessage = result.message;
+		toast.success(`Commit message generated with ${result.provider.providerId}`);
+	} catch (reason) {
+		toast.error(
+			reason instanceof Error ? reason.message : "Unable to generate commit message",
+		);
+	} finally {
+		gitGeneratingMessage = false;
+	}
+}
+
+async function commitChanges(push: boolean) {
+	if (!selectedProjectId || !gitCommitMessage.trim() || gitBusy) return;
+	gitBusy = true;
+	try {
+		const result = await daemon.commitProjectGit(
+			selectedProjectId,
+			gitCommitMessage,
+			push,
+		);
+		toast.success(result.synced ? "Changes committed and synced" : "Changes committed");
+		gitCommitMessage = "";
+		gitOverview = await daemon.getProjectGit(selectedProjectId);
+		if (activePanel === "walkthrough") {
+			const snapshot = await daemon.getProjectWalkthroughSnapshot(selectedProjectId);
+			walkthroughSnapshot = snapshot.snapshot;
+			walkthroughDocument = null;
+			walkthroughDocumentFingerprint = "";
+		}
+	} catch (reason) {
+		try {
+			gitOverview = await daemon.getProjectGit(selectedProjectId);
+		} catch {
+			// Keep the original commit/push error visible in the toast.
+		}
+		toast.error(reason instanceof Error ? reason.message : "Unable to commit changes");
+	} finally {
+		gitBusy = false;
+	}
+}
+
+async function createPullRequest() {
+	if (!selectedProjectId || !pullRequestTitle.trim() || pullRequestBusy) return;
+	pullRequestBusy = true;
+	try {
+		const result = await daemon.createProjectPullRequest(selectedProjectId, {
+			title: pullRequestTitle,
+			body: pullRequestBody,
+			...(pullRequestBase.trim() ? { base: pullRequestBase.trim() } : {}),
+			draft: pullRequestDraft,
+		});
+		toast.success("Pull request created");
+		pullRequestTitle = "";
+		pullRequestBody = "";
+		createdPullRequestUrl = result.url;
+		await showPanel("pull-requests", true);
+	} catch (reason) {
+		toast.error(reason instanceof Error ? reason.message : "Unable to create pull request");
+	} finally {
+		pullRequestBusy = false;
+	}
+}
+
 function saveRailPanelPreferences() {
 	try {
 		window.localStorage.setItem(
@@ -1994,21 +2139,28 @@ async function answer(requestId: string, answers: string[][]) {
             </div>
           {:else if activePanel === "git"}
             {#if panelLoading && !gitOverview}<div class="flex items-center gap-2 py-8 text-xs text-muted-foreground"><LoaderCircle size={14} class="animate-spin" />Reading repository…</div>
+            {:else if gitOverview && !gitOverview.gitAvailable}<section class="rounded-lg border border-amber-500/25 bg-amber-500/5 p-3"><p class="text-xs font-medium text-amber-200">Git repository required</p><p class="mt-1 text-xs leading-5 text-muted-foreground">{gitOverview.gitMessage ?? "Initialize Git in this project to inspect changes, commit, or sync with a remote."}</p></section>
             {:else if gitOverview}<div class="flex flex-col gap-3">
               <section class="rounded-lg border bg-card/50 p-3"><p class="text-[11px] text-muted-foreground">Current branch</p><p class="mt-1 flex items-center gap-2 break-all text-sm font-medium"><GitBranch size={14} class="shrink-0 text-orange-300" />{gitOverview.branch}</p><p class="mt-2 text-[11px] text-muted-foreground">Default: {gitOverview.defaultBranch}</p></section>
-              {#if gitOverview.remoteUrl}<section class="rounded-lg border bg-card/50 p-3"><p class="text-[11px] text-muted-foreground">Origin</p>{#if gitOverview.remoteUrl.startsWith("https://") || gitOverview.remoteUrl.startsWith("http://")}<a href={gitOverview.remoteUrl} target="_blank" rel="noreferrer" class="mt-1 block truncate text-xs text-primary underline-offset-4 hover:underline">{gitOverview.remoteUrl}</a>{:else}<p class="mt-1 truncate font-mono text-xs text-muted-foreground">{gitOverview.remoteUrl}</p>{/if}</section>{/if}
+              {#if gitOverview.remoteUrl}<section class="rounded-lg border bg-card/50 p-3"><p class="text-[11px] text-muted-foreground">Origin</p>{#if gitOverview.remoteUrl.startsWith("https://") || gitOverview.remoteUrl.startsWith("http://")}<a href={gitOverview.remoteUrl} target="_blank" rel="noreferrer" class="mt-1 block truncate text-xs text-primary underline-offset-4 hover:underline">{gitOverview.remoteUrl}</a>{:else}<p class="mt-1 truncate font-mono text-xs text-muted-foreground">{gitOverview.remoteUrl}</p>{/if}</section>{:else}<section class="rounded-lg border border-amber-500/25 bg-amber-500/5 p-3"><p class="text-xs font-medium text-amber-200">No remote configured</p><p class="mt-1 text-xs leading-5 text-muted-foreground">You can commit locally. Add an <code>origin</code> remote to use Commit &amp; sync or create a pull request.</p></section>{/if}
               <section class="rounded-lg border bg-card/50 p-3"><p class="text-xs font-medium">Working tree</p><p class="mt-1 text-xs text-muted-foreground">{gitOverview.files.length ? `${gitOverview.files.length}${gitOverview.truncated ? "+" : ""} changed files` : "Clean"}</p></section>
               {#if gitOverview.diffStat}<pre class="overflow-auto rounded-lg border bg-background p-3 text-[11px] leading-5 text-muted-foreground">{gitOverview.diffStat}</pre>{/if}
+              <section class="rounded-lg border bg-card/50 p-3"><p class="text-xs font-medium">Commit changes</p><p class="mt-1 text-[11px] leading-5 text-muted-foreground">This includes all {gitOverview.files.length} changed and untracked files in the working tree.</p>
+                <Popover.Root bind:open={walkthroughModelOpen} onOpenChange={(open) => { walkthroughModelOpen = open; if (open) { walkthroughFavoriteModelIds = readWalkthroughModelKeys(walkthroughFavoritesKey); walkthroughRecentModelIds = readWalkthroughModelKeys(walkthroughRecentsKey); } else walkthroughModelSearch = ""; }}>
+                  <Popover.Trigger class="mt-3 flex h-9 w-full items-center justify-between gap-2 rounded-md border bg-background px-3 text-xs transition hover:bg-accent/50" aria-label="Commit message model"><span class="flex min-w-0 items-center gap-2"><span class="truncate">{catalog.models.find((item) => walkthroughModelKey(item) === commitModelSelection)?.name ?? "Select model"}</span>{#if catalog.models.find((item) => walkthroughModelKey(item) === commitModelSelection)}<Badge variant="outline" class={`model-badge model-badge--${walkthroughProviderTone(catalog.models.find((item) => walkthroughModelKey(item) === commitModelSelection)!.providerID)} shrink-0 px-1.5 text-[9px] uppercase tracking-wide`}>{catalog.models.find((item) => walkthroughModelKey(item) === commitModelSelection)!.providerID}</Badge>{/if}</span><ChevronDown size={12} class="shrink-0 text-muted-foreground" /></Popover.Trigger>
+                  <Popover.Content class="w-96 max-w-[calc(100vw-2rem)] p-0" align="end"><Command.Root><Command.Input bind:value={walkthroughModelSearch} placeholder="Search models…" /><Command.List class="max-h-96"><Command.Empty>No configured models found.</Command.Empty>{#if visibleWalkthroughFavorites.length}<Command.Group heading="Favorites">{#each visibleWalkthroughFavorites as item (walkthroughModelKey(item))}{@render walkthroughModelOption(item, "favorite")}{/each}</Command.Group>{/if}{#if visibleWalkthroughRecents.length}<Command.Separator /><Command.Group heading="Recent">{#each visibleWalkthroughRecents as item (walkthroughModelKey(item))}{@render walkthroughModelOption(item, "recent")}{/each}</Command.Group>{/if}{#each walkthroughProviderGroups as group (group.id)}<Command.Separator /><Command.Group heading={group.label}>{#each group.models as item (walkthroughModelKey(item))}{@render walkthroughModelOption(item, group.id)}{/each}</Command.Group>{/each}</Command.List></Command.Root></Popover.Content>
+                </Popover.Root>
+                <div class="mt-2 flex gap-2"><Input bind:value={gitCommitMessage} aria-label="Commit message" placeholder="Commit message" maxlength={500} /><Button variant="outline" size="icon" title={!commitModelSelection ? "Choose a model" : "Generate with AI"} aria-label="Generate commit message with AI" onclick={() => void generateCommitMessage()} disabled={!gitOverview.files.length || gitGeneratingMessage || gitBusy || !commitModelSelection}>{#if gitGeneratingMessage}<LoaderCircle size={14} class="animate-spin" />{:else}<Sparkles size={14} />{/if}</Button></div><div class="mt-2 grid grid-cols-2 gap-2"><Button variant="outline" size="sm" class="text-xs" onclick={() => void commitChanges(false)} disabled={!gitOverview.files.length || !gitCommitMessage.trim() || gitBusy || gitGeneratingMessage}>{gitBusy ? "Working…" : "Commit"}</Button><Button size="sm" class="text-xs" onclick={() => void commitChanges(true)} disabled={!gitOverview.files.length || !gitCommitMessage.trim() || gitBusy || gitGeneratingMessage || !gitOverview.remoteUrl} title={!gitOverview.remoteUrl ? "Configure an origin remote to sync" : "Commit and push changes"}>{gitBusy ? "Working…" : "Commit & sync"}</Button></div></section>
             </div>
             {:else if !panelLoading}<p class="rounded-lg border border-dashed p-4 text-xs text-muted-foreground">Repository details are unavailable.</p>{/if}
           {:else if activePanel === "pull-requests"}
-            {#if panelLoading && !pullRequestData}<div class="flex items-center gap-2 py-8 text-xs text-muted-foreground"><LoaderCircle size={14} class="animate-spin" />Loading pull requests…</div>{:else if pullRequestData?.available && pullRequestData.pullRequests.length}<div class="flex flex-col gap-2">{#each pullRequestData.pullRequests as pr (pr.number)}<a href={pr.url} target="_blank" rel="noreferrer" class="block rounded-lg border bg-card/50 p-3 transition hover:border-primary/40 hover:bg-accent/30"><div class="flex items-center gap-2"><Badge variant="outline" class="shrink-0">#{pr.number}</Badge><span class="truncate text-[11px] text-muted-foreground">{pr.state}</span></div><p class="mt-2 text-sm font-medium leading-5">{pr.title}</p><p class="mt-1 truncate font-mono text-[10px] text-muted-foreground">{pr.headRefName}</p></a>{/each}</div>{:else if pullRequestData?.available}<p class="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">No open pull requests found for this repository.</p>{:else if pullRequestData?.message}<section class="flex flex-col gap-3 rounded-lg border border-dashed p-4"><GitPullRequest size={17} class="text-muted-foreground" /><p class="text-xs leading-5 text-muted-foreground">{pullRequestData.message}</p><p class="text-[11px] leading-5 text-muted-foreground">Install and authenticate GitHub CLI with <code class="rounded bg-muted px-1 py-0.5">gh auth login</code> to load pull requests.</p></section>{/if}
+            {#if panelLoading && !pullRequestData}<div class="flex items-center gap-2 py-8 text-xs text-muted-foreground"><LoaderCircle size={14} class="animate-spin" />Loading pull requests…</div>{:else if pullRequestData?.available}<form class="mb-3 space-y-2 rounded-lg border bg-card/50 p-3" onsubmit={(event) => { event.preventDefault(); void createPullRequest(); }}><p class="text-xs font-medium">Create pull request</p>{#if createdPullRequestUrl}<a href={createdPullRequestUrl} target="_blank" rel="noreferrer" class="block text-xs text-primary underline">Open the pull request that was just created</a>{/if}<Input bind:value={pullRequestTitle} aria-label="Pull request title" placeholder="Title" maxlength={256} /><Input bind:value={pullRequestBase} aria-label="Base branch" placeholder={`Base branch · ${gitOverview?.defaultBranch || "default"}`} /><textarea bind:value={pullRequestBody} aria-label="Pull request description" placeholder="What changed and why?" class="min-h-24 w-full resize-y rounded-md border bg-background px-3 py-2 text-xs outline-none focus-visible:ring-1 focus-visible:ring-ring"></textarea><label class="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" bind:checked={pullRequestDraft} />Draft</label><Button type="submit" size="sm" class="w-full" disabled={!pullRequestTitle.trim() || pullRequestBusy}>{pullRequestBusy ? "Creating…" : "Create pull request"}</Button></form>{#if pullRequestData.pullRequests.length}<div class="flex flex-col gap-2">{#each pullRequestData.pullRequests as pr (pr.number)}<a href={pr.url} target="_blank" rel="noreferrer" class="block rounded-lg border bg-card/50 p-3 transition hover:border-primary/40 hover:bg-accent/30"><div class="flex items-center gap-2"><Badge variant="outline" class="shrink-0">#{pr.number}</Badge><span class="truncate text-[11px] text-muted-foreground">{pr.state}</span></div><p class="mt-2 text-sm font-medium leading-5">{pr.title}</p><p class="mt-1 truncate font-mono text-[10px] text-muted-foreground">{pr.headRefName}</p></a>{/each}</div>{:else}<p class="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">No open pull requests found for this repository.</p>{/if}{:else if pullRequestData?.message}<section class="flex flex-col gap-3 rounded-lg border border-dashed p-4"><GitPullRequest size={17} class="text-muted-foreground" /><p class="text-xs leading-5 text-muted-foreground">{pullRequestData.message}</p><p class="text-[11px] leading-5 text-muted-foreground">Install and authenticate GitHub CLI with <code class="rounded bg-muted px-1 py-0.5">gh auth login</code> to load or create pull requests.</p></section>{/if}
           {:else if activePanel === "walkthrough"}
             <div class="flex min-h-full flex-col gap-3">
               {#if panelLoading && !walkthroughSnapshot}<div role="status" class="flex items-center gap-2 py-8 text-xs text-muted-foreground"><LoaderCircle size={14} class="animate-spin" />Capturing repository changes…</div>{/if}
               {#if walkthroughError}<p role="alert" class="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-xs text-destructive">{walkthroughError}</p>{/if}
               <div class="flex flex-wrap items-center gap-2 rounded-lg border bg-card/50 p-2">
-                <Badge variant="outline" class="gap-1"><FileDiffIcon size={12} />All uncommitted</Badge>
+                <Badge variant="outline" class="gap-1"><FileDiffIcon size={12} />{walkthroughSnapshot?.files.length ?? 0} uncommitted files</Badge><span class="text-[10px] text-muted-foreground">Unchanged project files are not included.</span>
                 <Select.Root type="single" bind:value={walkthroughLanguage}>
                   <Select.Trigger class="h-8 w-auto min-w-[130px] gap-2 border-0 bg-transparent px-2 text-xs shadow-none" aria-label="Walkthrough language">{walkthroughLanguage === "en" ? "English" : "Bahasa Indonesia"}</Select.Trigger>
                   <Select.Content><Select.Item value="en">English</Select.Item><Select.Item value="id">Bahasa Indonesia</Select.Item></Select.Content>

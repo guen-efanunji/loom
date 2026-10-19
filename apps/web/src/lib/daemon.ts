@@ -555,6 +555,19 @@ export const daemon = {
 		),
 	getProjectGit: (id: string) =>
 		request<ProjectGitOverview>(`/api/projects/${id}/git`),
+	generateProjectCommitMessage: (
+		id: string,
+		model: { providerId: string; modelId: string },
+	) =>
+		request<{ message: string; provider: { providerId: string; modelId: string } }>(
+			`/api/projects/${id}/git/commit-message`,
+			{ method: "POST", body: JSON.stringify({ model }) },
+		),
+	commitProjectGit: (id: string, message: string, push = false) =>
+		request<{ committed: boolean; synced: boolean; output: string }>(
+			`/api/projects/${id}/git/commit`,
+			{ method: "POST", body: JSON.stringify({ message, push }) },
+		),
 	checkoutProjectBranch: (id: string, branch: string) =>
 		request<{ branch: string }>(`/api/projects/${id}/git/checkout`, {
 			method: "POST",
@@ -570,6 +583,14 @@ export const daemon = {
 		),
 	getProjectPullRequests: (id: string) =>
 		request<ProjectPullRequests>(`/api/projects/${id}/pull-requests`),
+	createProjectPullRequest: (
+		id: string,
+		input: { title: string; body: string; base?: string; draft: boolean },
+	) =>
+		request<{ url: string }>(`/api/projects/${id}/pull-requests`, {
+			method: "POST",
+			body: JSON.stringify(input),
+		}),
 	getProjectWalkthroughSnapshot: (id: string) =>
 		request<{ snapshot: WalkthroughSnapshot }>(
 			`/api/projects/${id}/walkthrough/snapshot`,
@@ -761,7 +782,11 @@ export const daemon = {
 			`/api/custom-providers/${encodeURIComponent(id)}`,
 			{ method: "DELETE" },
 		),
-	createCustomProvider: (input: { name: string; baseUrl: string; apiKey: string }) =>
+	createCustomProvider: (input: {
+		name: string;
+		baseUrl: string;
+		apiKey: string;
+	}) =>
 		request<{
 			provider: { id: string; name: string; baseUrl: string; status: string };
 			models: Array<{
