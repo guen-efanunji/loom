@@ -1525,30 +1525,37 @@ export function createChatRoutes(options: {
 			deletions: number;
 		};
 		const providerTurn = providerSessions.get(current.id);
-		if (providerTurn) {
-			const activityDiffs = providerTurn.assistant.parts.flatMap((part) => {
-				const metadata = part.state?.metadata;
-				if (!metadata) return [];
-				const filediff = metadata.filediff as Diff | undefined;
-				if (filediff?.file) return [filediff];
-				const files = metadata.files;
-				return Array.isArray(files)
-					? files.flatMap((file) => {
-							if (!file || typeof file !== "object") return [];
-							const item = file as Diff & {
-								filePath?: string;
-								relativePath?: string;
-								diff?: string;
-							};
-							const path = item.file ?? item.relativePath ?? item.filePath;
-							return path
-								? [{ ...item, file: path, patch: item.patch ?? item.diff }]
-								: [];
-						})
-					: [];
-			});
-			return c.json(activityDiffs);
-		}
+		if (providerTurn) await updateProviderTurn(providerTurn);
+		const readMessageDiffs = (messages: ProviderMessage[]): Diff[] =>
+			messages.flatMap((message) =>
+				message.parts.flatMap((part) => {
+					if (part.type !== "tool" || part.state?.status !== "completed")
+						return [];
+					const metadata = part.state.metadata;
+					if (!metadata) return [];
+					const filediff = metadata.filediff as Diff | undefined;
+					if (filediff?.file) return [filediff];
+					const files = metadata.files;
+					return Array.isArray(files)
+						? files.flatMap((file) => {
+								if (!file || typeof file !== "object") return [];
+								const item = file as Diff & {
+									filePath?: string;
+									relativePath?: string;
+									diff?: string;
+								};
+								const path =
+									item.file ?? item.relativePath ?? item.filePath;
+								return path
+									? [{ ...item, file: path, patch: item.patch ?? item.diff }]
+									: [];
+							})
+						: [];
+				}),
+			);
+		const providerMessages =
+			(await options.providerHistory?.get<ProviderMessage[]>(current.id)) ?? [];
+		const providerDiffs = readMessageDiffs(providerMessages);
 		let diffs = await request<Diff[]>(
 			`/session/${current.id}/diff`,
 			current.directory,
@@ -1575,20 +1582,33 @@ export function createChatRoutes(options: {
 					}>;
 				}>
 			>(`/session/${current.id}/message`, current.directory);
-			diffs = messages.flatMap((m) =>
-				m.parts.flatMap((p) => {
-					if (p.type !== "tool" || p.state?.status !== "completed") return [];
-					const metadata = p.state.metadata;
-					return metadata?.filediff
-						? [metadata.filediff]
-						: (metadata?.files ?? []).map((f) => ({
-								...f,
-								file: f.file ?? f.relativePath ?? f.filePath,
-								patch: f.patch ?? f.diff,
-							}));
+			diffs = messages.flatMap((message) =>
+				message.parts.flatMap((part) => {
+					if (part.type !== "tool" || part.state?.status !== "completed")
+						return [];
+					const metadata = part.state.metadata;
+					if (!metadata) return [];
+					const filediff = metadata.filediff as Diff | undefined;
+					if (filediff) return [filediff];
+					const files = metadata.files;
+					return Array.isArray(files)
+						? files.map((file) => {
+								const item = file as Diff & {
+									filePath?: string;
+									relativePath?: string;
+									diff?: string;
+								};
+								return {
+									...item,
+									file: item.file ?? item.relativePath ?? item.filePath,
+									patch: item.patch ?? item.diff,
+								};
+							})
+						: [];
 				}),
 			);
 		}
+		diffs = [...providerDiffs, ...diffs];
 		const grouped = new Map<string, Diff>();
 		for (const diff of diffs) {
 			if (!diff.file) continue;

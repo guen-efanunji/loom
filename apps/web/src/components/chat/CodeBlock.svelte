@@ -10,10 +10,12 @@ let {
 	code,
 	language,
 	maxHeight = "max-h-80",
+	scrollable = true,
 }: {
 	code: string;
 	language?: string;
 	maxHeight?: string;
+	scrollable?: boolean;
 } = $props();
 
 let copied = $state(false);
@@ -93,7 +95,7 @@ const lines = $derived(safe.split("\n"));
 			{#if copied}<Check size={13} />{:else}<Copy size={13} />{/if}
 		</Button>
 	</div>
-	<pre class={`nice-scroll overflow-auto p-0 text-xs leading-6 ${maxHeight}`}><code class="hljs block bg-transparent p-3">{#each lines as line, i}<span class="code-line" data-line={i + 1}>{@html line || " "}</span>{/each}</code></pre>
+	<pre class={`nice-scroll p-0 text-xs leading-6 ${scrollable ? "overflow-auto" : "overflow-visible"} ${maxHeight}`}><code class="hljs block bg-transparent p-3">{#each lines as line, i}<span class="code-line" data-line={i + 1}>{@html line || " "}</span>{/each}</code></pre>
 </div>
 
 <style>

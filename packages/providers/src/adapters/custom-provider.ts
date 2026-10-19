@@ -39,7 +39,7 @@ export type ImportedCustomModel = {
 	outputLimit?: number;
 };
 
-export type CustomOpenCodeProviderConfig = {
+export type CustomProviderConfig = {
 	id: string;
 	name: string;
 	baseUrl: string;
@@ -203,8 +203,8 @@ export function ensureOpenAiSseTerminator(
 	);
 }
 
-export function openCodeProviderConfig(
-	provider: CustomOpenCodeProviderConfig,
+export function customProviderConfig(
+	provider: CustomProviderConfig,
 	overrides: { baseUrl?: string; apiKey?: string } = {},
 ) {
 	const baseUrl = overrides.baseUrl ?? provider.baseUrl;
@@ -647,7 +647,7 @@ function describeLineChanges(before: string, after: string) {
 	};
 }
 
-export class CustomOpenCodeProviderAdapter implements CliProviderAdapter {
+export class CustomProviderAdapter implements CliProviderAdapter {
 	readonly definition: ProviderDefinition;
 	private readonly runs = new Map<
 		string,
@@ -664,7 +664,7 @@ export class CustomOpenCodeProviderAdapter implements CliProviderAdapter {
 		}
 	>();
 
-	constructor(readonly config: CustomOpenCodeProviderConfig) {
+	constructor(readonly config: CustomProviderConfig) {
 		this.definition = {
 			id: config.id,
 			name: config.name,

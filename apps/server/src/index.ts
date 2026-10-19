@@ -5,8 +5,10 @@ import {
 	mkdir,
 	readdir,
 	readFile,
+	stat,
 	writeFile,
 } from "node:fs/promises";
+import { homedir } from "node:os";
 import {
 	basename,
 	dirname,
@@ -78,13 +80,13 @@ import {
 } from "@loom/protocol";
 import {
 	createDefaultProviderRegistry,
-	CustomOpenCodeProviderAdapter,
+	CustomProviderAdapter,
 	discoverCustomModels,
 	ProviderManager,
 	readPrompt,
 	testCustomModel,
 } from "@loom/providers";
-import type { CustomOpenCodeProviderConfig } from "@loom/providers";
+import type { CustomProviderConfig } from "@loom/providers";
 import type {
 	AgentModel,
 	AgentRuntime,
@@ -588,7 +590,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			),
 		}),
 	);
-	let customProviderConfigs: CustomOpenCodeProviderConfig[] = [];
+	let customProviderConfigs: CustomProviderConfig[] = [];
 	try {
 		customProviderConfigs = storedCustomProviderSchema.parse(
 			JSON.parse(await readFile(customProviderPath, "utf8")),
@@ -600,7 +602,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		openCodeRuntime,
 	);
 	for (const provider of customProviderConfigs)
-		providerRegistry.register(new CustomOpenCodeProviderAdapter(provider));
+		providerRegistry.register(new CustomProviderAdapter(provider));
 	const providerManager = new ProviderManager({
 		registry: providerRegistry,
 		onEvent: (event) => {
@@ -1623,6 +1625,29 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			return errorResponse(c, error);
 		}
 	});
+	app.get("/api/filesystem/directories", async (c) => {
+		try {
+			const requestedPath = c.req.query("path")?.trim();
+			const showHidden = c.req.query("showHidden") === "true";
+			const directory = resolve(requestedPath || homedir());
+			const details = await stat(directory);
+			if (!details.isDirectory())
+				return c.json({ error: { message: "Path is not a directory." } }, 400);
+			const entries = await readdir(directory, { withFileTypes: true });
+			return c.json({
+				path: directory,
+				parentPath: dirname(directory) === directory ? null : dirname(directory),
+				entries: entries
+					.filter((entry) => entry.isDirectory())
+					.filter((entry) => showHidden || !entry.name.startsWith("."))
+					.sort((a, b) => a.name.localeCompare(b.name))
+					.slice(0, 500)
+					.map((entry) => ({ name: entry.name, path: join(directory, entry.name) })),
+			});
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
 	app.get("/api/projects", async (c) =>
 		c.json((await repos.projects.list()).map(recordToProject)),
 	);
@@ -2327,7 +2352,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		return { ...input, baseUrl: url.toString().replace(/\/$/, "") };
 	};
 	const persistCustomProviders = async (
-		providers: CustomOpenCodeProviderConfig[],
+		providers: CustomProviderConfig[],
 	) => {
 		await mkdir(dirname(customProviderPath), { recursive: true, mode: 0o700 });
 		await writeFile(
@@ -2391,7 +2416,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 
 			const adapter = providerManager.registry.get(providerId);
 			if (adapter) {
-				if (adapter instanceof CustomOpenCodeProviderAdapter) {
+				if (adapter instanceof CustomProviderAdapter) {
 					await testCustomModel(
 						adapter.config.baseUrl,
 						adapter.config.apiKey,
@@ -2503,14 +2528,14 @@ export async function createApp(options: DaemonAppOptions = {}) {
 				.replace(/[^a-z0-9]+/g, "-")
 				.replace(/^-|-$/g, "")
 				.slice(0, 28);
-			const provider: CustomOpenCodeProviderConfig = {
+			const provider: CustomProviderConfig = {
 				id: `loom_custom_${slug || "provider"}_${randomUUID().slice(0, 8)}`,
 				name: input.name,
 				baseUrl: input.baseUrl,
 				apiKey: input.apiKey,
 				models,
 			};
-			const adapter = new CustomOpenCodeProviderAdapter(provider);
+			const adapter = new CustomProviderAdapter(provider);
 			providerRegistry.register(adapter);
 			const connection = await providerManager.refresh(provider.id, {
 				refreshModels: true,
@@ -2547,7 +2572,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			const input = parseCustomProviderInput(await jsonBody(c));
 			const apiKey = input.apiKey || current.apiKey;
 			const models = await discoverCustomModels(input.baseUrl, apiKey);
-			const updated: CustomOpenCodeProviderConfig = {
+			const updated: CustomProviderConfig = {
 				...current,
 				name: input.name,
 				baseUrl: input.baseUrl,
@@ -2555,7 +2580,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 				models,
 			};
 			providerRegistry.unregister(providerId);
-			providerRegistry.register(new CustomOpenCodeProviderAdapter(updated));
+			providerRegistry.register(new CustomProviderAdapter(updated));
 			swapped = true;
 			const connection = await providerManager.refresh(providerId, {
 				refreshModels: true,
@@ -2580,7 +2605,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			if (swapped) {
 				try {
 					providerRegistry.unregister(providerId);
-					providerRegistry.register(new CustomOpenCodeProviderAdapter(current));
+					providerRegistry.register(new CustomProviderAdapter(current));
 					await providerManager.refresh(providerId, { refreshModels: true });
 				} catch {}
 			}

@@ -8,6 +8,7 @@ import {
 	Columns3,
 	FileCode,
 	FileDiff as FileDiffIcon,
+	EllipsisVertical,
 	Folder,
 	FolderPlus,
 	GitBranch,
@@ -65,6 +66,7 @@ import { Input } from "$lib/components/ui/input";
 import * as Marker from "$lib/components/ui/marker";
 import * as Popover from "$lib/components/ui/popover";
 import * as Select from "$lib/components/ui/select";
+import * as ScrollArea from "$lib/components/ui/scroll-area";
 import * as Tabs from "$lib/components/ui/tabs";
 import {
 	type CustomAgentMonitorItem,
@@ -88,6 +90,7 @@ import Composer from "./chat/Composer.svelte";
 import QuestionCard from "./chat/QuestionCard.svelte";
 import SplitChatWorkspace from "./chat/SplitChatWorkspace.svelte";
 import Turn from "./chat/Turn.svelte";
+import CodeBlock from "./chat/CodeBlock.svelte";
 import KanbanBoard from "./KanbanBoard.svelte";
 import TerminalPanel from "./TerminalPanel.svelte";
 import WorkspaceCodePreview from "./WorkspaceCodePreview.svelte";
@@ -127,6 +130,11 @@ let aboutOpen = $state(false);
 let renameOpen = $state(false);
 let renameTitle = $state("");
 let renameTarget = $state("");
+let projectRenameOpen = $state(false);
+let projectRenameTarget = $state<Project | null>(null);
+let projectRenameName = $state("");
+let projectDeleteOpen = $state(false);
+let projectDeleteTarget = $state<Project | null>(null);
 let deleteTarget = $state<ChatSession | null>(null);
 let deleteSessionOpen = $state(false);
 type ViewMode = "chat" | "kanban";
@@ -1597,6 +1605,38 @@ async function removeSession() {
 		toast.error(reason instanceof Error ? reason.message : "Delete failed");
 	}
 }
+function openProjectRename(project: Project) {
+	projectRenameTarget = project;
+	projectRenameName = project.name;
+	projectRenameOpen = true;
+}
+async function renameProject() {
+	const project = projectRenameTarget;
+	const name = projectRenameName.trim();
+	if (!project || !name) return;
+	try {
+		await daemon.updateProject(project.id, { name });
+		await refreshProjects();
+		projectRenameOpen = false;
+		projectRenameTarget = null;
+		toast.success("Project renamed");
+	} catch (reason) {
+		toast.error(reason instanceof Error ? reason.message : "Unable to rename project");
+	}
+}
+async function removeProject() {
+	const project = projectDeleteTarget;
+	if (!project) return;
+	try {
+		await daemon.deleteProject(project.id);
+		projectDeleteOpen = false;
+		projectDeleteTarget = null;
+		await refreshProjects();
+		toast.success("Project removed from Loom");
+	} catch (reason) {
+		toast.error(reason instanceof Error ? reason.message : "Unable to remove project");
+	}
+}
 async function refreshBoard() {
 	try {
 		legacyTasks = await daemon.listTasks();
@@ -1769,7 +1809,7 @@ async function answer(requestId: string, answers: string[][]) {
         {#if !filteredSessions.length}<p class="px-2 py-2 text-xs text-muted-foreground">{search ? "No matching conversations." : "Your conversations will appear here."}</p>{/if}
         {#each projects as project}
           {@const selected = project.id === selectedProjectId}
-          <section class="mt-5"><div class={`flex items-center rounded-md ${selected ? "bg-accent/40" : ""}`}><Button variant="ghost" size="icon" class="size-6" aria-label={`Toggle ${project.name}`} aria-expanded={!collapsed.includes(project.id)} onclick={() => collapsed = collapsed.includes(project.id) ? collapsed.filter((id) => id !== project.id) : [...collapsed, project.id]}><ChevronDown size={13} class={collapsed.includes(project.id) ? "-rotate-90" : ""} /></Button><Button variant="ghost" class="h-8 min-w-0 flex-1 justify-start bg-transparent px-1 text-xs font-medium hover:bg-transparent" onclick={() => newSession(project.id)}><Folder size={14} class="text-teal-400" /><span class="truncate">{project.name}</span></Button><Button href={`/project/${project.id}/canvas`} variant="ghost" size="icon" class="size-6" aria-label={`Open canvas for ${project.name}`} title="Design canvas"><Sparkles size={12} /></Button><Button href={`/?project=${project.id}&view=kanban`} variant="ghost" size="icon" class="size-6" aria-label={`Open task board for ${project.name}`} title="Task board"><Columns3 size={12} /></Button></div>
+          <section class="mt-5"><div class={`group relative flex items-center rounded-md ${selected ? "bg-accent/40" : ""}`}><Button variant="ghost" size="icon" class="size-6" aria-label={`Toggle ${project.name}`} aria-expanded={!collapsed.includes(project.id)} onclick={() => collapsed = collapsed.includes(project.id) ? collapsed.filter((id) => id !== project.id) : [...collapsed, project.id]}><ChevronDown size={13} class={collapsed.includes(project.id) ? "-rotate-90" : ""} /></Button><Button variant="ghost" class="h-8 min-w-0 flex-1 justify-start bg-transparent px-1 text-xs font-medium hover:bg-transparent" onclick={() => newSession(project.id)}><Folder size={14} class="text-teal-400" /><span class="truncate">{project.name}</span></Button><Button variant="ghost" size="icon" class="size-6" title={`New session in ${project.name}`} aria-label={`New session in ${project.name}`} onclick={() => newSession(project.id)}><Plus size={13} /></Button><details class="group/project-menu relative"><summary class="grid size-6 cursor-pointer list-none place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label={`Project menu for ${project.name}`} title="Project options"><EllipsisVertical size={14} /></summary><div class="absolute right-0 top-7 z-50 min-w-44 rounded-md border bg-popover p-1 text-popover-foreground shadow-lg"><button type="button" class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent" onclick={(event) => { (event.currentTarget.closest('details') as HTMLDetailsElement).open = false; newSession(project.id); }}><Plus size={13} />New session</button><button type="button" class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent" onclick={(event) => { (event.currentTarget.closest('details') as HTMLDetailsElement).open = false; openProjectRename(project); }}><Pencil size={13} />Edit project</button><button type="button" class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs text-destructive hover:bg-destructive/10" onclick={(event) => { (event.currentTarget.closest('details') as HTMLDetailsElement).open = false; projectDeleteTarget = project; projectDeleteOpen = true; }}><Trash2 size={13} />Delete project</button></div></details></div>
             {#if !collapsed.includes(project.id)}<div class="ml-3 border-l pl-3">{#each filteredSessions.filter((s) => s.projectId === project.id) as session}
               {@const active = session.id === sessionId}
               <div class={`group flex h-8 items-center rounded-md pr-1 ${active ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-accent/50"}`}>
@@ -1871,11 +1911,13 @@ async function answer(requestId: string, answers: string[][]) {
                 {#if !activeMonitorTasks.length}<p class="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">No tasks are running for this project.</p>
                 {:else}<div class="space-y-2">{#each activeMonitorTasks as task (task.id)}
                   {@const activities = monitorTaskActivities[task.id] ?? []}
+                  {@const executor = task.executor}
+                  {@const assignedAgent = executor?.kind === "agent" ? monitorAgents.find((agent) => agent.id === executor.agentId)?.label : null}
                   <a href={`/task/${encodeURIComponent(task.id)}`} class="block rounded-lg border bg-card/40 p-3 transition-colors hover:bg-accent/40">
                     <div class="flex items-center justify-between gap-2"><p class="truncate text-xs font-medium">{task.title}</p><span class="inline-flex shrink-0 items-center gap-1.5 text-[10px] font-medium text-amber-300"><span class="size-2 animate-pulse rounded-full bg-amber-300"></span>{task.status === "preparing" ? "Preparing" : "Running"}</span></div>
                     {#if activities.length}<p class="mt-1 truncate text-[10px] leading-4 text-muted-foreground">Activity · {activities.at(-1)?.tool} · {activities.at(-1)?.status}</p>{/if}
 					<p class="mt-1 line-clamp-2 text-[10px] leading-4 text-muted-foreground">{monitorOutputPreview(task.id)}</p>
-					{#if task.executor?.kind === "agent"}<p class="mt-1 text-[10px] text-muted-foreground">Agent · {monitorAgents.find((agent) => agent.id === task.executor?.agentId)?.label ?? "assigned agent"}</p>{:else if task.executor?.kind === "direct"}<p class="mt-1 text-[10px] text-muted-foreground">Provider · {task.executor.providerId}</p>{:else}<p class="mt-1 text-[10px] text-muted-foreground">Default task executor</p>{/if}
+					{#if executor?.kind === "agent"}<p class="mt-1 text-[10px] text-muted-foreground">Agent · {assignedAgent ?? "assigned agent"}</p>{:else if executor?.kind === "direct"}<p class="mt-1 text-[10px] text-muted-foreground">Provider · {executor.providerId}</p>{:else}<p class="mt-1 text-[10px] text-muted-foreground">Default task executor</p>{/if}
                   </a>
                 {/each}</div>{/if}
               </section>
@@ -2058,9 +2100,11 @@ async function answer(requestId: string, answers: string[][]) {
 		</Dialog.Footer>
 	</Dialog.Content>
 </Dialog.Root>
-<Dialog.Root bind:open={addProjectOpen}><Dialog.Content><Dialog.Header><Dialog.Title>Add project</Dialog.Title><Dialog.Description>Connect a local Git repository to OpenCode.</Dialog.Description></Dialog.Header><AddProjectForm oncreated={() => { addProjectOpen = false; void retryConnection(); }} /></Dialog.Content></Dialog.Root>
+<Dialog.Root bind:open={addProjectOpen}><Dialog.Content class="sm:max-w-2xl"><Dialog.Header><Dialog.Title>Add project directory</Dialog.Title><Dialog.Description>Choose a folder on the machine running Loom’s local daemon.</Dialog.Description></Dialog.Header><AddProjectForm oncreated={() => { addProjectOpen = false; void retryConnection(); }} /></Dialog.Content></Dialog.Root>
 <Dialog.Root bind:open={worktreeDialogOpen}><Dialog.Content><Dialog.Header><Dialog.Title>Create worktree</Dialog.Title><Dialog.Description>Create an isolated checkout on a new branch, then use it as this project’s active workspace.</Dialog.Description></Dialog.Header><form class="space-y-4" onsubmit={(event) => { event.preventDefault(); void createProjectWorktree(); }}><Input bind:value={worktreeBranchName} aria-label="New branch name" placeholder="feature/my-change" maxlength={240} /><Dialog.Footer><Dialog.Close class={buttonVariants({ variant: "outline" })}>Cancel</Dialog.Close><Button type="submit" disabled={!worktreeBranchName.trim() || worktreeCreating}>{worktreeCreating ? "Creating…" : "Create worktree"}</Button></Dialog.Footer></form></Dialog.Content></Dialog.Root>
 <Dialog.Root bind:open={renameOpen}><Dialog.Content><Dialog.Header><Dialog.Title>Rename session</Dialog.Title><Dialog.Description>Choose a title you can find in the sidebar.</Dialog.Description></Dialog.Header><form class="space-y-4" onsubmit={(event) => { event.preventDefault(); void rename(); }}><Input aria-label="Session title" bind:value={renameTitle} maxlength={200} /><Dialog.Footer><Button type="submit" disabled={!renameTitle.trim()}>Save title</Button></Dialog.Footer></form></Dialog.Content></Dialog.Root>
+<Dialog.Root bind:open={projectRenameOpen}><Dialog.Content><Dialog.Header><Dialog.Title>Edit project name</Dialog.Title><Dialog.Description>This only changes how the workspace is named in Loom.</Dialog.Description></Dialog.Header><form class="space-y-4" onsubmit={(event) => { event.preventDefault(); void renameProject(); }}><Input aria-label="Project name" bind:value={projectRenameName} maxlength={120} /><Dialog.Footer><Dialog.Close class={buttonVariants({ variant: "outline" })}>Cancel</Dialog.Close><Button type="submit" disabled={!projectRenameName.trim()}>Save changes</Button></Dialog.Footer></form></Dialog.Content></Dialog.Root>
+<AlertDialog.Root bind:open={projectDeleteOpen}><AlertDialog.Content><AlertDialog.Header><AlertDialog.Title>Delete project from Loom?</AlertDialog.Title><AlertDialog.Description>“{projectDeleteTarget?.name}” will be removed from Loom’s workspace list. Its folder and files on disk will stay untouched.</AlertDialog.Description></AlertDialog.Header><AlertDialog.Footer><AlertDialog.Cancel>Cancel</AlertDialog.Cancel><AlertDialog.Action onclick={() => void removeProject()}>Delete project</AlertDialog.Action></AlertDialog.Footer></AlertDialog.Content></AlertDialog.Root>
 <AlertDialog.Root bind:open={deleteSessionOpen}>
 	<AlertDialog.Content>
 		<AlertDialog.Header>
@@ -2076,5 +2120,5 @@ async function answer(requestId: string, answers: string[][]) {
 <Dialog.Root bind:open={aboutOpen}><Dialog.Content><Dialog.Header><Dialog.Title>About Loom</Dialog.Title><Dialog.Description>Your local workspace for conversations with OpenCode.</Dialog.Description></Dialog.Header><p class="text-sm leading-6 text-muted-foreground">Chats are saved in OpenCode. Use @ to attach project files or agents. The Changes panel shows file edits; task worktrees are available from the sidebar.</p><Badge variant="outline">{connected ? "OpenCode connected" : "Connection unavailable"}</Badge></Dialog.Content></Dialog.Root>
 <Dialog.Root bind:open={fileOpen}><Dialog.Content class="flex max-h-[85svh] flex-col overflow-hidden sm:max-w-5xl"><Dialog.Header><Dialog.Title class="truncate pr-8">{fileName || "Session changes"}</Dialog.Title><Dialog.Description>{fileName ? "Inspect file content and changes made in this session." : `${diffs.length} changed files in this session.`}</Dialog.Description></Dialog.Header>
   {#if fileLoading}<p class="py-6 text-sm text-muted-foreground">Loading file…</p>{:else if fileError}<p role="alert" class="text-sm text-destructive">{fileError}</p>{:else if !fileName}<div class="min-h-0 overflow-auto">{#each diffs as diff}<Button variant="ghost" class="h-auto w-full justify-start py-3" onclick={() => showFiles(diff.file)}><FileCode size={15} /><span class="min-w-0 flex-1 truncate text-left">{diff.file}</span><span class="text-xs text-emerald-400">+{diff.additions}</span><span class="text-xs text-red-400">−{diff.deletions}</span></Button>{/each}{#if !diffs.length}<p class="py-8 text-center text-sm text-muted-foreground">No file changes in this session yet.</p>{/if}</div>
-  {:else}<Tabs.Root bind:value={fileTab} class="flex min-h-0 flex-1 flex-col"><Tabs.List><Tabs.Trigger value="changes" disabled={!selectedDiff}>Changes</Tabs.Trigger><Tabs.Trigger value="content">File content</Tabs.Trigger></Tabs.List><Tabs.Content value="changes" class="min-h-0 overflow-auto">{#if selectedDiff?.patch}<div class="overflow-auto rounded-lg border bg-background"><pre class="min-w-fit py-3 text-xs leading-6">{#each selectedDiff.patch.split("\n") as line}<div class={`min-h-6 px-4 ${line.startsWith("+") ? "bg-emerald-500/10 text-emerald-300" : line.startsWith("-") ? "bg-red-500/10 text-red-300" : line.startsWith("@@") ? "bg-blue-500/10 text-blue-300" : "text-muted-foreground"}`}>{line || " "}</div>{/each}</pre></div>{:else if selectedDiff}<div class="grid min-w-[640px] grid-cols-2 divide-x rounded-lg border"><div><p class="sticky top-0 border-b bg-card p-2 text-xs text-red-300">Before · −{selectedDiff.deletions}</p><pre class="overflow-auto bg-red-500/5 p-3 text-xs leading-6">{selectedDiff.before || "(empty)"}</pre></div><div><p class="sticky top-0 border-b bg-card p-2 text-xs text-emerald-300">After · +{selectedDiff.additions}</p><pre class="overflow-auto bg-emerald-500/5 p-3 text-xs leading-6">{selectedDiff.after || "(empty)"}</pre></div></div>{/if}</Tabs.Content><Tabs.Content value="content" class="min-h-0 overflow-auto"><pre class="rounded-lg border bg-background p-4 text-xs leading-6">{fileContent || "(empty file)"}</pre></Tabs.Content></Tabs.Root><Dialog.Footer><Button variant="outline" onclick={() => { fileName = ""; fileContent = ""; }}>All changes</Button><Button onclick={() => { draft = `Please update @${fileName}: `; fileOpen = false; }}>Discuss this file</Button></Dialog.Footer>{/if}
+  {:else}<Tabs.Root bind:value={fileTab} class="flex min-h-0 flex-1 flex-col"><Tabs.List><Tabs.Trigger value="changes" disabled={!selectedDiff}>Changes</Tabs.Trigger><Tabs.Trigger value="content">File content</Tabs.Trigger></Tabs.List><Tabs.Content value="changes" class="min-h-0 flex-1">{#if selectedDiff?.patch}<ScrollArea.Root class="h-full min-h-0 rounded-lg border bg-background" orientation="both"><pre class="min-w-fit py-3 text-xs leading-6">{#each selectedDiff.patch.split("\n") as line}<div class={`min-h-6 px-4 ${line.startsWith("+") ? "bg-emerald-500/10 text-emerald-300" : line.startsWith("-") ? "bg-red-500/10 text-red-300" : line.startsWith("@@") ? "bg-blue-500/10 text-blue-300" : "text-muted-foreground"}`}>{line || " "}</div>{/each}</pre></ScrollArea.Root>{:else if selectedDiff}<ScrollArea.Root class="h-full min-h-0 rounded-lg border" orientation="both"><div class="grid min-w-[640px] grid-cols-2 divide-x"><div><p class="sticky top-0 border-b bg-card p-2 text-xs text-red-300">Before · −{selectedDiff.deletions}</p><pre class="bg-red-500/5 p-3 text-xs leading-6">{selectedDiff.before || "(empty)"}</pre></div><div><p class="sticky top-0 border-b bg-card p-2 text-xs text-emerald-300">After · +{selectedDiff.additions}</p><pre class="bg-emerald-500/5 p-3 text-xs leading-6">{selectedDiff.after || "(empty)"}</pre></div></div></ScrollArea.Root>{/if}</Tabs.Content><Tabs.Content value="content" class="min-h-0 flex-1"><ScrollArea.Root class="h-full min-h-0 rounded-lg" orientation="both"><CodeBlock code={fileContent || "(empty file)"} language={fileName} maxHeight="max-h-none" scrollable={false} /></ScrollArea.Root></Tabs.Content></Tabs.Root><Dialog.Footer><Button variant="outline" onclick={() => { fileName = ""; fileContent = ""; }}>All changes</Button><Button onclick={() => { draft = `Please update @${fileName}: `; fileOpen = false; }}>Discuss this file</Button></Dialog.Footer>{/if}
 </Dialog.Content></Dialog.Root>

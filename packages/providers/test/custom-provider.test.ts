@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
 import {
-	CustomOpenCodeProviderAdapter,
+	CustomProviderAdapter,
 	ensureOpenAiSseTerminator,
-	openCodeProviderConfig,
-} from "../src/adapters/custom-opencode";
+	customProviderConfig,
+} from "../src/adapters/custom-provider";
 
 async function normalize(input: string) {
 	const response = new Response(
@@ -32,7 +32,7 @@ test("adds a finish reason when a stream closes without one", async () => {
 });
 
 test("includes both OpenCode model limits when a context window is known", () => {
-	const config = openCodeProviderConfig({
+	const config = customProviderConfig({
 		id: "loom_custom_agent_c01a9946",
 		name: "agent",
 		baseUrl: "http://localhost:20128/v1",
@@ -48,7 +48,7 @@ test("includes both OpenCode model limits when a context window is known", () =>
 });
 
 test("uses a discovered output limit without exceeding the model context", () => {
-	const config = openCodeProviderConfig({
+	const config = customProviderConfig({
 		id: "loom_custom_agent_c01a9946",
 		name: "agent",
 		baseUrl: "http://localhost:20128/v1",
@@ -87,7 +87,7 @@ test("runs a custom model directly against its OpenAI-compatible endpoint", asyn
 		});
 	};
 	try {
-		const adapter = new CustomOpenCodeProviderAdapter({
+		const adapter = new CustomProviderAdapter({
 			id: "loom_custom_agent_test",
 			name: "AGENT",
 			baseUrl: "http://localhost:20128/v1",
@@ -117,7 +117,7 @@ test("surfaces direct custom provider HTTP failures as failed runs", async () =>
 	const originalFetch = globalThis.fetch;
 	globalThis.fetch = async () => new Response("upstream unavailable", { status: 503 });
 	try {
-		const adapter = new CustomOpenCodeProviderAdapter({
+		const adapter = new CustomProviderAdapter({
 			id: "loom_custom_agent_test",
 			name: "AGENT",
 			baseUrl: "http://localhost:20128/v1",

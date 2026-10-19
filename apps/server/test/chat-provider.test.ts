@@ -26,7 +26,12 @@ type TestRuntimeOutput = {
 		| { type: "text"; id: string; text: string }
 		| { type: "activity"; id: string }
 	>;
-	activities?: Array<{ id: string; tool: string; status: "completed" }>;
+	activities?: Array<{
+		id: string;
+		tool: string;
+		status: "completed";
+		metadata?: Record<string, unknown>;
+	}>;
 };
 
 async function setup(
@@ -146,6 +151,31 @@ async function setup(
 					? [{ id: part.id, tool: part.id, status: "completed" as const }]
 					: [],
 			);
+		},
+		finishWithFileDiff: () => {
+			status = "completed";
+			output = "Updated login.html";
+			outputParts = [
+				{ type: "text", id: "summary", text: "Login page updated." },
+				{ type: "activity", id: "edit-login" },
+			];
+			outputActivities = [
+				{
+					id: "edit-login",
+					tool: "write_file",
+					status: "completed",
+					metadata: {
+						filediff: {
+							file: "login.html",
+							before: "",
+							after: "<main>Login</main>\n",
+							additions: 1,
+							deletions: 0,
+							patch: "@@ -0,0 +1 @@\n+<main>Login</main>",
+						},
+					},
+				},
+			];
 		},
 		failSpawn: () => {
 			failure = "Binary unavailable";
@@ -391,6 +421,32 @@ describe("provider chat", () => {
 		expect(restartedServer.prompts[0]?.prompt).toContain(
 			"assistant: Saved reply",
 		);
+	});
+	test("custom provider file changes remain visible after a server restart", async () => {
+		const storedHistory = new Map<string, unknown[]>();
+		const firstServer = await setup("loom_custom_agent_test", storedHistory);
+		expect((await firstServer.send("Create a login page")).status).toBe(204);
+		firstServer.finishWithFileDiff();
+		await firstServer.state();
+
+		const restartedServer = await setup(
+			"loom_custom_agent_test",
+			storedHistory,
+		);
+		const response = await restartedServer.app.request(
+			"/sessions/ses_test/diff",
+		);
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual([
+			{
+				file: "login.html",
+				before: "",
+				after: "<main>Login</main>\n",
+				additions: 1,
+				deletions: 0,
+				patch: "@@ -0,0 +1 @@\n+<main>Login</main>",
+			},
+		]);
 	});
 	test("cancellation permits another turn", async () => {
 		const fixture = await setup();

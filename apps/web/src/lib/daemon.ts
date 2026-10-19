@@ -28,6 +28,12 @@ export type Project = {
 	createdAt: string;
 };
 
+export type DirectoryListing = {
+	path: string;
+	parentPath: string | null;
+	entries: Array<{ name: string; path: string }>;
+};
+
 export type ProjectReviewPolicy = {
 	id: string;
 	projectId: string;
@@ -518,6 +524,12 @@ export async function request<T>(path: string, init: RequestInit = {}) {
 
 export const daemon = {
 	listProjects: () => request<Project[]>("/api/projects"),
+	listDirectories: (path?: string, showHidden = false) => {
+		const params = new URLSearchParams();
+		if (path) params.set("path", path);
+		if (showHidden) params.set("showHidden", "true");
+		return request<DirectoryListing>(`/api/filesystem/directories?${params}`);
+	},
 	getMcpInventory: (projectId?: string) =>
 		request<McpInventory>(
 			`/api/mcp/inventory${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`,
