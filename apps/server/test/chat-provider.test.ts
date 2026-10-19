@@ -56,6 +56,13 @@ async function setup(
 	const prompts: Parameters<AgentRuntime["prompt"]>[0][] = [];
 	const calls: string[] = [];
 	const openCodePrompts: unknown[] = [];
+	let nativeSessions: Array<{
+		id: string;
+		directory: string;
+		title: string;
+		parentID?: string;
+		time: { updated: number; archived?: number };
+	}> = [];
 	const runtime: AgentRuntime = {
 		createSession: async () => ({ id: `${providerId}-${++count}` }),
 		prompt: async (input) => {
@@ -122,6 +129,7 @@ async function setup(
 					title: "Chat",
 					time: { updated: 1 },
 				} as T;
+			if (path === "/session?limit=200") return nativeSessions as T;
 			if (path === "/session/status") return {} as T;
 			return [] as T;
 		},
@@ -134,6 +142,9 @@ async function setup(
 		prompts,
 		calls,
 		openCodePrompts,
+		setNativeSessions: (sessions: typeof nativeSessions) => {
+			nativeSessions = sessions;
+		},
 		finish: (next = "completed" as typeof status, text = "Hello") => {
 			status = next;
 			output = text;
@@ -226,7 +237,65 @@ describe("provider chat", () => {
 			providerID: providerId,
 			modelID: "custom-model",
 		});
+		expect(fixture.prompts[0]?.system).toContain("simple requests");
+		expect(fixture.prompts[0]?.system).toContain(
+			"Never claim a todo or child was created",
+		);
 	});
+
+	test("lists only same-project direct child sessions for focus navigation", async () => {
+		const fixture = await setup("opencode");
+		fixture.setNativeSessions([
+			{
+				id: "child-one",
+				directory: "/tmp",
+				title: "Explore UI",
+				parentID: "ses_test",
+				time: { updated: 2 },
+			},
+			{
+				id: "foreign-child",
+				directory: "/other-project",
+				title: "Foreign",
+				parentID: "ses_test",
+				time: { updated: 3 },
+			},
+			{
+				id: "grandchild",
+				directory: "/tmp",
+				title: "Nested",
+				parentID: "child-one",
+				time: { updated: 4 },
+			},
+		]);
+		const response = await fixture.app.request("/sessions/ses_test/children");
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual([
+			{
+				id: "child-one",
+				title: "Explore UI",
+				parentID: "ses_test",
+				time: { updated: 2 },
+				status: { type: "idle" },
+			},
+		]);
+	});
+
+	for (const provider of ["agy", "claude", "codex"]) {
+		test(`${provider}: supplies adaptive execution guidance without another model call`, async () => {
+			const fixture = await setup(provider);
+			expect((await fixture.send("What does this project do?", provider)).status).toBe(
+				204,
+			);
+			expect(fixture.prompts).toHaveLength(1);
+			expect(fixture.prompts[0]?.system).toContain(
+				"For simple requests, answer or work directly",
+			);
+			expect(fixture.prompts[0]?.system).toContain(
+				"without simulating it",
+			);
+		});
+	}
 
 	test("renders assistant text and tools in the order emitted by the provider", async () => {
 		const fixture = await setup("codex");
@@ -310,6 +379,9 @@ describe("provider chat", () => {
 		};
 		expect(payload.system).toContain(
 			"authoritative visual specification",
+		);
+		expect(payload.system).toContain(
+			"For simple requests, answer or work directly",
 		);
 		const attachment = payload.parts.find((part) =>
 			part.filename?.startsWith("canvas-design:"),

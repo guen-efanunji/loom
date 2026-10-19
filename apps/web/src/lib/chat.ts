@@ -3,8 +3,16 @@ export type ChatSession = {
 	id: string;
 	title: string;
 	directory: string;
+	parentID?: string;
 	projectId?: string;
 	time: { updated: number };
+};
+export type ChatChildSession = {
+	id: string;
+	title: string;
+	parentID: string;
+	time: { updated: number };
+	status: { type: string; message?: string };
 };
 export type ChatPart = {
 	id: string;
@@ -202,6 +210,10 @@ export const chat = {
 	sessions: (projectId: string) =>
 		request<ChatSession[]>(
 			`${root}/sessions?projectId=${encodeURIComponent(projectId)}`,
+		),
+	children: (id: string) =>
+		request<ChatChildSession[]>(
+			`${root}/sessions/${encodeURIComponent(id)}/children`,
 		),
 	create: (projectId: string, title: string) =>
 		post<ChatSession>("/sessions", { projectId, title }),

@@ -38,6 +38,7 @@ import { goto, replaceState } from "$app/navigation";
 import { page } from "$app/state";
 import {
 	type Catalog,
+	type ChatChildSession,
 	type ChatMessage,
 	type ChatSession,
 	type ChatState,
@@ -99,6 +100,8 @@ import WorkspaceCodePreview from "./WorkspaceCodePreview.svelte";
 
 let projects = $state<Project[]>([]);
 let sessions = $state<ChatSession[]>([]);
+let childSessions = $state<ChatChildSession[]>([]);
+let childSessionsLoading = $state(false);
 let legacyTasks = $state<Task[]>([]);
 let monitorAgents = $state<CustomAgentMonitorItem[]>([]);
 let monitorRuns = $state<CustomAgentRunMonitorItem[]>([]);
@@ -375,19 +378,76 @@ const messages = $derived([
 	...(conversation?.messages ?? []),
 	...(optimistic ? [optimistic] : []),
 ]);
-type TurnGroup = { key: string; role: string; messages: ChatMessage[] };
+$effect(() => {
+	const currentSessionId = sessionId;
+	const currentProjectId = selectedProjectId;
+	if (!currentSessionId) {
+		childSessions = [];
+		childSessionsLoading = false;
+		return;
+	}
+	let active = true;
+	childSessionsLoading = childSessions.length === 0;
+	const refresh = async () => {
+		try {
+			const children = await chat.children(currentSessionId);
+			if (
+				active &&
+				currentSessionId === sessionId &&
+				currentProjectId === selectedProjectId
+			)
+				childSessions = children;
+		} catch {
+			if (active && currentSessionId === sessionId) childSessions = [];
+		} finally {
+			if (active && currentSessionId === sessionId)
+				childSessionsLoading = false;
+		}
+	};
+	void refresh();
+	const timer = window.setInterval(() => void refresh(), busy ? 2_500 : 15_000);
+	return () => {
+		active = false;
+		window.clearInterval(timer);
+	};
+});
+type TurnGroup = {
+	key: string;
+	role: string;
+	messages: ChatMessage[];
+	sourceMessageId?: string;
+	sourceMessage?: string;
+};
 const turns = $derived.by(() => {
 	const groups: TurnGroup[] = [];
-	for (const message of messages) {
+	for (let index = 0; index < messages.length; index++) {
+		const message = messages[index]!;
 		const last = groups[groups.length - 1];
 		if (message.info.role === "assistant" && last && last.role === "assistant")
 			last.messages.push(message);
-		else
+		else {
+			const sourceMessage =
+				message.info.role === "assistant"
+					? messages
+							.slice(0, index)
+							.findLast((item) => item.info.role === "user")
+					: undefined;
 			groups.push({
 				key: message.info.id,
 				role: message.info.role,
 				messages: [message],
+				...(sourceMessage
+					? {
+						sourceMessageId: sourceMessage.info.id,
+						sourceMessage: sourceMessage.parts
+							.filter((part) => part.type === "text")
+							.map((part) => part.text)
+							.join("\n\n")
+							.trim(),
+					}
+					: {}),
 			});
+		}
 	}
 	return groups;
 });
@@ -1748,6 +1808,30 @@ async function send(input: Parameters<typeof chat.send>[1]) {
 		sendingChatTabIds = sendingChatTabIds.filter((id) => id !== tabId);
 	}
 }
+async function createPlanFromChat(
+	sourceMessageId: string,
+	message: string,
+	sourceSessionId: string,
+) {
+	if (!selectedProjectId || !message.trim()) return;
+	try {
+		const [providerID, ...modelParts] = model.split("/");
+		const result = await daemon.createPlan({
+			projectId: selectedProjectId,
+			sourceMessageId,
+			message: message.slice(0, 20_000),
+			sourceSessionId,
+			mode: "plan",
+			...(providerID && modelParts.length
+				? { model: { providerID, modelID: modelParts.join("/") } }
+				: {}),
+		});
+		toast.success("Plan created for review. Kanban tasks are not started automatically.");
+		await goto(`/plans/${encodeURIComponent(result.planId)}`);
+	} catch (reason) {
+		toast.error(reason instanceof Error ? reason.message : "Unable to create plan");
+	}
+}
 async function stop() {
 	try {
 		await chat.abort(sessionId);
@@ -2083,7 +2167,35 @@ async function answer(requestId: string, answers: string[][]) {
       <div class={`mx-auto flex min-h-full w-full max-w-[740px] flex-col px-5 ${sessionId ? "py-8" : "justify-center py-12"}`}>
         {#if loading || sessionLoading}<div role="status" class="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground"><LoaderCircle size={17} class="animate-spin" />Loading {loading ? "workspace" : "conversation"}…</div>
         {:else if !sessionId}<section class="relative isolate -mx-5 flex flex-col items-center px-5 pb-10 pt-[8vh] sm:pt-[12vh]"><div class="pointer-events-none absolute left-1/2 top-24 -z-10 h-80 w-[min(42rem,90vw)] -translate-x-1/2 rounded-full bg-cyan-500/[0.035] blur-3xl"></div><div class="w-full max-w-[700px]"><div class="mb-8 text-center"><div aria-hidden="true" class="relative mx-auto mb-6 size-20"><div class="hero-orbit hero-orbit-one"></div><div class="hero-orbit hero-orbit-two"></div><div class="absolute inset-0 grid place-items-center"><div class="hero-core grid size-12 place-items-center rounded-2xl border border-cyan-200/30 bg-cyan-300/[0.1]"><Sparkles size={20} class="text-cyan-200" /></div></div><span class="hero-node hero-node-one"></span><span class="hero-node hero-node-two"></span><span class="hero-node hero-node-three"></span></div><h1 class="text-3xl font-medium tracking-[-0.04em] text-white sm:text-[38px]">Turn ideas into momentum</h1><p class="mx-auto mt-3 max-w-md text-sm leading-6 text-white/45">Bring a little context. We’ll shape the next step together.</p></div></div></section>{/if}
-         {#if sessionId}<div class="space-y-8" aria-live="polite" aria-relevant="additions text">{#each turns as turn (turn.key)}<Turn messages={turn.messages} {catalog} {sessionId} projectId={selectedProjectId} onfile={showFiles} onopenfile={openProjectFile} onbranch={startNewChatFromAnswer} />{/each}</div>
+         {#if sessionId}
+           <div class="space-y-8" aria-live="polite" aria-relevant="additions text">
+             {#if conversation?.session.parentID}
+               <div class="flex items-center gap-2 rounded-lg border bg-muted/20 px-3 py-2 text-xs">
+                 <span class="min-w-0 flex-1 truncate text-muted-foreground">Focused child session</span>
+                 <Button variant="outline" size="sm" class="h-7" onclick={() => void openSession(conversation!.session.parentID!)}>Back to parent chat</Button>
+               </div>
+             {/if}
+             {#if childSessions.length}
+               <details class="rounded-lg border bg-muted/20 p-3">
+                 <summary class="cursor-pointer text-xs font-medium">Child sessions ({childSessions.length})</summary>
+                 <ul class="mt-2 space-y-1">
+                   {#each childSessions as child (child.id)}
+                     <li class="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 hover:bg-accent/50">
+                       <span class={`size-1.5 shrink-0 rounded-full ${child.status.type === "busy" || child.status.type === "running" ? "animate-pulse bg-sky-400" : child.status.type === "error" ? "bg-destructive" : "bg-emerald-400"}`} aria-hidden="true"></span>
+                       <span class="min-w-0 flex-1 truncate text-xs">{child.title || "Untitled child session"}</span>
+                       <span class="shrink-0 text-[10px] text-muted-foreground">{child.status.message ?? child.status.type}</span>
+                       <Button variant="ghost" size="sm" class="h-7 px-2 text-xs" onclick={() => void openSession(child.id)}>Focus</Button>
+                     </li>
+                   {/each}
+                 </ul>
+               </details>
+             {:else if childSessionsLoading}
+               <p class="text-xs text-muted-foreground">Checking for child sessions…</p>
+             {/if}
+             {#each turns as turn (turn.key)}
+               <Turn messages={turn.messages} {catalog} {sessionId} projectId={selectedProjectId} sourceMessageId={turn.sourceMessageId} sourceMessage={turn.sourceMessage} oncreateplan={(sourceId, brief) => createPlanFromChat(sourceId, brief, sessionId)} onfile={showFiles} onopenfile={openProjectFile} onbranch={startNewChatFromAnswer} />
+             {/each}
+           </div>
            {#if busy}<Marker.Root variant="border" class="mt-5 flex items-center"><Marker.Icon><LoaderCircle size={14} class="animate-spin" /></Marker.Icon><Marker.Content>{conversation?.permissions.length ? "Waiting for permission" : conversation?.questions.length ? "Waiting for your answer" : friendlyProviderStatus(catalog, conversation?.status.message) || `${providerLabel} is working…`}</Marker.Content></Marker.Root>{/if}
           {#each conversation?.permissions ?? [] as request}<div role="group" aria-label={`Permission required: ${request.permission}`} class="mt-5 space-y-3 rounded-xl border border-amber-500/30 bg-card p-4"><p class="flex items-center gap-2 text-sm font-medium"><ShieldCheck size={16} />Permission required: {request.permission}</p>{#if request.patterns.length}<pre class="overflow-auto whitespace-pre-wrap break-words text-xs text-muted-foreground">{request.patterns.join("\n")}</pre>{/if}<div class="flex flex-wrap gap-2"><Button size="sm" disabled={permissionReplying === request.id} onclick={() => permission(request.id, "once")}>Accept once</Button><Button variant="outline" size="sm" disabled={permissionReplying === request.id} onclick={() => permission(request.id, "always")}>Always allow</Button><Button variant="ghost" size="sm" disabled={permissionReplying === request.id} onclick={() => permission(request.id, "reject")}>Decline</Button></div></div>{/each}
           {#each conversation?.questions ?? [] as question}<div class="mt-5"><QuestionCard {question} onanswer={(answers) => answer(question.id, answers)} /></div>{/each}

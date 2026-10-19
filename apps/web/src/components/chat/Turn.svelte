@@ -4,6 +4,7 @@ import {
 	Copy,
 	FileCode,
 	MessageSquarePlus,
+	ListTodo,
 	PanelsTopLeft,
 	Pencil,
 	Sparkles,
@@ -34,6 +35,9 @@ let {
 	onfile,
 	onopenfile,
 	onbranch,
+	sourceMessageId,
+	sourceMessage,
+	oncreateplan,
 }: {
 	messages: ChatMessage[];
 	catalog: Catalog;
@@ -42,6 +46,9 @@ let {
 	onfile: (path: string) => void;
 	onopenfile?: (path: string) => void;
 	onbranch?: (answer: string) => void;
+	sourceMessageId?: string;
+	sourceMessage?: string;
+	oncreateplan?: (sourceMessageId: string, message: string) => void;
 } = $props();
 
 const role = $derived(messages[0]?.info.role ?? "assistant");
@@ -84,6 +91,48 @@ const canCopyResponse = $derived(
 		!!responseText.trim() &&
 		messages[messages.length - 1]?.info.time.completed !== undefined,
 );
+type NativeTodo = {
+	id: string;
+	title: string;
+	status: "pending" | "in_progress" | "blocked" | "completed" | "cancelled";
+};
+function nativeTodoSnapshot(messages: ChatMessage[]): NativeTodo[] | null {
+	const snapshots = messages
+		.flatMap((message) => message.parts)
+		.filter((part) => {
+			if (part.type !== "tool" || !part.state) return false;
+			const name = (part.tool ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+			return ["todowrite", "writetodos", "updatetodolist", "updateplan"].includes(name);
+		});
+	const latest = snapshots.at(-1);
+	if (!latest || latest.type !== "tool" || !latest.state) return null;
+	const input = latest.state.input as Record<string, unknown> | undefined;
+	if (!input) return null;
+	const raw = [input.todos, input.tasks, input.plan, input.steps].find(Array.isArray);
+	if (!Array.isArray(raw)) return null;
+	const todos = raw.flatMap((value, index) => {
+		if (!value || typeof value !== "object") return [];
+		const item = value as Record<string, unknown>;
+		const title = [item.content, item.title, item.step, item.description].find(
+			(value): value is string => typeof value === "string" && !!value.trim(),
+		);
+		if (!title) return [];
+		const state = String(item.status ?? item.state ?? "pending").toLowerCase();
+		const status: NativeTodo["status"] =
+			state === "completed" || state === "complete" || state === "done"
+				? "completed"
+				: state === "in_progress" || state === "in-progress" || state === "active"
+					? "in_progress"
+					: state === "blocked"
+						? "blocked"
+						: state === "cancelled" || state === "canceled"
+							? "cancelled"
+							: "pending";
+		return [{ id: String(item.id ?? `${latest.id}-${index}`), title, status }];
+	});
+	return todos.length ? todos : null;
+}
+const nativeTodos = $derived(nativeTodoSnapshot(messages));
 
 let copied = $state(false);
 let openTools = $state<Record<string, boolean>>({});
@@ -396,6 +445,23 @@ async function copy() {
 		{/each}
 	{:else}
 		<div class="min-w-0 py-1">
+			{#if nativeTodos}
+				<section class="mb-4 rounded-lg border bg-muted/20 p-3" aria-label="Runtime todo progress">
+					<div class="mb-2 flex items-center justify-between gap-3">
+						<p class="text-xs font-medium">Todo progress</p>
+						<span class="text-[10px] text-muted-foreground">Reported by runtime</span>
+					</div>
+					<ul class="space-y-1.5">
+						{#each nativeTodos as todo (todo.id)}
+							<li class="flex min-w-0 items-start gap-2 text-xs">
+								<span class={`mt-1 size-1.5 shrink-0 rounded-full ${todo.status === "completed" ? "bg-emerald-400" : todo.status === "in_progress" ? "animate-pulse bg-sky-400" : todo.status === "blocked" ? "bg-amber-400" : todo.status === "cancelled" ? "bg-muted-foreground" : "bg-muted-foreground/50"}`} aria-hidden="true"></span>
+								<span class={`min-w-0 flex-1 ${todo.status === "completed" ? "text-muted-foreground line-through" : ""}`}>{todo.title}</span>
+								<span class="shrink-0 text-[10px] text-muted-foreground">{todo.status.replace("_", " ")}</span>
+							</li>
+						{/each}
+					</ul>
+				</section>
+			{/if}
 			{#each messages as message (message.info.id)}
 				{#each message.parts as part (part.id)}
 					{#if part.type === "text" && part.text}<Markdown text={part.text} />
@@ -489,6 +555,7 @@ async function copy() {
 			<div class="mt-3 flex flex-wrap items-center gap-1 border-t border-white/[0.07] pt-2 text-xs text-muted-foreground">
 				<time class="mr-auto tabular-nums">{formatDuration(elapsed)}{elapsed !== null ? " · " : ""}{new Date(completedAt ?? time).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</time>
 				{#if onbranch}<Button variant="ghost" size="sm" class="h-7 gap-1.5 text-xs" onclick={() => onbranch(responseText)} title="Start a new chat from this answer"><MessageSquarePlus size={13} />New session from answer</Button>{/if}
+				{#if oncreateplan && sourceMessageId && sourceMessage?.trim()}<Button variant="ghost" size="sm" class="h-7 gap-1.5 text-xs" onclick={() => oncreateplan(sourceMessageId!, sourceMessage!)} title="Create a durable plan from this request"><ListTodo size={13} />Create plan</Button>{/if}
 				<Button variant="ghost" size="sm" class="h-7 gap-1.5 text-xs" onclick={copy}>{#if copied}<Check size={13} />{:else}<Copy size={13} />{/if}{copied ? "Copied" : "Copy response"}</Button>
 			</div>
 		{/if}

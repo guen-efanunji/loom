@@ -133,6 +133,9 @@ function thinkingGuidance(mode: string) {
 	return instruction ? `Reasoning preference (${mode}): ${instruction}` : "";
 }
 
+const adaptiveExecutionGuidance = `Adapt execution to the user's request and the capabilities actually exposed in this run.
+For simple requests, answer or work directly without a forced checklist or planning call. For meaningful multi-step work, use the runtime's structured todo support only when it is available; keep pending, in-progress, blocked, and completed work distinct, and do not treat a plan as proof of completion. Delegate bounded read-only exploration only through an exposed and authorized runtime capability, with a clear brief and verifiable evidence. Never claim a todo or child was created unless the runtime confirms it. Do not duplicate native todos or child runs, bypass permissions, share concurrent write workspaces, or create/start Kanban work without the existing approval flow. For a large durable deliverable, let the user explicitly create a plan from chat and review it before conversion. If a capability is unavailable or opaque, state that limitation and continue safely without simulating it.`;
+
 function mergeMessages(
 	previous: ProviderMessage[],
 	current: ProviderMessage[],
@@ -878,6 +881,32 @@ export function createChatRoutes(options: {
 			),
 		);
 	});
+	app.get("/sessions/:id/children", async (c) => {
+		const parent = await session(c.req.param("id"));
+		const [sessions, statuses] = await Promise.all([
+			request<Session[]>("/session?limit=200", parent.directory),
+			request<Record<string, { type: string; message?: string }>>(
+				"/session/status",
+				parent.directory,
+			),
+		]);
+		return c.json(
+			sessions
+				.filter(
+					(child) =>
+						child.parentID === parent.id &&
+						resolve(child.directory) === resolve(parent.directory) &&
+						!child.time.archived,
+				)
+				.map((child) => ({
+					id: child.id,
+					title: child.title,
+					parentID: parent.id,
+					time: child.time,
+					status: statuses[child.id] ?? { type: "idle" },
+				})),
+		);
+	});
 	app.post("/sessions", async (c) => {
 		const input = z
 			.object({ projectId: z.string(), title: z.string().min(1).max(200) })
@@ -1097,6 +1126,7 @@ export function createChatRoutes(options: {
 			designNodes.length
 				? `Attached Canvas nodes: ${designNodes.map((node) => `${node.title} (${node.viewport}): ${node.brief}`).join("; ")}. Inspect the attached HTML files as the visual source of truth.`
 				: "",
+			adaptiveExecutionGuidance,
 		]
 			.filter(Boolean)
 			.join("\n\n");
@@ -1342,9 +1372,9 @@ export function createChatRoutes(options: {
 				await runtime.prompt({
 					sessionId: created.id,
 					prompt,
-					...(customAgentInstructions
-						? { system: customAgentInstructions }
-						: {}),
+					system: [customAgentInstructions, adaptiveExecutionGuidance]
+						.filter(Boolean)
+						.join("\n\n"),
 					model: runtimeModel,
 					thinkingMode: input.thinkingMode,
 					...(customAgent
