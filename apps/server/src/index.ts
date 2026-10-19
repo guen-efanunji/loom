@@ -1769,7 +1769,12 @@ export async function createApp(options: DaemonAppOptions = {}) {
 					),
 					runWorkspaceCommand(
 						"git",
-						["for-each-ref", "--format=%(refname:short)", "refs/heads"],
+						[
+							"for-each-ref",
+							"--format=%(refname:short)",
+							"refs/heads",
+							"refs/remotes/origin",
+						],
 						repository.path,
 					),
 					runWorkspaceCommand(
@@ -1804,7 +1809,15 @@ export async function createApp(options: DaemonAppOptions = {}) {
 				});
 			const branches =
 				branchResult.exitCode === 0
-					? branchResult.stdout.split(/\r?\n/).filter(Boolean)
+					? [
+							...new Set(
+								branchResult.stdout
+									.split(/\r?\n/)
+									.filter(Boolean)
+									.filter((branch) => branch !== "origin/HEAD")
+									.map((branch) => branch.replace(/^origin\//, "")),
+							),
+						]
 					: [];
 			const currentBranch =
 				lines[0]?.replace(/^##\s*/, "").split("...")[0] ?? "";

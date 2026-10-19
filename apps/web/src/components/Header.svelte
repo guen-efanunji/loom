@@ -4,7 +4,7 @@ import UserMenu from "./UserMenu.svelte";
 
 <div>
 	<div class="flex flex-row items-center justify-between px-4 py-2 md:px-6">
-		<nav class="flex gap-4 text-lg">
+		<nav class="flex flex-wrap items-center gap-3 text-sm sm:gap-4 sm:text-base md:text-lg">
 			<a href="/" class="transition-colors hover:text-neutral-400">Home</a>
 			<a href="/dashboard" class="transition-colors hover:text-neutral-400">Dashboard</a>
 			<a href="/settings" class="transition-colors hover:text-neutral-400">Settings</a>

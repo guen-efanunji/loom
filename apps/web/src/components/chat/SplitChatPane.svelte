@@ -37,6 +37,7 @@
 		initialDraft,
 		onstate,
 		onfile,
+		onopenfile,
 		onSession,
 	}: {
 		className?: string;
@@ -51,6 +52,7 @@
 		initialDraft: string;
 		onstate: (state: { sessionId: string; projectId: string; model: string; agent: string; customAgentId: string; draft: string; title: string }) => void;
 		onfile: (path: string) => void;
+		onopenfile?: (path: string) => void;
 		onSession: (session: ChatSession, projectId: string) => void;
 	} = $props();
 
@@ -215,7 +217,7 @@
 		<div class="mx-auto flex min-h-full w-full max-w-[900px] flex-col px-4 py-5 sm:px-5">
 			{#if active?.loading}<div class="flex flex-1 items-center justify-center gap-2 text-xs text-muted-foreground"><LoaderCircle size={15} class="animate-spin" />Loading conversation…</div>
 			{:else if active?.sessionId}
-				<div class="space-y-6" aria-live="polite" aria-relevant="additions text">{#each turns as turn (turn.key)}<Turn messages={turn.messages} {catalog} sessionId={active.sessionId} projectId={active.projectId} {onfile} onbranch={startNewChatFromAnswer} />{/each}</div>
+				<div class="space-y-6" aria-live="polite" aria-relevant="additions text">{#each turns as turn (turn.key)}<Turn messages={turn.messages} {catalog} sessionId={active.sessionId} projectId={active.projectId} {onfile} {onopenfile} onbranch={startNewChatFromAnswer} />{/each}</div>
 				{#if busy}<Marker.Root variant="border" class="mt-4 flex items-center"><Marker.Icon><LoaderCircle size={13} class="animate-spin" /></Marker.Icon><Marker.Content>{active.conversation?.permissions.length ? "Waiting for permission" : active.conversation?.questions.length ? "Waiting for your answer" : friendlyProviderStatus(catalog, active.conversation?.status.message) || "Assistant is working…"}</Marker.Content></Marker.Root>{/if}
 				{#each active.conversation?.permissions ?? [] as request}<div role="group" aria-label={`Permission required: ${request.permission}`} class="mt-4 space-y-3 rounded-xl border border-amber-500/30 bg-card p-3"><p class="text-xs font-medium">Permission required: {request.permission}</p>{#if request.patterns.length}<pre class="overflow-auto whitespace-pre-wrap break-words text-[11px] text-muted-foreground">{request.patterns.join("\n")}</pre>{/if}<div class="flex flex-wrap gap-2"><Button size="sm" disabled={permissionReplying === request.id} onclick={() => permission(request.id, "once")}>Accept once</Button><Button variant="outline" size="sm" disabled={permissionReplying === request.id} onclick={() => permission(request.id, "always")}>Always allow</Button><Button variant="ghost" size="sm" disabled={permissionReplying === request.id} onclick={() => permission(request.id, "reject")}>Decline</Button></div></div>{/each}
 				{#each active.conversation?.questions ?? [] as question}<div class="mt-4"><QuestionCard {question} onanswer={(answers) => answer(question.id, answers)} /></div>{/each}

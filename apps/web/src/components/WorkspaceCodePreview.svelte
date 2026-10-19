@@ -36,6 +36,8 @@ import { Input } from "$lib/components/ui/input";
 let {
 	projectId,
 	projectName,
+	requestedPath = "",
+	openRequest = 0,
 	busy = false,
 	hasUnsavedChanges = $bindable(false),
 	expanded = $bindable(false),
@@ -43,6 +45,8 @@ let {
 }: {
 	projectId: string;
 	projectName: string;
+	requestedPath?: string;
+	openRequest?: number;
 	busy?: boolean;
 	hasUnsavedChanges?: boolean;
 	expanded?: boolean;
@@ -95,13 +99,16 @@ let copyState = $state<"path" | "content" | null>(null);
 let contextLabel = $state("Project checkout");
 let workspaceId = $state("");
 let disposed = false;
+let refreshTimer: ReturnType<typeof setInterval> | undefined;
 let preferencesReady = false;
+let initialTreeReady = false;
 let contentRequest = 0;
 let treeRequest = 0;
 let directoryRequest = new Map<string, number>();
 let lastRevision = "";
 let lastRevisionPath = "";
 let contextEpoch = 0;
+let handledOpenRequest = 0;
 const hiddenPreferencesKey = $derived(`loom.preview.panel.${projectId}`);
 
 const selectedParent = $derived.by(() => {
@@ -270,7 +277,7 @@ async function loadDirectory(directory: string) {
 	}
 }
 
-async function openFile(path: string) {
+async function openFile(path: string, silent = false) {
 	if (unsavedChanges) {
 		toast.error("Save or discard your edits before opening another file.");
 		return;
@@ -278,7 +285,7 @@ async function openFile(path: string) {
 	if (editing) editing = false;
 	activePath = path;
 	selectedDirectory = null;
-	fileLoading = true;
+	fileLoading = !silent;
 	fileError = "";
 	missingFile = false;
 	const request = ++contentRequest;
@@ -618,12 +625,22 @@ onMount(async () => {
 	expanded = saved.expanded ?? false;
 	preferencesReady = true;
 	await loadDirectory("");
+	initialTreeReady = true;
 	for (const path of expandedDirectories) await loadDirectory(path);
 	if (activePath) await openFile(activePath);
+	refreshTimer = setInterval(() => {
+		if (disposed || document.hidden) return;
+		void (async () => {
+			await loadDirectory("");
+			for (const path of expandedDirectories) await loadDirectory(path);
+			if (activePath && !unsavedChanges && !editing) await openFile(activePath, true);
+		})();
+	}, 3000);
 });
 
 onDestroy(() => {
 	disposed = true;
+	if (refreshTimer) clearInterval(refreshTimer);
 });
 
 $effect(() => {
@@ -635,6 +652,14 @@ $effect(() => {
 	expandedDirectories;
 	expanded;
 	savePreferences();
+});
+
+$effect(() => {
+	const request = openRequest;
+	const path = requestedPath;
+	if (!initialTreeReady || !workspaceId || !path || request === 0 || request === handledOpenRequest) return;
+	handledOpenRequest = request;
+	void openFile(path);
 });
 
 $effect(() => {
@@ -700,7 +725,7 @@ $effect(() => {
 	</header>
 	<div class="flex min-h-0 flex-1 flex-col md:flex-row">
 		{#if treeVisible}
-			<aside class="order-2 flex min-h-0 shrink-0 flex-col border-t md:border-t-0 md:border-l" style={`width:${treeWidth}px`} aria-label="Workspace file tree">
+			<aside class="order-2 flex min-h-0 shrink-0 flex-col border-t md:border-t-0 md:border-l max-md:!w-full max-md:max-h-60" style={`width:${treeWidth}px`} aria-label="Workspace file tree">
 				<div class="flex h-10 shrink-0 items-center gap-0.5 border-b px-2">
 								<Button variant="ghost" size="icon" class="size-7" aria-label="Create file" title="New file" disabled={busy || !projectId || !workspaceId} onclick={() => showCreate("file")}><FilePlus2 size={14} /></Button>
 								<Button variant="ghost" size="icon" class="size-7" aria-label="Create folder" title="New folder" disabled={busy || !projectId || !workspaceId} onclick={() => showCreate("directory")}><FolderPlus size={14} /></Button>
@@ -744,7 +769,7 @@ $effect(() => {
 			</div>
 			{#if findReplaceOpen}
 				<div class="absolute right-3 top-12 z-20 w-[min(480px,calc(100%-24px))] rounded-lg border bg-popover p-2 shadow-xl" aria-label="Find and replace">
-					<div class="flex items-center gap-1">
+					<div class="flex flex-wrap items-center gap-1 sm:flex-nowrap">
 						<input bind:this={findInputElement} class="h-7 min-w-0 flex-1 rounded-md border border-input bg-background px-2 text-xs outline-none focus-visible:ring-1 focus-visible:ring-ring" aria-label="Find text" placeholder="Find" bind:value={findQuery} oninput={() => (matchIndex = -1)} onkeydown={handleFindKeydown} />
 						<Button variant={caseSensitive ? "secondary" : "ghost"} size="sm" class="h-7 min-w-7 px-1.5 text-xs" aria-label="Match case" title="Match case" aria-pressed={caseSensitive} onclick={() => { caseSensitive = !caseSensitive; matchIndex = -1; }}>Aa</Button>
 						<Button variant={regexSearch ? "secondary" : "ghost"} size="sm" class="h-7 min-w-7 px-1.5 font-mono text-xs" aria-label="Use regular expression" title="Use regular expression" aria-pressed={regexSearch} onclick={() => { regexSearch = !regexSearch; matchIndex = -1; }}>.*</Button>
@@ -753,7 +778,7 @@ $effect(() => {
 						<Button variant="ghost" size="icon" class="size-7" aria-label="Next match" title="Next match" disabled={!findMatches.length} onclick={() => void findNext(1)}><ChevronDown size={14} /></Button>
 						<Button variant="ghost" size="icon" class="size-7" aria-label="Close find and replace" title="Close" onclick={() => (findReplaceOpen = false)}><X size={14} /></Button>
 					</div>
-					<div class="mt-1 flex items-center gap-1">
+					<div class="mt-1 flex flex-wrap items-center gap-1 sm:flex-nowrap">
 						<Input class="h-7 min-w-0 flex-1 text-xs" aria-label="Replace with" placeholder="Replace" bind:value={replaceQuery} onkeydown={handleFindKeydown} />
 						<span class="min-w-16 text-center text-[10px] text-muted-foreground" aria-live="polite">{#if findPatternError}{findPatternError}{:else if findQuery}{findMatches.length ? `${matchIndex < 0 ? 1 : matchIndex + 1} of ${findMatches.length}` : "No results"}{/if}</span>
 						<Button variant="outline" size="sm" class="h-7 px-2 text-xs" disabled={!findMatches.length || !!findPatternError} onclick={() => void replaceCurrent()}>Replace</Button>

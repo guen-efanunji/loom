@@ -19,6 +19,7 @@ import {
 	X,
 } from "@lucide/svelte";
 import { onMount, tick } from "svelte";
+import { page } from "$app/state";
 import { toast } from "svelte-sonner";
 import SettingsSidebar from "$lib/components/settings/SettingsSidebar.svelte";
 import { Badge } from "$lib/components/ui/badge";
@@ -26,6 +27,7 @@ import { Button } from "$lib/components/ui/button";
 import { Input } from "$lib/components/ui/input";
 import * as AlertDialog from "$lib/components/ui/alert-dialog";
 import { daemon } from "$lib/daemon";
+import { settingsHref } from "$lib/settings-navigation";
 
 type Provider = Awaited<ReturnType<typeof daemon.listProviders>>[number];
 let providers = $state<Provider[]>([]);
@@ -474,8 +476,8 @@ async function copyCommand(command: string) {
 		{/if}
 	</div>
 {/snippet}
-<div class="min-h-svh bg-[#090909] text-neutral-100"><div class="flex min-h-svh w-full flex-col md:flex-row"><SettingsSidebar active="providers" bind:search /><main class="min-w-0 flex-1 px-4 py-6 sm:px-7 lg:px-10 lg:py-8"><div class="mx-auto max-w-[1320px]"><div class="mb-8 flex items-start justify-between gap-4"><div><p class="mb-2 text-[11px] font-medium uppercase tracking-[0.2em] text-neutral-500">Agents</p><h1 class="text-2xl font-semibold tracking-tight sm:text-3xl">Providers</h1><p class="mt-2 text-sm text-neutral-500">Manage local coding CLIs or connect any OpenAI-compatible API.</p></div><Button href="/settings" variant="outline" size="sm"><ChevronLeft class="size-4" />Settings</Button></div><section class="mb-8"><p class="mb-3 text-[11px] font-medium uppercase tracking-[0.2em] text-neutral-500">Automatic CLI checks</p><div class="flex items-center justify-between gap-4 rounded-2xl border border-white/10 bg-white/[0.035] p-5"><div><h2 class="text-sm font-semibold">Check for CLI updates automatically</h2><p class="mt-1 text-sm text-neutral-500">Last checked: {lastCheckedLabel}</p></div><div class="flex items-center gap-3"><Button variant="outline" size="sm" disabled={checking} onclick={() => void checkProviders()}><RefreshCw class={`size-4 ${checking ? "animate-spin" : ""}`} />Check now</Button><button type="button" role="switch" aria-checked={autoCheck} class={`relative h-6 w-11 rounded-full ${autoCheck ? "bg-emerald-500" : "bg-white/15"}`} onclick={() => autoCheck = !autoCheck}><span class={`absolute top-1 size-4 rounded-full bg-white transition ${autoCheck ? "left-6" : "left-1"}`}></span><span class="sr-only">Toggle automatic CLI checks</span></button></div></div></section>
-<section class="mb-8"><div class="mb-3 flex items-center justify-between gap-3"><p class="text-[11px] font-medium uppercase tracking-[0.2em] text-neutral-500">Provider updates{#if updateChecks.some((item) => item.updateAvailable)} — {updateChecks.filter((item) => item.updateAvailable).length} available{/if}</p><Input class="max-w-56" placeholder="Filter providers…" bind:value={providerSearch} /></div>{#if !lastChecked}<div class="rounded-2xl border border-dashed border-white/10 p-5 text-sm text-neutral-500">Select <span class="text-neutral-300">Check now</span> to compare installed CLI versions with their latest releases.</div>{:else}<div class="overflow-hidden rounded-2xl border border-white/10 bg-white/[0.035]">{#each updateChecks.filter((item) => item.name.toLowerCase().includes(providerSearch.toLowerCase())) as update}<div class="flex flex-wrap items-center gap-4 border-b border-white/[0.08] p-4 last:border-0"><div class="min-w-0 flex-1"><p class="font-medium">{update.name}</p>{#if update.error}<p class="mt-1 text-xs text-amber-300">Could not check latest version: {update.error}</p>{:else if !update.installed}<p class="mt-1 text-xs text-neutral-500">Not installed</p>{:else if update.updateAvailable}<p class="mt-1 font-mono text-xs text-neutral-400">{update.currentVersion} → {update.latestVersion}</p>{:else}<p class="mt-1 text-xs text-neutral-500">{update.currentVersion ?? "Version unknown"} · Up to date</p>{/if}</div>{#if update.updateAvailable && update.updateSupported}<Button variant="outline" size="sm" disabled={updatingProviderId !== null} onclick={() => openUpdateDialog(update)}><Download class="size-4" />Update</Button>{:else if update.updateAvailable && update.updateCommand}<div class="flex max-w-full items-center gap-2"><code class="max-w-[min(24rem,60vw)] truncate rounded border border-white/10 px-2 py-1 text-xs text-neutral-400">{update.updateCommand}</code><Button variant="ghost" size="icon-sm" aria-label={`Copy ${update.name} update command`} onclick={() => void copyCommand(update.updateCommand!)}><Copy class="size-4" /></Button></div>{:else if update.installed && !update.error}<span class="text-xs text-neutral-500">No update available</span>{/if}</div>{/each}</div>{/if}</section>
+<div class="min-h-svh bg-[#090909] text-neutral-100"><div class="flex min-h-svh w-full flex-col md:flex-row"><SettingsSidebar active="providers" bind:search /><main class="min-w-0 flex-1 px-4 py-6 sm:px-7 lg:px-10 lg:py-8"><div class="mx-auto w-full max-w-[1320px]"><div class="mb-8 flex flex-wrap items-start justify-between gap-4"><div><p class="mb-2 text-[11px] font-medium uppercase tracking-[0.2em] text-neutral-500">Agents</p><h1 class="text-2xl font-semibold tracking-tight sm:text-3xl">Providers</h1><p class="mt-2 text-sm text-neutral-500">Manage local coding CLIs or connect any OpenAI-compatible API.</p></div><Button href={settingsHref("/settings", page.url.searchParams.get("returnTo"))} variant="outline" size="sm"><ChevronLeft class="size-4" />Settings</Button></div><section class="mb-8"><p class="mb-3 text-[11px] font-medium uppercase tracking-[0.2em] text-neutral-500">Automatic CLI checks</p><div class="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-white/10 bg-white/[0.035] p-5"><div><h2 class="text-sm font-semibold">Check for CLI updates automatically</h2><p class="mt-1 text-sm text-neutral-500">Last checked: {lastCheckedLabel}</p></div><div class="flex items-center gap-3"><Button variant="outline" size="sm" disabled={checking} onclick={() => void checkProviders()}><RefreshCw class={`size-4 ${checking ? "animate-spin" : ""}`} />Check now</Button><button type="button" role="switch" aria-checked={autoCheck} class={`relative h-6 w-11 rounded-full ${autoCheck ? "bg-emerald-500" : "bg-white/15"}`} onclick={() => autoCheck = !autoCheck}><span class={`absolute top-1 size-4 rounded-full bg-white transition ${autoCheck ? "left-6" : "left-1"}`}></span><span class="sr-only">Toggle automatic CLI checks</span></button></div></div></section>
+<section class="mb-8"><div class="mb-3 flex flex-wrap items-center justify-between gap-3"><p class="text-[11px] font-medium uppercase tracking-[0.2em] text-neutral-500">Provider updates{#if updateChecks.some((item) => item.updateAvailable)} — {updateChecks.filter((item) => item.updateAvailable).length} available{/if}</p><Input class="w-full sm:max-w-56" placeholder="Filter providers…" bind:value={providerSearch} /></div>{#if !lastChecked}<div class="rounded-2xl border border-dashed border-white/10 p-5 text-sm text-neutral-500">Select <span class="text-neutral-300">Check now</span> to compare installed CLI versions with their latest releases.</div>{:else}<div class="overflow-hidden rounded-2xl border border-white/10 bg-white/[0.035]">{#each updateChecks.filter((item) => item.name.toLowerCase().includes(providerSearch.toLowerCase())) as update}<div class="flex flex-wrap items-center gap-4 border-b border-white/[0.08] p-4 last:border-0"><div class="min-w-0 flex-1"><p class="font-medium">{update.name}</p>{#if update.error}<p class="mt-1 text-xs text-amber-300">Could not check latest version: {update.error}</p>{:else if !update.installed}<p class="mt-1 text-xs text-neutral-500">Not installed</p>{:else if update.updateAvailable}<p class="mt-1 font-mono text-xs text-neutral-400">{update.currentVersion} → {update.latestVersion}</p>{:else}<p class="mt-1 text-xs text-neutral-500">{update.currentVersion ?? "Version unknown"} · Up to date</p>{/if}</div>{#if update.updateAvailable && update.updateSupported}<Button variant="outline" size="sm" disabled={updatingProviderId !== null} onclick={() => openUpdateDialog(update)}><Download class="size-4" />Update</Button>{:else if update.updateAvailable && update.updateCommand}<div class="flex max-w-full items-center gap-2"><code class="max-w-[min(24rem,60vw)] truncate rounded border border-white/10 px-2 py-1 text-xs text-neutral-400">{update.updateCommand}</code><Button variant="ghost" size="icon-sm" aria-label={`Copy ${update.name} update command`} onclick={() => void copyCommand(update.updateCommand!)}><Copy class="size-4" /></Button></div>{:else if update.installed && !update.error}<span class="text-xs text-neutral-500">No update available</span>{/if}</div>{/each}</div>{/if}</section>
 <section class="mb-8">
 	<p class="mb-3 text-[11px] font-medium uppercase tracking-[0.2em] text-neutral-500">Local CLI</p>
 	<div class="overflow-hidden rounded-2xl border border-white/10 bg-white/[0.035]">
@@ -506,7 +508,7 @@ async function copyCommand(command: string) {
 		{/if}
 	</div>
 </section>
-<section class="mb-8"><div class="mb-3 flex items-center justify-between gap-3"><div><p class="text-[11px] font-medium uppercase tracking-[0.2em] text-neutral-500">Custom providers</p><p class="mt-1 text-sm text-neutral-500">Connect an OpenAI-compatible endpoint and import its models into Loom. Imported models appear in Chat, Kanban, Canvas, and Walkthrough; the API key is stored in Loom local data.</p></div><Button size="sm" onclick={openAddCustomProvider}><Plus class="size-4" />Add provider</Button></div>
+<section class="mb-8"><div class="mb-3 flex flex-wrap items-center justify-between gap-3"><div><p class="text-[11px] font-medium uppercase tracking-[0.2em] text-neutral-500">Custom providers</p><p class="mt-1 text-sm text-neutral-500">Connect an OpenAI-compatible endpoint and import its models into Loom. Imported models appear in Chat, Kanban, Canvas, and Walkthrough; the API key is stored in Loom local data.</p></div><Button size="sm" onclick={openAddCustomProvider}><Plus class="size-4" />Add provider</Button></div>
 {#if customProviders.length}
 	<div class="overflow-hidden rounded-2xl border border-white/10 bg-white/[0.035]">
 		{#each customProviders as provider (provider.id)}
@@ -547,7 +549,7 @@ async function copyCommand(command: string) {
 {/if}</section></div></main></div></div>
 <AlertDialog.Root bind:open={customDialogOpen}>
 	<AlertDialog.Content class="flex h-fit max-h-[calc(100dvh-2.5rem)] w-[calc(100vw-2rem)] max-w-2xl sm:max-w-2xl flex-col gap-0 overflow-hidden rounded-2xl border border-white/10 bg-[#121212] p-0 text-neutral-100 shadow-2xl">
-		<AlertDialog.Header class="relative shrink-0 border-b border-white/10 px-6 py-4.5 pr-14 text-left">
+		<AlertDialog.Header class="relative shrink-0 border-b border-white/10 px-4 py-3.5 sm:px-6 sm:py-4.5 pr-12 sm:pr-14 text-left">
 			<div class="flex items-center gap-3">
 				<div class="flex size-9 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/[0.05] text-neutral-300">
 					{#if customEditingId}
@@ -568,7 +570,7 @@ async function copyCommand(command: string) {
 			<Button
 				variant="ghost"
 				size="icon"
-				class="absolute right-4 top-4 size-8 shrink-0 rounded-md border border-transparent text-neutral-400 transition-colors hover:border-white/10 hover:bg-white/10 hover:text-white"
+				class="absolute right-3 top-3 sm:right-4 sm:top-4 size-8 shrink-0 rounded-md border border-transparent text-neutral-400 transition-colors hover:border-white/10 hover:bg-white/10 hover:text-white"
 				aria-label="Close dialog"
 				onclick={() => (customDialogOpen = false)}
 				disabled={customBusy}
@@ -577,7 +579,7 @@ async function copyCommand(command: string) {
 			</Button>
 		</AlertDialog.Header>
 
-		<div class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-5">
+		<div class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 sm:px-6 sm:py-5">
 			<div class="flex flex-col gap-5">
 				<div class="grid gap-4 sm:grid-cols-2">
 					<div class="flex flex-col gap-1.5">
@@ -785,7 +787,7 @@ async function copyCommand(command: string) {
 			</div>
 		</div>
 
-		<AlertDialog.Footer class="shrink-0 border-t border-white/10 bg-white/[0.02] px-6 py-4 flex flex-row items-center justify-between sm:justify-between">
+		<AlertDialog.Footer class="shrink-0 border-t border-white/10 bg-white/[0.02] px-4 py-3 sm:px-6 sm:py-4 flex flex-wrap items-center justify-between gap-3">
 			<div class="text-xs text-neutral-400">
 				{#if discoveredModels.length > 0}
 					<span class="text-neutral-400">

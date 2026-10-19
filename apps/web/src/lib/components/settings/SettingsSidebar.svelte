@@ -15,6 +15,8 @@ import {
 } from "@lucide/svelte";
 import { Button } from "$lib/components/ui/button";
 import { Input } from "$lib/components/ui/input";
+import { page } from "$app/state";
+import { safeWorkspaceReturnTo, settingsHref } from "$lib/settings-navigation";
 
 type ActiveSection = "general" | "context" | "providers" | "agents" | "mcp" | "token-usage";
 type Props = {
@@ -23,6 +25,8 @@ type Props = {
 };
 
 let { active, search = $bindable("") }: Props = $props();
+
+const returnTo = $derived(safeWorkspaceReturnTo(page.url.searchParams.get("returnTo")));
 
 const sections = [
 	{
@@ -65,7 +69,7 @@ const sections = [
 
 <div class="sticky top-0 z-20 border-b border-white/10 bg-[#090909]/95 px-3 py-2 backdrop-blur md:hidden">
 	<div class="flex items-center justify-between gap-3">
-		<Button href="/" variant="ghost" size="sm" class="shrink-0 gap-2 px-2 text-neutral-300">
+		<Button href={returnTo} variant="ghost" size="sm" class="shrink-0 gap-2 px-2 text-neutral-300">
 			<ArrowLeft data-icon="inline-start" />Workspace
 		</Button>
 		<span class="flex min-w-0 items-center gap-2 text-sm font-semibold">
@@ -78,7 +82,7 @@ const sections = [
 			{#each section.items as item}
 				{@const Icon = item.icon}
 				<Button
-					href={item.href}
+					href={settingsHref(item.href, returnTo)}
 					variant="ghost"
 					size="sm"
 					aria-current={"key" in item && item.key === active ? "page" : undefined}
@@ -93,7 +97,7 @@ const sections = [
 
 <aside class="sticky top-0 hidden h-svh w-64 shrink-0 overflow-y-auto border-r border-white/10 px-3 py-4 md:block">
 	<div class="mb-5">
-		<Button href="/" variant="ghost" class="w-full justify-start gap-2 px-2 text-sm font-semibold text-neutral-100">
+		<Button href={returnTo} variant="ghost" class="w-full justify-start gap-2 px-2 text-sm font-semibold text-neutral-100">
 			<ArrowLeft class="size-4" />
 			Back to workspace
 		</Button>
@@ -114,7 +118,7 @@ const sections = [
 					{#each section.items as item}
 						{@const Icon = item.icon}
 						<Button
-							href={item.href}
+							href={settingsHref(item.href, returnTo)}
 							variant="ghost"
 			class={`w-full justify-start gap-2 ${"key" in item && item.key === active ? "bg-white/[0.14] text-white" : "text-neutral-400"}`}
 						>

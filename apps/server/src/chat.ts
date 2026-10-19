@@ -1681,9 +1681,7 @@ export function createChatRoutes(options: {
 				}
 				const relevant = changed
 					.filter(
-						({ status, file }) =>
-							status === "??" ||
-							(candidatePaths.size > 0 && candidatePaths.has(file)),
+							({ file }) => candidatePaths.size > 0 && candidatePaths.has(file),
 					)
 					.slice(0, 30);
 				for (const { status, file } of relevant) {

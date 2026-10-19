@@ -63,6 +63,7 @@ import * as Checkbox from "$lib/components/ui/checkbox";
 import * as Command from "$lib/components/ui/command";
 import * as Dialog from "$lib/components/ui/dialog";
 import { Input } from "$lib/components/ui/input";
+import { Textarea } from "$lib/components/ui/textarea/index.js";
 import * as Marker from "$lib/components/ui/marker";
 import * as Popover from "$lib/components/ui/popover";
 import * as Select from "$lib/components/ui/select";
@@ -104,6 +105,8 @@ let monitorRuns = $state<CustomAgentRunMonitorItem[]>([]);
 let monitorError = $state("");
 let monitorRequest = 0;
 let monitorTimer: ReturnType<typeof setInterval> | undefined;
+let panelSyncRequest = 0;
+let lastPanelSyncAt = 0;
 let monitorSocket: WebSocket | undefined;
 let monitorReconnectTimer: ReturnType<typeof setTimeout> | undefined;
 let monitorTaskOutput = $state<Record<string, string>>({});
@@ -269,12 +272,19 @@ let timer: ReturnType<typeof setTimeout>;
 let projectRequest = 0;
 let panelProjectId = "";
 let fileRequest = 0;
+let editorOpenRequest = $state(0);
+let editorRequestedPath = $state("");
 let sendingChatTabIds = $state<string[]>([]);
 const sending = $derived(sendingChatTabIds.includes(activeChatTabId));
 let permissionReplying = $state<string | null>(null);
 const selectedProject = $derived(
 	projects.find((p) => p.id === selectedProjectId),
 );
+function settingsUrl(path: string, params: Record<string, string> = {}) {
+	const query = new URLSearchParams(params);
+	query.set("returnTo", `${page.url.pathname}${page.url.search}${page.url.hash}`);
+	return `${path}?${query.toString()}`;
+}
 $effect(() => {
 	const projectId = selectedProjectId;
 	const panel = activePanel;
@@ -1046,11 +1056,49 @@ async function poll() {
 		if (sessionId && !sessionLoading && !sending)
 			await refreshSession(sessionId);
 		if (viewMode !== "chat" && ready) await refreshBoard();
+		if (activePanel && ["git", "changes", "pull-requests", "walkthrough"].includes(activePanel)) {
+			const now = Date.now();
+			const interval = activePanel === "pull-requests" ? 15_000 : 2_000;
+			if (now - lastPanelSyncAt >= interval) {
+				lastPanelSyncAt = now;
+				void refreshVisiblePanel();
+			}
+		}
 	} catch (reason) {
 		connected = false;
 		report(reason);
 	} finally {
 		if (!disposed) timer = setTimeout(poll, 1200);
+	}
+}
+async function refreshVisiblePanel() {
+	const panel = activePanel;
+	const projectId = selectedProjectId;
+	const currentSession = sessionId;
+	if (!panel) return;
+	if (panel === "changes") {
+		if (!currentSession) return;
+		const result = await chat.diff(currentSession).catch(() => null);
+		if (result && activePanel === panel && sessionId === currentSession) diffs = result;
+		return;
+	}
+	if (!projectId) return;
+	if (panel === "git" || panel === "pull-requests") {
+		const request = ++panelSyncRequest;
+		const [git, prs] = await Promise.all([
+			daemon.getProjectGit(projectId),
+			panel === "pull-requests" ? daemon.getProjectPullRequests(projectId) : Promise.resolve(null),
+		]).catch(() => [null, null] as const);
+		if (request !== panelSyncRequest || projectId !== selectedProjectId || activePanel !== panel) return;
+		if (git) {
+			gitOverview = git;
+		}
+		if (prs) pullRequestData = prs;
+		return;
+	}
+	if (panel === "walkthrough") {
+		const result = await daemon.getProjectWalkthroughSnapshot(projectId).catch(() => null);
+		if (result && projectId === selectedProjectId && activePanel === panel) walkthroughSnapshot = result.snapshot;
 	}
 }
 async function refreshAgentMonitor() {
@@ -1434,9 +1482,14 @@ async function showPanel(panel: ChatPanelId, force = false) {
 				gitOverview = result;
 		} else if (panel === "pull-requests") {
 			pullRequestData = null;
-			const result = await daemon.getProjectPullRequests(projectId);
-			if (request === panelRequest && projectId === selectedProjectId)
+			const [git, result] = await Promise.all([
+				daemon.getProjectGit(projectId),
+				daemon.getProjectPullRequests(projectId),
+			]);
+			if (request === panelRequest && projectId === selectedProjectId) {
+				gitOverview = git;
 				pullRequestData = result;
+			}
 		} else if (panel === "walkthrough") {
 			if (walkthroughProjectId !== projectId) {
 				walkthroughProjectId = projectId;
@@ -1828,6 +1881,18 @@ async function showFiles(path = "") {
 		if (request === fileRequest) fileLoading = false;
 	}
 }
+function openProjectFile(path: string) {
+	const project = selectedProject;
+	if (!project || !path) return;
+	const normalizedPath = path.replaceAll("\\", "/");
+	const normalizedRoot = project.path.replaceAll("\\", "/").replace(/\/$/, "");
+	editorRequestedPath = normalizedPath.startsWith(`${normalizedRoot}/`)
+		? normalizedPath.slice(normalizedRoot.length + 1)
+		: normalizedPath;
+	editorOpenRequest += 1;
+	previewExpanded = false;
+	activePanel = "files";
+}
 async function permission(
 	requestId: string,
 	reply: "once" | "always" | "reject",
@@ -1971,7 +2036,7 @@ async function answer(requestId: string, answers: string[][]) {
           </section>
         {/each}
       </nav>
-      <div class="flex items-center gap-1 border-t p-3"><Button href="/settings" variant="ghost" size="icon" title="Settings" aria-label="Settings"><Settings size={16} /></Button><Button variant="ghost" size="icon" title="About Loom" aria-label="About Loom" onclick={() => aboutOpen = true}><CircleHelp size={16} /></Button><Button variant="ghost" size="sm" class="ml-auto text-xs text-muted-foreground" onclick={retryConnection} title="Refresh connection"><span class={`size-1.5 rounded-full ${connected ? "bg-emerald-400" : "bg-amber-400"}`}></span>{connected ? "Connected" : "Reconnect"}</Button></div>
+      <div class="flex items-center gap-1 border-t p-3"><Button href={settingsUrl("/settings")} variant="ghost" size="icon" title="Settings" aria-label="Settings"><Settings size={16} /></Button><Button variant="ghost" size="icon" title="About Loom" aria-label="About Loom" onclick={() => aboutOpen = true}><CircleHelp size={16} /></Button><Button variant="ghost" size="sm" class="ml-auto text-xs text-muted-foreground" onclick={retryConnection} title="Refresh connection"><span class={`size-1.5 rounded-full ${connected ? "bg-emerald-400" : "bg-amber-400"}`}></span>{connected ? "Connected" : "Reconnect"}</Button></div>
     </aside>
     <Button class="fixed inset-0 z-30 h-full w-full rounded-none bg-black/50 md:hidden" variant="ghost" aria-label="Close sidebar backdrop" onclick={() => sidebarOpen = false} />
     </Resizable.Pane>
@@ -1979,10 +2044,10 @@ async function answer(requestId: string, answers: string[][]) {
   {/if}
   <Resizable.Pane defaultSize={sidebarOpen ? 78 : 100} minSize={40} class="h-full min-h-0 min-w-0 flex-1">
   <main class="flex h-full min-h-0 min-w-0 flex-col">
-    <header class="flex h-[72px] shrink-0 items-center gap-3 border-b border-white/[0.08] px-5 sm:px-8">
+    <header class="flex h-[72px] shrink-0 items-center gap-2 sm:gap-3 border-b border-white/[0.08] px-3 sm:px-8">
       {#if !sidebarOpen}<Button variant="ghost" size="icon" aria-label="Open sidebar" onclick={() => sidebarOpen = true}><PanelLeft size={16} /></Button>{/if}
-      <div class="flex min-w-0 flex-1 items-center gap-3"><div class="grid size-9 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/[0.06] shadow-sm"><Sparkles size={16} class="text-cyan-300" /></div><div class="min-w-0"><p class="truncate text-sm font-semibold tracking-[-0.01em]">{viewMode === "chat" ? (conversation?.session.title ?? "New session") : `Tasks · ${selectedProject?.name ?? "No project"}`}</p>{#if selectedProject}<p class="mt-1 flex items-center gap-2 text-[11px] text-white/45"><span class="truncate">{selectedProject.name}</span><span class="text-white/20">·</span><GitBranch size={12} />{selectedProject.defaultBranch}</p>{/if}</div></div>
-      <Tabs.Root bind:value={viewMode} onValueChange={(value) => syncViewParam(value as ViewMode)} aria-label="Workspace mode"><Tabs.List class="h-auto gap-1 rounded-xl border border-white/10 bg-white/[0.04] p-1"><Tabs.Trigger value="chat" class="h-9 gap-2 rounded-lg px-3 text-xs text-white/50 data-[state=active]:bg-white/[0.12] data-[state=active]:text-white data-[state=active]:shadow-sm"><MessageSquare size={14} />Chat</Tabs.Trigger><Tabs.Trigger value="kanban" class="h-9 gap-2 rounded-lg px-3 text-xs text-white/50 data-[state=active]:bg-white/[0.12] data-[state=active]:text-white data-[state=active]:shadow-sm"><Columns3 size={14} />Kanban</Tabs.Trigger>{#if selectedProject}<a href={`/project/${selectedProject.id}/canvas`} class="inline-flex h-9 items-center gap-2 rounded-lg px-3 text-xs font-medium text-white/50 transition hover:text-white/80" aria-label="Design canvas"><Sparkles size={14} />Canvas</a>{/if}</Tabs.List></Tabs.Root>
+      <div class="flex min-w-0 flex-1 items-center gap-2 sm:gap-3"><div class="grid size-9 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/[0.06] shadow-sm"><Sparkles size={16} class="text-cyan-300" /></div><div class="min-w-0"><p class="truncate text-sm font-semibold tracking-[-0.01em]">{viewMode === "chat" ? (conversation?.session.title ?? "New session") : `Tasks · ${selectedProject?.name ?? "No project"}`}</p>{#if selectedProject}<p class="mt-1 flex items-center gap-2 text-[11px] text-white/45"><span class="truncate">{selectedProject.name}</span><span class="text-white/20">·</span><GitBranch size={12} />{selectedProject.defaultBranch}</p>{/if}</div></div>
+      <Tabs.Root bind:value={viewMode} onValueChange={(value) => syncViewParam(value as ViewMode)} aria-label="Workspace mode"><Tabs.List class="h-auto gap-1 rounded-xl border border-white/10 bg-white/[0.04] p-1"><Tabs.Trigger value="chat" class="h-9 gap-1.5 sm:gap-2 rounded-lg px-2 sm:px-3 text-xs text-white/50 data-[state=active]:bg-white/[0.12] data-[state=active]:text-white data-[state=active]:shadow-sm"><MessageSquare size={14} /><span class="hidden sm:inline">Chat</span></Tabs.Trigger><Tabs.Trigger value="kanban" class="h-9 gap-1.5 sm:gap-2 rounded-lg px-2 sm:px-3 text-xs text-white/50 data-[state=active]:bg-white/[0.12] data-[state=active]:text-white data-[state=active]:shadow-sm"><Columns3 size={14} /><span class="hidden sm:inline">Kanban</span></Tabs.Trigger>{#if selectedProject}<a href={`/project/${selectedProject.id}/canvas`} class="inline-flex h-9 items-center gap-1.5 sm:gap-2 rounded-lg px-2 sm:px-3 text-xs font-medium text-white/50 transition hover:text-white/80" aria-label="Design canvas"><Sparkles size={14} /><span class="hidden sm:inline">Canvas</span></a>{/if}</Tabs.List></Tabs.Root>
     </header>
     {#if viewMode === "kanban"}
       <div class="min-h-0 flex-1 overflow-y-auto px-5 py-5">
@@ -1998,7 +2063,7 @@ async function answer(requestId: string, answers: string[][]) {
     <Resizable.Pane defaultSize={activePanel ? (previewExpanded ? 0 : 72) : 100} minSize={0} class="flex h-full min-h-0 min-w-0 flex-col">
 	<div class={`flex min-h-0 min-w-0 flex-1 flex-col ${activePanel === "files" && previewExpanded ? "hidden" : ""}`}>
     {#if splitChat && viewMode === "chat"}
-      <SplitChatWorkspace project={selectedProject} {catalog} {customAgents} primarySessionId={sessionId} primaryModel={model} primaryAgent={agent} primaryCustomAgentId={customAgentId} primaryDraft={draft} onclose={leaveSplitChat} onfile={showFiles} onSession={registerSplitSession} />
+      <SplitChatWorkspace project={selectedProject} {catalog} {customAgents} primarySessionId={sessionId} primaryModel={model} primaryAgent={agent} primaryCustomAgentId={customAgentId} primaryDraft={draft} onclose={leaveSplitChat} onfile={showFiles} onopenfile={openProjectFile} onSession={registerSplitSession} />
     {:else}
     {#if viewMode === "chat"}
       <div class="nice-scroll flex shrink-0 items-center gap-1 overflow-x-auto border-b border-white/[0.08] bg-background/40 px-3 py-2" role="tablist" aria-label="Chat tabs">
@@ -2018,7 +2083,7 @@ async function answer(requestId: string, answers: string[][]) {
       <div class={`mx-auto flex min-h-full w-full max-w-[740px] flex-col px-5 ${sessionId ? "py-8" : "justify-center py-12"}`}>
         {#if loading || sessionLoading}<div role="status" class="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground"><LoaderCircle size={17} class="animate-spin" />Loading {loading ? "workspace" : "conversation"}…</div>
         {:else if !sessionId}<section class="relative isolate -mx-5 flex flex-col items-center px-5 pb-10 pt-[8vh] sm:pt-[12vh]"><div class="pointer-events-none absolute left-1/2 top-24 -z-10 h-80 w-[min(42rem,90vw)] -translate-x-1/2 rounded-full bg-cyan-500/[0.035] blur-3xl"></div><div class="w-full max-w-[700px]"><div class="mb-8 text-center"><div aria-hidden="true" class="relative mx-auto mb-6 size-20"><div class="hero-orbit hero-orbit-one"></div><div class="hero-orbit hero-orbit-two"></div><div class="absolute inset-0 grid place-items-center"><div class="hero-core grid size-12 place-items-center rounded-2xl border border-cyan-200/30 bg-cyan-300/[0.1]"><Sparkles size={20} class="text-cyan-200" /></div></div><span class="hero-node hero-node-one"></span><span class="hero-node hero-node-two"></span><span class="hero-node hero-node-three"></span></div><h1 class="text-3xl font-medium tracking-[-0.04em] text-white sm:text-[38px]">Turn ideas into momentum</h1><p class="mx-auto mt-3 max-w-md text-sm leading-6 text-white/45">Bring a little context. We’ll shape the next step together.</p></div></div></section>{/if}
-         {#if sessionId}<div class="space-y-8" aria-live="polite" aria-relevant="additions text">{#each turns as turn (turn.key)}<Turn messages={turn.messages} {catalog} {sessionId} projectId={selectedProjectId} onfile={showFiles} onbranch={startNewChatFromAnswer} />{/each}</div>
+         {#if sessionId}<div class="space-y-8" aria-live="polite" aria-relevant="additions text">{#each turns as turn (turn.key)}<Turn messages={turn.messages} {catalog} {sessionId} projectId={selectedProjectId} onfile={showFiles} onopenfile={openProjectFile} onbranch={startNewChatFromAnswer} />{/each}</div>
            {#if busy}<Marker.Root variant="border" class="mt-5 flex items-center"><Marker.Icon><LoaderCircle size={14} class="animate-spin" /></Marker.Icon><Marker.Content>{conversation?.permissions.length ? "Waiting for permission" : conversation?.questions.length ? "Waiting for your answer" : friendlyProviderStatus(catalog, conversation?.status.message) || `${providerLabel} is working…`}</Marker.Content></Marker.Root>{/if}
           {#each conversation?.permissions ?? [] as request}<div role="group" aria-label={`Permission required: ${request.permission}`} class="mt-5 space-y-3 rounded-xl border border-amber-500/30 bg-card p-4"><p class="flex items-center gap-2 text-sm font-medium"><ShieldCheck size={16} />Permission required: {request.permission}</p>{#if request.patterns.length}<pre class="overflow-auto whitespace-pre-wrap break-words text-xs text-muted-foreground">{request.patterns.join("\n")}</pre>{/if}<div class="flex flex-wrap gap-2"><Button size="sm" disabled={permissionReplying === request.id} onclick={() => permission(request.id, "once")}>Accept once</Button><Button variant="outline" size="sm" disabled={permissionReplying === request.id} onclick={() => permission(request.id, "always")}>Always allow</Button><Button variant="ghost" size="sm" disabled={permissionReplying === request.id} onclick={() => permission(request.id, "reject")}>Decline</Button></div></div>{/each}
           {#each conversation?.questions ?? [] as question}<div class="mt-5"><QuestionCard {question} onanswer={(answers) => answer(question.id, answers)} /></div>{/each}
@@ -2039,17 +2104,18 @@ async function answer(requestId: string, answers: string[][]) {
     </div>
     </Resizable.Pane>
     {#if activePanel}
-      <Resizable.Handle class={previewExpanded ? "hidden" : ""} withHandle />
-      <Resizable.Pane defaultSize={previewExpanded ? 100 : 28} minSize={previewExpanded ? 30 : 18} maxSize={previewExpanded ? 100 : 65} class="flex h-full min-h-0 min-w-0 flex-col">
+      <Resizable.Handle class={previewExpanded ? "hidden" : "hidden md:flex"} withHandle />
+      <Resizable.Pane defaultSize={previewExpanded ? 100 : 28} minSize={previewExpanded ? 30 : 18} maxSize={previewExpanded ? 100 : 65} class="flex h-full min-h-0 min-w-0 flex-col max-md:!absolute max-md:inset-y-0 max-md:left-0 max-md:right-11 max-md:!z-30 max-md:bg-background">
       <aside class="relative flex h-full min-w-0 flex-col border-l bg-card/30" aria-label={`${activePanel} panel`}>
         {#if activePanel === "files"}
-          {#key selectedProjectId}<WorkspaceCodePreview projectId={selectedProjectId} projectName={selectedProject?.name ?? "Project"} {busy} bind:hasUnsavedChanges={previewHasUnsavedChanges} bind:expanded={previewExpanded} onclose={() => { previewExpanded = false; activePanel = null; }} />{/key}
+          {#key selectedProjectId}<WorkspaceCodePreview projectId={selectedProjectId} projectName={selectedProject?.name ?? "Project"} requestedPath={editorRequestedPath} openRequest={editorOpenRequest} {busy} bind:hasUnsavedChanges={previewHasUnsavedChanges} bind:expanded={previewExpanded} onclose={() => { previewExpanded = false; activePanel = null; }} />{/key}
         {:else if activePanel === "terminal"}
           {#key selectedProjectId}<TerminalPanel projectId={selectedProjectId} />{/key}
         {:else}
         <div class="flex h-12 shrink-0 items-center gap-2 border-b px-4">
           <p class="min-w-0 flex-1 truncate text-sm font-medium">{activePanel === "agents" ? "Agents & tasks" : activePanel === "context" ? "Context usage" : activePanel === "git" ? "Git" : activePanel === "pull-requests" ? "Pull requests" : activePanel === "walkthrough" ? "Walkthrough" : "Changes"}</p>
           {#if activePanel !== "context"}<Button variant="ghost" size="icon" class="size-7" aria-label="Refresh panel" title="Refresh" onclick={() => void showPanel(activePanel!, true)} disabled={panelLoading}><RefreshCw size={13} class={panelLoading ? "animate-spin" : ""} /></Button>{/if}
+          <Button variant="ghost" size="icon" class="size-7 md:hidden" aria-label="Close panel" title="Close" onclick={() => { activePanel = null; previewExpanded = false; }}><X size={14} /></Button>
         </div>
         <div class="nice-scroll min-h-0 flex-1 overflow-y-auto p-4">
           {#if panelError}<p role="alert" class="mb-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-xs text-destructive">{panelError}</p>{/if}
@@ -2076,7 +2142,7 @@ async function answer(requestId: string, answers: string[][]) {
                 {/each}</div>{/if}
               </section>
               <section>
-                <div class="mb-2 flex items-center justify-between"><h3 class="text-xs font-semibold">Registered agents</h3><a href="/settings/agents" class="text-[10px] text-primary hover:underline">Manage</a></div>
+                <div class="mb-2 flex items-center justify-between"><h3 class="text-xs font-semibold">Registered agents</h3><a href={settingsUrl("/settings/agents")} class="text-[10px] text-primary hover:underline">Manage</a></div>
                 {#if !agentMonitorRows.length}<p class="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">No custom agents have been created yet.</p>
                 {:else}<div class="space-y-2">{#each agentMonitorRows as item (item.agent.id)}
                   {@const running = item.run?.status === "running" || item.kanbanTask?.status === "running" || item.kanbanTask?.status === "preparing"}
@@ -2134,7 +2200,7 @@ async function answer(requestId: string, answers: string[][]) {
               <section class="rounded-lg border bg-card/50 p-3">
                 <p class="text-xs font-medium">Context library</p>
                 <p class="mt-1 text-[11px] leading-5 text-muted-foreground">Manage scoped knowledge, rules, skills, and approved memory for this workspace.</p>
-                <a class="mt-3 inline-flex h-8 items-center rounded-md border px-3 text-xs transition hover:bg-accent" href={`/settings/context?projectId=${encodeURIComponent(selectedProjectId)}`}>Open Context Hub</a>
+                <a class="mt-3 inline-flex h-8 items-center rounded-md border px-3 text-xs transition hover:bg-accent" href={settingsUrl("/settings/context", { projectId: selectedProjectId })}>Open Context Hub</a>
               </section>
             </div>
           {:else if activePanel === "git"}
@@ -2154,7 +2220,7 @@ async function answer(requestId: string, answers: string[][]) {
             </div>
             {:else if !panelLoading}<p class="rounded-lg border border-dashed p-4 text-xs text-muted-foreground">Repository details are unavailable.</p>{/if}
           {:else if activePanel === "pull-requests"}
-            {#if panelLoading && !pullRequestData}<div class="flex items-center gap-2 py-8 text-xs text-muted-foreground"><LoaderCircle size={14} class="animate-spin" />Loading pull requests…</div>{:else if pullRequestData?.available}<form class="mb-3 space-y-2 rounded-lg border bg-card/50 p-3" onsubmit={(event) => { event.preventDefault(); void createPullRequest(); }}><p class="text-xs font-medium">Create pull request</p>{#if createdPullRequestUrl}<a href={createdPullRequestUrl} target="_blank" rel="noreferrer" class="block text-xs text-primary underline">Open the pull request that was just created</a>{/if}<Input bind:value={pullRequestTitle} aria-label="Pull request title" placeholder="Title" maxlength={256} /><Input bind:value={pullRequestBase} aria-label="Base branch" placeholder={`Base branch · ${gitOverview?.defaultBranch || "default"}`} /><textarea bind:value={pullRequestBody} aria-label="Pull request description" placeholder="What changed and why?" class="min-h-24 w-full resize-y rounded-md border bg-background px-3 py-2 text-xs outline-none focus-visible:ring-1 focus-visible:ring-ring"></textarea><label class="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" bind:checked={pullRequestDraft} />Draft</label><Button type="submit" size="sm" class="w-full" disabled={!pullRequestTitle.trim() || pullRequestBusy}>{pullRequestBusy ? "Creating…" : "Create pull request"}</Button></form>{#if pullRequestData.pullRequests.length}<div class="flex flex-col gap-2">{#each pullRequestData.pullRequests as pr (pr.number)}<a href={pr.url} target="_blank" rel="noreferrer" class="block rounded-lg border bg-card/50 p-3 transition hover:border-primary/40 hover:bg-accent/30"><div class="flex items-center gap-2"><Badge variant="outline" class="shrink-0">#{pr.number}</Badge><span class="truncate text-[11px] text-muted-foreground">{pr.state}</span></div><p class="mt-2 text-sm font-medium leading-5">{pr.title}</p><p class="mt-1 truncate font-mono text-[10px] text-muted-foreground">{pr.headRefName}</p></a>{/each}</div>{:else}<p class="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">No open pull requests found for this repository.</p>{/if}{:else if pullRequestData?.message}<section class="flex flex-col gap-3 rounded-lg border border-dashed p-4"><GitPullRequest size={17} class="text-muted-foreground" /><p class="text-xs leading-5 text-muted-foreground">{pullRequestData.message}</p><p class="text-[11px] leading-5 text-muted-foreground">Install and authenticate GitHub CLI with <code class="rounded bg-muted px-1 py-0.5">gh auth login</code> to load or create pull requests.</p></section>{/if}
+            {#if panelLoading && !pullRequestData}<div class="flex items-center gap-2 py-8 text-xs text-muted-foreground"><LoaderCircle size={14} class="animate-spin" />Loading pull requests…</div>{:else if pullRequestData?.available}<form class="mb-3 space-y-2 rounded-lg border bg-card/50 p-3" onsubmit={(event) => { event.preventDefault(); void createPullRequest(); }}><p class="text-xs font-medium">Create pull request</p>{#if createdPullRequestUrl}<a href={createdPullRequestUrl} target="_blank" rel="noreferrer" class="block text-xs text-primary underline">Open the pull request that was just created</a>{/if}<Input bind:value={pullRequestTitle} aria-label="Pull request title" placeholder="Title" maxlength={256} /><Select.Root type="single" value={pullRequestBase || "__default"} onValueChange={(value) => pullRequestBase = value === "__default" ? "" : value}><Select.Trigger class="w-full" aria-label="Base branch"><Select.Value placeholder="Choose a base branch" /></Select.Trigger><Select.Content><Select.Item value="__default">Default branch · {gitOverview?.defaultBranch || "default"}</Select.Item>{#each [...new Set([...(gitOverview?.branches ?? []), gitOverview?.branch ?? ""].filter(Boolean))] as branch (branch)}{#if branch !== gitOverview?.defaultBranch}<Select.Item value={branch}>{branch}</Select.Item>{/if}{/each}</Select.Content></Select.Root><Textarea bind:value={pullRequestBody} aria-label="Pull request description" placeholder="What changed and why?" class="min-h-24 resize-y text-xs" /><label class="flex items-center gap-2 text-xs text-muted-foreground"><Checkbox.Root bind:checked={pullRequestDraft} aria-label="Draft pull request" />Draft</label><Button type="submit" size="sm" class="w-full" disabled={!pullRequestTitle.trim() || pullRequestBusy}>{pullRequestBusy ? "Creating…" : "Create pull request"}</Button></form>{#if pullRequestData.pullRequests.length}<div class="flex flex-col gap-2">{#each pullRequestData.pullRequests as pr (pr.number)}<a href={pr.url} target="_blank" rel="noreferrer" class="block rounded-lg border bg-card/50 p-3 transition hover:border-primary/40 hover:bg-accent/30"><div class="flex items-center gap-2"><Badge variant="outline" class="shrink-0">#{pr.number}</Badge><span class="truncate text-[11px] text-muted-foreground">{pr.state}</span></div><p class="mt-2 text-sm font-medium leading-5">{pr.title}</p><p class="mt-1 truncate font-mono text-[10px] text-muted-foreground">{pr.headRefName}</p></a>{/each}</div>{:else}<p class="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">No open pull requests found for this repository.</p>{/if}{:else if pullRequestData?.message}<section class="flex flex-col gap-3 rounded-lg border border-dashed p-4"><GitPullRequest size={17} class="text-muted-foreground" /><p class="text-xs leading-5 text-muted-foreground">{pullRequestData.message}</p><p class="text-[11px] leading-5 text-muted-foreground">Install and authenticate GitHub CLI with <code class="rounded bg-muted px-1 py-0.5">gh auth login</code> to load or create pull requests.</p></section>{/if}
           {:else if activePanel === "walkthrough"}
             <div class="flex min-h-full flex-col gap-3">
               {#if panelLoading && !walkthroughSnapshot}<div role="status" class="flex items-center gap-2 py-8 text-xs text-muted-foreground"><LoaderCircle size={14} class="animate-spin" />Capturing repository changes…</div>{/if}
@@ -2188,8 +2254,8 @@ async function answer(requestId: string, answers: string[][]) {
               {#if !selectedProjectId}<p class="rounded-lg border border-dashed p-6 text-center text-xs text-muted-foreground">Choose a project to review uncommitted changes.</p>
               {:else if !walkthroughSnapshot && !panelLoading}<p class="rounded-lg border border-dashed p-6 text-center text-xs text-muted-foreground">Choose Walkthrough to capture this project’s changes.</p>
               {:else if walkthroughSnapshot && !walkthroughSnapshot.files.length}<div class="rounded-lg border border-dashed p-7 text-center"><ListTree size={20} class="mx-auto text-muted-foreground" /><p class="mt-2 text-sm font-medium">No uncommitted changes</p><p class="mt-1 text-xs text-muted-foreground">There are no changed text files to explain yet.</p></div>
-              {:else if walkthroughSnapshot}<div class="grid min-h-[420px] flex-1 grid-cols-[minmax(160px,220px)_minmax(0,1fr)] overflow-hidden rounded-xl border bg-background/50">
-                <nav class="nice-scroll overflow-y-auto border-r p-2" aria-label="Walkthrough steps">
+              {:else if walkthroughSnapshot}<div class="grid min-h-[420px] flex-1 grid-cols-1 md:grid-cols-[minmax(160px,220px)_minmax(0,1fr)] overflow-hidden rounded-xl border bg-background/50">
+                <nav class="nice-scroll overflow-y-auto border-b md:border-b-0 md:border-r p-2 max-md:max-h-44" aria-label="Walkthrough steps">
                   {#if walkthroughDocument}
                     <div class="mb-3 px-2 pt-1"><p class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{walkthroughDocument.groups.reduce((total, group) => total + group.steps.length, 0)} steps</p></div>
                     {#each walkthroughDocument.groups as group (group.id)}<section class="mb-3"><p class="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{group.title}</p>{#each group.steps as step, index (`${group.id}:${step.id}`)}<Button variant="ghost" class={`mb-1 h-auto w-full justify-start gap-2 whitespace-normal px-2 py-2 text-left ${selectedWalkthroughStep?.id === step.id ? "bg-accent text-accent-foreground" : "text-muted-foreground"}`} onclick={() => walkthroughStepId = step.id}><span class="grid size-5 shrink-0 place-items-center rounded-full border text-[10px]">{index + 1}</span><span class="line-clamp-2 min-w-0 text-xs leading-4">{step.title}</span></Button>{/each}</section>{/each}
@@ -2209,7 +2275,7 @@ async function answer(requestId: string, answers: string[][]) {
             </div>
           {:else}
             <section>
-              <div class="mb-3 flex items-center justify-between"><p class="text-xs font-medium">Session changes</p><Badge variant="outline">{diffs.length}</Badge></div>
+              <div class="mb-3 flex items-center justify-between"><p class="text-xs font-medium">Session changes</p><Badge variant="outline">{diffs.length}</Badge></div><p class="-mt-1 mb-3 text-[10px] leading-4 text-muted-foreground">Files changed by this chat. Git shows all changes in the workspace.</p>
               {#if panelLoading && !diffs.length}<div class="flex items-center gap-2 py-8 text-xs text-muted-foreground"><LoaderCircle size={14} class="animate-spin" />Loading changes…</div>
               {:else if !sessionId}<p class="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">Start a chat to see its file changes.</p>
               {:else if !diffs.length}<p class="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">No file changes in this session yet.</p>

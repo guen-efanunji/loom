@@ -5,6 +5,7 @@ import { toast } from "svelte-sonner";
 import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
 import { Badge } from "$lib/components/ui/badge";
 import { Button } from "$lib/components/ui/button";
+import * as Checkbox from "$lib/components/ui/checkbox";
 import { Input } from "$lib/components/ui/input";
 import * as Select from "$lib/components/ui/select/index.js";
 import { Textarea } from "$lib/components/ui/textarea";
@@ -474,9 +475,9 @@ async function doCancel(task: Task) {
 </script>
 
 <div class="flex h-full flex-col gap-4">
-	<div class="flex items-center justify-between gap-2">
+	<div class="flex flex-wrap items-center justify-between gap-2">
 		<p class="text-sm text-muted-foreground">{tasks.length} tasks · drag cards to reorder</p>
-		<div class="flex items-center gap-2">
+		<div class="flex flex-wrap items-center gap-2">
 			{#if selectedIntegrationTaskIds.length >= 2}<Button size="sm" variant="outline" onclick={() => void createIntegrationBatch()} disabled={busy}>Assemble {selectedIntegrationTaskIds.length} outputs</Button>{/if}
 			<Button size="sm" onclick={() => void openAddTask()} disabled={busy}><Plus size={15} />Add task</Button>
 		</div>
@@ -498,7 +499,7 @@ async function doCancel(task: Task) {
 				</label>
 				<Button size="sm" variant="outline" disabled={reviewPolicyBusy} onclick={() => void saveReviewPolicy()}>{reviewPolicyBusy ? "Saving…" : "Save policy"}</Button>
 			</div>
-			{#if autoMergeAvailable}<label class="mt-3 flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" bind:checked={reviewPolicy.autoMerge} disabled={reviewPolicy.mode !== "automatic"} /> Allow automatic merge after required checks and approved automated review</label>{/if}
+			{#if autoMergeAvailable}<label class="mt-3 flex items-center gap-2 text-xs text-muted-foreground"><Checkbox.Root bind:checked={reviewPolicy.autoMerge} disabled={reviewPolicy.mode !== "automatic"} aria-label="Allow automatic merge after review" /> Allow automatic merge after required checks and approved automated review</label>{/if}
 			<p class="mt-2 text-xs text-muted-foreground">Policy changes invalidate prior approvals. Automatic merge availability is controlled by the server feature flag.</p>
 		</details>
 	{/if}
@@ -530,7 +531,7 @@ async function doCancel(task: Task) {
 			{/each}
 		</section>
 	{/if}
-	<div class="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-x-auto md:grid-cols-3 xl:grid-cols-6">
+	<div class="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-x-auto sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6">
 		{#each columns as item}
 			{@const cards = ordered.filter((task) => column(task) === item.key)}
 			<section
@@ -568,7 +569,7 @@ async function doCancel(task: Task) {
 							}}
 						>
 							<div class="flex items-start gap-1">
-								{#if task.status === "ready_to_merge"}<input type="checkbox" aria-label={`Select ${task.title} for integration`} checked={selectedIntegrationTaskIds.includes(task.id)} onchange={(event) => toggleIntegrationTask(task.id, event.currentTarget.checked)} />{/if}
+								{#if task.status === "ready_to_merge"}<Checkbox.Root aria-label={`Select ${task.title} for integration`} checked={selectedIntegrationTaskIds.includes(task.id)} onCheckedChange={(checked) => toggleIntegrationTask(task.id, checked === true)} />{/if}
 								<span class="mt-0.5 cursor-grab text-muted-foreground" title="Drag to reorder" aria-hidden="true"><GripVertical size={14} /></span>
 								<p class="min-w-0 flex-1 text-sm font-medium break-words">{task.title}</p>
 								<Button variant="ghost" size="icon" class="size-7 shrink-0" title="Edit task" aria-label={`Edit ${task.title}`} onclick={() => openEdit(task)}><Pencil size={13} /></Button>

@@ -1,7 +1,6 @@
 <script lang="ts">
 import {
 	Check,
-	ChevronDown,
 	Copy,
 	FileCode,
 	MessageSquarePlus,
@@ -33,6 +32,7 @@ let {
 	sessionId,
 	projectId,
 	onfile,
+	onopenfile,
 	onbranch,
 }: {
 	messages: ChatMessage[];
@@ -40,6 +40,7 @@ let {
 	sessionId: string;
 	projectId: string;
 	onfile: (path: string) => void;
+	onopenfile?: (path: string) => void;
 	onbranch?: (answer: string) => void;
 } = $props();
 
@@ -85,25 +86,21 @@ const canCopyResponse = $derived(
 );
 
 let copied = $state(false);
+let openTools = $state<Record<string, boolean>>({});
 
-type FilePreview = {
-	open: boolean;
-	tab: "changes" | "content";
-	loading: boolean;
-	error: string;
-	patch?: string;
-	additions: number;
-	deletions: number;
-	content: string;
-};
-let previews = $state<Record<string, FilePreview>>({});
+type InlineDiff = Pick<FileDiff, "file" | "patch" | "additions" | "deletions">;
+let inlineDiffs = $state<Record<string, InlineDiff | null>>({});
+let inlineDiffLoading = $state<Record<string, boolean>>({});
 let designPreviews = $state<Record<string, DesignNode>>({});
 let sessionDiffs = $state<FileDiff[] | null>(null);
+let diffPrefetchSession = "";
 
 $effect(() => {
 	sessionId;
-	previews = {};
+	inlineDiffs = {};
+	inlineDiffLoading = {};
 	sessionDiffs = null;
+	diffPrefetchSession = "";
 });
 
 function designIdOf(part: ChatPart) {
@@ -172,64 +169,6 @@ $effect(() => {
 		cancelled = true;
 	};
 });
-
-async function togglePreview(file: string) {
-	const existing = previews[file];
-	if (existing?.open) {
-		previews[file] = { ...existing, open: false };
-		return;
-	}
-	if (!sessionId) {
-		toast.error("Open a session to preview files");
-		return;
-	}
-	previews[file] = {
-		open: true,
-		tab: "changes",
-		loading: true,
-		error: "",
-		additions: 0,
-		deletions: 0,
-		content: "",
-	};
-	try {
-		if (!sessionDiffs) sessionDiffs = await chat.diff(sessionId);
-		const diff = sessionDiffs.find(
-			(d) => d.file === file || file.endsWith(`/${d.file}`),
-		);
-		let content = "";
-		try {
-			const result = await chat.file(projectId, file);
-			content =
-				result.encoding === "base64"
-					? "Binary file preview is unavailable."
-					: result.content;
-		} catch {
-			content = diff ? "" : "File is no longer available in the project.";
-		}
-		previews[file] = {
-			open: true,
-			tab: diff ? "changes" : "content",
-			loading: false,
-			error: "",
-			patch: diff?.patch,
-			additions: diff?.additions ?? 0,
-			deletions: diff?.deletions ?? 0,
-			content,
-		};
-	} catch (reason) {
-		previews[file] = {
-			open: true,
-			tab: "content",
-			loading: false,
-			error:
-				reason instanceof Error ? reason.message : "Unable to load preview",
-			additions: 0,
-			deletions: 0,
-			content: "",
-		};
-	}
-}
 
 type ToolKind = "shell" | "read" | "search" | "edit" | "other";
 function kindOf(part: ChatPart): ToolKind {
@@ -303,6 +242,110 @@ function diffStats(part: ChatPart) {
 	}
 	return found ? { additions, deletions } : null;
 }
+function toolFileDiff(part: ChatPart, file: string): InlineDiff | null {
+	const metadata = part.state?.metadata as
+		| {
+				filediff?: InlineDiff & { diff?: string; filePath?: string; relativePath?: string };
+				files?: Array<InlineDiff & { diff?: string; filePath?: string; relativePath?: string }>;
+	  }
+		| undefined;
+	const files = metadata?.filediff
+		? [metadata.filediff]
+		: (metadata?.files ?? []);
+	const matching = files.find((item) => {
+		const path = item.file ?? item.filePath ?? item.relativePath;
+		return typeof path === "string" && (path === file || file.endsWith(`/${path}`));
+	});
+	if (!matching) return null;
+	const patch = matching.patch ?? matching.diff;
+	return typeof patch === "string"
+		? {
+				file: matching.file ?? matching.filePath ?? matching.relativePath ?? file,
+				patch,
+				additions: matching.additions ?? 0,
+				deletions: matching.deletions ?? 0,
+			}
+		: null;
+}
+async function setToolDiffOpen(key: string, part: ChatPart, file: string, open: boolean) {
+	if (!open || inlineDiffs[key] !== undefined || inlineDiffLoading[key]) return;
+	const metadataDiff = toolFileDiff(part, file);
+	if (metadataDiff) {
+		inlineDiffs[key] = metadataDiff;
+		return;
+	}
+	if (!sessionId) {
+		inlineDiffs[key] = null;
+		return;
+	}
+	inlineDiffLoading[key] = true;
+	try {
+		if (!sessionDiffs) sessionDiffs = await chat.diff(sessionId);
+		inlineDiffs[key] =
+			sessionDiffs.find(
+				(diff) => diff.file === file || file.endsWith(`/${diff.file}`),
+			) ?? null;
+	} catch (reason) {
+		inlineDiffs[key] = null;
+		toast.error(reason instanceof Error ? reason.message : "Unable to load file changes");
+	} finally {
+		inlineDiffLoading[key] = false;
+	}
+}
+
+$effect(() => {
+	const currentSession = sessionId;
+	const editTools = messages.flatMap((message) =>
+		message.parts.flatMap((part) => {
+			if (part.type !== "tool" || kindOf(part) !== "edit" || diffStats(part))
+				return [];
+			const file = fileOf(part);
+			return file
+				? [{ key: `${message.info.id}-${part.id}`, file }]
+				: [];
+		}),
+	);
+	if (
+		!currentSession ||
+		!editTools.length
+	)
+		return;
+	if (sessionDiffs) {
+		const next = { ...inlineDiffs };
+		let changed = false;
+		for (const tool of editTools) {
+			if (next[tool.key]) continue;
+			const diff = sessionDiffs.find(
+				(item) =>
+					item.file === tool.file || tool.file.endsWith(`/${item.file}`),
+			);
+			if (!diff) continue;
+			next[tool.key] = {
+				file: diff.file,
+				patch: diff.patch,
+				additions: diff.additions,
+				deletions: diff.deletions,
+			};
+			changed = true;
+		}
+		if (changed) inlineDiffs = next;
+		return;
+	}
+	if (diffPrefetchSession === currentSession) return;
+
+	diffPrefetchSession = currentSession;
+	void chat
+		.diff(currentSession)
+		.then((diffs) => {
+			if (sessionId !== currentSession) return;
+			sessionDiffs = diffs;
+		})
+		.catch(() => {
+			if (diffPrefetchSession === currentSession)
+				diffPrefetchSession = "";
+		});
+});
+
 function statusOf(part: ChatPart) {
 	const status = part.state?.status ?? "unknown";
 	if (status === "completed") return "completed";
@@ -325,7 +368,7 @@ async function copy() {
 </script>
 
 <article class="group min-w-0" aria-label={role === "user" ? "Your message" : `${providerLabel} response`}>
-	<div class="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
+	<div class="mb-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
 		<span class="font-medium text-foreground">{role === "user" ? "You" : providerLabel}</span>
 		{#if agent}<span>{agent}</span>{/if}
 		{#if modelID}<Badge variant="outline" class={`model-badge model-badge--${modelTone} max-w-64 truncate`}>{modelID}</Badge>{/if}
@@ -339,7 +382,7 @@ async function copy() {
 					{:else if part.type === "design" || (part.type === "file" && part.filename?.startsWith("canvas-design:"))}
 						{@const designId = designIdOf(part)}
 						{@const design = designPreviews[designId]}
-						<div class="my-2 flex max-w-full items-center gap-3 rounded-lg border bg-background/60 p-2 text-xs">
+						<div class="my-2 flex max-w-full flex-col sm:flex-row items-start sm:items-center gap-3 rounded-lg border bg-background/60 p-2 text-xs">
 							<div class="relative h-[84px] w-[126px] shrink-0 overflow-hidden rounded border bg-background">
 								{#if design?.html}<iframe title={`Preview of ${design.title}`} srcdoc={design.html} sandbox="" tabindex="-1" aria-hidden="true" style={thumbnailStyle(design, 126, 84)} class="pointer-events-none absolute origin-top-left border-0"></iframe>{:else}<div class="flex h-full items-center justify-center text-muted-foreground"><PanelsTopLeft size={18} /></div>{/if}
 							</div>
@@ -365,59 +408,74 @@ async function copy() {
 						</Trace.Root>
 					{:else if part.type === "tool" && part.state}
 						{@const kind = kindOf(part)}
-						{@const stats = kind === "edit" ? diffStats(part) : null}
 						{@const file = fileOf(part)}
 						{@const toolStatus = statusOf(part)}
 						{@const traceStatus = toolStatus === "running" ? "running" : toolStatus === "error" ? "error" : undefined}
+						{@const toolKey = `${message.info.id}-${part.id}`}
+						{@const stats = kind === "edit" ? (diffStats(part) ?? inlineDiffs[toolKey]) : null}
+						{@const inlineDiff = inlineDiffs[toolKey]}
 						<div class="my-0.5 min-w-0">
-							<Trace.Root class="gap-0">
-							<Trace.Collapsible>
-								<Trace.CollapsibleTrigger class="w-full text-left">
-									<Trace.Line status={traceStatus} class="w-full">
-										<Trace.Icon>
-										{#if kind === "shell"}<Terminal size={14} />
-										{:else if kind === "read" || kind === "search"}<FileCode size={14} />
-										{:else if kind === "edit"}<Pencil size={14} />
-										{:else}<Wrench size={14} />{/if}
-										</Trace.Icon>
-										<Trace.Title class="min-w-0 flex-1 truncate">
-											{toolStatus === "running" ? "Running" : toolStatus === "error" ? "Failed" : kind === "edit" ? "Edited" : kind === "read" ? "Read" : kind === "search" ? "Searched" : "Ran"}
-											{kind === "shell" ? commandOf(part) : (kind === "edit" || kind === "read") && file ? file : commandOf(part)}
-										</Trace.Title>
-										{#if stats}<Trace.Description class="shrink-0 font-mono text-[11px]"><span class="text-emerald-400">+{stats.additions}</span> <span class="text-red-400">−{stats.deletions}</span></Trace.Description>{/if}
+							{#if kind === "read" && file}
+								<button type="button" class="w-full text-left" onclick={() => (onopenfile ?? onfile)(file)} title={`Open ${file} in the project editor`}>
+									<Trace.Line class="w-full">
+										<Trace.Icon><FileCode size={14} /></Trace.Icon>
+										<Trace.Title class="min-w-0 flex-1 truncate">Read {file}</Trace.Title>
+										<Trace.Description class="shrink-0">Open file</Trace.Description>
 									</Trace.Line>
-								</Trace.CollapsibleTrigger>
-								<Trace.CollapsibleContent class="space-y-2 pt-2">
-									{#if part.state.input}<CodeBlock code={JSON.stringify(part.state.input, null, 2)} language="json" maxHeight="max-h-60" />{/if}
-									{#if part.state.output}<CodeBlock code={part.state.output} maxHeight="max-h-80" />{/if}
-									{#if part.state.error}<p class="text-sm text-destructive" role="alert">{part.state.error}</p>{/if}
-								</Trace.CollapsibleContent>
-							</Trace.Collapsible>
-							</Trace.Root>
-							{#if file}
-								{@const preview = previews[file]}
-								<Button variant="ghost" size="sm" class="mt-1 h-7 w-full justify-start text-xs text-muted-foreground" onclick={() => void togglePreview(file)} aria-expanded={!!preview?.open}><FileCode size={14} /><span class="truncate">{file}</span><span class="ml-auto flex items-center gap-1">{preview?.open ? "Hide preview" : "Open file / diff"}<ChevronDown size={13} class={preview?.open ? "rotate-180" : ""} /></span></Button>
-								{#if preview?.open}
-									<div class="border-t p-3">
-										{#if preview.loading}
-											<p class="py-3 text-center text-xs text-muted-foreground">Loading preview…</p>
-										{:else if preview.error}
-											<p class="text-xs text-destructive" role="alert">{preview.error}</p>
-										{:else}
-											<div class="mb-2 flex gap-1 text-xs">
-												<Button variant={preview.tab === "changes" ? "secondary" : "ghost"} size="sm" class="h-7" onclick={() => (previews[file] = { ...preview, tab: "changes" })}>Changes{#if preview.additions || preview.deletions}<span class="ml-1 font-mono"><span class="text-emerald-400">+{preview.additions}</span><span class="text-red-400">−{preview.deletions}</span></span>{/if}</Button>
-												<Button variant={preview.tab === "content" ? "secondary" : "ghost"} size="sm" class="h-7" onclick={() => (previews[file] = { ...preview, tab: "content" })}>File content</Button>
-											</div>
-											{#if preview.tab === "changes"}
-												{#if preview.patch}
-													<div class="nice-scroll max-h-80 overflow-auto rounded-lg border bg-background"><pre class="min-w-fit py-2 text-xs leading-6">{#each preview.patch.split("\n") as line}<div class={`min-h-6 px-3 ${line.startsWith("+") ? "bg-emerald-500/10 text-emerald-300" : line.startsWith("-") ? "bg-red-500/10 text-red-300" : line.startsWith("@@") ? "bg-blue-500/10 text-blue-300" : "text-muted-foreground"}`}>{line || " "}</div>{/each}</pre></div>
-												{:else}<p class="py-2 text-xs text-muted-foreground">No recorded changes for this file yet.</p>{/if}
+								</button>
+							{:else if kind === "edit" && file}
+								<Trace.Root class="gap-0">
+									<Trace.Collapsible
+										open={openTools[toolKey] ?? false}
+										onOpenChange={(open) => {
+											openTools[toolKey] = open;
+											if (open) void setToolDiffOpen(toolKey, part, file, open);
+										}}
+									>
+										<Trace.CollapsibleTrigger class="w-full text-left">
+											<Trace.Line status={traceStatus} class="w-full">
+												<Trace.Icon><Pencil size={14} /></Trace.Icon>
+												<Trace.Title class="min-w-0 flex-1 truncate">
+													{toolStatus === "running" ? "Editing" : toolStatus === "error" ? "Failed to edit" : "Edited"} {file}
+												</Trace.Title>
+												{#if stats}<Trace.Description class="shrink-0 font-mono text-[11px]"><span class="text-emerald-400">+{stats.additions}</span> <span class="text-red-400">−{stats.deletions}</span></Trace.Description>{/if}
+											</Trace.Line>
+										</Trace.CollapsibleTrigger>
+										<Trace.CollapsibleContent class="space-y-2 pt-2">
+											{#if inlineDiffLoading[toolKey]}
+												<p class="py-3 text-xs text-muted-foreground">Loading file changes…</p>
+											{:else if inlineDiff?.patch}
+												<div class="nice-scroll max-h-80 overflow-auto rounded-lg border bg-background"><pre class="min-w-fit py-2 text-xs leading-6">{#each inlineDiff.patch.split("\n") as line}<div class={`min-h-6 px-3 ${line.startsWith("+") ? "bg-emerald-500/10 text-emerald-300" : line.startsWith("-") ? "bg-red-500/10 text-red-300" : line.startsWith("@@") ? "bg-blue-500/10 text-blue-300" : "text-muted-foreground"}`}>{line || " "}</div>{/each}</pre></div>
+												<Button variant="ghost" size="sm" class="h-7 px-2 text-xs text-muted-foreground" onclick={() => (onopenfile ?? onfile)(file)}><FileCode size={13} />Open in editor</Button>
 											{:else}
-												<CodeBlock code={preview.content || "(empty file)"} language={file} maxHeight="max-h-80" />
+												<p class="py-2 text-xs text-muted-foreground">No recorded diff for this file.</p>
+												<Button variant="ghost" size="sm" class="h-7 px-2 text-xs text-muted-foreground" onclick={() => (onopenfile ?? onfile)(file)}><FileCode size={13} />Open in editor</Button>
 											{/if}
-										{/if}
-									</div>
-								{/if}
+											{#if part.state.error}<p class="text-sm text-destructive" role="alert">{part.state.error}</p>{/if}
+										</Trace.CollapsibleContent>
+									</Trace.Collapsible>
+								</Trace.Root>
+							{:else}
+								<Trace.Root class="gap-0">
+									<Trace.Collapsible>
+										<Trace.CollapsibleTrigger class="w-full text-left">
+											<Trace.Line status={traceStatus} class="w-full">
+												<Trace.Icon>{#if kind === "shell"}<Terminal size={14} />{:else if kind === "read" || kind === "search"}<FileCode size={14} />{:else if kind === "edit"}<Pencil size={14} />{:else}<Wrench size={14} />{/if}</Trace.Icon>
+												<Trace.Title class="min-w-0 flex-1 truncate">
+													{toolStatus === "running" ? "Running" : toolStatus === "error" ? "Failed" : kind === "edit" ? "Edited" : kind === "read" ? "Read" : kind === "search" ? "Searched" : "Ran"}
+													{kind === "shell" ? commandOf(part) : (kind === "edit" || kind === "read") && file ? file : commandOf(part)}
+												</Trace.Title>
+										</Trace.Line>
+									</Trace.CollapsibleTrigger>
+									<Trace.CollapsibleContent class="space-y-2 pt-2">
+										{#if kind === "shell"}<CodeBlock code={commandOf(part)} language="bash" maxHeight="max-h-40" />{/if}
+										{#if part.state.input && kind !== "shell"}<CodeBlock code={JSON.stringify(part.state.input, null, 2)} language="json" maxHeight="max-h-60" />{/if}
+										{#if part.state.output}<CodeBlock code={part.state.output} maxHeight="max-h-80" />{/if}
+										{#if part.state.error}<p class="text-sm text-destructive" role="alert">{part.state.error}</p>{/if}
+										{#if kind === "read" && file}<Button variant="ghost" size="sm" class="h-7 px-2 text-xs text-muted-foreground" onclick={() => onfile(file)}><FileCode size={13} />Open in editor</Button>{/if}
+									</Trace.CollapsibleContent>
+								</Trace.Collapsible>
+								</Trace.Root>
 							{/if}
 						</div>
 					{:else if part.type === "file" && part.filename}

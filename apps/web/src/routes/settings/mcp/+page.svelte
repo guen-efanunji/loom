@@ -1,11 +1,13 @@
 <script lang="ts">
 	import { onMount } from "svelte";
+	import { page } from "$app/state";
 	import { toast } from "svelte-sonner";
 	import { ChevronLeft, CircleHelp, Folder, Globe, MessageSquareText, RefreshCw, ShieldAlert, Terminal } from "@lucide/svelte";
 	import SettingsSidebar from "$lib/components/settings/SettingsSidebar.svelte";
 	import { Button } from "$lib/components/ui/button";
 	import * as Select from "$lib/components/ui/select";
 	import { daemon, type McpInventory, type Project } from "$lib/daemon";
+	import { settingsHref } from "$lib/settings-navigation";
 
 	let projects = $state<Project[]>([]);
 	let projectId = $state("all");
@@ -64,7 +66,7 @@
 	<div class="flex min-h-svh w-full flex-col md:flex-row">
 		<SettingsSidebar active="mcp" bind:search />
 		<main class="min-w-0 flex-1 px-4 py-6 sm:px-7 lg:px-10 lg:py-8">
-			<div class="mx-auto max-w-[1320px]">
+			<div class="mx-auto w-full max-w-[1320px]">
 				<header class="mb-7 flex flex-wrap items-start justify-between gap-4">
 					<div>
 						<p class="mb-2 text-[11px] font-medium uppercase tracking-[0.2em] text-neutral-500">Agents · Integrations</p>
@@ -75,7 +77,7 @@
 				</header>
 
 				<div class="mb-5 flex flex-wrap items-end justify-between gap-3 rounded-2xl border border-white/10 bg-white/[0.035] p-4">
-					<div class="w-full max-w-xs">
+					<div class="w-full sm:max-w-xs">
 						<p class="mb-1.5 text-[10px] uppercase tracking-wide text-neutral-500">Workspace configuration</p>
 						<Select.Root type="single" value={projectId} onValueChange={chooseProject}>
 							<Select.Trigger class="h-9 w-full text-sm"><Select.Value /></Select.Trigger>
@@ -139,7 +141,7 @@
 				</section>
 
 				<div class="mt-6 flex items-start gap-2 text-xs text-neutral-600"><CircleHelp class="mt-0.5 size-3.5 shrink-0" /><p>Managed connections, tool catalogs, attachment policies, and built-in Loom MCP are not available in this inventory phase. They require a maintained MCP SDK and explicit process/network approval.</p></div>
-				<div class="mt-8"><Button href="/settings" variant="outline" size="sm"><ChevronLeft class="size-4" />Settings</Button></div>
+				<div class="mt-8"><Button href={settingsHref("/settings", page.url.searchParams.get("returnTo"))} variant="outline" size="sm"><ChevronLeft class="size-4" />Settings</Button></div>
 			</div>
 		</main>
 	</div>

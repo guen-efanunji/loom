@@ -3,6 +3,7 @@ import { ArrowUp, Folder, FolderPlus, LoaderCircle } from "@lucide/svelte";
 import { onMount } from "svelte";
 import { toast } from "svelte-sonner";
 import { Button } from "$lib/components/ui/button";
+import * as Checkbox from "$lib/components/ui/checkbox";
 import { Input } from "$lib/components/ui/input";
 import * as ScrollArea from "$lib/components/ui/scroll-area";
 import { daemon, type DirectoryListing } from "$lib/daemon";
@@ -48,14 +49,14 @@ async function submit() {
 </script>
 
 <div class="space-y-3">
-	<div class="flex items-center gap-2">
+	<div class="flex flex-col gap-2 sm:flex-row sm:items-center">
 		<form class="flex min-w-0 flex-1 items-center gap-2" onsubmit={(event) => { event.preventDefault(); void navigate(pathInput); }}>
 			<FolderPlus size={15} class="shrink-0 text-muted-foreground" />
 			<Input aria-label="Current folder path" bind:value={pathInput} spellcheck="false" />
 			<Button type="submit" variant="outline" size="sm" disabled={loading}>Go</Button>
 		</form>
 		<label class="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
-			<input type="checkbox" bind:checked={showHidden} onchange={() => void navigate(listing?.path)} />
+			<Checkbox.Root checked={showHidden} onCheckedChange={(checked) => { showHidden = checked === true; void navigate(listing?.path); }} aria-label="Show hidden directories" />
 			Show hidden
 		</label>
 	</div>

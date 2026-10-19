@@ -145,20 +145,22 @@ onMount(() => {
 		{#if detail.plan.sourceMessage}<details class="my-4 rounded-lg border p-4"><summary class="cursor-pointer text-sm">View original brief</summary><p class="mt-3 whitespace-pre-wrap text-sm text-muted-foreground">{detail.plan.sourceMessage}</p><Button class="mt-3" variant="outline" href={`/?project=${detail.plan.projectId}${detail.plan.sourceSessionId ? `&session=${encodeURIComponent(detail.plan.sourceSessionId)}` : ""}`}>View original chat</Button></details>{/if}
 		<header class="my-6 flex flex-wrap items-center justify-between gap-4">
 			<div>
-				<h1 class="text-3xl font-semibold">{detail.plan.title}</h1>
+				<h1 class="text-2xl font-semibold sm:text-3xl">{detail.plan.title}</h1>
 				<p class="mt-2 max-w-3xl whitespace-pre-wrap text-sm text-muted-foreground">{detail.plan.summary || "Planner is still working on this plan."}</p>
 			</div>
-			<div class="flex items-center gap-2">
+			<div class="flex flex-wrap items-center gap-2">
 				<Badge variant="outline">{formatStatus(detail.plan.status)}</Badge>
 				<Badge variant="secondary">{detail.progress.done} / {detail.progress.total} done</Badge>
 			</div>
 		</header>
 		{#if detail.plan.errorMessage}<p class="mb-4 rounded-lg border border-amber-800 p-3 text-sm text-amber-200">{detail.plan.errorMessage}</p>{/if}
-		{#if detail.plan.status === "failed" && !detail.plan.convertedAt}<Button disabled={!!busy} onclick={() => action("regenerate", async () => { await daemon.retryPlan(id, { model: readPlannerModel() }); initialized = false; })}>Regenerate plan</Button>{/if}
-		{#if !detail.plan.cancelledAt && detail.plan.status !== "completed"}<Button variant="outline" disabled={!!busy} onclick={() => action("cancel", () => daemon.cancelPlan(id))}>Cancel plan</Button>{/if}
+		<div class="mb-4 flex flex-wrap gap-2">
+			{#if detail.plan.status === "failed" && !detail.plan.convertedAt}<Button disabled={!!busy} onclick={() => action("regenerate", async () => { await daemon.retryPlan(id, { model: readPlannerModel() }); initialized = false; })}>Regenerate plan</Button>{/if}
+			{#if !detail.plan.cancelledAt && detail.plan.status !== "completed"}<Button variant="outline" disabled={!!busy} onclick={() => action("cancel", () => daemon.cancelPlan(id))}>Cancel plan</Button>{/if}
+		</div>
 		{#if detail.plan.status === "draft" && !detail.draft.length}<p class="rounded-xl border p-6">OpenCode is preparing the plan. This page updates automatically.</p>{/if}
 		{#if editable}
-			<section class="space-y-4 rounded-xl border bg-card p-5">
+			<section class="space-y-4 rounded-xl border bg-card p-4 sm:p-5">
 				<div><h2 class="text-xl font-medium">Review proposed plan</h2><p class="text-sm text-muted-foreground">Rename tasks, edit descriptions and acceptance criteria, change priority and dependencies.</p></div>
 				<div class="grid gap-3 sm:grid-cols-2">
 					<label class="block text-sm">Plan title<Input aria-label="Plan title" bind:value={title} maxlength={200} /></label>
@@ -166,10 +168,13 @@ onMount(() => {
 				<label class="block text-sm">Summary<Textarea aria-label="Plan summary" bind:value={summary} rows={3} /></label>
 				{#each draft as task, index (task.key)}
 					<article class="space-y-3 rounded-lg border bg-background p-4">
-						<div class="flex items-center gap-3">
-							<Badge variant="outline">{task.key}</Badge>
-							<Input aria-label={`Task ${index + 1} title`} bind:value={task.title} placeholder="Task title" maxlength={200} />
-							<Button variant="ghost" disabled={!!busy} onclick={() => remove(task.key)}>Remove</Button>
+						<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+							<div class="flex items-center justify-between gap-2 sm:contents">
+								<Badge variant="outline">{task.key}</Badge>
+								<Button variant="ghost" size="sm" class="sm:hidden" disabled={!!busy} onclick={() => remove(task.key)}>Remove</Button>
+							</div>
+							<Input class="min-w-0 flex-1" aria-label={`Task ${index + 1} title`} bind:value={task.title} placeholder="Task title" maxlength={200} />
+							<Button variant="ghost" class="hidden sm:inline-flex" disabled={!!busy} onclick={() => remove(task.key)}>Remove</Button>
 						</div>
 						<Textarea aria-label={`Task ${index + 1} description`} bind:value={task.description} rows={3} placeholder="Scope, deliverables, and context" />
 						<div class="grid gap-3 sm:grid-cols-2">
@@ -188,7 +193,7 @@ onMount(() => {
 							<span class="text-sm text-muted-foreground">Acceptance criteria</span>
 							{#each task.acceptanceCriteria as criterion, ci}
 								<div class="flex items-center gap-2">
-									<Input aria-label={`Task ${index + 1} criterion ${ci + 1}`} value={criterion} oninput={(event) => { task.acceptanceCriteria[ci] = event.currentTarget.value; }} placeholder="Measurable check" />
+									<Input class="min-w-0 flex-1" aria-label={`Task ${index + 1} criterion ${ci + 1}`} value={criterion} oninput={(event) => { task.acceptanceCriteria[ci] = event.currentTarget.value; }} placeholder="Measurable check" />
 									<Button variant="ghost" size="sm" onclick={() => { task.acceptanceCriteria = task.acceptanceCriteria.filter((_, i) => i !== ci); }}>Remove</Button>
 								</div>
 							{/each}
