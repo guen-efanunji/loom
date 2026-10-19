@@ -32,6 +32,20 @@ export const mergeConflictSchema = z.object({
 
 export type MergeConflict = z.infer<typeof mergeConflictSchema>;
 
+export const taskExecutorSchema = z.discriminatedUnion("kind", [
+	z.object({
+		kind: z.literal("agent"),
+		agentId: z.string().min(1),
+	}),
+	z.object({
+		kind: z.literal("direct"),
+		providerId: z.string().min(1),
+		modelId: z.string().min(1).nullable(),
+	}),
+]);
+
+export type TaskExecutor = z.infer<typeof taskExecutorSchema>;
+
 export const taskSchema = z.object({
 	id: z.string().min(1),
 	projectId: z.string().min(1),
@@ -44,6 +58,8 @@ export const taskSchema = z.object({
 	acceptanceCriteria: z.array(z.string()).default([]),
 	suggestedFiles: z.array(z.string()).default([]),
 	source: z.enum(["manual", "planner"]).default("manual"),
+	executor: taskExecutorSchema.nullable().default(null),
+	targetBranch: z.string().nullable().default(null),
 	position: z.number().int().nullable().default(null),
 	workspaceId: z.string().min(1).nullable(),
 	sessionId: z.string().min(1).nullable(),
@@ -89,6 +105,13 @@ export const agentRunSchema = z.object({
 	errorCode: z.string().nullable(),
 	recoveryAction: z.string().nullable(),
 	retryOfRunId: z.string().min(1).nullable(),
+	executorSnapshotJson: z.string().nullable().default(null),
+	snapshotHash: z.string().nullable().default(null),
+	effectiveProvider: z.string().nullable().default(null),
+	effectiveModel: z.string().nullable().default(null),
+	attemptNumber: z.number().int().positive().default(1),
+	baseSha: z.string().nullable().default(null),
+	outputSha: z.string().nullable().default(null),
 });
 
 export type AgentRun = z.infer<typeof agentRunSchema>;

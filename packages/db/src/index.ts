@@ -61,7 +61,7 @@ export function createDb(env: DatabaseConfig = {}) {
 
 export type Database = ReturnType<typeof createDb>;
 
-export { and, desc, eq, isNull, or } from "drizzle-orm";
+export { and, desc, eq, gt, isNull, or } from "drizzle-orm";
 export * from "./automation";
 export * from "./bootstrap";
 export * from "./design";

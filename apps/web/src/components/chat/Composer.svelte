@@ -202,9 +202,11 @@ const providerGroups = $derived.by(() => {
 			group = {
 				id,
 				label:
-					displayName && displayName.toLowerCase() !== id.toLowerCase()
-						? `${displayName} · ${id}`
-						: id,
+					displayName && id.startsWith("loom_custom_")
+						? displayName
+						: displayName && displayName.toLowerCase() !== id.toLowerCase()
+							? `${displayName} · ${id}`
+							: id,
 				models: [],
 			};
 			groups.set(id, group);
@@ -474,27 +476,33 @@ async function send() {
 		return;
 	sending = true;
 	query = null;
+	const pendingDraft = draft;
+	const pendingFiles = [...files];
+	const pendingAttachments = [...attachments];
+	const pendingDesignIds = [...selectedDesignIds];
+	const pendingAgents = [...agents];
 	try {
-		const ok = await onsend({
-			text: draft.trim(),
-			files,
-			attachments: await Promise.all(
-				attachments.map(
-					async (file): Promise<ChatAttachment> => ({
-						filename: file.name,
-						mime: file.type || "application/octet-stream",
-						data: await new Promise<string>((resolve, reject) => {
-							const reader = new FileReader();
-							reader.onload = () =>
-								resolve(String(reader.result).split(",")[1] ?? "");
-							reader.onerror = () => reject(reader.error);
-							reader.readAsDataURL(file);
-						}),
+		const attachmentsPayload = await Promise.all(
+			pendingAttachments.map(
+				async (file): Promise<ChatAttachment> => ({
+					filename: file.name,
+					mime: file.type || "application/octet-stream",
+					data: await new Promise<string>((resolve, reject) => {
+						const reader = new FileReader();
+						reader.onload = () =>
+							resolve(String(reader.result).split(",")[1] ?? "");
+						reader.onerror = () => reject(reader.error);
+						reader.readAsDataURL(file);
 					}),
-				),
+				}),
 			),
-			designNodeIds: selectedDesignIds,
-			agents,
+		);
+		const request = onsend({
+			text: pendingDraft.trim(),
+			files: pendingFiles,
+			attachments: attachmentsPayload,
+			designNodeIds: pendingDesignIds,
+			agents: pendingAgents,
 			agent,
 			customAgentId: customAgentId || undefined,
 			model: selectedModel
@@ -505,19 +513,36 @@ async function send() {
 				: undefined,
 			thinkingMode: supportsThinkingMode ? thinkingMode : undefined,
 		});
-		if (ok) {
-			draft = "";
-			files = [];
-			attachments = [];
-			selectedDesignIds = [];
-			agents = [];
+		draft = "";
+		files = [];
+		attachments = [];
+		selectedDesignIds = [];
+		agents = [];
+		const ok = await request;
+		if (!ok) {
+			draft = pendingDraft;
+			files = pendingFiles;
+			attachments = pendingAttachments;
+			selectedDesignIds = pendingDesignIds;
+			agents = pendingAgents;
 		}
+	} catch (error) {
+		draft = pendingDraft;
+		files = pendingFiles;
+		attachments = pendingAttachments;
+		selectedDesignIds = pendingDesignIds;
+		agents = pendingAgents;
+		throw error;
 	} finally {
 		sending = false;
 	}
 }
 function keydown(event: KeyboardEvent) {
 	if (event.isComposing) return;
+	if (event.repeat && event.key === "Enter") {
+		event.preventDefault();
+		return;
+	}
 	if (query !== null) {
 		if (event.key === "Escape") {
 			event.preventDefault();
@@ -546,31 +571,35 @@ function keydown(event: KeyboardEvent) {
 	}
 	if (event.key === "Enter" && !event.shiftKey) {
 		event.preventDefault();
-		void send();
+		textarea?.form?.requestSubmit();
 	}
 }
 </script>
 {#snippet modelOption(item: Model, section: string)}
 	{@const key = modelKey(item)}
 	{@const favorite = favoriteModelIds.includes(key)}
+	{@const selected = model === key}
 	<div class="flex items-center gap-1">
 		<Command.Item
 			value={modelOptionValue(item, `${section} ${key}`)}
 			onSelect={() => chooseModel(item)}
-			class="h-12 min-w-0 flex-1 items-center"
+			aria-current={selected ? "true" : undefined}
+			class={`h-12 min-w-0 flex-1 items-center ${selected ? "bg-primary/10 ring-1 ring-inset ring-primary/40" : ""}`}
 		>
 			<span class="min-w-0 flex-1">
 				<span class="flex min-w-0 items-center gap-2">
 					<span class="truncate">{item.name}</span>
 					<Badge
 						variant="outline"
-						class={`model-badge model-badge--${providerTone(item.providerID)} shrink-0 px-1.5 text-[10px] uppercase tracking-wide`}
-					>{item.providerID}</Badge>
+						class={`model-badge model-badge--${providerTone(item.providerID)} max-w-36 shrink-0 truncate px-1.5 text-[10px] uppercase tracking-wide`}
+						title={item.provider?.trim() || item.providerID}
+					>{item.provider?.trim() || item.providerID}</Badge>
 				</span>
 				<span class="block truncate text-xs text-muted-foreground">
-					{item.modelID}{item.connectionId && item.connectionId !== item.providerID ? ` · ${item.connectionId}` : ""}
+					{item.modelID}{!item.providerID.startsWith("loom_custom_") && item.connectionId && item.connectionId !== item.providerID ? ` · ${item.connectionId}` : ""}
 				</span>
 			</span>
+			{#if selected}<span class="ml-2 inline-flex shrink-0 items-center gap-1 text-[10px] font-medium text-primary"><Check size={13} />Selected</span>{/if}
 		</Command.Item>
 		<Button
 			type="button"
@@ -614,7 +643,7 @@ function keydown(event: KeyboardEvent) {
       {#if onAutoAcceptChange}<label class="ml-1 flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-white/50 transition hover:bg-white/[0.06]" title="Auto-approve tool permissions for this project. When off, each tool asks for your approval."><Switch checked={autoAccept} onCheckedChange={(value) => onAutoAcceptChange(value)} size="sm" /><span>Auto-accept</span></label>{/if}
     </div>
     <div class="flex min-w-0 items-center gap-1">
-      <Popover.Root bind:open={modelOpen} onOpenChange={(open) => { modelOpen = open; if (!open) modelSearch = ""; }}><Popover.Trigger class="flex max-w-56 items-center gap-1 rounded-lg px-2 py-1.5 text-xs text-white/65 transition hover:bg-white/[0.06] hover:text-white disabled:opacity-50" aria-label="Select model" disabled={!!selectedCustomAgent}><span class="truncate">{selectedCustomAgent ? customAgentModelLabel(selectedCustomAgent) : selectedModel?.name ?? "Default model"}</span><ChevronDown size={12} /></Popover.Trigger>
+      <Popover.Root bind:open={modelOpen} onOpenChange={(open) => { modelOpen = open; if (!open) modelSearch = ""; }}><Popover.Trigger class="flex max-w-56 items-center gap-1 rounded-lg px-2 py-1.5 text-xs text-white/65 transition hover:bg-white/[0.06] hover:text-white disabled:opacity-50" aria-label={selectedCustomAgent ? `Custom agent model: ${customAgentModelLabel(selectedCustomAgent)}` : selectedModel ? `Selected model: ${selectedModel.name} from ${selectedModel.provider?.trim() || selectedModel.providerID}` : "Select model"} title={selectedCustomAgent ? customAgentModelLabel(selectedCustomAgent) : selectedModel ? `${selectedModel.name} · ${selectedModel.provider?.trim() || selectedModel.providerID} · ${selectedModel.modelID}` : "Default model"} disabled={!!selectedCustomAgent}><span class="truncate">{selectedCustomAgent ? customAgentModelLabel(selectedCustomAgent) : selectedModel?.name ?? "Default model"}</span>{#if selectedModel && !selectedCustomAgent}<Badge variant="outline" class={`model-badge model-badge--${providerTone(selectedModel.providerID)} max-w-20 shrink-0 truncate px-1 text-[9px] uppercase tracking-wide`}>{selectedModel.provider?.trim() || selectedModel.providerID}</Badge>{/if}<ChevronDown size={12} /></Popover.Trigger>
         <Popover.Content class="w-96 max-w-[calc(100vw-2rem)] p-0" align="end"><Command.Root><Command.Input bind:value={modelSearch} placeholder="Search models…" /><Command.List class="max-h-96"><Command.Empty>No configured models found.</Command.Empty>
           {#if visibleFavoriteModels.length}<Command.Group heading="Favorites">{#each visibleFavoriteModels as item (modelKey(item))}{@render modelOption(item, "favorite")}{/each}</Command.Group>{/if}
           {#if visibleRecentModels.length}<Command.Separator /><Command.Group heading="Recent">{#each visibleRecentModels as item (modelKey(item))}{@render modelOption(item, "recent")}{/each}</Command.Group>{/if}

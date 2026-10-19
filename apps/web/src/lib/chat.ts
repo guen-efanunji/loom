@@ -108,6 +108,54 @@ export type Catalog = {
 	agents: Array<{ name: string; description?: string; mode: string }>;
 	commands: Array<{ name: string; description?: string }>;
 };
+
+/** Return a user-facing provider name for both built-in and custom providers. */
+export function providerDisplayName(catalog: Catalog, providerID?: string) {
+	if (!providerID) return "Assistant";
+	const normalized = providerID.toLowerCase();
+	const model = catalog.models.find(
+		(item) => item.providerID.toLowerCase() === normalized,
+	);
+	if (model?.provider?.trim()) return model.provider.trim();
+	if (normalized === "agy" || normalized === "antigravity") return "Agy";
+	if (normalized === "claude" || normalized === "anthropic") return "Claude";
+	if (normalized === "codex" || normalized === "openai") return "Codex";
+	if (normalized === "opencode") return "OpenCode";
+	if (normalized.startsWith("loom_custom_")) {
+		const label = providerID
+			.slice("loom_custom_".length)
+			.replace(/_[a-f0-9]{8,}$/i, "");
+		return label
+			.replace(/[_-]+/g, " ")
+			.replace(/\b\w/g, (letter) => letter.toUpperCase());
+	}
+	return providerID;
+}
+
+/** Hide internal custom-provider IDs if they appear in a runtime status string. */
+export function friendlyProviderStatus(catalog: Catalog, message?: string) {
+	if (!message) return "";
+	let friendly = message;
+	const providerIDs = new Set(
+		catalog.models
+			.map((model) => model.providerID)
+			.filter((providerID) => providerID.toLowerCase().startsWith("loom_custom_")),
+	);
+	for (const providerID of providerIDs) {
+		const label = providerDisplayName(catalog, providerID);
+		const escaped = providerID.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+		friendly = friendly.replace(new RegExp(escaped, "gi"), label);
+	}
+	friendly = friendly.replace(
+		/loom_custom_(.+?)_([a-f0-9]{8,})(?=\b|$)/gi,
+		(_match, rawLabel: string) =>
+			rawLabel
+				.replace(/[_-]+/g, " ")
+				.replace(/\b\w/g, (letter) => letter.toUpperCase()),
+	);
+	return friendly;
+}
+
 const root = "/api/chat";
 const catalogCache = new Map<string, Catalog>();
 const catalogRequests = new Map<string, Promise<Catalog>>();

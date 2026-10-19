@@ -14,7 +14,7 @@ import type {
 } from "@loom/db";
 import type { AutomationPlanTask, PlanStatus } from "@loom/protocol";
 import type { AgentRuntime, RuntimeModel } from "@loom/providers/core";
-import { git, snapshotWorkspace } from "./commands";
+import { git } from "./commands";
 import type { TaskLifecycleHooks, TaskOrchestrator } from "./index";
 
 type Repos = ReturnType<typeof repositories>;
@@ -439,15 +439,27 @@ export class AutomationService {
 		return {
 			canRun: async (taskId) => {
 				const task = await this.repos.tasks.getById(taskId);
-				if (!task?.planId) return true;
-				if ((await this.store.get(task.planId))?.cancelledAt) return false;
-				if (task.status !== "ready") return false;
-				for (const dep of await this.store.dependencies(taskId))
-					if (
-						(await this.repos.tasks.getById(dep.dependsOnTaskId))?.status !==
-						"completed"
-					)
-						return false;
+				if (!task) return false;
+				if (task.planId) {
+					if ((await this.store.get(task.planId))?.cancelledAt) return false;
+					if (!["ready", "blocked", "queued"].includes(task.status ?? "")) return false;
+				}
+				for (const dep of await this.store.dependencies(taskId)) {
+					const producer = await this.repos.tasks.getById(dep.dependsOnTaskId);
+					if (!producer || producer.projectId !== task.projectId) return false;
+					if (dep.requiredMilestone === "contract_published" || dep.requiredMilestone === "artifact_ready") {
+						if (!dep.artifactId || !this.repos.taskArtifacts) return false;
+						const artifact = await this.repos.taskArtifacts.getById(dep.artifactId);
+						if (!artifact || artifact.taskId !== producer.id || artifact.status !== "ready") return false;
+						if (dep.requiredMilestone === "contract_published" && artifact.kind !== "contract") return false;
+						continue;
+					}
+					const output = await this.repos.agentRuns.getByTaskId(dep.dependsOnTaskId);
+					if (!output?.outputSha) return false;
+					if (dep.requiredMilestone === "integrated") {
+						if (producer.status !== "completed") return false;
+					} else if (dep.requiredMilestone !== "implementation_ready" || !(["ready_to_merge", "completed"].includes(producer.status))) return false;
+				}
 				return true;
 			},
 			prepare: async (task, workspace) => {
@@ -474,12 +486,8 @@ export class AutomationService {
 				if (!files.length) return task.prompt;
 				return `${task.prompt}\n\nSuggested files: ${files.join(", ")}`;
 			},
-			complete: async (task, workspace) => {
-				if (task.planId)
-					await snapshotWorkspace(
-						workspace.path,
-						`Complete task: ${task.title}`,
-					);
+			complete: async () => {
+				// Output commits require an explicit user checkpoint action.
 			},
 			settled: (taskId) => this.unlockDependents(taskId),
 			guard: async (taskId, action) => {
@@ -512,19 +520,14 @@ export class AutomationService {
 
 	private async unlockDependents(taskId: string): Promise<void> {
 		const task = await this.repos.tasks.getById(taskId);
-		if (!task?.planId) return;
-		const plan = await this.requirePlan(task.planId);
-		if (plan.cancelledAt) return;
-		if (!TERMINAL_TASK.has(task.status ?? "")) return;
-		if (task.status !== "completed") return;
+		if (!task) return;
+		const plan = task.planId ? await this.store.get(task.planId) : undefined;
+		if (plan?.cancelledAt) return;
 		for (const link of await this.store.dependents(taskId)) {
 			const dependent = await this.repos.tasks.getById(link.taskId);
 			if (dependent?.status !== "blocked") continue;
 			const deps = await this.store.dependencies(dependent.id);
-			const states = await Promise.all(
-				deps.map((dep) => this.repos.tasks.getById(dep.dependsOnTaskId)),
-			);
-			if (!states.every((row) => row?.status === "completed")) continue;
+			if (!(await Promise.all(deps.map((dep) => this.dependencyReady(dep)))).every(Boolean)) continue;
 			await this.repos.tasks.update(dependent.id, { status: "ready" });
 			await this.tasks.publishDaemonEvent({
 				type: "task.ready",
@@ -536,11 +539,15 @@ export class AutomationService {
 				unblockedBy: taskId,
 			});
 			try {
-				if (plan.startedAt) await this.tasks.enqueue(dependent.id);
+				if (dependent.planId) {
+					const dependentPlan = await this.store.get(dependent.planId);
+					if (dependentPlan?.startedAt) await this.tasks.enqueue(dependent.id);
+				}
 			} catch {
 				// Already scheduled; the scheduler gate decides.
 			}
 		}
+		if (!task.planId) return;
 		const remaining = (await projectTasks(this.repos, task.projectId)).filter(
 			(row) => row.planId === task.planId,
 		);
@@ -549,6 +556,22 @@ export class AutomationService {
 			remaining.every((row) => row.status === "completed")
 		)
 			await this.store.update(task.planId, { status: "completed" });
+	}
+
+	private async dependencyReady(dep: { dependsOnTaskId: string; requiredMilestone: string; artifactId?: string | null }) {
+		const producer = await this.repos.tasks.getById(dep.dependsOnTaskId);
+		if (!producer) return false;
+		if (["contract_published", "artifact_ready"].includes(dep.requiredMilestone)) {
+			if (!dep.artifactId || !this.repos.taskArtifacts) return false;
+			const artifact = await this.repos.taskArtifacts.getById(dep.artifactId);
+			return !!artifact && artifact.taskId === producer.id && artifact.status === "ready" &&
+				(dep.requiredMilestone !== "contract_published" || artifact.kind === "contract");
+		}
+		const output = await this.repos.agentRuns.getByTaskId(dep.dependsOnTaskId);
+		if (!output?.outputSha) return false;
+		return dep.requiredMilestone === "integrated"
+			? producer.status === "completed"
+			: ["ready_to_merge", "completed"].includes(producer.status ?? "");
 	}
 
 	async recover(): Promise<void> {

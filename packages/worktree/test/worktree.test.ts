@@ -163,6 +163,207 @@ describe("temporary git repository", () => {
 		await manager.discard(second);
 	});
 
+	test("assembles exact task output SHAs into a reviewable candidate before promotion", async () => {
+		root = await mkdtemp(join(tmpdir(), "loom-integration-repository-"));
+		home = await mkdtemp(join(tmpdir(), "loom-integration-home-"));
+		const run = async (args: string[], cwd = root) => {
+			const process = Bun.spawn(["git", ...args], {
+				cwd,
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			return {
+				stdout: await new Response(process.stdout).text(),
+				stderr: await new Response(process.stderr).text(),
+				exitCode: await process.exited,
+			};
+		};
+		await run(["init", "-b", "main"]);
+		await run(["config", "user.name", "Loom"]);
+		await run(["config", "user.email", "loom@example.test"]);
+		await writeFile(join(root, "base.txt"), "base\n");
+		await run(["add", "."]);
+		await run(["commit", "-m", "base"]);
+		const baseSha = (await run(["rev-parse", "HEAD"])).stdout.trim();
+		const manager = new WorktreeManager({ home });
+		const frontend = await manager.create({ projectPath: root, projectId: "batch-project", taskId: "frontend", baseRef: baseSha });
+		const backend = await manager.create({ projectPath: root, projectId: "batch-project", taskId: "backend", baseRef: baseSha });
+		for (const [workspace, file] of [[frontend, "frontend.txt"], [backend, "backend.txt"]] as const) {
+			await writeFile(join(workspace.path, file), `${file}\n`);
+			await run(["add", file], workspace.path);
+			await run(["-c", "user.name=Loom", "-c", "user.email=loom@example.test", "commit", "-m", file], workspace.path);
+		}
+		const frontendSha = (await run(["rev-parse", "HEAD"], frontend.path)).stdout.trim();
+		const backendSha = (await run(["rev-parse", "HEAD"], backend.path)).stdout.trim();
+		const candidate = await manager.createIntegrationCandidate({
+			projectPath: root,
+			projectId: "batch-project",
+			batchId: "batch-1",
+			targetBranch: "main",
+			targetBaseSha: baseSha,
+			members: [
+				{ taskId: "frontend", outputSha: frontendSha },
+				{ taskId: "backend", outputSha: backendSha },
+			],
+		});
+		expect(candidate.memberShas).toEqual([frontendSha, backendSha]);
+		expect(await Bun.file(join(candidate.workspace.path, "frontend.txt")).text()).toBe("frontend.txt\n");
+		expect(await Bun.file(join(candidate.workspace.path, "backend.txt")).text()).toBe("backend.txt\n");
+		expect((await run(["rev-parse", "main"])).stdout.trim()).toBe(baseSha);
+		const reviewed = await manager.inspectHead(candidate.workspace);
+		expect(reviewed.head).toBe(candidate.candidateSha);
+		const cleanCheck = await manager.runIntegrationCheck(candidate.workspace, {
+			name: "git diff check",
+			command: "git",
+			args: ["diff", "--check"],
+			timeoutMs: 5_000,
+		});
+		expect(cleanCheck.status).toBe("passed");
+		const failedCheck = await manager.runIntegrationCheck(candidate.workspace, {
+			name: "invalid git option",
+			command: "git",
+			args: ["--not-a-git-option"],
+			timeoutMs: 5_000,
+		});
+		expect(failedCheck.status).toBe("failed");
+		await run(["-c", "user.name=Loom", "-c", "user.email=loom@example.test", "commit", "--allow-empty", "-m", "move target"]);
+		await expect(manager.promoteIntegrationCandidate(candidate.workspace, {
+			expectedTargetSha: baseSha,
+			candidateSha: candidate.candidateSha,
+		})).rejects.toThrow("Target branch moved");
+		await run(["reset", "--hard", baseSha]);
+		await manager.promoteIntegrationCandidate(candidate.workspace, {
+			expectedTargetSha: baseSha,
+			candidateSha: candidate.candidateSha,
+		});
+		expect((await run(["rev-parse", "main"])).stdout.trim()).toBe(candidate.candidateSha);
+		await manager.discardIntegrationCandidate(candidate.workspace);
+		await manager.discard(frontend);
+		await manager.discard(backend);
+	});
+
+	test("uses an explicit baseline while leaving dirty checkout changes untouched", async () => {
+		root = await mkdtemp(join(tmpdir(), "loom-repository-"));
+		home = await mkdtemp(join(tmpdir(), "loom-home-"));
+		const run = async (args: string[], cwd = root) => {
+			const process = Bun.spawn(["git", ...args], {
+				cwd,
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			return {
+				stdout: await new Response(process.stdout).text(),
+				stderr: await new Response(process.stderr).text(),
+				exitCode: await process.exited,
+			};
+		};
+		await run(["init", "-b", "main"]);
+		await run(["config", "user.name", "Loom"]);
+		await run(["config", "user.email", "loom@example.test"]);
+		await writeFile(join(root, "base.txt"), "baseline\n");
+		await run(["add", "."]);
+		await run(["commit", "-m", "baseline"]);
+		const baseSha = (await run(["rev-parse", "HEAD"])).stdout.trim();
+		await run(["checkout", "-b", "other"]);
+		await writeFile(join(root, "base.txt"), "other branch\n");
+		await run(["commit", "-am", "other branch"]);
+		await writeFile(join(root, "local.txt"), "uncommitted user work\n");
+		const manager = new WorktreeManager({ home });
+		const workspace = await manager.create({
+			projectPath: root,
+			projectId: "project-explicit-base",
+			taskId: "task-explicit-base",
+			baseRef: baseSha,
+		});
+		expect(workspace.baseCommit).toBe(baseSha);
+		expect(await Bun.file(join(workspace.path, "base.txt")).text()).toBe(
+			"baseline\n",
+		);
+		expect(await Bun.file(join(root, "local.txt")).text()).toBe(
+			"uncommitted user work\n",
+		);
+		await manager.discard(workspace);
+	});
+
+	test("refuses normal removal when task output is uncheckpointed", async () => {
+		root = await mkdtemp(join(tmpdir(), "loom-repository-"));
+		home = await mkdtemp(join(tmpdir(), "loom-home-"));
+		const run = async (args: string[], cwd = root) => {
+			const process = Bun.spawn(["git", ...args], {
+				cwd,
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			return {
+				stdout: await new Response(process.stdout).text(),
+				stderr: await new Response(process.stderr).text(),
+				exitCode: await process.exited,
+			};
+		};
+		await run(["init", "-b", "main"]);
+		await run(["config", "user.name", "Loom"]);
+		await run(["config", "user.email", "loom@example.test"]);
+		await writeFile(join(root, "base.txt"), "baseline\n");
+		await run(["add", "."]);
+		await run(["commit", "-m", "baseline"]);
+		const manager = new WorktreeManager({ home });
+		const workspace = await manager.create({
+			projectPath: root,
+			projectId: "project-safe-remove",
+			taskId: "task-safe-remove",
+		});
+		await writeFile(join(workspace.path, "output.txt"), "keep this output\n");
+		await expect(manager.remove(workspace)).rejects.toThrow(
+			/uncheckpointed changes/,
+		);
+		expect(await Bun.file(join(workspace.path, "output.txt")).exists()).toBe(true);
+		await manager.discard(workspace);
+	});
+
+	test("checkpoints visible worktree output and rejects secret files", async () => {
+		root = await mkdtemp(join(tmpdir(), "loom-repository-"));
+		home = await mkdtemp(join(tmpdir(), "loom-home-"));
+		const run = async (args: string[], cwd = root) => {
+			const process = Bun.spawn(["git", ...args], {
+				cwd,
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			return {
+				stdout: await new Response(process.stdout).text(),
+				stderr: await new Response(process.stderr).text(),
+				exitCode: await process.exited,
+			};
+		};
+		await run(["init", "-b", "main"]);
+		await run(["config", "user.name", "Loom"]);
+		await run(["config", "user.email", "loom@example.test"]);
+		await writeFile(join(root, "base.txt"), "baseline\n");
+		await run(["add", "."]);
+		await run(["commit", "-m", "baseline"]);
+		const manager = new WorktreeManager({ home });
+		const workspace = await manager.create({
+			projectPath: root,
+			projectId: "project-checkpoint",
+			taskId: "task-checkpoint",
+		});
+		await writeFile(join(workspace.path, "output.ts"), "export const ready = true;\n");
+		await writeFile(join(workspace.path, ".env.local"), "TOKEN=secret\n");
+		expect(await manager.diff(workspace)).toContain("output.ts");
+		expect(await manager.diff(workspace)).not.toContain("TOKEN=secret");
+		await expect(manager.checkpoint(workspace, "checkpoint output")).rejects.toThrow(
+			/secret, generated, or Loom metadata/,
+		);
+		await rm(join(workspace.path, ".env.local"));
+		const sha = await manager.checkpoint(workspace, "checkpoint output");
+		expect((await run(["rev-parse", "HEAD"], workspace.path)).stdout.trim()).toBe(sha);
+		expect((await run(["ls-files"], workspace.path)).stdout).toContain("output.ts");
+		expect((await run(["ls-files"], workspace.path)).stdout).not.toContain(".loom-worktree.json");
+		expect(await manager.readTextAtCommit(workspace, sha, "output.ts")).toContain("ready = true");
+		await expect(manager.readTextAtCommit(workspace, sha, "../../outside")).rejects.toThrow("unsafe or excluded");
+		await manager.discard(workspace);
+	});
+
 	test("merges committed changes and removes only a clean worktree", async () => {
 		root = await mkdtemp(join(tmpdir(), "loom-repository-"));
 		home = await mkdtemp(join(tmpdir(), "loom-home-"));
@@ -192,8 +393,14 @@ describe("temporary git repository", () => {
 		});
 		await writeFile(join(workspace.path, "file.txt"), "merged\n");
 		await run(["add", "."], workspace.path);
+		expect(
+			(await run(["ls-files", ".loom-worktree.json"], workspace.path)).stdout.trim(),
+		).toBe("");
 		await run(["commit", "-m", "change"], workspace.path);
-		await manager.merge(workspace);
+		const outputSha = (await run(["rev-parse", "HEAD"], workspace.path)).stdout.trim();
+		const promotedSha = await manager.merge(workspace);
+		expect(await manager.isCommitIntegrated(workspace, outputSha)).toBe(true);
+		expect(promotedSha).not.toBe("");
 		expect((await run(["show", "HEAD:file.txt"])).stdout.trim()).toBe("merged");
 	});
 

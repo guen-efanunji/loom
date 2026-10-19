@@ -9,11 +9,13 @@ export type SchedulerState =
 export type SchedulerConfig = {
 	maxConcurrentAgents: number;
 	maxConcurrentAgentsPerProject: number;
+	maxConcurrentAgentsPerProvider: number;
 };
 
 export const defaultSchedulerConfig: SchedulerConfig = {
 	maxConcurrentAgents: 3,
 	maxConcurrentAgentsPerProject: 3,
+	maxConcurrentAgentsPerProvider: 2,
 };
 
 export type SchedulerTask = {
@@ -44,6 +46,10 @@ type SchedulerOptions = {
 	getProjectId: (taskId: string) => Promise<string>;
 	run: (taskId: string) => Promise<void>;
 	canRun?: (taskId: string) => Promise<boolean>;
+	claim?: (taskId: string) => Promise<boolean>;
+	heartbeat?: (taskId: string) => Promise<boolean>;
+	release?: (taskId: string) => Promise<void>;
+	onLeaseLost?: (taskId: string) => Promise<void> | void;
 	onChanged?: (state: {
 		running: number;
 		queued: number;
@@ -58,6 +64,7 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
 	if (
 		config.maxConcurrentAgents < 1 ||
 		config.maxConcurrentAgentsPerProject < 1
+		|| config.maxConcurrentAgentsPerProvider < 1
 	)
 		throw new Error("Scheduler concurrency limits must be at least 1");
 
@@ -69,6 +76,7 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
 	let shuttingDown = false;
 	let dispatchPromise: Promise<void> | undefined;
 	let redispatch = false;
+	let leasePoll: ReturnType<typeof setTimeout> | undefined;
 
 	const changed = async () => {
 		await options.onChanged?.({
@@ -92,6 +100,7 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
 				);
 				if (running.length >= config.maxConcurrentAgents) break;
 				let nextIndex = -1;
+				let claimedTaskId: string | undefined;
 				for (let i = 0; i < queue.length; i++) {
 					const candidate = queue[i];
 					if (!candidate) continue;
@@ -103,16 +112,38 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
 					)
 						continue;
 					if (options.canRun && !(await options.canRun(candidate))) continue;
+					if (options.claim && !(await options.claim(candidate))) continue;
 					// Readiness is asynchronous: cancellation may have removed this candidate.
-					if (task.state !== "queued" || !queue.includes(candidate)) continue;
+					if (task.state !== "queued" || !queue.includes(candidate)) {
+						if (options.release) await options.release(candidate);
+						continue;
+					}
 					nextIndex = queue.indexOf(candidate);
+					claimedTaskId = options.claim ? candidate : undefined;
 					break;
 				}
-				if (nextIndex < 0) break;
+				if (nextIndex < 0) {
+					if (queue.length && options.claim && !leasePoll)
+						leasePoll = setTimeout(() => {
+							leasePoll = undefined;
+							void dispatch();
+						}, 1500);
+					break;
+				}
+				if (leasePoll) {
+					clearTimeout(leasePoll);
+					leasePoll = undefined;
+				}
 				const taskId = queue.splice(nextIndex, 1)[0];
-				if (!taskId) break;
+				if (!taskId) {
+					if (claimedTaskId && options.release) await options.release(claimedTaskId);
+					break;
+				}
 				const task = tasks.get(taskId);
-				if (task?.state !== "queued") continue;
+				if (task?.state !== "queued") {
+					if (claimedTaskId && options.release) await options.release(claimedTaskId);
+					continue;
+				}
 				task.state = "running";
 				dispatching.add(taskId);
 				changedState = true;
@@ -132,12 +163,27 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
 	};
 
 	const run = async (task: SchedulerTask) => {
+		let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+		if (options.heartbeat) {
+			heartbeatTimer = setInterval(() => {
+				void options.heartbeat?.(task.taskId).then((owned) => {
+					if (!owned) {
+						if (heartbeatTimer) clearInterval(heartbeatTimer);
+						heartbeatTimer = undefined;
+						void options.onLeaseLost?.(task.taskId);
+					}
+				}).catch(() => {});
+			}, 15_000);
+			heartbeatTimer.unref?.();
+		}
 		try {
 			await options.run(task.taskId);
 			if (task.state === "running") task.state = "completed";
 		} catch {
 			if (task.state === "running") task.state = "failed";
 		} finally {
+			if (heartbeatTimer) clearInterval(heartbeatTimer);
+			await options.release?.(task.taskId);
 			dispatching.delete(task.taskId);
 			for (const resolve of waiters.get(task.taskId) ?? []) resolve(task.state);
 			waiters.delete(task.taskId);
@@ -217,6 +263,8 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
 		},
 		async shutdown() {
 			shuttingDown = true;
+			if (leasePoll) clearTimeout(leasePoll);
+			leasePoll = undefined;
 			for (const taskId of queue.splice(0)) {
 				const task = tasks.get(taskId);
 				if (task) task.state = "cancelled";

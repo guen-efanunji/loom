@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { taskExecutorSchema } from "./domain";
 
 export const createProjectInputSchema = z.object({
 	path: z.string().trim().min(1),
@@ -10,6 +11,10 @@ export const createTaskInputSchema = z.object({
 	projectId: z.string().min(1),
 	title: z.string().trim().min(1).max(200),
 	prompt: z.string().trim().min(1),
+	acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).max(30).optional(),
+	// null explicitly means this is a planning-only task without a Git target.
+	targetBranch: z.string().trim().min(1).max(240).nullable().optional(),
+	executor: taskExecutorSchema.optional(),
 });
 
 export type CreateTaskInput = z.infer<typeof createTaskInputSchema>;

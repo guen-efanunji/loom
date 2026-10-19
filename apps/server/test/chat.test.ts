@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { OpenCodeHttpRuntime } from "@loom/opencode";
 import { createChatRoutes } from "../src/chat";
 
@@ -75,6 +78,11 @@ function setup() {
 }
 describe("chat gateway", () => {
 	test("accepts a provider-neutral request gateway", async () => {
+		const root = await mkdtemp(join(tmpdir(), "loom-chat-files-"));
+		const git = Bun.spawnSync(["git", "init"], { cwd: root });
+		expect(git.exitCode).toBe(0);
+		await mkdir(join(root, "src"));
+		await writeFile(join(root, "src", "app.ts"), "export {}\n");
 		const calls: Array<{
 			path: string;
 			options?: { directory?: string; body?: unknown; method?: string };
@@ -83,7 +91,7 @@ describe("chat gateway", () => {
 			projects: {
 				list: async () => [],
 				getById: async (id: string) =>
-					id === "project" ? { path: "/tmp" } : null,
+					id === "project" ? { path: root } : null,
 			},
 			request: async <T>(
 				path: string,
@@ -93,14 +101,14 @@ describe("chat gateway", () => {
 				return [] as T;
 			},
 		});
-		const response = await app.request("/files?projectId=project&query=src");
-		expect(response.status).toBe(200);
-		expect(calls).toEqual([
-			{
-				path: "/find/file?query=src&limit=100&dirs=false",
-				options: { directory: "/tmp", body: undefined, method: "GET" },
-			},
-		]);
+		try {
+			const response = await app.request("/files?projectId=project&query=src");
+			expect(response.status).toBe(200);
+			expect(await response.json()).toEqual(["src/", "src/app.ts"]);
+			expect(calls).toEqual([]);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
 	});
 	test("builds the composer catalog without rescanning providers", async () => {
 		const app = createChatRoutes({
@@ -115,6 +123,7 @@ describe("chat gateway", () => {
 				return [] as T;
 			},
 			providerManager: {
+				subscribe: () => () => {},
 				refreshAll: async () => {
 					throw new Error("catalog request must not rescan providers");
 				},

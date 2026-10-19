@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Database } from "@loom/db";
 import {
 	and,
+	customAgentAssignmentRuns,
 	customAgentAssignments,
 	customAgentRunEvents,
 	customAgentRuns,
@@ -117,7 +118,12 @@ type Options = {
 			| null
 			| undefined
 		>;
+		update(id: string, input: { executorConfig: string }): Promise<unknown>;
 	};
+	startTask(taskId: string): Promise<void>;
+	enqueueAndWait(taskId: string): Promise<void>;
+	retryTask(taskId: string): Promise<void>;
+	cancelTask(taskId: string): Promise<void>;
 	providers: ProviderManager;
 };
 
@@ -272,9 +278,9 @@ export function createAgentSettingsRoutes(options: Options) {
 				systemInstructions: input.systemInstructions,
 				status: input.status,
 				executionMode: input.executionMode,
-				allowChat: true,
-				allowCanvas: true,
-				allowKanban: true,
+				allowChat: input.allowChat,
+				allowCanvas: input.allowCanvas,
+				allowKanban: input.allowKanban,
 				approvalPolicy: input.approvalPolicy,
 				maxRunDurationMinutes: input.maxRunDurationMinutes,
 				maxRetries: input.maxRetries,
@@ -324,9 +330,9 @@ export function createAgentSettingsRoutes(options: Options) {
 					systemInstructions: input.systemInstructions,
 					status: input.status,
 					executionMode: input.executionMode,
-					allowChat: true,
-					allowCanvas: true,
-					allowKanban: true,
+					allowChat: input.allowChat,
+					allowCanvas: input.allowCanvas,
+					allowKanban: input.allowKanban,
 					approvalPolicy: input.approvalPolicy,
 					maxRunDurationMinutes: input.maxRunDurationMinutes,
 					maxRetries: input.maxRetries,
@@ -374,10 +380,17 @@ export function createAgentSettingsRoutes(options: Options) {
 			})
 			.parse(await c.req.json());
 		const agent = await load(body.agentId);
-		if (!agent || agent.status !== "active")
+		if (agent?.status !== "active")
 			return c.json(
 				{ error: { message: "Agent is missing or disabled" } },
 				404,
+			);
+		const surfaceAllowed =
+			body.trigger === "kanban" ? agent.allowKanban : agent.allowChat;
+		if (!surfaceAllowed)
+			return c.json(
+				{ error: { message: `Agent is not enabled for ${body.trigger}` } },
+				403,
 			);
 		if (agent.approvalPolicy !== "read_only")
 			return c.json(
@@ -463,7 +476,12 @@ export function createAgentSettingsRoutes(options: Options) {
 			: undefined;
 		const modelId = model
 			? String(model.metadata?.modelId ?? model.name)
-			: undefined;
+			: agent.modelId &&
+					options.providers.registry
+						.require(agent.provider)
+						.definition.capabilities.includes("custom-model")
+				? agent.modelId
+				: undefined;
 		await db.insert(customAgentRuns).values({
 			id: runId,
 			agentId: agent.id,
@@ -505,7 +523,9 @@ export function createAgentSettingsRoutes(options: Options) {
 					readOnly: true,
 				});
 				const enabledSkills = agent.skills.filter(
-					(skill) => skill.enabled && skill.allowChat,
+					(skill) =>
+						skill.enabled &&
+						(body.trigger === "kanban" ? skill.allowKanban : skill.allowChat),
 				);
 				const instructions = [
 					`You are ${agent.label}, a ${agent.role} agent.`,
@@ -525,8 +545,13 @@ export function createAgentSettingsRoutes(options: Options) {
 				await runtime.prompt({
 					sessionId: created.id,
 					prompt: `${instructions}\n\n${taskContext}\n\nUser request:\n${body.message}`,
-					...(model && modelId
-						? { model: { providerID: model.providerId, modelID: modelId } }
+					...(modelId
+						? {
+								model: {
+									providerID: model?.providerId ?? adapter.definition.id,
+									modelID: modelId,
+								},
+							}
 						: {}),
 					permission: { mode: "read-only" },
 				});
@@ -585,21 +610,34 @@ export function createAgentSettingsRoutes(options: Options) {
 				agentId: z.string(),
 				projectId: z.string(),
 				taskId: z.string(),
-				continuousEnabled: z.literal(false).default(false),
+				continuousEnabled: z.boolean().default(false),
 			})
 			.parse(await c.req.json());
 		const agent = await load(input.agentId);
 		const task = await options.tasks.getById(input.taskId);
-		if (!agent || agent.status !== "active")
+		if (agent?.status !== "active")
+			return c.json({ error: { message: "Active agent not found" } }, 404);
+		if (!agent.allowKanban)
 			return c.json(
-				{ error: { message: "Active agent not found" } },
-				404,
+				{ error: { message: "Agent is not enabled for Kanban" } },
+				403,
+			);
+		if (input.continuousEnabled && agent.executionMode !== "continuous_kanban")
+			return c.json(
+				{
+					error: {
+						message:
+							"Enable continuous Kanban mode in the agent settings first",
+					},
+				},
+				409,
 			);
 		if (
 			!task ||
 			task.projectId !== input.projectId ||
 			task.status === "completed" ||
 			task.status === "blocked" ||
+			["preparing", "running"].includes(task.status) ||
 			!`${task.title} ${task.description ?? ""} ${task.prompt}`.trim()
 		)
 			return c.json(
@@ -612,12 +650,15 @@ export function createAgentSettingsRoutes(options: Options) {
 				400,
 			);
 		const id = randomUUID();
+		await options.tasks.update(task.id, {
+			executorConfig: JSON.stringify({ kind: "agent", agentId: agent.id }),
+		});
 		await db.insert(customAgentAssignments).values({
 			id,
 			agentId: agent.id,
 			projectId: input.projectId,
 			taskId: input.taskId,
-			continuousEnabled: false,
+			continuousEnabled: input.continuousEnabled,
 		});
 		return c.json(
 			await db.query.customAgentAssignments.findFirst({
@@ -630,49 +671,412 @@ export function createAgentSettingsRoutes(options: Options) {
 		const assignment = await db.query.customAgentAssignments.findFirst({
 			where: eq(customAgentAssignments.id, c.req.param("id")),
 		});
-		if (!assignment || assignment.status !== "active" || !assignment.taskId)
+		if (assignment?.status !== "active" || !assignment.taskId)
 			return c.json(
 				{ error: { message: "Active task assignment not found" } },
 				404,
 			);
-		const task = await options.tasks.getById(assignment.taskId);
-		const agent = await load(assignment.agentId);
+		const seedTaskId = assignment.taskId;
+		const parsedInput = z
+			.object({
+				taskIds: z.array(z.string().min(1)).min(1).max(20).optional(),
+				maxTasks: z.number().int().min(1).max(20).default(1),
+				concurrency: z.number().int().min(1).max(3).default(1),
+				durationMinutes: z.number().int().min(1).max(120).default(30),
+				maxRetries: z.number().int().min(0).max(2).default(0),
+				idempotencyKey: z.string().trim().min(8).max(128).optional(),
+			})
+			.safeParse(await c.req.json().catch(() => ({})));
+		if (!parsedInput.success) {
+			const result = validationError(parsedInput.error);
+			return c.json(result.body, result.status);
+		}
+		const input = parsedInput.data;
+		const requestedTaskIds = input.taskIds ?? [seedTaskId];
+		const idempotencyKey =
+			input.idempotencyKey ?? c.req.header("Idempotency-Key") ?? randomUUID();
+		const existing = await db.query.customAgentAssignmentRuns.findFirst({
+			where: and(
+				eq(customAgentAssignmentRuns.assignmentId, assignment.id),
+				eq(customAgentAssignmentRuns.idempotencyKey, idempotencyKey),
+			),
+		});
 		if (
-			!task ||
-			!agent ||
-			task.projectId !== assignment.projectId ||
-			["completed", "blocked", "failed", "cancelled"].includes(task.status)
+			existing &&
+			(existing.taskIdsJson !==
+				JSON.stringify(requestedTaskIds.slice(0, input.maxTasks)) ||
+				existing.maxTasks !== input.maxTasks ||
+				existing.concurrency !== input.concurrency ||
+				existing.durationMs !== input.durationMinutes * 60_000)
 		)
 			return c.json(
-				{ error: { message: "Task is no longer eligible for agent work" } },
+				{
+					error: {
+						message:
+							"Idempotency key was already used for a different assignment request",
+					},
+				},
 				409,
 			);
-		let criteria: string[] = [];
-		try {
-			criteria = JSON.parse(task.acceptanceCriteria) as string[];
-		} catch {
-			/* malformed historical criteria are omitted */
+		if (existing)
+			return c.json(existing, existing.status === "queued" ? 202 : 200);
+		const agent = await load(assignment.agentId);
+		if (agent?.status !== "active" || !agent.allowKanban)
+			return c.json(
+				{ error: { message: "Agent is disabled or unavailable" } },
+				409,
+			);
+		if (input.maxTasks > (input.taskIds?.length ?? 1))
+			return c.json(
+				{
+					error: {
+						message: "maxTasks cannot exceed the explicitly selected task list",
+					},
+				},
+				400,
+			);
+		if (input.concurrency > input.maxTasks)
+			return c.json(
+				{ error: { message: "concurrency cannot exceed maxTasks" } },
+				400,
+			);
+		if (input.maxRetries > 0 && !assignment.continuousEnabled)
+			return c.json(
+				{
+					error: { message: "Retries require an opt-in continuous assignment" },
+				},
+				409,
+			);
+		if (
+			assignment.continuousEnabled &&
+			agent.executionMode !== "continuous_kanban"
+		)
+			return c.json(
+				{
+					error: {
+						message: "Agent is no longer configured for continuous Kanban",
+					},
+				},
+				409,
+			);
+		const taskIds = requestedTaskIds;
+		if (new Set(taskIds).size !== taskIds.length)
+			return c.json(
+				{ error: { message: "Task list must not contain duplicates" } },
+				400,
+			);
+		for (const taskId of taskIds) {
+			const task = await options.tasks.getById(taskId);
+			if (
+				!task ||
+				task.projectId !== assignment.projectId ||
+				[
+					"completed",
+					"blocked",
+					"cancelled",
+					"preparing",
+					"running",
+					"ready_to_merge",
+					"merge_conflict",
+				].includes(task.status)
+			)
+				return c.json(
+					{
+						error: {
+							message: `Task ${taskId} is outside the assignment scope or is not eligible`,
+						},
+					},
+					409,
+				);
 		}
-		const prompt = [
-			"Review the assigned task and report the next implementation steps. Do not modify files from this read-only continuation.",
-			`Kanban task: ${task.title}`,
-			task.description || task.prompt,
-			criteria.length
-				? `Acceptance criteria:\n${criteria.map((s) => `- ${s}`).join("\n")}`
-				: "",
-		]
-			.filter(Boolean)
-			.join("\n\n");
-		return app.request("/runs/chat", {
-			method: "POST",
-			headers: { "content-type": "application/json" },
-			body: JSON.stringify({
-				agentId: agent.id,
-				projectId: assignment.projectId,
-				taskId: task.id,
-				trigger: "kanban",
-				message: prompt,
-			}),
+		const activeRun = await db.query.customAgentAssignmentRuns.findFirst({
+			where: and(
+				eq(customAgentAssignmentRuns.assignmentId, assignment.id),
+				or(
+					eq(customAgentAssignmentRuns.status, "queued"),
+					eq(customAgentAssignmentRuns.status, "running"),
+					eq(customAgentAssignmentRuns.status, "cancel_requested"),
+				),
+			),
+		});
+		if (activeRun)
+			return c.json(
+				{
+					error: {
+						message: "This assignment already has an active bounded run",
+					},
+				},
+				409,
+			);
+		const runId = randomUUID();
+		try {
+			await db.insert(customAgentAssignmentRuns).values({
+				id: runId,
+				assignmentId: assignment.id,
+				idempotencyKey,
+				taskIdsJson: JSON.stringify(taskIds.slice(0, input.maxTasks)),
+				maxTasks: input.maxTasks,
+				concurrency: input.concurrency,
+				durationMs: input.durationMinutes * 60_000,
+			});
+		} catch {
+			const duplicate = await db.query.customAgentAssignmentRuns.findFirst({
+				where: and(
+					eq(customAgentAssignmentRuns.assignmentId, assignment.id),
+					eq(customAgentAssignmentRuns.idempotencyKey, idempotencyKey),
+				),
+			});
+			if (duplicate) return c.json(duplicate, 202);
+			return c.json(
+				{
+					error: {
+						message: "This assignment already has an active bounded run",
+					},
+				},
+				409,
+			);
+		}
+		const updateRun = async (
+			patch: Partial<typeof customAgentAssignmentRuns.$inferInsert>,
+		) => {
+			await db
+				.update(customAgentAssignmentRuns)
+				.set(patch)
+				.where(eq(customAgentAssignmentRuns.id, runId));
+		};
+		void (async () => {
+			const startedAt = Date.now();
+			let next = 0;
+			let completedTasks = 0;
+			let stopScheduling = false;
+			let failure: string | undefined;
+			const claimed = new Set<string>();
+			await db
+				.update(customAgentAssignmentRuns)
+				.set({ status: "running", startedAt: new Date() })
+				.where(
+					and(
+						eq(customAgentAssignmentRuns.id, runId),
+						eq(customAgentAssignmentRuns.status, "queued"),
+					),
+				);
+			const initialRun = await db.query.customAgentAssignmentRuns.findFirst({
+				where: eq(customAgentAssignmentRuns.id, runId),
+			});
+			if (initialRun?.status === "cancel_requested") {
+				await updateRun({
+					status: "cancelled",
+					currentTaskIdsJson: "[]",
+					finishedAt: new Date(),
+				});
+				return;
+			}
+			const worker = async () => {
+				while (
+					!stopScheduling &&
+					next < Math.min(input.maxTasks, taskIds.length)
+				) {
+					const runState = await db.query.customAgentAssignmentRuns.findFirst({
+						where: eq(customAgentAssignmentRuns.id, runId),
+					});
+					if (runState?.status === "cancel_requested") {
+						stopScheduling = true;
+						return;
+					}
+					if (Date.now() - startedAt >= input.durationMinutes * 60_000) {
+						failure = "Continuous assignment reached its duration limit";
+						stopScheduling = true;
+						return;
+					}
+					const taskId = taskIds[next++];
+					if (!taskId) return;
+					const task = await options.tasks.getById(taskId);
+					const currentAgent = await load(assignment.agentId);
+					if (currentAgent?.status !== "active" || !currentAgent.allowKanban) {
+						stopScheduling = true;
+						failure = "Agent was disabled; no additional tasks were started";
+						return;
+					}
+					if (
+						!task ||
+						task.projectId !== assignment.projectId ||
+						[
+							"completed",
+							"blocked",
+							"cancelled",
+							"preparing",
+							"running",
+							"ready_to_merge",
+							"merge_conflict",
+						].includes(task.status)
+					) {
+						failure = `Task ${taskId} became ineligible before it was claimed`;
+						stopScheduling = true;
+						return;
+					}
+					claimed.add(taskId);
+					await updateRun({ currentTaskIdsJson: JSON.stringify([...claimed]) });
+					await options.tasks.update(taskId, {
+						executorConfig: JSON.stringify({
+							kind: "agent",
+							agentId: agent.id,
+						}),
+					});
+					let attempts = 0;
+					while (true) {
+						const latest = await options.tasks.getById(taskId);
+						if (!latest)
+							throw new Error("Task disappeared during continuous assignment");
+						if (latest.status === "failed" && attempts >= input.maxRetries)
+							throw new Error("Task failed; retry limit exhausted");
+						const retrying = latest.status === "failed";
+						if (retrying) attempts++;
+						const execution = retrying
+							? options.retryTask(taskId)
+							: options.enqueueAndWait(taskId);
+						const remainingMs = Math.max(
+							0,
+							input.durationMinutes * 60_000 - (Date.now() - startedAt),
+						);
+						let timeout: ReturnType<typeof setTimeout> | undefined;
+						try {
+							await Promise.race([
+								execution,
+								new Promise<never>((_, reject) => {
+									timeout = setTimeout(
+										() =>
+											reject(
+												new Error(
+													"Continuous assignment duration limit reached",
+												),
+											),
+										remainingMs,
+									);
+								}),
+							]);
+						} catch (error) {
+							if (Date.now() - startedAt >= input.durationMinutes * 60_000) {
+								stopScheduling = true;
+								failure = "Continuous assignment reached its duration limit";
+								await options.cancelTask(taskId);
+								await execution.catch(() => {});
+								claimed.delete(taskId);
+								await updateRun({
+									currentTaskIdsJson: JSON.stringify([...claimed]),
+								});
+							}
+							throw error;
+						} finally {
+							if (timeout) clearTimeout(timeout);
+						}
+						const fresh = await options.tasks.getById(taskId);
+						if (fresh?.status === "failed") {
+							if (attempts < input.maxRetries) continue;
+							throw new Error("Task failed; retry limit exhausted");
+						}
+						break;
+					}
+					const finished = await options.tasks.getById(taskId);
+					claimed.delete(taskId);
+					completedTasks++;
+					await updateRun({
+						completedTasks,
+						currentTaskIdsJson: JSON.stringify([...claimed]),
+					});
+					if (
+						finished?.status === "ready_to_merge" ||
+						finished?.status === "merge_conflict" ||
+						finished?.status === "blocked"
+					) {
+						stopScheduling = true;
+						failure =
+							finished.status === "ready_to_merge"
+								? "Paused for the required review and integration gates"
+								: `Paused because task ${taskId} is ${finished.status}`;
+					}
+				}
+			};
+			try {
+				await Promise.all(
+					Array.from({ length: input.concurrency }, () => worker()),
+				);
+				const cancelled =
+					(
+						await db.query.customAgentAssignmentRuns.findFirst({
+							where: eq(customAgentAssignmentRuns.id, runId),
+						})
+					)?.status === "cancel_requested";
+				await updateRun({
+					status: cancelled ? "cancelled" : failure ? "paused" : "completed",
+					errorMessage: failure ?? null,
+					currentTaskIdsJson: "[]",
+					finishedAt: new Date(),
+				});
+			} catch (error) {
+				await updateRun({
+					status: failure ? "paused" : "failed",
+					errorMessage:
+						failure ??
+						(error instanceof Error
+							? safeError(error)
+							: "Continuous assignment failed"),
+					currentTaskIdsJson: JSON.stringify([...claimed]),
+					finishedAt: new Date(),
+				});
+			}
+		})();
+		return c.json(
+			{
+				id: runId,
+				assignmentId: assignment.id,
+				status: "queued",
+				taskIds: taskIds.slice(0, input.maxTasks),
+			},
+			202,
+		);
+	});
+	app.get("/assignments/:id/runs", async (c) => {
+		const assignment = await db.query.customAgentAssignments.findFirst({
+			where: eq(customAgentAssignments.id, c.req.param("id")),
+		});
+		if (!assignment)
+			return c.json({ error: { message: "Assignment not found" } }, 404);
+		return c.json(
+			await db
+				.select()
+				.from(customAgentAssignmentRuns)
+				.where(eq(customAgentAssignmentRuns.assignmentId, assignment.id))
+				.orderBy(desc(customAgentAssignmentRuns.createdAt))
+				.limit(50),
+		);
+	});
+	app.post("/assignments/:id/cancel", async (c) => {
+		const assignment = await db.query.customAgentAssignments.findFirst({
+			where: eq(customAgentAssignments.id, c.req.param("id")),
+		});
+		if (!assignment)
+			return c.json({ error: { message: "Assignment not found" } }, 404);
+		const run = await db.query.customAgentAssignmentRuns.findFirst({
+			where: and(
+				eq(customAgentAssignmentRuns.assignmentId, assignment.id),
+				or(
+					eq(customAgentAssignmentRuns.status, "queued"),
+					eq(customAgentAssignmentRuns.status, "running"),
+				),
+			),
+		});
+		if (!run)
+			return c.json({ error: { message: "No active assignment run" } }, 409);
+		await db
+			.update(customAgentAssignmentRuns)
+			.set({ status: "cancel_requested" })
+			.where(eq(customAgentAssignmentRuns.id, run.id));
+		for (const taskId of JSON.parse(run.currentTaskIdsJson) as string[])
+			await options.cancelTask(taskId);
+		return c.json({
+			accepted: true,
+			runId: run.id,
+			cancelledTaskIds: JSON.parse(run.currentTaskIdsJson),
 		});
 	});
 	return app;

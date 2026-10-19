@@ -110,6 +110,7 @@ test("uses the documented defaults and rejects work after shutdown", async () =>
 	expect(defaultSchedulerConfig).toEqual({
 		maxConcurrentAgents: 3,
 		maxConcurrentAgentsPerProject: 3,
+		maxConcurrentAgentsPerProvider: 2,
 	});
 	const scheduler = createScheduler({
 		getProjectId: async () => "project",
@@ -141,4 +142,26 @@ test("failed dependency blocks its descendant until explicit successful retry", 
 	await scheduler.enqueue("dependency", true);
 	expect(await scheduler.wait("dependent")).toBe("completed");
 	expect(started).toEqual(["dependency", "dependency", "dependent"]);
+});
+
+test("holds a durable task claim before starting its runtime", async () => {
+	let claimable = false;
+	const started: string[] = [];
+	const scheduler = createScheduler({
+		getProjectId: async () => "project",
+		claim: async () => claimable,
+		run: async (taskId) => {
+			started.push(taskId);
+		},
+	});
+	await scheduler.enqueue("task-lease");
+	expect(started).toEqual([]);
+	expect(scheduler.getState().queued.map((task) => task.taskId)).toEqual([
+		"task-lease",
+	]);
+	claimable = true;
+	await scheduler.dispatch();
+	expect(await scheduler.wait("task-lease")).toBe("completed");
+	expect(started).toEqual(["task-lease"]);
+	await scheduler.shutdown();
 });

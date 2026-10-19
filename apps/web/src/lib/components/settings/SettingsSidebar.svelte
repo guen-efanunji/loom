@@ -69,7 +69,7 @@ const sections = [
 			<ArrowLeft data-icon="inline-start" />Workspace
 		</Button>
 		<span class="flex min-w-0 items-center gap-2 text-sm font-semibold">
-			<span class="flex size-6 shrink-0 items-center justify-center rounded-md bg-white text-black">L</span>
+			<img src="/loom-mark.webp" alt="" class="size-6 shrink-0 object-contain" />
 			loom · Settings
 		</span>
 	</div>

@@ -1,6 +1,8 @@
 # Loom — Parallel Kanban Agents, Review, and Integration
 
-Status: implementation specification, not a statement that all features already exist.
+Status: implemented across the server, orchestrator, database, worktree and Kanban UI. The workflow remains bounded by explicit task scope and approval gates; automatic promotion is opt-in.
+
+Verification on 2026-10-17: `bun run test` (152 passing) and `bun run check-types` pass. Implementation-specific runtime limits and replay behavior are recorded in §§14–16.
 
 ## 1. Objective
 
@@ -218,7 +220,11 @@ Do not merge branch tips that have moved since reviewed input capture. Git merge
 
 Opt-in only, assignment-scoped. User selects eligible project, task filter, concurrency, maximum task count, retry/repair limits and duration budget.
 
+The current bounded assignment API accepts an explicit `taskIds` allowlist (maximum 20), `maxTasks` (1–20), `concurrency` (1–3 and no greater than `maxTasks`), `durationMinutes` (1–120), `maxRetries` (0–2), and an idempotency key. It does not discover additional tasks outside this allowlist. Retries apply only to failed attempts; cancellation is never retried. The agent must have `executionMode=continuous_kanban`, remain active, and allow Kanban execution. Active runs are unique per assignment and interrupted on daemon restart. Use `POST /api/agents/assignments/:id/continue`, `GET /api/agents/assignments/:id/runs`, and `POST /api/agents/assignments/:id/cancel`.
+
 After completion, claim the next eligible task atomically. Do not execute blocked, done, cancelled or dependency-incomplete tasks. Pause on approval requirements, unavailable resources, exhausted limits, disable/cancel, or unresolved integration conflict.
+
+The service schedules only selected tasks through the regular orchestrator, so its persistent task lease and dependency checks remain authoritative. It pauses when an attempt reaches `ready_to_merge` and leaves review, approval, integration and promotion to their existing gates. This mode does not auto-approve or promote outputs.
 
 Agent disable prevents new runs; offer a separate explicit action to cancel active runs. Continuous execution never expands scope or auto-deploys.
 
@@ -255,6 +261,7 @@ Map these concepts onto existing tables instead of duplicating current task/run 
 ### Checks and events
 - check: id, run_id/batch_id, name, command_redacted, status, exit_code, evidence_ref, subject_sha, timestamps.
 - event: id, scope_id, sequence, type, payload_redacted, created_at.
+- Current implementation stores daemon events in `orchestration_events` with a monotonically increasing SQLite cursor; replay is available at authenticated `GET /api/events/replay?after=<cursor>&limit=<1..500>`. Websocket messages carry the same `replayCursor`. Event payloads are redacted before persistence. Assignment runs persist their explicit task filter, bounds, status, idempotency key, and active task IDs.
 - Durable idempotency keys for enqueue, approvals, promotion and request replay.
 
 Use transactions for configuration + skills/assignment updates and state transitions that must be atomic. Database transactions do not atomically commit Git operations; reconcile recorded intent with actual refs after crashes.
@@ -275,7 +282,7 @@ Use current Hono/oRPC conventions rather than forcing these example endpoint nam
 
 Every mutation validates project/resource scope, task version, allowed transition and required approval. Return conflict/stale errors rather than overwriting concurrent edits. Approval requests show exact target, commit SHA and intended operation.
 
-Events: task.blocked, task.eligible, run.started, run.output, run.permission_required, run.finished, artifact.published, review.started, review.decided, review.invalidated, integration.conflicted, integration.check_failed, integration.ready, integration.promoted.
+Events: task.blocked, task.eligible, run.started, run.output, run.permission_required, run.finished, artifact.published, review.started, review.decided, review.invalidated, integration.conflicted, integration.check_failed, integration.ready, integration.promoted. UI reconnection reads a latest cursor before refreshing its task snapshot, then replays subsequent pages and deduplicates by cursor.
 
 UI derives activity from real events and can recover using a snapshot plus replay cursor. Terminal failure must clear loading.
 
@@ -339,6 +346,8 @@ Use fake runtime adapters for ordinary tests and real temporary Git repositories
 - Restart marks missing workers interrupted and does not duplicate work.
 - Crash after Git promotion but before DB update is reconciled correctly.
 - Continuous mode honors task-hop, duration and retry limits.
+- Bounded assignment rejects out-of-scope task IDs, prevents concurrent runs for one assignment, enforces the selected task cap, pauses at review gates, and returns the same run for a matching idempotency key.
+- Event replay is authenticated, paginated, redacts token-shaped values, and recovers task events after a reconnect cursor.
 - UI clears loading on failure and reconstructs state after reconnect.
 
 ## 19. Rollout phases
@@ -351,7 +360,7 @@ Phase E: Integration worktree, required checks and manual promotion.
 Phase F: Read-only automatic/hybrid review with SHA-bound verdicts.
 Phase G: Opt-in auto-merge and bounded continuous assignments.
 
-Keep unsafe automation behind disabled-by-default feature flags. Do not activate later phases until preceding acceptance tests pass.
+Keep unsafe automation behind disabled-by-default feature flags. Automatic merge is gated by `LOOM_ENABLE_KANBAN_AUTO_MERGE=true`; it remains unavailable unless the operator explicitly opts in. Do not activate later phases until preceding acceptance tests pass.
 
 ## 20. Acceptance criteria
 

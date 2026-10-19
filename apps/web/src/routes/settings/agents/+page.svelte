@@ -429,9 +429,9 @@ async function saveAgent() {
 		systemInstructions: instructions,
 		status: "active",
 		executionMode,
-		allowChat: true,
-		allowCanvas: true,
-		allowKanban: true,
+		allowChat,
+		allowCanvas,
+		allowKanban,
 		approvalPolicy,
 		maxRunDurationMinutes: Number(maxRunDurationMinutes),
 		maxRetries: Number(maxRetries),
@@ -584,6 +584,15 @@ function duplicateAgent(agent: Agent) {
 					</label>
 				{/if}
 				{#if !connected.length}<p class="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-sm text-amber-200">Connect a provider in <a class="underline" href="/settings/providers">Provider settings</a> before saving an agent.</p>{/if}
+				<fieldset class="space-y-3 rounded-lg border p-4">
+					<legend class="px-1 text-sm font-medium">Available in</legend>
+					<p class="text-xs text-muted-foreground">Choose where this agent can be selected. Kanban access is required before an agent can be assigned to a task.</p>
+					<div class="flex flex-wrap gap-x-6 gap-y-3">
+						<label class="flex items-center gap-2 text-sm"><input type="checkbox" bind:checked={allowChat} class="size-4 accent-primary" />Chat</label>
+						<label class="flex items-center gap-2 text-sm"><input type="checkbox" bind:checked={allowCanvas} class="size-4 accent-primary" />Canvas</label>
+						<label class="flex items-center gap-2 text-sm"><input type="checkbox" bind:checked={allowKanban} class="size-4 accent-primary" />Kanban</label>
+					</div>
+				</fieldset>
 				<label class="flex flex-col gap-2 text-sm">
 					<span>Fallback Agent <span class="font-normal text-muted-foreground">(Optional)</span></span>
 					<Select.Root type="single" value={fallbackAgentId || "__none"} onValueChange={(value) => chooseFallbackAgent(value === "__none" ? "" : value)}>

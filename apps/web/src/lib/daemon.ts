@@ -15,6 +15,7 @@ import {
 	type AgentRun as ProtocolAgentRun,
 	type DaemonEvent as ProtocolDaemonEvent,
 	type PermissionRequest as ProtocolPermissionRequest,
+	type TaskExecutor,
 } from "@loom/protocol";
 import { PUBLIC_SERVER_URL } from "$app/env/public";
 import { dev } from "$app/environment";
@@ -25,6 +26,18 @@ export type Project = {
 	defaultBranch: string;
 	autoAccept?: boolean;
 	createdAt: string;
+};
+
+export type ProjectReviewPolicy = {
+	id: string;
+	projectId: string;
+	mode: "manual" | "automatic" | "hybrid";
+	reviewerExecutorJson: string | null;
+	autoMerge: boolean;
+	requiredChecksJson: string;
+	maxRevisionRounds: number;
+	version: number;
+	updatedAt: string;
 };
 
 export type McpInventory = {
@@ -138,6 +151,8 @@ export type ContextMemoryHistory = {
 };
 
 export type ProjectGitOverview = {
+	gitAvailable?: boolean;
+	gitMessage?: string;
 	branch: string;
 	defaultBranch: string;
 	branches: string[];
@@ -297,12 +312,52 @@ export type Task = {
 	acceptanceCriteria: string[];
 	suggestedFiles: string[];
 	source: "manual" | "planner";
+	executor: TaskExecutor | null;
 	position: number | null;
+	targetBranch: string | null;
 	workspaceId: string | null;
 	sessionId: string | null;
 	createdAt: string;
 	startedAt: string | null;
 	completedAt: string | null;
+};
+export type TaskDependency = {
+	taskId: string;
+	dependsOnTaskId: string;
+	requiredMilestone:
+		| "contract_published"
+		| "artifact_ready"
+		| "implementation_ready"
+		| "integrated";
+	artifactId: string | null;
+	producer: Task | null;
+	artifact?: TaskArtifact | null;
+};
+export type TaskArtifact = {
+	id: string;
+	taskId: string;
+	producerRunId: string | null;
+	kind: string;
+	version: string;
+	commitSha: string;
+	relativePath: string;
+	contentHash: string;
+	status: string;
+	createdAt: string;
+};
+export type TaskReview = {
+	id: string;
+	taskId: string;
+	runId: string | null;
+	reviewerIdentity: string;
+	baseSha: string;
+	subjectSha: string;
+	evidenceHash: string;
+	status: string;
+	verdictJson: string;
+	policyVersion: number;
+	createdAt: string;
+	decidedAt: string;
 };
 export type CustomAgentMonitorItem = {
 	id: string;
@@ -310,6 +365,9 @@ export type CustomAgentMonitorItem = {
 	role: string;
 	status: string;
 	allowChat: boolean;
+	allowCanvas: boolean;
+	allowKanban: boolean;
+	approvalPolicy: string;
 	projectId: string | null;
 	provider: string;
 	modelId: string | null;
@@ -344,6 +402,27 @@ export type SchedulerTask = {
 export type SchedulerState = {
 	running: SchedulerTask[];
 	queued: SchedulerTask[];
+};
+export type IntegrationBatch = {
+	id: string;
+	projectId: string;
+	targetBranch: string;
+	targetBaseSha: string;
+	candidateSha: string | null;
+	promotedSha: string | null;
+	status: string;
+	workspacePath: string | null;
+	workspaceBranch: string | null;
+	errorMessage: string | null;
+	createdAt: string | number;
+	updatedAt: string | number;
+	checks?: Array<{
+		name: string;
+		status: string;
+		exitCode: number | null;
+		evidenceHash: string;
+		commandRedacted: string;
+	}>;
 };
 
 const tokenKey = "loom.daemon.token";
@@ -399,6 +478,25 @@ export function parseDaemonEvent(value: unknown): DaemonEvent {
 	return daemonEventSchema.parse(value);
 }
 
+export type DaemonEventReplayPage = {
+	events: Array<{ cursor: number; event: DaemonEvent }>;
+	cursor: number;
+	highWaterCursor: number;
+};
+
+export async function replayDaemonEvents(after: number, limit = 200) {
+	return request<DaemonEventReplayPage>(
+		`/api/events/replay?after=${Math.max(0, Math.floor(after))}&limit=${Math.min(500, Math.max(1, Math.floor(limit)))}`,
+	);
+}
+
+export async function latestDaemonEventCursor() {
+	const result = await request<{ cursor: number }>(
+		"/api/events/replay?latest=1",
+	);
+	return result.cursor;
+}
+
 export async function request<T>(path: string, init: RequestInit = {}) {
 	await provisionDaemonToken();
 	const headers = new Headers(init.headers);
@@ -425,6 +523,24 @@ export const daemon = {
 			`/api/mcp/inventory${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`,
 		),
 	getProject: (id: string) => request<Project>(`/api/projects/${id}`),
+	getProjectReviewPolicy: (id: string) =>
+		request<{ policy: ProjectReviewPolicy; autoMergeAvailable: boolean }>(
+			`/api/projects/${id}/review-policy`,
+		),
+	setProjectReviewPolicy: (
+		id: string,
+		policy: Omit<
+			ProjectReviewPolicy,
+			"id" | "projectId" | "version" | "updatedAt"
+		>,
+	) =>
+		request<{ policy: ProjectReviewPolicy }>(
+			`/api/projects/${id}/review-policy`,
+			{
+				method: "PUT",
+				body: JSON.stringify(policy),
+			},
+		),
 	getProjectGit: (id: string) =>
 		request<ProjectGitOverview>(`/api/projects/${id}/git`),
 	checkoutProjectBranch: (id: string, branch: string) =>
@@ -433,10 +549,13 @@ export const daemon = {
 			body: JSON.stringify({ branch }),
 		}),
 	createProjectWorktree: (id: string, branch: string) =>
-		request<{ path: string; branch: string }>(`/api/projects/${id}/git/worktrees`, {
-			method: "POST",
-			body: JSON.stringify({ branch }),
-		}),
+		request<{ path: string; branch: string }>(
+			`/api/projects/${id}/git/worktrees`,
+			{
+				method: "POST",
+				body: JSON.stringify({ branch }),
+			},
+		),
 	getProjectPullRequests: (id: string) =>
 		request<ProjectPullRequests>(`/api/projects/${id}/pull-requests`),
 	getProjectWalkthroughSnapshot: (id: string) =>
@@ -491,6 +610,16 @@ export const daemon = {
 				capabilities: string[];
 			}>
 		>("/api/providers"),
+	listAvailableProviderModels: () =>
+		request<
+			Array<{
+				providerID: string;
+				modelID: string;
+				name: string;
+				provider: string;
+				contextWindow?: number;
+			}>
+		>("/api/providers/models"),
 	refreshProviders: () =>
 		request<
 			Array<{
@@ -565,6 +694,77 @@ export const daemon = {
 				method: "POST",
 			},
 		),
+	listCustomProviders: () =>
+		request<
+			Array<{
+				id: string;
+				name: string;
+				baseUrl: string;
+				status: string;
+				models: Array<{ id: string; name: string; contextWindow?: number }>;
+			}>
+		>("/api/custom-providers"),
+	testCustomProvider: (input: {
+		name: string;
+		baseUrl: string;
+		apiKey: string;
+		providerId?: string;
+	}) =>
+		request<{
+			connected: boolean;
+			models: Array<{ id: string; name: string; contextWindow?: number }>;
+		}>("/api/custom-providers/test", {
+			method: "POST",
+			body: JSON.stringify(input),
+		}),
+	testProviderModel: (providerId: string, modelId: string) =>
+		request<{ connected: boolean; modelId: string }>(
+			`/api/providers/${encodeURIComponent(providerId)}/models/test`,
+			{
+				method: "POST",
+				body: JSON.stringify({ modelId }),
+			},
+		),
+	updateCustomProvider: (
+		id: string,
+		input: { name: string; baseUrl: string; apiKey: string },
+	) =>
+		request<{
+			provider: { id: string; name: string; baseUrl: string; status: string };
+			models: Array<{
+				id: string;
+				providerId: string;
+				connectionId: string;
+				name: string;
+				displayName: string;
+				capabilities: string[];
+				isAvailable: boolean;
+			}>;
+		}>(`/api/custom-providers/${encodeURIComponent(id)}`, {
+			method: "PUT",
+			body: JSON.stringify(input),
+		}),
+	deleteCustomProvider: (id: string) =>
+		request<{ deleted: boolean; id: string }>(
+			`/api/custom-providers/${encodeURIComponent(id)}`,
+			{ method: "DELETE" },
+		),
+	createCustomProvider: (input: { name: string; baseUrl: string; apiKey: string }) =>
+		request<{
+			provider: { id: string; name: string; baseUrl: string; status: string };
+			models: Array<{
+				id: string;
+				providerId: string;
+				connectionId: string;
+				name: string;
+				displayName: string;
+				capabilities: string[];
+				isAvailable: boolean;
+			}>;
+		}>("/api/custom-providers", {
+			method: "POST",
+			body: JSON.stringify(input),
+		}),
 	listModels: () =>
 		request<
 			Array<{
@@ -656,15 +856,34 @@ export const daemon = {
 		agentId: string;
 		projectId: string;
 		taskId: string;
-		continuousEnabled?: false;
+		continuousEnabled?: boolean;
 	}) =>
 		request<Record<string, unknown>>("/api/agents/assignments", {
 			method: "POST",
 			body: JSON.stringify(input),
 		}),
-	continueCustomAgentAssignment: (id: string) =>
+	continueCustomAgentAssignment: (
+		id: string,
+		input: {
+			taskIds?: string[];
+			maxTasks?: number;
+			concurrency?: number;
+			durationMinutes?: number;
+			maxRetries?: number;
+			idempotencyKey?: string;
+		} = {},
+	) =>
 		request<Record<string, unknown>>(
 			`/api/agents/assignments/${encodeURIComponent(id)}/continue`,
+			{ method: "POST", body: JSON.stringify(input) },
+		),
+	listCustomAgentAssignmentRuns: (id: string) =>
+		request<Array<Record<string, unknown>>>(
+			`/api/agents/assignments/${encodeURIComponent(id)}/runs`,
+		),
+	cancelCustomAgentAssignment: (id: string) =>
+		request<Record<string, unknown>>(
+			`/api/agents/assignments/${encodeURIComponent(id)}/cancel`,
 			{ method: "POST" },
 		),
 	rebuildProjectIndex: (id: string) =>
@@ -673,12 +892,115 @@ export const daemon = {
 			{ method: "POST" },
 		),
 	listTasks: () => request<Task[]>("/api/tasks"),
+	listIntegrationBatches: (projectId: string) =>
+		request<{ batches: IntegrationBatch[] }>(
+			`/api/integration-batches?projectId=${encodeURIComponent(projectId)}`,
+		),
+	createIntegrationBatch: (
+		taskIds: string[],
+		requiredChecks: Array<{
+			name: string;
+			command: string;
+			args: string[];
+			timeoutMs?: number;
+		}> = [],
+	) =>
+		request<{ batch: IntegrationBatch | null; candidateSha: string }>(
+			"/api/integration-batches",
+			{
+				method: "POST",
+				body: JSON.stringify({ taskIds, requiredChecks }),
+			},
+		),
+	getIntegrationBatchDiff: (id: string) =>
+		request<{ diff: string; baseSha: string; candidateSha: string }>(
+			`/api/integration-batches/${encodeURIComponent(id)}/diff`,
+		),
+	approveIntegrationBatch: (id: string) =>
+		request<{ review: unknown }>(
+			`/api/integration-batches/${encodeURIComponent(id)}/review/approve`,
+			{ method: "POST" },
+		),
+	promoteIntegrationBatch: (id: string) =>
+		request<{ batchId: string; promotedSha: string; memberTaskIds: string[] }>(
+			`/api/integration-batches/${encodeURIComponent(id)}/promote`,
+			{ method: "POST" },
+		),
 	getTask: (id: string) => request<Task>(`/api/tasks/${id}`),
-	createTask: (input: { projectId: string; title: string; prompt: string }) =>
+	getTaskDependencies: (id: string) =>
+		request<{ dependencies: TaskDependency[] }>(
+			`/api/tasks/${id}/dependencies`,
+		),
+	getTaskReviews: (id: string) =>
+		request<{ reviews: TaskReview[] }>(`/api/tasks/${id}/reviews`),
+	getTaskArtifacts: (id: string) =>
+		request<{ artifacts: TaskArtifact[] }>(`/api/tasks/${id}/artifacts`),
+	publishTaskArtifact: (
+		id: string,
+		input: {
+			kind: "contract" | "generated_client" | "schema" | "evidence";
+			version: string;
+			relativePath: string;
+		},
+	) =>
+		request<{ artifact: TaskArtifact }>(`/api/tasks/${id}/artifacts`, {
+			method: "POST",
+			body: JSON.stringify(input),
+		}),
+	approveTaskReview: (id: string) =>
+		request<{ review: TaskReview }>(`/api/tasks/${id}/review/approve`, {
+			method: "POST",
+		}),
+	runTaskReview: (id: string) =>
+		request<{ review: TaskReview }>(`/api/tasks/${id}/review/run`, {
+			method: "POST",
+		}),
+	addTaskDependency: (
+		id: string,
+		input: {
+			dependsOnTaskId: string;
+			requiredMilestone: TaskDependency["requiredMilestone"];
+			artifactId?: string | null;
+		},
+	) =>
+		request<{ dependency: Omit<TaskDependency, "producer"> }>(
+			`/api/tasks/${id}/dependencies`,
+			{
+				method: "POST",
+				body: JSON.stringify(input),
+			},
+		),
+	removeTaskDependency: (id: string, producerId: string) =>
+		request<{ removed: boolean }>(
+			`/api/tasks/${id}/dependencies/${producerId}`,
+			{
+				method: "DELETE",
+			},
+		),
+	createTask: (input: {
+		projectId: string;
+		title: string;
+		prompt: string;
+		acceptanceCriteria: string[];
+		executor: TaskExecutor;
+		targetBranch?: string | null;
+	}) =>
 		request<Task>("/api/tasks", {
 			method: "POST",
 			body: JSON.stringify(input),
 		}),
+	listProviderModels: (id: string) =>
+		request<
+			Array<{
+				id: string;
+				providerId: string;
+				name: string;
+				displayName: string;
+				isAvailable: boolean;
+				isDefault?: boolean;
+				metadata?: Record<string, unknown>;
+			}>
+		>(`/api/providers/${encodeURIComponent(id)}/models`),
 	createTaskBatch: (
 		projectId: string,
 		tasks: Array<{ title: string; prompt: string }>,
@@ -795,6 +1117,10 @@ export const daemon = {
 			body: JSON.stringify({ decision }),
 		}),
 	getDiff: (id: string) => request<{ diff: string }>(`/api/tasks/${id}/diff`),
+	checkpointTask: (id: string) =>
+		request<{ outputSha: string }>(`/api/tasks/${id}/checkpoint`, {
+			method: "POST",
+		}),
 	mergeTask: (id: string) =>
 		request<{
 			merged: boolean;

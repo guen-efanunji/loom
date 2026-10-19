@@ -1,5 +1,11 @@
 import { sql } from "drizzle-orm";
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import {
+	index,
+	integer,
+	sqliteTable,
+	text,
+	uniqueIndex,
+} from "drizzle-orm/sqlite-core";
 import { projects, tasks } from "./workflow";
 
 const created = () =>
@@ -100,6 +106,41 @@ export const customAgentAssignments = sqliteTable("custom_agent_assignments", {
 	createdAt: created(),
 	updatedAt: updated(),
 });
+
+export const customAgentAssignmentRuns = sqliteTable(
+	"custom_agent_assignment_runs",
+	{
+		id: text("id").primaryKey(),
+		assignmentId: text("assignment_id")
+			.notNull()
+			.references(() => customAgentAssignments.id, { onDelete: "cascade" }),
+		idempotencyKey: text("idempotency_key").notNull(),
+		taskIdsJson: text("task_ids_json").notNull(),
+		status: text("status").notNull().default("queued"),
+		maxTasks: integer("max_tasks").notNull(),
+		concurrency: integer("concurrency").notNull(),
+		durationMs: integer("duration_ms").notNull(),
+		completedTasks: integer("completed_tasks").notNull().default(0),
+		currentTaskIdsJson: text("current_task_ids_json").notNull().default("[]"),
+		errorMessage: text("error_message"),
+		startedAt: integer("started_at", { mode: "timestamp_ms" }),
+		finishedAt: integer("finished_at", { mode: "timestamp_ms" }),
+		createdAt: created(),
+	},
+	(table) => [
+		uniqueIndex("custom_agent_assignment_runs_idempotency_uidx").on(
+			table.assignmentId,
+			table.idempotencyKey,
+		),
+		uniqueIndex("custom_agent_assignment_runs_active_uidx")
+			.on(table.assignmentId)
+			.where(sql`status in ('queued', 'running', 'cancel_requested')`),
+		index("custom_agent_assignment_runs_assignment_idx").on(
+			table.assignmentId,
+			table.createdAt,
+		),
+	],
+);
 
 export const customAgentRuns = sqliteTable("custom_agent_runs", {
 	id: text("id").primaryKey(),

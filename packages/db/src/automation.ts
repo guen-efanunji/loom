@@ -274,6 +274,44 @@ export function planRepository(db: Database) {
 				.from(taskDependencies)
 				.where(eq(taskDependencies.taskId, taskId));
 		},
+		async addDependency(
+			taskId: string,
+			dependsOnTaskId: string,
+			requiredMilestone: "contract_published" | "artifact_ready" | "implementation_ready" | "integrated" = "implementation_ready",
+			artifactId?: string | null,
+		) {
+		if (taskId === dependsOnTaskId) throw new Error("A task cannot depend on itself");
+		db.$client.exec("BEGIN IMMEDIATE");
+		try {
+			const task = db.$client.query("SELECT project_id FROM tasks WHERE id = ?").get(taskId) as { project_id: string } | null;
+			const producer = db.$client.query("SELECT project_id FROM tasks WHERE id = ?").get(dependsOnTaskId) as { project_id: string } | null;
+			if (!task || !producer) throw new Error("Dependency task not found");
+			if (task.project_id !== producer.project_id)
+				throw new Error("Cross-project dependencies are not allowed");
+			if (["contract_published", "artifact_ready"].includes(requiredMilestone) && !artifactId)
+				throw new Error("Artifact dependencies must pin an artifact ID");
+			if (artifactId) {
+				const artifact = db.$client.query("SELECT task_id, status FROM task_artifacts WHERE id = ?").get(artifactId) as { task_id: string; status: string } | null;
+				if (!artifact || artifact.task_id !== dependsOnTaskId || artifact.status !== "ready")
+					throw new Error("Dependency artifact is missing, unready, or owned by another producer");
+			}
+			const edges = db.$client.query("SELECT task_id, depends_on_task_id FROM task_dependencies").all() as Array<{ task_id: string; depends_on_task_id: string }>;
+			const seen = new Set<string>();
+			const visit = (current: string): boolean => {
+				if (current === taskId) return true;
+				if (seen.has(current)) return false;
+				seen.add(current);
+				return edges.filter((edge) => edge.task_id === current).some((edge) => visit(edge.depends_on_task_id));
+			};
+			if (visit(dependsOnTaskId)) throw new Error("Dependency would create a cycle");
+			db.$client.query("INSERT INTO task_dependencies (task_id, depends_on_task_id, required_milestone, artifact_id) VALUES (?, ?, ?, ?)").run(taskId, dependsOnTaskId, requiredMilestone, artifactId ?? null);
+			db.$client.exec("COMMIT");
+			return { taskId, dependsOnTaskId, requiredMilestone, artifactId: artifactId ?? null };
+		} catch (error) {
+			db.$client.exec("ROLLBACK");
+			throw error;
+		}
+		},
 		dependents(taskId: string) {
 			return db
 				.select()

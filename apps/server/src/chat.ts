@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdir, readFile, realpath, stat } from "node:fs/promises";
+import { mkdir, readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { atomicJson, dataDirectory } from "@loom/distribution";
 import type { AgentRuntime, ProviderManager } from "@loom/providers";
@@ -189,7 +189,9 @@ export function createChatRoutes(options: {
 	};
 	request: ChatRequestGateway;
 	providerManager?: ProviderManager;
-	runtimes?: Map<string, AgentRuntime>;
+	runtimes?:
+		| Map<string, AgentRuntime>
+		| ((providerId: string) => AgentRuntime | undefined);
 	permissions?: AgyPermissionStore;
 	agyPermissionUrl?: string;
 	agyPermissionError?: string;
@@ -393,7 +395,7 @@ export function createChatRoutes(options: {
 	let catalogPromise: Promise<Awaited<ReturnType<typeof buildCatalog>>> | null =
 		null;
 	let catalogVersion = 0;
-	options.providerManager?.subscribe((event) => {
+	options.providerManager?.subscribe?.((event) => {
 		if (
 			event.type === "provider.modelsUpdated" ||
 			event.type === "provider.connected" ||
@@ -441,7 +443,10 @@ export function createChatRoutes(options: {
 				providerID: model.providerId,
 				modelID: String(model.metadata?.modelId ?? model.name),
 				name: model.displayName,
-				provider: model.providerId,
+				provider:
+					typeof model.metadata?.providerName === "string"
+						? model.metadata.providerName
+						: model.providerId,
 				providerId: model.providerId,
 				connectionId: model.connectionId,
 				capabilities: model.capabilities,
@@ -1073,10 +1078,10 @@ export function createChatRoutes(options: {
 			: "";
 		const customAgentInstructions = customAgent
 			? `You are the custom agent “${customAgent.label}” (${customAgent.role}).\n${customAgent.roleDescription ?? ""}\n${customAgent.systemInstructions}\n${customAgent.skills
-						.filter((skill) => skill.enabled && skill.allowChat)
-						.map((skill) => `## ${skill.name}\n${skill.instructions}`)
-						.join(
-							"\n\n",
+					.filter((skill) => skill.enabled && skill.allowChat)
+					.map((skill) => `## ${skill.name}\n${skill.instructions}`)
+					.join(
+						"\n\n",
 					)}\n\nFollow the configured agent role and skills while respecting Loom's permission and project-scope policies.`
 			: "";
 		const promptText = [
@@ -1096,14 +1101,18 @@ export function createChatRoutes(options: {
 			.filter(Boolean)
 			.join("\n\n");
 		const providerId = customAgent?.provider ?? input.model?.providerID;
-		const runtime = providerId ? options.runtimes?.get(providerId) : undefined;
+		const runtime = providerId
+			? typeof options.runtimes === "function"
+				? options.runtimes(providerId)
+				: options.runtimes?.get(providerId)
+			: undefined;
 		const requestedModel = customAgent
 			? customAgent.modelId
 				? { providerID: customAgent.provider, modelID: customAgent.modelId }
 				: undefined
 			: input.model;
-		const openCodeModel =
-			providerId === "opencode" && requestedModel
+		const openCodeModel = requestedModel
+			? providerId === "opencode"
 				? (() => {
 						const [upstreamProviderId, ...upstreamModelParts] =
 							requestedModel.modelID.split("/");
@@ -1114,13 +1123,16 @@ export function createChatRoutes(options: {
 								}
 							: requestedModel;
 					})()
-				: undefined;
+				: requestedModel
+			: undefined;
 		const openCodeVariants =
 			providerId === "opencode" && requestedModel
-				? (cachedCatalog?.models.find(
-						(model) =>
-							model.providerID === "opencode" &&
-							model.modelID === requestedModel.modelID,
+				? ((
+						cachedCatalog?.models.find(
+							(model) =>
+								model.providerID === "opencode" &&
+								model.modelID === requestedModel.modelID,
+						) as { variants?: string[] } | undefined
 					)?.variants ?? [])
 				: [];
 		const useOpenCodeVariant =
@@ -1130,8 +1142,8 @@ export function createChatRoutes(options: {
 				? (() => {
 						const requestedId = requestedModel.modelID.toLowerCase();
 						const found = options.providerManager?.catalog
-							.listByProvider(providerId)
-							.find((candidate) => {
+							.listByProvider?.(providerId)
+							?.find((candidate) => {
 								const modelId = candidate.metadata?.modelId;
 								return [candidate.name, candidate.displayName, modelId].some(
 									(value) =>

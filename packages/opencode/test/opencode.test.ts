@@ -79,6 +79,41 @@ describe("OpenCode HTTP runtime", () => {
 			runtime.createSession({ cwd: "/tmp", title: "Task" }),
 		).rejects.toBeInstanceOf(OpenCodeError);
 	});
+
+	test("includes OpenCode validation details for rejected config updates", async () => {
+		const runtime = new OpenCodeHttpRuntime({
+			fetcher: async () =>
+				new Response(
+					JSON.stringify({
+						errors: [
+							{
+								path: ["provider", "custom", "options", "baseURL"],
+								message: "Invalid URL",
+							},
+						],
+					}),
+					{ status: 400 },
+				),
+		});
+		await expect(
+			runtime.request("/config", {
+				method: "PATCH",
+				body: JSON.stringify({ provider: {} }),
+			}),
+		).rejects.toThrow("provider.custom.options.baseURL: Invalid URL");
+	});
+
+	test("redacts API keys from OpenCode error details", async () => {
+		const runtime = new OpenCodeHttpRuntime({
+			fetcher: async () =>
+				new Response('{"message":"invalid apiKey: sk-secret-value-123456"}', {
+					status: 400,
+				}),
+		});
+		await expect(
+			runtime.request("/config", { method: "PATCH", body: "{}" }),
+		).rejects.toThrow("[redacted]");
+	});
 });
 
 describe("mock runtime", () => {

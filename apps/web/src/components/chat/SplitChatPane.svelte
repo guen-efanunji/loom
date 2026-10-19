@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { LoaderCircle, MessageSquare, Plus, X } from "@lucide/svelte";
 	import { onDestroy, onMount, untrack } from "svelte";
-	import { chat, type Catalog, type ChatMessage, type ChatSession, type ChatState } from "$lib/chat";
+	import { chat, friendlyProviderStatus, type Catalog, type ChatMessage, type ChatSession, type ChatState } from "$lib/chat";
 	import { Button } from "$lib/components/ui/button";
 	import * as Marker from "$lib/components/ui/marker";
 	import type { Project } from "$lib/daemon";
@@ -165,12 +165,13 @@
 				tab.conversation = { session: created, messages: [], status: { type: "idle" }, permissions: [], questions: [] };
 				onSession({ ...created, projectId: tab.projectId }, tab.projectId);
 			}
-			await chat.send(tab.sessionId, input);
 			tab.optimistic = { info: { id: `pending-${Date.now()}`, role: "user", time: { created: Date.now() } }, parts: [{ id: "pending-text", type: "text", text: input.text }, ...input.files.map((filename, index) => ({ id: `pending-file-${index}`, type: "file", filename }))] };
+			await chat.send(tab.sessionId, input);
 			await refresh(tab);
 			publishState(tab);
 			return true;
 		} catch (reason) {
+			tab.optimistic = null;
 			tab.error = reason instanceof Error ? reason.message : "Unable to send this message.";
 			return false;
 		} finally {
@@ -214,8 +215,8 @@
 		<div class="mx-auto flex min-h-full w-full max-w-[900px] flex-col px-4 py-5 sm:px-5">
 			{#if active?.loading}<div class="flex flex-1 items-center justify-center gap-2 text-xs text-muted-foreground"><LoaderCircle size={15} class="animate-spin" />Loading conversation…</div>
 			{:else if active?.sessionId}
-				<div class="space-y-6" aria-live="polite" aria-relevant="additions text">{#each turns as turn (turn.key)}<Turn messages={turn.messages} sessionId={active.sessionId} projectId={active.projectId} {onfile} onbranch={startNewChatFromAnswer} />{/each}</div>
-				{#if busy}<Marker.Root variant="border" class="mt-4 flex items-center"><Marker.Icon><LoaderCircle size={13} class="animate-spin" /></Marker.Icon><Marker.Content>{active.conversation?.permissions.length ? "Waiting for permission" : active.conversation?.questions.length ? "Waiting for your answer" : active.conversation?.status.message || "Assistant is working…"}</Marker.Content></Marker.Root>{/if}
+				<div class="space-y-6" aria-live="polite" aria-relevant="additions text">{#each turns as turn (turn.key)}<Turn messages={turn.messages} {catalog} sessionId={active.sessionId} projectId={active.projectId} {onfile} onbranch={startNewChatFromAnswer} />{/each}</div>
+				{#if busy}<Marker.Root variant="border" class="mt-4 flex items-center"><Marker.Icon><LoaderCircle size={13} class="animate-spin" /></Marker.Icon><Marker.Content>{active.conversation?.permissions.length ? "Waiting for permission" : active.conversation?.questions.length ? "Waiting for your answer" : friendlyProviderStatus(catalog, active.conversation?.status.message) || "Assistant is working…"}</Marker.Content></Marker.Root>{/if}
 				{#each active.conversation?.permissions ?? [] as request}<div role="group" aria-label={`Permission required: ${request.permission}`} class="mt-4 space-y-3 rounded-xl border border-amber-500/30 bg-card p-3"><p class="text-xs font-medium">Permission required: {request.permission}</p>{#if request.patterns.length}<pre class="overflow-auto whitespace-pre-wrap break-words text-[11px] text-muted-foreground">{request.patterns.join("\n")}</pre>{/if}<div class="flex flex-wrap gap-2"><Button size="sm" disabled={permissionReplying === request.id} onclick={() => permission(request.id, "once")}>Accept once</Button><Button variant="outline" size="sm" disabled={permissionReplying === request.id} onclick={() => permission(request.id, "always")}>Always allow</Button><Button variant="ghost" size="sm" disabled={permissionReplying === request.id} onclick={() => permission(request.id, "reject")}>Decline</Button></div></div>{/each}
 				{#each active.conversation?.questions ?? [] as question}<div class="mt-4"><QuestionCard {question} onanswer={(answers) => answer(question.id, answers)} /></div>{/each}
 			{:else}

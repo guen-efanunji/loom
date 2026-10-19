@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createDb, repositories } from "@loom/db";
+import { createDb, customAgents, repositories } from "@loom/db";
 import type { AgentRunStatus, AgentRuntime } from "@loom/opencode";
 import { TaskOrchestrator } from "@loom/orchestrator";
 import { WorktreeManager } from "@loom/worktree";
@@ -101,11 +101,20 @@ async function createTestSetup() {
 		path: root,
 		defaultBranch: "main",
 	});
+	await database.insert(customAgents).values({
+		id: "kanban-test-agent",
+		projectId: project.id,
+		label: "Test agent",
+		role: "backend",
+		provider: "opencode",
+		status: "active",
+		allowKanban: true,
+	});
 	const orchestrator = new TaskOrchestrator({
-		projects: repos.projects,
-		tasks: repos.tasks,
-		workspaces: repos.workspaces,
-		agentRuns: repos.agentRuns,
+		...repos,
+		reviews: repos.taskReviews,
+		artifacts: repos.taskArtifacts,
+		integrationLeases: repos.integrationLeases,
 		worktree: new WorktreeManager({ home }),
 		runtime: new FakeAgentRuntime(),
 	});
@@ -117,7 +126,7 @@ async function createTestSetup() {
 		startOpenCode: false,
 		initializeProviders: false,
 	});
-	return { daemon, database, home, root, project };
+	return { daemon, database, home, root, project, repos };
 }
 
 describe("server API", () => {
@@ -212,6 +221,48 @@ describe("server API", () => {
 			});
 			const projectList = (await projects.json()) as unknown[];
 			expect(projectList.length).toBe(1);
+			const batches = await setup.daemon.app.request(
+				`/api/integration-batches?projectId=${setup.project.id}`,
+				{ headers },
+			);
+			expect(batches.status).toBe(200);
+			expect(await batches.json()).toEqual({ batches: [] });
+			const policyUrl = `/api/projects/${setup.project.id}/review-policy`;
+			const initialPolicy = await setup.daemon.app.request(policyUrl, {
+				headers,
+			});
+			expect(
+				((await initialPolicy.json()) as { policy: { mode: string } }).policy
+					.mode,
+			).toBe("manual");
+			const updatedPolicy = await setup.daemon.app.request(policyUrl, {
+				method: "PUT",
+				headers,
+				body: JSON.stringify({
+					mode: "manual",
+					reviewerExecutorJson: null,
+					autoMerge: false,
+					requiredChecksJson: "[]",
+					maxRevisionRounds: 2,
+				}),
+			});
+			expect(updatedPolicy.status).toBe(200);
+			expect(
+				((await updatedPolicy.json()) as { policy: { version: number } }).policy
+					.version,
+			).toBe(1);
+			const unsafePolicy = await setup.daemon.app.request(policyUrl, {
+				method: "PUT",
+				headers,
+				body: JSON.stringify({
+					mode: "manual",
+					reviewerExecutorJson: null,
+					autoMerge: true,
+					requiredChecksJson: "[]",
+					maxRevisionRounds: 2,
+				}),
+			});
+			expect(unsafePolicy.status).toBe(400);
 			const invalidTask = await setup.daemon.app.request("/api/tasks", {
 				method: "POST",
 				headers,
@@ -233,6 +284,56 @@ describe("server API", () => {
 		}
 	});
 
+	test("returns pinned executor and target branch without exposing raw config", async () => {
+		const setup = await createTestSetup();
+		const headers = { Authorization: "Bearer test-token" };
+		try {
+			await setup.repos.tasks.create({
+				id: "task-config",
+				projectId: setup.project.id,
+				title: "Pinned task",
+				prompt: "Implement",
+				status: "queued",
+				description: "",
+				priority: "medium",
+				acceptanceCriteria: "[]",
+				suggestedFiles: "[]",
+				source: "manual",
+				executorConfig: JSON.stringify({
+					kind: "direct",
+					providerId: "agy",
+					modelId: "model-x",
+				}),
+				targetBranch: "main",
+				workspaceId: null,
+				sessionId: null,
+				startedAt: null,
+				completedAt: null,
+			});
+			const response = await setup.daemon.app.request(
+				"/api/tasks/task-config",
+				{ headers },
+			);
+			expect(response.status).toBe(200);
+			expect(await response.json()).toMatchObject({
+				id: "task-config",
+				executor: { kind: "direct", providerId: "agy", modelId: "model-x" },
+				targetBranch: "main",
+				acceptanceCriteria: [],
+				suggestedFiles: [],
+			});
+			expect(
+				await (
+					await setup.daemon.app.request("/api/tasks/task-config", { headers })
+				).text(),
+			).not.toContain("executorConfig");
+		} finally {
+			await setup.daemon.close();
+			await rm(setup.root, { recursive: true, force: true });
+			await rm(setup.home, { recursive: true, force: true });
+		}
+	});
+
 	test("renames, reorders, and deletes tasks", async () => {
 		const setup = await createTestSetup();
 		const headers = {
@@ -247,14 +348,22 @@ describe("server API", () => {
 					projectId: setup.project.id,
 					title,
 					prompt: title,
+					acceptanceCriteria: [`${title} works`],
+					executor: { kind: "agent", agentId: "kanban-test-agent" },
+					targetBranch: "main",
 				}),
 			});
 			expect(response.status).toBe(201);
-			return (await response.json()) as { id: string; position: number | null };
+			return (await response.json()) as {
+				id: string;
+				position: number | null;
+				targetBranch: string | null;
+			};
 		};
 		try {
 			const first = await create("First");
 			const second = await create("Second");
+			expect(first.targetBranch).toBe("main");
 			expect(second.position).toBe((first.position ?? -1) + 1);
 			const renamed = await setup.daemon.app.request(`/api/tasks/${first.id}`, {
 				method: "PATCH",
@@ -322,6 +431,8 @@ describe("server API", () => {
 					projectId: setup.project.id,
 					title: "Cancel",
 					prompt: "stop",
+					acceptanceCriteria: ["Task is queued"],
+					executor: { kind: "agent", agentId: "kanban-test-agent" },
 				}),
 			});
 			const task = (await created.json()) as { id: string };
@@ -356,6 +467,8 @@ describe("server API", () => {
 					projectId: setup.project.id,
 					title: "Change",
 					prompt: "hello",
+					acceptanceCriteria: ["agent.txt contains the prompt"],
+					executor: { kind: "agent", agentId: "kanban-test-agent" },
 				}),
 			});
 			expect(created.status).toBe(201);
@@ -388,6 +501,19 @@ describe("server API", () => {
 			);
 			const diffBody = (await diff.json()) as { diff: string };
 			expect(diffBody.diff).toContain("agent.txt");
+			expect(
+				(
+					await setup.daemon.app.request(`/api/tasks/${task.id}/checkpoint`, {
+						method: "POST",
+						headers,
+					})
+				).status,
+			).toBe(200);
+			const reviewResponse = await setup.daemon.app.request(
+				`/api/tasks/${task.id}/review/approve`,
+				{ method: "POST", headers },
+			);
+			expect(reviewResponse.status).toBe(201);
 			expect(
 				(
 					await setup.daemon.app.request(`/api/tasks/${task.id}/merge`, {
@@ -572,6 +698,61 @@ describe("server API", () => {
 			expect(
 				(await setup.daemon.app.request("/api/events?token=test-token")).status,
 			).not.toBe(401);
+		} finally {
+			await setup.daemon.close();
+			await rm(setup.root, { recursive: true, force: true });
+			await rm(setup.home, { recursive: true, force: true });
+		}
+	});
+
+	test("persists daemon events and replays them by durable cursor", async () => {
+		const setup = await createTestSetup();
+		const headers = {
+			Authorization: "Bearer test-token",
+			"Content-Type": "application/json",
+		};
+		try {
+			expect(
+				(await setup.daemon.app.request("/api/events/replay")).status,
+			).toBe(401);
+			const created = await setup.daemon.app.request("/api/tasks", {
+				method: "POST",
+				headers,
+				body: JSON.stringify({
+					projectId: setup.project.id,
+					title: "Replay cursor task",
+					prompt: "Verify event replay",
+					acceptanceCriteria: ["event is recoverable"],
+					executor: { kind: "agent", agentId: "kanban-test-agent" },
+					targetBranch: "main",
+				}),
+			});
+			expect(created.status).toBe(201);
+			const latest = await setup.daemon.app.request(
+				"/api/events/replay?latest=1",
+				{ headers },
+			);
+			const cursor = ((await latest.json()) as { cursor: number }).cursor;
+			expect(cursor).toBeGreaterThan(0);
+			const replay = await setup.daemon.app.request(
+				"/api/events/replay?after=0&limit=500",
+				{ headers },
+			);
+			const body = (await replay.json()) as {
+				events: Array<{
+					cursor: number;
+					event: { type: string; task?: { title?: string } };
+				}>;
+				cursor: number;
+			};
+			expect(body.cursor).toBe(cursor);
+			expect(
+				body.events.some(
+					(item) =>
+						item.event.type === "task.created" &&
+						item.event.task?.title === "Replay cursor task",
+				),
+			).toBe(true);
 		} finally {
 			await setup.daemon.close();
 			await rm(setup.root, { recursive: true, force: true });

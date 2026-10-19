@@ -86,6 +86,7 @@ async function setup(
 		registry: new ProviderRegistry().register(adapter),
 	});
 	await providerManager.refresh(providerId);
+	const runtimes = new Map([[providerId, runtime]]);
 	const app = createChatRoutes({
 		permissions: createAgyPermissionStore(),
 		agyPermissionUrl: "http://localhost/permission",
@@ -105,7 +106,7 @@ async function setup(
 		},
 		providerManager,
 		designs: { listNodes: async () => designNodes },
-		runtimes: new Map([[providerId, runtime]]),
+		runtimes: (id) => runtimes.get(id),
 		request: async <T>(path: string, options?: { body?: unknown }) => {
 			calls.push(path);
 			if (path.endsWith("/prompt_async")) openCodePrompts.push(options?.body);
@@ -122,6 +123,9 @@ async function setup(
 	});
 	return {
 		app,
+		runtime,
+		runtimes,
+		providerManager,
 		prompts,
 		calls,
 		openCodePrompts,
@@ -165,6 +169,35 @@ async function setup(
 }
 
 describe("provider chat", () => {
+	test("uses the runtime for a provider registered after chat routes initialize", async () => {
+		const fixture = await setup("agy");
+		const providerId = "loom_custom_agent_c194aec3";
+		const adapter = new CliProviderAdapter({
+			definition: {
+				id: providerId,
+				name: "Agent",
+				executable: "custom-provider",
+				capabilities: ["chat"],
+				install: { supported: false },
+				authStrategy: "none",
+			},
+			buildPrompt: async () => ({ command: providerId, args: [] }),
+			getAuthStatus: async () => ({ authenticated: true, strategy: "none" }),
+		});
+		adapter.detect = async () => ({ installed: true });
+		fixture.providerManager.registry.register(adapter);
+		await fixture.providerManager.refresh(providerId);
+		fixture.runtimes.set(providerId, fixture.runtime);
+
+		expect((await fixture.send("Hello custom provider", providerId)).status).toBe(
+			204,
+		);
+		expect(fixture.prompts[0]?.model).toEqual({
+			providerID: providerId,
+			modelID: "custom-model",
+		});
+	});
+
 	test("renders assistant text and tools in the order emitted by the provider", async () => {
 		const fixture = await setup("codex");
 		await fixture.send();
@@ -237,6 +270,7 @@ describe("provider chat", () => {
 		]);
 		expect(response.status).toBe(204);
 		const payload = openCodePrompts[0] as {
+			system?: string;
 			parts: Array<{
 				type: string;
 				text?: string;
@@ -244,7 +278,7 @@ describe("provider chat", () => {
 				url?: string;
 			}>;
 		};
-		expect(payload.parts[0]?.text).toContain(
+		expect(payload.system).toContain(
 			"authoritative visual specification",
 		);
 		const attachment = payload.parts.find((part) =>

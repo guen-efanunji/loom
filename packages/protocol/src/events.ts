@@ -17,7 +17,23 @@ const runEventSchema = z.object({
 	runId: z.string().min(1),
 });
 
+const runtimeActivitySchema = z.object({
+	id: z.string().min(1),
+	tool: z.string().min(1),
+	status: z.enum(["running", "completed", "error"]),
+});
+
 export const daemonEventSchema = z.discriminatedUnion("type", [
+	z
+		.object({
+			type: z.literal("artifact.published"),
+			taskId: z.string().min(1),
+			artifactId: z.string().min(1),
+			kind: z.string().min(1),
+			version: z.string().min(1),
+			commitSha: z.string().min(1),
+		})
+		.merge(eventMetaSchema),
 	z
 		.object({
 			type: z.literal("scheduler.changed"),
@@ -39,6 +55,7 @@ export const daemonEventSchema = z.discriminatedUnion("type", [
 			...runEventSchema.shape,
 			output: z.string(),
 			truncated: z.boolean(),
+			activities: z.array(runtimeActivitySchema).optional(),
 		})
 		.merge(eventMetaSchema),
 	z

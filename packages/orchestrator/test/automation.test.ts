@@ -98,9 +98,9 @@ async function buildPlan(harness: Awaited<ReturnType<typeof createHarness>>) {
 	return created.planId;
 }
 
-test("plans, converts, unlocks dependents, and completes", async () => {
+test("checkpointed outputs unlock dependents and keep the plan open for review", async () => {
 	const harness = await createHarness();
-	const { automation, events, store, tasks } = harness;
+	const { automation, events, repos, store, tasks } = harness;
 	const planId = await buildPlan(harness);
 	expect((await store.get(planId))?.status).toBe("validated");
 	expect(await store.planTasks(planId)).toHaveLength(2);
@@ -128,13 +128,23 @@ test("plans, converts, unlocks dependents, and completes", async () => {
 	const ready = detail.tasks.find((task) => task.status === "ready");
 	if (!ready) throw new Error("ready task missing");
 	await tasks.getScheduler().wait(ready.id);
+	const readyWorkspace = await repos.workspaces.getByTaskId(ready.id);
+	if (!readyWorkspace) throw new Error("ready workspace missing");
+	await writeFile(join(readyWorkspace.path, "base.html"), "<main>base</main>\n");
+	await tasks.checkpoint(ready.id);
 	const top = detail.tasks.find((task) => task.status === "blocked");
 	if (!top) throw new Error("blocked task missing");
 	await tasks.getScheduler().wait(top.id);
-	const done = await automation.detail(planId);
-	expect(done.progress.done).toBe(2);
-	expect(done.progress.percent).toBe(100);
-	expect((await store.get(planId))?.status).toBe("completed");
+	const topWorkspace = await repos.workspaces.getByTaskId(top.id);
+	if (!topWorkspace) throw new Error("dependent workspace missing");
+	await writeFile(join(topWorkspace.path, "top.html"), "<main>top</main>\n");
+	await tasks.checkpoint(top.id);
+	const pendingReview = await automation.detail(planId);
+	expect(pendingReview.tasks.map((task) => task.status)).toEqual([
+		"ready_to_merge",
+		"ready_to_merge",
+	]);
+	expect((await store.get(planId))?.status).toBe("executing");
 	const types = events.map((event) => event.type);
 	for (const type of [
 		"plan.created",
@@ -147,9 +157,7 @@ test("plans, converts, unlocks dependents, and completes", async () => {
 		"task.unblocked",
 	] as const)
 		expect(types).toContain(type);
-	expect(blocked && done.tasks.find((t) => t.id === blocked.id)?.status).toBe(
-		"completed",
-	);
+	expect(blocked && pendingReview.tasks.find((t) => t.id === blocked.id)?.status).toBe("ready_to_merge");
 });
 
 test("rejects invalid edits, premature actions, and failed dependencies stay blocked", async () => {

@@ -321,12 +321,20 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 			});
 		}
 		if (!response.ok) {
+			const responseBody = await response.text().catch(() => "");
+			const detail = openCodeResponseErrorDetail(responseBody);
 			throw new OpenCodeError(
 				"HTTP_ERROR",
-				`OpenCode request failed with HTTP ${response.status} (${init.method ?? "GET"} ${path})`,
+				[
+					`OpenCode request failed with HTTP ${response.status} (${init.method ?? "GET"} ${path})`,
+					detail,
+				]
+					.filter(Boolean)
+					.join(": "),
 				{
 					status: String(response.status),
 					path,
+					...(detail ? { response: detail } : {}),
 				},
 			);
 		}
@@ -516,6 +524,55 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 			method: "GET",
 		});
 	}
+}
+
+function openCodeResponseErrorDetail(body: string): string {
+	if (!body.trim()) return "";
+	let detail = body.trim();
+	try {
+		const payload: unknown = JSON.parse(body);
+		if (payload && typeof payload === "object") {
+			const value = payload as {
+				message?: unknown;
+				error?: { message?: unknown } | string;
+				data?: { message?: unknown; errors?: unknown };
+				errors?: unknown;
+				issues?: Array<{ path?: unknown[]; message?: unknown }>;
+			};
+			const validationIssues = value.issues ??
+				(Array.isArray(value.errors)
+					? (value.errors as Array<{ path?: unknown[]; message?: unknown }>)
+					: undefined);
+			const issues = validationIssues
+				?.map((issue) => {
+					const path = Array.isArray(issue.path)
+						? issue.path.map(String).join(".")
+						: "";
+					const message =
+						typeof issue.message === "string" ? issue.message : "";
+					return [path, message].filter(Boolean).join(": ");
+				})
+				.filter(Boolean);
+			const messages = [
+				typeof value.message === "string" ? value.message : "",
+				typeof value.data?.message === "string" ? value.data.message : "",
+				typeof value.error === "string"
+					? value.error
+					: typeof value.error?.message === "string"
+						? value.error.message
+						: "",
+				...(issues ?? []),
+			].filter(Boolean);
+			if (messages.length) detail = [...new Set(messages)].join("; ");
+		}
+	} catch {
+		// Non-JSON errors are still useful when OpenCode returns plain text.
+	}
+	return detail
+		.replace(/("?apiKey"?\s*[:=]\s*"?)[^",\s}]+/gi, "$1[redacted]")
+		.replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "[redacted]")
+		.replace(/\s+/g, " ")
+		.slice(0, 600);
 }
 
 export class MockAgentRuntime implements AgentRuntime {

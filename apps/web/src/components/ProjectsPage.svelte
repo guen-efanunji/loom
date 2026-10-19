@@ -42,6 +42,8 @@ import {
 	type ChatState,
 	chat,
 	type FileDiff,
+	friendlyProviderStatus,
+	providerDisplayName,
 } from "$lib/chat";
 import {
 	type ChatPanelId,
@@ -67,7 +69,10 @@ import * as Tabs from "$lib/components/ui/tabs";
 import {
 	type CustomAgentMonitorItem,
 	type CustomAgentRunMonitorItem,
+	type DaemonEvent,
 	daemon,
+	parseDaemonEvent,
+	provisionDaemonToken,
 	type Project,
 	type ProjectGitOverview,
 	type ProjectPullRequests,
@@ -75,6 +80,8 @@ import {
 	type WalkthroughDocument,
 	type WalkthroughLanguage,
 	type WalkthroughSnapshot,
+	websocketProtocols,
+	websocketUrl,
 } from "$lib/daemon";
 import AddProjectForm from "./AddProjectForm.svelte";
 import Composer from "./chat/Composer.svelte";
@@ -93,6 +100,12 @@ let monitorRuns = $state<CustomAgentRunMonitorItem[]>([]);
 let monitorError = $state("");
 let monitorRequest = 0;
 let monitorTimer: ReturnType<typeof setInterval> | undefined;
+let monitorSocket: WebSocket | undefined;
+let monitorReconnectTimer: ReturnType<typeof setTimeout> | undefined;
+let monitorTaskOutput = $state<Record<string, string>>({});
+let monitorTaskActivities = $state<
+	Record<string, Array<{ id: string; tool: string; status: "running" | "completed" | "error" }>>
+>({});
 let selectedProjectId = $state("");
 let sessionId = $state("");
 let conversation = $state<ChatState | null>(null);
@@ -382,13 +395,7 @@ $effect(() => {
 	);
 	model = canonical ? `${providerID}/${canonical.modelID}` : "";
 });
-const providerLabel = $derived(
-	activeProvider === "agy"
-		? "Agy"
-		: activeProvider === "opencode"
-			? "OpenCode"
-			: activeProvider[0]?.toUpperCase() + activeProvider.slice(1),
-);
+const providerLabel = $derived(providerDisplayName(catalog, activeProvider));
 const busy = $derived(
 	sending ||
 		!!optimistic ||
@@ -789,6 +796,17 @@ const noModels = $derived(
 );
 const agentMonitorRows = $derived.by(() =>
 	monitorAgents.map((agent) => {
+		const agentTasks = legacyTasks.filter(
+			(item) =>
+				item.projectId === selectedProjectId &&
+				item.executor?.kind === "agent" &&
+				item.executor.agentId === agent.id,
+		);
+		const task =
+			agentTasks.find((item) => item.status === "running") ??
+			agentTasks.find((item) => item.status === "preparing") ??
+			agentTasks.find((item) => item.status === "queued" || item.status === "ready") ??
+			agentTasks.find((item) => item.status === "failed");
 		const recentRuns = monitorRuns
 			.filter((item) => item.agentId === agent.id)
 			.sort(
@@ -799,17 +817,52 @@ const agentMonitorRows = $derived.by(() =>
 		const run = recentRuns.find(
 			(item) => item.status === "queued" || item.status === "running",
 		) ?? (recentRuns[0]?.status === "failed" ? recentRuns[0] : undefined);
-		const task = run?.taskId
+		const chatTask = run?.taskId
 			? legacyTasks.find((item) => item.id === run.taskId)
 			: undefined;
-		return { agent, run, task, failed: run?.status === "failed" };
+		const kanbanTask = task && task.status !== "failed" ? task : undefined;
+		const runActive = run?.status === "queued" || run?.status === "running";
+		return {
+			agent,
+			run,
+			task: kanbanTask ?? chatTask,
+			kanbanTask,
+			failed:
+				!runActive &&
+				(task?.status === "failed" || run?.status === "failed"),
+		};
 	}),
 );
+const activeMonitorTasks = $derived(
+	legacyTasks
+		.filter(
+			(task) =>
+				(!selectedProjectId || task.projectId === selectedProjectId) &&
+				(task.status === "running" || task.status === "preparing"),
+		)
+		.slice()
+		.sort(
+			(a, b) =>
+				monitorTimestamp(b.startedAt ?? b.createdAt) -
+				monitorTimestamp(a.startedAt ?? a.createdAt),
+		),
+);
 const monitorRunningCount = $derived(
-	agentMonitorRows.filter(({ run }) => run?.status === "running").length,
+	activeMonitorTasks.length +
+		monitorRuns.filter(
+			(run) =>
+				run.status === "running" &&
+				!legacyTasks.some((task) => task.id === run.taskId),
+		).length,
 );
 const monitorIdleCount = $derived(
-	agentMonitorRows.filter(({ run, agent }) => agent.status === "active" && !run)
+	agentMonitorRows.filter(
+		({ run, kanbanTask, agent, failed }) =>
+			agent.status === "active" &&
+			!run &&
+			!kanbanTask &&
+			!failed,
+	)
 		.length,
 );
 const visibleMonitorTasks = $derived(
@@ -828,6 +881,83 @@ function monitorTimestamp(value: string | number | null | undefined) {
 	if (!value) return 0;
 	const parsed = Date.parse(value);
 	return Number.isFinite(parsed) ? parsed : 0;
+}
+function applyMonitorEvent(event: DaemonEvent) {
+	if (event.type === "task.created" || event.type === "task.updated") {
+		const exists = legacyTasks.some((task) => task.id === event.task.id);
+		legacyTasks = exists
+			? legacyTasks.map((task) =>
+					task.id === event.task.id ? { ...task, ...event.task } : task,
+				)
+			: [...legacyTasks, event.task];
+		return;
+	}
+	if (event.type === "run.started") {
+		monitorTaskOutput = { ...monitorTaskOutput, [event.taskId]: "" };
+		monitorTaskActivities = { ...monitorTaskActivities, [event.taskId]: [] };
+		return;
+	}
+	if (event.type === "run.output") {
+		if (event.output) {
+			const current = monitorTaskOutput[event.taskId] ?? "";
+			monitorTaskOutput = {
+				...monitorTaskOutput,
+				[event.taskId]: `${current}${event.output}`.slice(-4000),
+			};
+		}
+		if (event.activities)
+			monitorTaskActivities = {
+				...monitorTaskActivities,
+				[event.taskId]: event.activities,
+			};
+		return;
+	}
+	if (
+		["task.started", "task.completed", "task.failed", "task.cancelled"].includes(
+			event.type,
+		)
+	)
+		void refreshAgentMonitor();
+}
+async function connectMonitorSocket() {
+	if (disposed) return;
+	try {
+		await provisionDaemonToken();
+		if (disposed) return;
+		const socket = new WebSocket(websocketUrl(), websocketProtocols());
+		monitorSocket = socket;
+		socket.onmessage = (message) => {
+			try {
+				applyMonitorEvent(
+					parseDaemonEvent(JSON.parse(String(message.data))),
+				);
+			} catch {
+				// Ignore unrelated or malformed daemon events.
+			}
+		};
+		socket.onclose = () => {
+			if (monitorSocket === socket) monitorSocket = undefined;
+			if (!disposed)
+				monitorReconnectTimer = setTimeout(
+					() => void connectMonitorSocket(),
+					2000,
+				);
+		};
+		socket.onerror = () => socket.close();
+	} catch {
+		if (!disposed)
+			monitorReconnectTimer = setTimeout(
+				() => void connectMonitorSocket(),
+				2000,
+			);
+	}
+}
+function monitorOutputPreview(taskId: string) {
+	const lines = (monitorTaskOutput[taskId] ?? "")
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.filter(Boolean);
+	return lines.at(-1)?.slice(-180) ?? "Agent is working…";
 }
 async function reloadModels() {
 	catalogNonce += 1;
@@ -865,6 +995,27 @@ async function refreshAgentMonitor() {
 		monitorRuns = runs;
 		legacyTasks = tasks;
 		monitorError = "";
+		const activeTasks = tasks.filter(
+			(task) =>
+				(!projectId || task.projectId === projectId) &&
+				(task.status === "running" || task.status === "preparing"),
+		);
+		void Promise.all(
+			activeTasks.map(async (task) => {
+				try {
+					const result = await daemon.getOutput(task.id);
+					if (disposed || request !== monitorRequest || !result.output) return;
+					const current = monitorTaskOutput[task.id] ?? "";
+					if (result.output.length >= current.length)
+						monitorTaskOutput = {
+							...monitorTaskOutput,
+							[task.id]: result.output.slice(-4000),
+						};
+				} catch {
+					// Output may not be available for every runtime until it responds.
+				}
+			}),
+		);
 	} catch (reason) {
 		if (!disposed && request === monitorRequest)
 			monitorError =
@@ -899,6 +1050,7 @@ onMount(() => {
 		catalogNonce += 1;
 	};
 	window.addEventListener("loom:providers-changed", refreshProviders);
+	void connectMonitorSocket();
 	void (async () => {
 		try {
 			await refreshProjects();
@@ -931,6 +1083,8 @@ onMount(() => {
 		window.removeEventListener("loom:providers-changed", refreshProviders);
 		clearTimeout(timer);
 		if (monitorTimer) clearInterval(monitorTimer);
+		if (monitorReconnectTimer) clearTimeout(monitorReconnectTimer);
+		monitorSocket?.close();
 	};
 });
 function homeUrl(session = "") {
@@ -1355,7 +1509,6 @@ async function send(input: Parameters<typeof chat.send>[1]) {
 				updateChatUrl(id);
 			}
 		}
-		await chat.send(id, input);
 		if (activeChatTabId === tabId) {
 			optimistic = {
 				info: {
@@ -1376,9 +1529,13 @@ async function send(input: Parameters<typeof chat.send>[1]) {
 			await tick();
 			scroller?.scrollTo({ top: scroller.scrollHeight });
 		}
+		await chat.send(id, input);
 		return true;
 	} catch (reason) {
-		if (activeChatTabId === tabId) report(reason);
+		if (activeChatTabId === tabId) {
+			optimistic = null;
+			report(reason);
+		}
 		return false;
 	} finally {
 		sendingChatTabIds = sendingChatTabIds.filter((id) => id !== tabId);
@@ -1594,7 +1751,7 @@ async function answer(requestId: string, answers: string[][]) {
 <div class="flex h-svh overflow-hidden bg-background text-foreground">
   {#if sidebarOpen}
     <aside class="fixed inset-y-0 left-0 z-40 flex w-[280px] shrink-0 flex-col border-r bg-sidebar md:relative" aria-label="Workspace sidebar">
-      <div class="flex h-14 items-center justify-between px-4"><a href="/" class="flex items-center gap-2 text-sm font-semibold tracking-wide"><span class="flex size-6 items-center justify-center rounded-md bg-primary text-primary-foreground">L</span> loom</a><Button variant="ghost" size="icon" aria-label="Collapse sidebar" onclick={() => sidebarOpen = false}><PanelLeft size={16} /></Button></div>
+      <div class="flex h-14 items-center justify-between px-4"><a href="/" class="flex items-center gap-2 text-sm font-semibold tracking-wide"><img src="/loom-mark.webp" alt="" class="size-6 object-contain" /> loom</a><Button variant="ghost" size="icon" aria-label="Collapse sidebar" onclick={() => sidebarOpen = false}><PanelLeft size={16} /></Button></div>
       <div class="space-y-2 px-3 pb-3"><Button variant="outline" class="w-full justify-start bg-background/50" onclick={() => newSession()}><MessageSquarePlus size={16} />New session<span class="ml-auto text-muted-foreground">+</span></Button><div class="flex items-center gap-1"><Button variant="ghost" size="sm" class="flex-1 justify-start text-muted-foreground" onclick={() => searchOpen = !searchOpen}><Search size={15} />Search sessions</Button><Button variant="ghost" size="icon" title="Add project" aria-label="Add project" onclick={() => addProjectOpen = true}><FolderPlus size={16} /></Button></div>{#if searchOpen}<Input aria-label="Search sessions" placeholder="Find a conversation…" bind:value={search} />{/if}</div>
       <nav class="nice-scroll min-h-0 flex-1 overflow-y-auto px-3 pb-4">
         <p class="px-2 py-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Recent chats</p>
@@ -1670,8 +1827,8 @@ async function answer(requestId: string, answers: string[][]) {
       <div class={`mx-auto flex min-h-full w-full max-w-[740px] flex-col px-5 ${sessionId ? "py-8" : "justify-center py-12"}`}>
         {#if loading || sessionLoading}<div role="status" class="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground"><LoaderCircle size={17} class="animate-spin" />Loading {loading ? "workspace" : "conversation"}…</div>
         {:else if !sessionId}<section class="relative isolate -mx-5 flex flex-col items-center px-5 pb-10 pt-[8vh] sm:pt-[12vh]"><div class="pointer-events-none absolute left-1/2 top-24 -z-10 h-80 w-[min(42rem,90vw)] -translate-x-1/2 rounded-full bg-cyan-500/[0.035] blur-3xl"></div><div class="w-full max-w-[700px]"><div class="mb-8 text-center"><div aria-hidden="true" class="relative mx-auto mb-6 size-20"><div class="hero-orbit hero-orbit-one"></div><div class="hero-orbit hero-orbit-two"></div><div class="absolute inset-0 grid place-items-center"><div class="hero-core grid size-12 place-items-center rounded-2xl border border-cyan-200/30 bg-cyan-300/[0.1]"><Sparkles size={20} class="text-cyan-200" /></div></div><span class="hero-node hero-node-one"></span><span class="hero-node hero-node-two"></span><span class="hero-node hero-node-three"></span></div><h1 class="text-3xl font-medium tracking-[-0.04em] text-white sm:text-[38px]">Turn ideas into momentum</h1><p class="mx-auto mt-3 max-w-md text-sm leading-6 text-white/45">Bring a little context. We’ll shape the next step together.</p></div></div></section>{/if}
-         {#if sessionId}<div class="space-y-8" aria-live="polite" aria-relevant="additions text">{#each turns as turn (turn.key)}<Turn messages={turn.messages} {sessionId} projectId={selectedProjectId} onfile={showFiles} onbranch={startNewChatFromAnswer} />{/each}</div>
-           {#if busy}<Marker.Root variant="border" class="mt-5 flex items-center"><Marker.Icon><LoaderCircle size={14} class="animate-spin" /></Marker.Icon><Marker.Content>{conversation?.permissions.length ? "Waiting for permission" : conversation?.questions.length ? "Waiting for your answer" : conversation?.status.message || `${providerLabel} is working…`}</Marker.Content></Marker.Root>{/if}
+         {#if sessionId}<div class="space-y-8" aria-live="polite" aria-relevant="additions text">{#each turns as turn (turn.key)}<Turn messages={turn.messages} {catalog} {sessionId} projectId={selectedProjectId} onfile={showFiles} onbranch={startNewChatFromAnswer} />{/each}</div>
+           {#if busy}<Marker.Root variant="border" class="mt-5 flex items-center"><Marker.Icon><LoaderCircle size={14} class="animate-spin" /></Marker.Icon><Marker.Content>{conversation?.permissions.length ? "Waiting for permission" : conversation?.questions.length ? "Waiting for your answer" : friendlyProviderStatus(catalog, conversation?.status.message) || `${providerLabel} is working…`}</Marker.Content></Marker.Root>{/if}
           {#each conversation?.permissions ?? [] as request}<div role="group" aria-label={`Permission required: ${request.permission}`} class="mt-5 space-y-3 rounded-xl border border-amber-500/30 bg-card p-4"><p class="flex items-center gap-2 text-sm font-medium"><ShieldCheck size={16} />Permission required: {request.permission}</p>{#if request.patterns.length}<pre class="overflow-auto whitespace-pre-wrap break-words text-xs text-muted-foreground">{request.patterns.join("\n")}</pre>{/if}<div class="flex flex-wrap gap-2"><Button size="sm" disabled={permissionReplying === request.id} onclick={() => permission(request.id, "once")}>Accept once</Button><Button variant="outline" size="sm" disabled={permissionReplying === request.id} onclick={() => permission(request.id, "always")}>Always allow</Button><Button variant="ghost" size="sm" disabled={permissionReplying === request.id} onclick={() => permission(request.id, "reject")}>Decline</Button></div></div>{/each}
           {#each conversation?.questions ?? [] as question}<div class="mt-5"><QuestionCard {question} onanswer={(answers) => answer(question.id, answers)} /></div>{/each}
         {/if}
@@ -1707,20 +1864,34 @@ async function answer(requestId: string, answers: string[][]) {
               {#if monitorError}<p role="alert" class="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-xs text-destructive">{monitorError}</p>{/if}
               <section class="rounded-lg border bg-card/50 p-3">
                 <div class="flex items-center justify-between gap-2"><div class="flex items-center gap-2"><Activity size={14} class="text-primary" /><p class="text-xs font-medium">Agent activity</p></div><span class="text-[10px] text-muted-foreground">Live · 5s</span></div>
-                <div class="mt-3 grid grid-cols-2 gap-2"><div class="rounded-md border bg-background/50 p-2"><p class="text-[10px] text-muted-foreground">Running</p><p class="mt-1 text-lg font-semibold">{monitorRunningCount}</p></div><div class="rounded-md border bg-background/50 p-2"><p class="text-[10px] text-muted-foreground">Idle</p><p class="mt-1 text-lg font-semibold">{monitorIdleCount}</p></div></div>
+                <div class="mt-3 grid grid-cols-2 gap-2"><div class="rounded-md border bg-background/50 p-2"><p class="text-[10px] text-muted-foreground">Running tasks</p><p class="mt-1 text-lg font-semibold">{monitorRunningCount}</p></div><div class="rounded-md border bg-background/50 p-2"><p class="text-[10px] text-muted-foreground">Idle agents</p><p class="mt-1 text-lg font-semibold">{monitorIdleCount}</p></div></div>
+              </section>
+              <section>
+                <div class="mb-2 flex items-center justify-between"><h3 class="text-xs font-semibold">Active tasks</h3><a href={`/?project=${encodeURIComponent(selectedProjectId)}&view=kanban`} class="text-[10px] text-primary hover:underline">Open board</a></div>
+                {#if !activeMonitorTasks.length}<p class="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">No tasks are running for this project.</p>
+                {:else}<div class="space-y-2">{#each activeMonitorTasks as task (task.id)}
+                  {@const activities = monitorTaskActivities[task.id] ?? []}
+                  <a href={`/task/${encodeURIComponent(task.id)}`} class="block rounded-lg border bg-card/40 p-3 transition-colors hover:bg-accent/40">
+                    <div class="flex items-center justify-between gap-2"><p class="truncate text-xs font-medium">{task.title}</p><span class="inline-flex shrink-0 items-center gap-1.5 text-[10px] font-medium text-amber-300"><span class="size-2 animate-pulse rounded-full bg-amber-300"></span>{task.status === "preparing" ? "Preparing" : "Running"}</span></div>
+                    {#if activities.length}<p class="mt-1 truncate text-[10px] leading-4 text-muted-foreground">Activity · {activities.at(-1)?.tool} · {activities.at(-1)?.status}</p>{/if}
+					<p class="mt-1 line-clamp-2 text-[10px] leading-4 text-muted-foreground">{monitorOutputPreview(task.id)}</p>
+					{#if task.executor?.kind === "agent"}<p class="mt-1 text-[10px] text-muted-foreground">Agent · {monitorAgents.find((agent) => agent.id === task.executor?.agentId)?.label ?? "assigned agent"}</p>{:else if task.executor?.kind === "direct"}<p class="mt-1 text-[10px] text-muted-foreground">Provider · {task.executor.providerId}</p>{:else}<p class="mt-1 text-[10px] text-muted-foreground">Default task executor</p>{/if}
+                  </a>
+                {/each}</div>{/if}
               </section>
               <section>
                 <div class="mb-2 flex items-center justify-between"><h3 class="text-xs font-semibold">Registered agents</h3><a href="/settings/agents" class="text-[10px] text-primary hover:underline">Manage</a></div>
                 {#if !agentMonitorRows.length}<p class="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">No custom agents have been created yet.</p>
                 {:else}<div class="space-y-2">{#each agentMonitorRows as item (item.agent.id)}
-                  {@const running = item.run?.status === "running"}
-                  {@const queued = item.run?.status === "queued"}
-                  {@const idle = item.agent.status === "active" && !item.run}
+                  {@const running = item.run?.status === "running" || item.kanbanTask?.status === "running" || item.kanbanTask?.status === "preparing"}
+                  {@const queued = item.run?.status === "queued" || item.kanbanTask?.status === "queued" || item.kanbanTask?.status === "ready"}
+                  {@const idle = item.agent.status === "active" && !item.run && !item.kanbanTask && !item.failed}
                   {@const statusTone = item.failed ? "text-red-400" : running || queued ? "text-amber-300" : idle ? "text-emerald-400" : "text-muted-foreground"}
                   {@const dotTone = item.failed ? "bg-red-400" : running || queued ? "bg-amber-300" : idle ? "bg-emerald-400" : "bg-muted-foreground"}
                   <article class="rounded-lg border bg-card/40 p-3">
                     <div class="flex min-w-0 items-start gap-2"><div class="mt-0.5 grid size-7 shrink-0 place-items-center rounded-md border bg-background/60"><Bot size={14} class="text-cyan-300" /></div><div class="min-w-0 flex-1"><div class="flex items-center gap-2"><p class="min-w-0 flex-1 truncate text-xs font-medium">{item.agent.label}</p><span class={`inline-flex shrink-0 items-center gap-1.5 text-[10px] font-medium ${statusTone}`} title={item.failed ? "The most recent agent run failed" : undefined}><span class="relative inline-flex size-2"><span class={`absolute inline-flex size-full rounded-full opacity-60 ${dotTone} ${idle || running || queued ? "animate-ping" : ""}`}></span><span class={`relative inline-flex size-2 rounded-full ${dotTone}`}></span></span>{item.failed ? "Error" : running ? "Running" : queued ? "Queued" : idle ? "Idle" : "Inactive"}</span></div><p class="mt-1 truncate text-[10px] text-muted-foreground">{item.agent.role} · {item.agent.provider}</p>
-                      {#if item.run && (running || queued)}<p class="mt-2 flex items-start gap-1.5 text-[10px] leading-4 text-muted-foreground"><Activity size={12} class={`mt-0.5 shrink-0 ${running ? "text-emerald-300" : "text-amber-200"}`} />{item.task ? `In use · ${item.task.title}` : item.run.trigger === "chat" ? "In use · Chat session" : "Agent run active"}</p>{/if}
+                      {#if item.kanbanTask && (running || queued)}<p class="mt-2 flex items-start gap-1.5 text-[10px] leading-4 text-muted-foreground"><Activity size={12} class={`mt-0.5 shrink-0 ${running ? "text-emerald-300" : "text-amber-200"}`} />{running ? `Working on · ${item.kanbanTask.title}` : `Queued · ${item.kanbanTask.title}`}</p>{#if running}<p class="mt-1 line-clamp-2 pl-5 text-[10px] leading-4 text-muted-foreground">{monitorOutputPreview(item.kanbanTask.id)}</p>{/if}<a href={`/task/${encodeURIComponent(item.kanbanTask.id)}`} class="mt-1 inline-block pl-5 text-[10px] text-primary hover:underline">View live progress</a>
+                      {:else if item.run && (running || queued)}<p class="mt-2 flex items-start gap-1.5 text-[10px] leading-4 text-muted-foreground"><Activity size={12} class={`mt-0.5 shrink-0 ${running ? "text-emerald-300" : "text-amber-200"}`} />{item.task ? `In use · ${item.task.title}` : item.run.trigger === "chat" ? "In use · Chat session" : "Agent run active"}</p>{/if}
                     </div></div>
                   </article>
                 {/each}</div>{/if}

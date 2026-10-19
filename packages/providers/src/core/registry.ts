@@ -16,6 +16,12 @@ export class ProviderRegistry {
 		return this.providers.get(providerId);
 	}
 
+	unregister(providerId: string): CliProviderAdapter | undefined {
+		const adapter = this.providers.get(providerId);
+		this.providers.delete(providerId);
+		return adapter;
+	}
+
 	require(providerId: string): CliProviderAdapter {
 		const adapter = this.get(providerId);
 		if (!adapter) throw new Error(`Provider is not registered: ${providerId}`);

@@ -1,5 +1,16 @@
-import { randomUUID } from "node:crypto";
-import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import {
+	createHash,
+	randomBytes,
+	randomUUID,
+} from "node:crypto";
+import {
+	access,
+	chmod,
+	mkdir,
+	readdir,
+	readFile,
+	writeFile,
+} from "node:fs/promises";
 import {
 	basename,
 	dirname,
@@ -12,14 +23,19 @@ import {
 import { appRouter } from "@loom/api/routers/index";
 import type { Database } from "@loom/db";
 import {
+	customAgentAssignmentRuns,
 	customAgentRunEvents,
 	customAgentRuns,
 	customAgentSkills,
 	customAgents,
 	type DesignMessageRecord,
 	type DesignNodeRecord,
+	desc,
 	designRepository,
 	eq,
+	gt,
+	or,
+	orchestrationEvents,
 	planRepository,
 	repositories,
 } from "@loom/db";
@@ -60,14 +76,25 @@ import {
 	permissionDecisionInputSchema,
 	refineDesignSchema,
 	type Task,
+	type TaskExecutor,
+	taskExecutorSchema,
 	taskIdInputSchema,
 } from "@loom/protocol";
 import {
 	createDefaultProviderRegistry,
+	CustomOpenCodeProviderAdapter,
+	discoverCustomModels,
 	ProviderManager,
 	readPrompt,
+	testCustomModel,
 } from "@loom/providers";
-import type { AgentModel, AgentRuntime } from "@loom/providers/core";
+import type { CustomOpenCodeProviderConfig } from "@loom/providers";
+import type {
+	AgentModel,
+	AgentRuntime,
+	RuntimeModel,
+	RuntimePermission,
+} from "@loom/providers/core";
 import {
 	MergeConflictError,
 	WorktreeError,
@@ -83,12 +110,12 @@ import { createBunWebSocket } from "hono/bun";
 import { cors } from "hono/cors";
 import { z } from "zod";
 import { createAgentSettingsRoutes } from "./agents";
-import { createContextHubRoutes } from "./context-hub";
-import { createMcpManagerRoutes } from "./mcp-manager";
 import { registerAgyPermissionHook } from "./agy-hooks";
 import { type ChatRequestGateway, createChatRoutes } from "./chat";
 import { type DaemonConfig, loadDaemonConfig } from "./config";
 import { createContext } from "./context";
+import { createContextHubRoutes } from "./context-hub";
+import { createMcpManagerRoutes } from "./mcp-manager";
 import {
 	type AgyPermissionStore,
 	createAgyPermissionStore,
@@ -97,10 +124,10 @@ import {
 	createProjectValidationService,
 	ProjectValidationError,
 } from "./projects";
-import { auth, checkDbHealth, getDb } from "./services";
-import { collectWalkthroughSnapshot } from "./walkthrough";
-import { TerminalManager } from "./terminal";
 import { checkProviderUpdate, updateProviderCli } from "./provider-updates";
+import { auth, checkDbHealth, getDb } from "./services";
+import { TerminalManager } from "./terminal";
+import { collectWalkthroughSnapshot } from "./walkthrough";
 
 const { upgradeWebSocket, websocket: bunWebSocket } = createBunWebSocket();
 
@@ -263,6 +290,8 @@ function recordToTask(
 				acceptanceCriteria: string;
 				suggestedFiles: string;
 				source: string;
+				executorConfig: string | null;
+				targetBranch: string | null;
 				workspaceId: string | null;
 				sessionId: string | null;
 				createdAt: Date;
@@ -274,8 +303,31 @@ function recordToTask(
 		| undefined,
 ) {
 	if (!record) return null;
+	const { executorConfig, ...task } = record;
+	const parseList = (value: string) => {
+		try {
+			const parsed: unknown = JSON.parse(value);
+			return Array.isArray(parsed)
+				? parsed.filter((item): item is string => typeof item === "string")
+				: [];
+		} catch {
+			return [];
+		}
+	};
+	let executor: TaskExecutor | null = null;
+	if (executorConfig) {
+		try {
+			executor = taskExecutorSchema.parse(JSON.parse(executorConfig));
+		} catch {
+			// Preserve task readability if a legacy or manually edited config is invalid.
+		}
+	}
 	return {
-		...record,
+		...task,
+		acceptanceCriteria: parseList(record.acceptanceCriteria),
+		suggestedFiles: parseList(record.suggestedFiles),
+		executor,
+		targetBranch: record.targetBranch ?? null,
 		createdAt: record.createdAt.toISOString(),
 		startedAt: record.startedAt?.toISOString() ?? null,
 		completedAt: record.completedAt?.toISOString() ?? null,
@@ -293,9 +345,23 @@ function recordToAgentRun(record: {
 	errorCode: string | null;
 	recoveryAction: string | null;
 	retryOfRunId: string | null;
+	executorSnapshotJson?: string | null;
+	snapshotHash?: string | null;
+	effectiveProvider?: string | null;
+	effectiveModel?: string | null;
+	attemptNumber?: number;
+	baseSha?: string | null;
+	outputSha?: string | null;
 }) {
 	return {
 		...record,
+		executorSnapshotJson: record.executorSnapshotJson ?? null,
+		snapshotHash: record.snapshotHash ?? null,
+		effectiveProvider: record.effectiveProvider ?? null,
+		effectiveModel: record.effectiveModel ?? null,
+		attemptNumber: record.attemptNumber ?? 1,
+		baseSha: record.baseSha ?? null,
+		outputSha: record.outputSha ?? null,
 		startedAt: record.startedAt?.toISOString() ?? null,
 		completedAt: record.completedAt?.toISOString() ?? null,
 	};
@@ -420,12 +486,43 @@ export type DaemonAppOptions = {
 	initializeProviders?: boolean;
 };
 
+function redactEvent(value: unknown, key = ""): unknown {
+	if (
+		/(authorization|api.?key|access.?token|refresh.?token|password|secret|credential)/i.test(
+			key,
+		)
+	)
+		return "[REDACTED]";
+	if (typeof value === "string")
+		return value
+			.replace(
+				/\b(sk-(?:proj-)?[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{20,}|Bearer\s+[A-Za-z0-9._~+/-]{12,})\b/gi,
+				"[REDACTED]",
+			)
+			.replace(
+				/\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|client[_-]?secret)\s*[:=]\s*["']?[^\s,"'}]+/gi,
+				"[REDACTED]",
+			)
+			.slice(-64_000);
+	if (Array.isArray(value))
+		return value.slice(0, 500).map((item) => redactEvent(item));
+	if (value && typeof value === "object")
+		return Object.fromEntries(
+			Object.entries(value).map(([childKey, child]) => [
+				childKey,
+				redactEvent(child, childKey),
+			]),
+		);
+	return value;
+}
+
 export async function createApp(options: DaemonAppOptions = {}) {
 	const config = options.config ?? (await loadDaemonConfig());
 	const clients = new Set<{ send(data: string): void; close(): void }>();
 	const db = options.database ?? getDb();
 	const repos = repositories(db);
 	const designRepo = designRepository(db);
+	let eventWriteQueue = Promise.resolve();
 	const eventPublisher = {
 		publish(event: unknown) {
 			const parsed = daemonEventSchema.parse(event);
@@ -434,8 +531,39 @@ export async function createApp(options: DaemonAppOptions = {}) {
 				parsed.type,
 				"taskId" in parsed ? { taskId: parsed.taskId } : {},
 			);
-			const payload = JSON.stringify(parsed);
-			for (const client of clients) client.send(payload);
+			eventWriteQueue = eventWriteQueue
+				.then(async () => {
+					const safeEvent = redactEvent(parsed);
+					const scopeId =
+						("taskId" in parsed && parsed.taskId) ||
+						("task" in parsed && parsed.task.id) ||
+						("planId" in parsed && parsed.planId) ||
+						("providerId" in parsed && parsed.providerId) ||
+						("conflict" in parsed && parsed.conflict.taskId) ||
+						"global";
+					const inserted = await db
+						.insert(orchestrationEvents)
+						.values({
+							scopeId,
+							type: parsed.type,
+							payloadRedacted: JSON.stringify(safeEvent),
+						})
+						.returning({ cursor: orchestrationEvents.cursor });
+					const payload = JSON.stringify({
+						...parsed,
+						replayCursor: inserted[0]?.cursor,
+					});
+					for (const client of clients) client.send(payload);
+				})
+				.catch((error) => {
+					log(
+						"orchestrator",
+						"event-persist-failed",
+						{ error: error instanceof Error ? error.message : String(error) },
+						"warn",
+					);
+					for (const client of clients) client.send(JSON.stringify(parsed));
+				});
 		},
 	};
 	const openCodeManager =
@@ -446,9 +574,40 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		"cache",
 		"provider-models.json",
 	);
+	const customProviderPath = join(dataDirectory(), "custom-providers.json");
+	const storedCustomProviderSchema = z.array(
+		z.object({
+			id: z.string().regex(/^loom_custom_[a-z0-9_-]+$/),
+			name: z.string().min(1).max(80),
+			baseUrl: z.string().url(),
+			apiKey: z.string().max(4096),
+			models: z.array(
+				z.object({
+					id: z.string().min(1).max(300),
+					name: z.string().min(1).max(300),
+					contextWindow: z.number().int().positive().optional(),
+					outputLimit: z.number().int().positive().optional(),
+				}),
+			),
+		}),
+	);
+	let customProviderConfigs: CustomOpenCodeProviderConfig[] = [];
+	try {
+		customProviderConfigs = storedCustomProviderSchema.parse(
+			JSON.parse(await readFile(customProviderPath, "utf8")),
+		);
+	} catch {}
 	let persistProviderModelCache = () => {};
+	const providerRegistry = createDefaultProviderRegistry(
+		openCodeManager,
+		openCodeRuntime,
+	);
+	for (const provider of customProviderConfigs)
+		providerRegistry.register(
+			new CustomOpenCodeProviderAdapter(provider),
+		);
 	const providerManager = new ProviderManager({
-		registry: createDefaultProviderRegistry(openCodeManager, openCodeRuntime),
+		registry: providerRegistry,
 		onEvent: (event) => {
 			// Model catalogs can contain hundreds of entries. Logging the complete
 			// payload on every refresh blocks startup on stdout and produces huge logs.
@@ -539,9 +698,9 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	let providerModelBootstrap: Promise<void> | undefined;
 	let openCodeStartup: Promise<void> = Promise.resolve();
 	const discoverProviders = () =>
-		(providerDiscovery ??= openCodeStartup.then(() =>
-			providerManager.refreshAll(),
-		));
+		(providerDiscovery ??= openCodeStartup.then(async () => {
+			return providerManager.refreshAll();
+		}));
 	const refreshConnectedProviderModels = async (
 		connections: Awaited<ReturnType<typeof providerManager.refreshAll>>,
 	) => {
@@ -580,22 +739,255 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	}
 	const worktreeManager = new WorktreeManager();
 	const agentRuntime = options.agentRuntime ?? providerManager.getRuntime();
+	const agyPermissions =
+		options.agyPermissionStore ?? createAgyPermissionStore();
+	const agyPermissionBase =
+		options.agyPermissionUrl ??
+		`http://127.0.0.1:${config.port}/api/agy/permission`;
+	let agyPermissionError = "Agy permission hook is not configured";
+	if (options.agyPermissionUrl) {
+		agyPermissionError = "";
+	} else if (options.registerAgyHook) {
+		try {
+			const registration = await registerAgyPermissionHook();
+			agyPermissionError = registration.reason
+				? `Agy permission hook unavailable: ${registration.reason}`
+				: "";
+		} catch (error) {
+			agyPermissionError = `Agy permission hook unavailable: ${error instanceof Error ? error.message : String(error)}`;
+			log(
+				"agy",
+				"hook-registration-failed",
+				{ error: agyPermissionError },
+				"warn",
+			);
+		}
+	}
+	const resolveTaskExecutor = async (task: {
+		executorConfig: string | null;
+		projectId: string;
+		source: string;
+		targetBranch: string | null;
+	}) => {
+		if (!task.executorConfig && task.source === "manual" && !task.targetBranch)
+			return {
+				runtime: agentRuntime,
+				providerId: "legacy-default",
+				modelId: null,
+				snapshot: { kind: "legacy-default", providerId: "legacy-default" },
+			};
+		if (!task.executorConfig)
+			throw new Error(
+				"This task has no executor pinned. Edit or recreate it with a Kanban agent or direct provider/model before running.",
+			);
+		let selection: TaskExecutor;
+		try {
+			selection = taskExecutorSchema.parse(JSON.parse(task.executorConfig));
+		} catch {
+			throw new Error(
+				"Task executor configuration is invalid; edit the task before running it",
+			);
+		}
+		let agent: typeof customAgents.$inferSelect | undefined;
+		let system =
+			"You are Loom's Kanban coding agent. Implement the requested task in the assigned worktree, follow acceptance criteria, inspect relevant code before editing, and report concrete results. Never commit, push, merge, deploy, or delete branches; Loom checkpoints and integrates output through explicit user actions.";
+		let permissionMode: RuntimePermission["mode"] = "ask";
+		let agentSkills: Array<{ name: string; instructions: string }> = [];
+		let providerId: string;
+		let modelId: string | null;
+		if (selection.kind === "agent") {
+			agent = await db.query.customAgents.findFirst({
+				where: eq(customAgents.id, selection.agentId),
+			});
+			if (
+				!agent ||
+				agent.status !== "active" ||
+				!agent.allowKanban ||
+				(agent.projectId && agent.projectId !== task.projectId)
+			)
+				throw new Error(
+					"Selected agent is disabled, unavailable in this project, or not allowed in Kanban",
+				);
+			if (agent.approvalPolicy === "read_only")
+				throw new Error(
+					`Agent “${agent.label}” is read-only and cannot implement Kanban tasks. Choose a writable coding agent or a direct provider/model.`,
+				);
+			providerId = agent.provider;
+			modelId = agent.modelId;
+			const skills = await db
+				.select()
+				.from(customAgentSkills)
+				.where(eq(customAgentSkills.agentId, agent.id));
+			agentSkills = skills
+				.filter((skill) => skill.enabled && skill.allowKanban)
+				.map((skill) => ({
+					name: skill.name,
+					instructions: skill.instructions,
+				}));
+			system = [
+				system,
+				`You are ${agent.label}, a ${agent.role} implementation agent.`,
+				agent.roleDescription ?? "",
+				agent.systemInstructions,
+				...agentSkills.map(
+					(skill) => `## Skill: ${skill.name}\n${skill.instructions}`,
+				),
+				"Follow the task acceptance criteria. Stay inside the assigned worktree. Never commit, push, merge, deploy, or delete branches; Loom checkpoints and integrates output through explicit user actions.",
+				`Permission policy: ${agent.approvalPolicy}.`,
+			]
+				.filter(Boolean)
+				.join("\n\n");
+		} else {
+			providerId = selection.providerId;
+			modelId = selection.modelId;
+		}
+		const connection = providerManager.get(providerId);
+		if (connection?.status !== "connected")
+			throw new Error(`Selected provider is unavailable: ${providerId}`);
+		const adapter = providerManager.registry.require(providerId);
+		const runtime = adapter.getRuntime?.();
+		if (!runtime)
+			throw new Error(
+				`Selected provider has no task execution runtime: ${providerId}`,
+			);
+		let model: RuntimeModel | undefined;
+		if (modelId) {
+			const catalogModel = providerManager.catalog
+				.listByProvider(providerId)
+				.find(
+					(item) =>
+						item.metadata?.modelId === modelId ||
+						item.name === modelId ||
+						item.id === modelId,
+				);
+			if (
+				!catalogModel &&
+				!adapter.definition.capabilities.includes("custom-model")
+			)
+				throw new Error(
+					`Selected model is unavailable for ${providerId}: ${modelId}`,
+				);
+			modelId = String(
+				catalogModel?.metadata?.modelId ?? catalogModel?.name ?? modelId,
+			);
+			model = { providerID: adapter.definition.id, modelID: modelId };
+		}
+		if (
+			permissionMode === "ask" &&
+			adapter.definition.id === "agy" &&
+			agyPermissionError
+		)
+			throw new Error(agyPermissionError);
+		return {
+			runtime,
+			providerId: adapter.definition.id,
+			modelId,
+			model,
+			timeoutMs: agent ? agent.maxRunDurationMinutes * 60_000 : undefined,
+			system,
+			permission: { mode: permissionMode },
+			...(adapter.definition.id === "agy"
+				? {
+						permissionForSession: async (sessionId: string) => {
+							const token = randomBytes(24).toString("hex");
+							agyPermissions.registerRun({
+								token,
+								sessionId,
+								autoAccept: false,
+							});
+							return {
+								permission: {
+									mode: "ask" as const,
+									env: {
+										LOOM_PERMISSION_URL: agyPermissionBase,
+										LOOM_PERMISSION_TOKEN: token,
+									},
+								},
+								cleanup: () => agyPermissions.unregisterRun(token),
+							};
+						},
+					}
+				: {}),
+			snapshot: {
+				selection,
+				providerId: adapter.definition.id,
+				modelId,
+				effort: agent?.effort ?? null,
+				timeoutMs: agent ? agent.maxRunDurationMinutes * 60_000 : null,
+				fallback: agent
+					? {
+							enabled: false,
+							configuredEnabled: agent.fallbackEnabled,
+							provider: agent.fallbackProvider,
+							modelId: agent.fallbackModelId,
+						}
+					: { enabled: false },
+				sourceConfigUpdatedAt: agent?.updatedAt.toISOString() ?? null,
+				renderedInstructionsHash: createHash("sha256")
+					.update(system)
+					.digest("hex"),
+				agent: agent
+					? {
+							id: agent.id,
+							label: agent.label,
+							role: agent.role,
+							roleDescription: agent.roleDescription,
+							instructions: agent.systemInstructions,
+							skills: agentSkills,
+							approvalPolicy: agent.approvalPolicy,
+						}
+					: null,
+				permissionMode,
+			},
+		};
+	};
 	const orchestrator =
 		options.orchestrator ??
 		new TaskOrchestrator({
 			...repos,
+			leases: repos.tasks,
+			reviews: repos.taskReviews,
+			artifacts: repos.taskArtifacts,
+			integrationLeases: repos.integrationLeases,
+			schedulerResourceLeases: repos.schedulerResourceLeases,
+			allowAutoMerge: process.env.LOOM_ENABLE_KANBAN_AUTO_MERGE === "true",
+			integrationBatches: repos.integrationBatches,
+			integrationBatchReviews: repos.integrationBatchReviews,
 			worktree: worktreeManager,
 			runtime: agentRuntime,
+			resolveExecutor: resolveTaskExecutor,
+			resolveReviewerExecutor: resolveTaskExecutor,
+			runtimeForProvider: (providerId) =>
+				providerId === "legacy-default"
+					? agentRuntime
+					: providerManager.registry.get(providerId)?.getRuntime?.(),
 			events: eventPublisher,
 		});
+	orchestrator.setEventPublisher(eventPublisher);
+	const planStore = planRepository(db);
 	const automation = new AutomationService(
-		planRepository(db),
+		planStore,
 		repos,
 		orchestrator,
 		options.plannerRuntime ?? agentRuntime,
 	);
 	orchestrator.setLifecycle(combineHooks(automation.hooks()));
 	await orchestrator.reconcile();
+	await db
+		.update(customAgentAssignmentRuns)
+		.set({
+			status: "interrupted",
+			errorMessage: "Daemon restarted before the bounded assignment finished",
+			currentTaskIdsJson: "[]",
+			finishedAt: new Date(),
+		})
+		.where(
+			or(
+				eq(customAgentAssignmentRuns.status, "queued"),
+				eq(customAgentAssignmentRuns.status, "running"),
+				eq(customAgentAssignmentRuns.status, "cancel_requested"),
+			),
+		);
 	await automation.recover();
 	const projectValidation =
 		options.projectValidation ?? createProjectValidationService();
@@ -692,7 +1084,8 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			c.req.path.startsWith("/api/agy/permission/") ||
 			c.req.path === "/api/events" ||
 			c.req.path === "/api/bootstrap" ||
-			(/^\/api\/terminals\/[^/]+\/stream$/.test(c.req.path) && c.req.method === "GET")
+			(/^\/api\/terminals\/[^/]+\/stream$/.test(c.req.path) &&
+				c.req.method === "GET")
 		)
 			return next();
 		const authorization = c.req.header("Authorization");
@@ -739,15 +1132,22 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		if (!project) return errorResponse(c, new Error("Project not found"));
 		try {
 			const root = await projectValidation.validate(project.path);
-			const input = z.object({
-				cols: z.number().int().min(20).max(300),
-				rows: z.number().int().min(5).max(120),
-				idempotencyKey: z.string().trim().min(1).max(120),
-			}).parse(await jsonBody(c));
-			return c.json(await terminalManager.create({
-				projectId: project.id, workspaceId: root.path, cwd: root.path,
-				...input,
-			}), 201);
+			const input = z
+				.object({
+					cols: z.number().int().min(20).max(300),
+					rows: z.number().int().min(5).max(120),
+					idempotencyKey: z.string().trim().min(1).max(120),
+				})
+				.parse(await jsonBody(c));
+			return c.json(
+				await terminalManager.create({
+					projectId: project.id,
+					workspaceId: root.path,
+					cwd: root.path,
+					...input,
+				}),
+				201,
+			);
 		} catch (error) {
 			return errorResponse(c, error);
 		}
@@ -764,17 +1164,29 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	});
 	app.post("/api/terminals/:id/restart", async (c) => {
 		const projectId = c.req.query("projectId") ?? "";
-		const project = projectId ? await repos.projects.getById(projectId) : undefined;
-		if (!project)
-			return errorResponse(c, new Error("Project not found"));
+		const project = projectId
+			? await repos.projects.getById(projectId)
+			: undefined;
+		if (!project) return errorResponse(c, new Error("Project not found"));
 		try {
 			const root = await projectValidation.validate(project.path);
-			const input = z.object({
-				expectedGeneration: z.number().int().positive(),
-				approved: z.literal(true),
-				idempotencyKey: z.string().trim().min(1).max(120),
-			}).parse(await jsonBody(c));
-			return c.json(await terminalManager.restart(c.req.param("id"), projectId, root.path, input.expectedGeneration, input.approved, input.idempotencyKey));
+			const input = z
+				.object({
+					expectedGeneration: z.number().int().positive(),
+					approved: z.literal(true),
+					idempotencyKey: z.string().trim().min(1).max(120),
+				})
+				.parse(await jsonBody(c));
+			return c.json(
+				await terminalManager.restart(
+					c.req.param("id"),
+					projectId,
+					root.path,
+					input.expectedGeneration,
+					input.approved,
+					input.idempotencyKey,
+				),
+			);
 		} catch (error) {
 			return errorResponse(c, error);
 		}
@@ -784,37 +1196,51 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		if (!projectId || !(await repos.projects.getById(projectId)))
 			return errorResponse(c, new Error("Project not found"));
 		try {
-			const input = z.object({
-				expectedGeneration: z.number().int().positive(),
-				approved: z.literal(true),
-			}).parse(await jsonBody(c));
-			await terminalManager.closeSession(c.req.param("id"), projectId, input.expectedGeneration, input.approved);
+			const input = z
+				.object({
+					expectedGeneration: z.number().int().positive(),
+					approved: z.literal(true),
+				})
+				.parse(await jsonBody(c));
+			await terminalManager.closeSession(
+				c.req.param("id"),
+				projectId,
+				input.expectedGeneration,
+				input.approved,
+			);
 			return c.body(null, 204);
 		} catch (error) {
 			return errorResponse(c, error);
 		}
 	});
-	app.get("/api/terminals/:id/stream", upgradeWebSocket((c) => {
-		const terminalId = c.req.param("id") ?? "";
-		const ticket = c.req.query("ticket") ?? "";
-		let attachment: ReturnType<typeof terminalManager.attach> | undefined;
-		return {
-			onOpen(_event, ws) {
-				attachment = terminalManager.attach(terminalId, ticket, {
-					send: (value) => ws.send(value),
-					close: (code, reason) => ws.close(code, reason),
-				});
-			},
-			onMessage(event, _ws) {
-				const attachmentId = attachment?.id;
-				if (!attachmentId) return;
-				const data = typeof event.data === "string" ? event.data : "";
-				terminalManager.message(terminalId, attachmentId, data);
-			},
-			onClose() { attachment?.detach(); },
-			onError() { attachment?.detach(); },
-		};
-	}));
+	app.get(
+		"/api/terminals/:id/stream",
+		upgradeWebSocket((c) => {
+			const terminalId = c.req.param("id") ?? "";
+			const ticket = c.req.query("ticket") ?? "";
+			let attachment: ReturnType<typeof terminalManager.attach> | undefined;
+			return {
+				onOpen(_event, ws) {
+					attachment = terminalManager.attach(terminalId, ticket, {
+						send: (value) => ws.send(value),
+						close: (code, reason) => ws.close(code, reason),
+					});
+				},
+				onMessage(event, _ws) {
+					const attachmentId = attachment?.id;
+					if (!attachmentId) return;
+					const data = typeof event.data === "string" ? event.data : "";
+					terminalManager.message(terminalId, attachmentId, data);
+				},
+				onClose() {
+					attachment?.detach();
+				},
+				onError() {
+					attachment?.detach();
+				},
+			};
+		}),
+	);
 	const updateReady = async () => {
 		const scheduler = orchestrator.getScheduler().getState();
 		if (scheduler.running.length || scheduler.queued.length)
@@ -944,6 +1370,39 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			},
 		})),
 	);
+	app.get("/api/events/replay", async (c) => {
+		await eventWriteQueue;
+		const after = Math.max(
+			0,
+			Number.parseInt(c.req.query("after") ?? "0", 10) || 0,
+		);
+		const limit = Math.min(
+			500,
+			Math.max(1, Number.parseInt(c.req.query("limit") ?? "200", 10) || 200),
+		);
+		const latest = await db
+			.select({ cursor: orchestrationEvents.cursor })
+			.from(orchestrationEvents)
+			.orderBy(desc(orchestrationEvents.cursor))
+			.limit(1);
+		const highWaterCursor = latest[0]?.cursor ?? 0;
+		if (c.req.query("latest") === "1")
+			return c.json({ events: [], cursor: highWaterCursor, highWaterCursor });
+		const rows = await db
+			.select()
+			.from(orchestrationEvents)
+			.where(gt(orchestrationEvents.cursor, after))
+			.orderBy(orchestrationEvents.cursor)
+			.limit(limit);
+		return c.json({
+			events: rows.map((row) => ({
+				cursor: row.cursor,
+				event: daemonEventSchema.parse(JSON.parse(row.payloadRedacted)),
+			})),
+			cursor: rows.at(-1)?.cursor ?? after,
+			highWaterCursor,
+		});
+	});
 
 	const openCodeChatRequest: ChatRequestGateway = <T>(
 		path: string,
@@ -957,30 +1416,6 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			},
 			options.directory,
 		);
-	const agyPermissions =
-		options.agyPermissionStore ?? createAgyPermissionStore();
-	const agyPermissionBase =
-		options.agyPermissionUrl ??
-		`http://127.0.0.1:${config.port}/api/agy/permission`;
-	let agyPermissionError = "Agy permission hook is not configured";
-	if (options.agyPermissionUrl) {
-		agyPermissionError = "";
-	} else if (options.registerAgyHook) {
-		try {
-			const registration = await registerAgyPermissionHook();
-			agyPermissionError = registration.reason
-				? `Agy permission hook unavailable: ${registration.reason}`
-				: "";
-		} catch (error) {
-			agyPermissionError = `Agy permission hook unavailable: ${error instanceof Error ? error.message : String(error)}`;
-			log(
-				"agy",
-				"hook-registration-failed",
-				{ error: agyPermissionError },
-				"warn",
-			);
-		}
-	}
 	const designRuntimes = new Map(
 		providerManager.registry.list().flatMap((adapter) => {
 			const runtime = options.designRuntime ?? adapter.getRuntime?.();
@@ -1008,6 +1443,13 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			db,
 			projects: repos.projects,
 			tasks: repos.tasks,
+			startTask: (taskId) => orchestrator.enqueue(taskId),
+			enqueueAndWait: (taskId) => orchestrator.enqueueAndWait(taskId),
+			retryTask: async (taskId) => {
+				await orchestrator.retry(taskId);
+				await orchestrator.enqueueAndWait(taskId);
+			},
+			cancelTask: (taskId) => orchestrator.cancel(taskId),
 			providers: providerManager,
 		}),
 	);
@@ -1089,12 +1531,8 @@ export async function createApp(options: DaemonAppOptions = {}) {
 				},
 			},
 			designs: designRepo,
-			runtimes: new Map(
-				providerManager.registry.list().flatMap((adapter) => {
-					const runtime = adapter.getRuntime?.();
-					return runtime ? [[adapter.definition.id, runtime] as const] : [];
-				}),
-			),
+			runtimes: (providerId) =>
+				providerManager.registry.get(providerId)?.getRuntime?.(),
 		}),
 	);
 
@@ -1154,50 +1592,119 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			return errorResponse(c, error);
 		}
 	});
+	app.get("/api/projects/:id/review-policy", async (c) => {
+		try {
+			return c.json({
+				policy: await orchestrator.getReviewPolicy(c.req.param("id")),
+				autoMergeAvailable: orchestrator.isAutoMergeEnabled(),
+			});
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.put("/api/projects/:id/review-policy", async (c) => {
+		try {
+			const body = await jsonBody(c);
+			if (!body || typeof body !== "object")
+				throw new Error("Invalid review policy");
+			const input = body as Record<string, unknown>;
+			if (
+				typeof input.mode !== "string" ||
+				typeof input.requiredChecksJson !== "string" ||
+				typeof input.maxRevisionRounds !== "number"
+			)
+				throw new Error(
+					"mode, requiredChecksJson and maxRevisionRounds are required",
+				);
+			if (input.autoMerge !== undefined && typeof input.autoMerge !== "boolean")
+				throw new Error("autoMerge must be boolean");
+			if (
+				input.autoMerge === true &&
+				process.env.LOOM_ENABLE_KANBAN_AUTO_MERGE !== "true"
+			)
+				return c.json(
+					{
+						error: createApiError(
+							"VALIDATION_ERROR",
+							"Automatic merge is disabled by the LOOM_ENABLE_KANBAN_AUTO_MERGE feature flag",
+						),
+					},
+					400,
+				);
+			if (input.autoMerge === true && input.mode !== "automatic")
+				return c.json(
+					{
+						error: createApiError(
+							"VALIDATION_ERROR",
+							"Automatic merge requires automatic review mode",
+						),
+					},
+					400,
+				);
+			if (
+				input.reviewerExecutorJson !== null &&
+				input.reviewerExecutorJson !== undefined &&
+				typeof input.reviewerExecutorJson !== "string"
+			)
+				throw new Error("reviewerExecutorJson must be a JSON string or null");
+			const policy = await orchestrator.setReviewPolicy(c.req.param("id"), {
+				mode: input.mode as "manual" | "automatic" | "hybrid",
+				reviewerExecutorJson:
+					(input.reviewerExecutorJson as string | null | undefined) ?? null,
+				autoMerge: (input.autoMerge as boolean | undefined) ?? false,
+				requiredChecksJson: input.requiredChecksJson,
+				maxRevisionRounds: input.maxRevisionRounds,
+			});
+			return c.json({ policy });
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
 	app.get("/api/projects/:id/git", async (c) => {
 		const project = await repos.projects.getById(c.req.param("id"));
 		if (!project) return errorResponse(c, new Error("Project not found"));
 		try {
 			const repository = await projectValidation.validate(project.path);
-			const [status, diff, stagedDiff, remote, branchResult, worktreeResult] = await Promise.all([
-				runWorkspaceCommand(
-					"git",
-					["status", "--short", "--branch", "--untracked-files=all"],
-					repository.path,
-				),
-				runWorkspaceCommand(
-					"git",
-					["--no-pager", "diff", "--no-ext-diff", "--no-textconv", "--stat"],
-					repository.path,
-				),
-				runWorkspaceCommand(
-					"git",
-					[
-						"--no-pager",
-						"diff",
-						"--no-ext-diff",
-						"--no-textconv",
-						"--cached",
-						"--stat",
-					],
-					repository.path,
-				),
-				runWorkspaceCommand(
-					"git",
-					["remote", "get-url", "origin"],
-					repository.path,
-				),
-				runWorkspaceCommand(
-					"git",
-					["for-each-ref", "--format=%(refname:short)", "refs/heads"],
-					repository.path,
-				),
-				runWorkspaceCommand(
-					"git",
-					["worktree", "list", "--porcelain"],
-					repository.path,
-				),
-			]);
+			const [status, diff, stagedDiff, remote, branchResult, worktreeResult] =
+				await Promise.all([
+					runWorkspaceCommand(
+						"git",
+						["status", "--short", "--branch", "--untracked-files=all"],
+						repository.path,
+					),
+					runWorkspaceCommand(
+						"git",
+						["--no-pager", "diff", "--no-ext-diff", "--no-textconv", "--stat"],
+						repository.path,
+					),
+					runWorkspaceCommand(
+						"git",
+						[
+							"--no-pager",
+							"diff",
+							"--no-ext-diff",
+							"--no-textconv",
+							"--cached",
+							"--stat",
+						],
+						repository.path,
+					),
+					runWorkspaceCommand(
+						"git",
+						["remote", "get-url", "origin"],
+						repository.path,
+					),
+					runWorkspaceCommand(
+						"git",
+						["for-each-ref", "--format=%(refname:short)", "refs/heads"],
+						repository.path,
+					),
+					runWorkspaceCommand(
+						"git",
+						["worktree", "list", "--porcelain"],
+						repository.path,
+					),
+				]);
 			if (status.exitCode !== 0)
 				throw new Error(status.stderr.trim() || "Unable to read Git status");
 			const lines = status.stdout.trimEnd().split("\n");
@@ -1214,13 +1721,30 @@ export async function createApp(options: DaemonAppOptions = {}) {
 				.filter(Boolean)
 				.map((entry) => {
 					const path = entry.match(/^worktree (.+)$/m)?.[1] ?? "";
-					const branch = entry.match(/^branch refs\/heads\/(.+)$/m)?.[1] ?? "(detached)";
-					return { path, branch, current: resolve(path) === resolve(repository.path) };
+					const branch =
+						entry.match(/^branch refs\/heads\/(.+)$/m)?.[1] ?? "(detached)";
+					return {
+						path,
+						branch,
+						current: resolve(path) === resolve(repository.path),
+					};
 				});
+			const branches =
+				branchResult.exitCode === 0
+					? branchResult.stdout.split(/\r?\n/).filter(Boolean)
+					: [];
+			const currentBranch =
+				lines[0]?.replace(/^##\s*/, "").split("...")[0] ?? "";
+			const defaultBranch = branches.includes(project.defaultBranch)
+				? project.defaultBranch
+				: branches.includes(currentBranch)
+					? currentBranch
+					: (branches[0] ?? "");
 			return c.json({
-				branch: lines[0]?.replace(/^##\s*/, "") || "Unknown branch",
-				defaultBranch: project.defaultBranch,
-				branches: branchResult.exitCode === 0 ? branchResult.stdout.split(/\r?\n/).filter(Boolean) : [],
+				gitAvailable: true,
+				branch: currentBranch || "Unknown branch",
+				defaultBranch,
+				branches,
 				worktrees,
 				remoteUrl:
 					remote.exitCode === 0
@@ -1233,7 +1757,24 @@ export async function createApp(options: DaemonAppOptions = {}) {
 					.join("\n"),
 			});
 		} catch (error) {
-			return errorResponse(c, error);
+			if (
+				!(error instanceof ProjectValidationError) ||
+				!/not a git repository/i.test(error.message)
+			)
+				return errorResponse(c, error);
+			return c.json({
+				gitAvailable: false,
+				gitMessage:
+					"This project is not a Git repository. Kanban planning is available; Git is required to run tasks in worktrees.",
+				branch: "No Git repository",
+				defaultBranch: "",
+				branches: [],
+				worktrees: [],
+				remoteUrl: null,
+				files: [],
+				truncated: false,
+				diffStat: "",
+			});
 		}
 	});
 	app.post("/api/projects/:id/git/checkout", async (c) => {
@@ -1241,35 +1782,93 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			const project = await repos.projects.getById(c.req.param("id"));
 			if (!project) return errorResponse(c, new Error("Project not found"));
 			const repository = await projectValidation.validate(project.path);
-			const { branch } = z.object({ branch: z.string().trim().min(1).max(240) }).parse(await jsonBody(c));
-			const valid = await runWorkspaceCommand("git", ["check-ref-format", "--branch", branch], repository.path);
+			const { branch } = z
+				.object({ branch: z.string().trim().min(1).max(240) })
+				.parse(await jsonBody(c));
+			const valid = await runWorkspaceCommand(
+				"git",
+				["check-ref-format", "--branch", branch],
+				repository.path,
+			);
 			if (valid.exitCode !== 0) throw new Error("Invalid branch name");
-			const status = await runWorkspaceCommand("git", ["status", "--porcelain", "--untracked-files=all"], repository.path);
-			if (status.exitCode !== 0) throw new Error(status.stderr.trim() || "Unable to read Git status");
-			if (status.stdout.trim()) throw new Error("Commit or stash local changes before switching branches.");
-			const listed = await runWorkspaceCommand("git", ["worktree", "list", "--porcelain"], repository.path);
-			if (listed.stdout.split(/\n\n+/).some((entry) => entry.includes(`\nbranch refs/heads/${branch}`) && resolve(entry.match(/^worktree (.+)$/m)?.[1] ?? "") !== resolve(repository.path)))
-				throw new Error("This branch is already checked out in another worktree.");
-			const switched = await runWorkspaceCommand("git", ["switch", branch], repository.path);
-			if (switched.exitCode !== 0) throw new Error(switched.stderr.trim() || "Unable to switch branch");
+			const status = await runWorkspaceCommand(
+				"git",
+				["status", "--porcelain", "--untracked-files=all"],
+				repository.path,
+			);
+			if (status.exitCode !== 0)
+				throw new Error(status.stderr.trim() || "Unable to read Git status");
+			if (status.stdout.trim())
+				throw new Error(
+					"Commit or stash local changes before switching branches.",
+				);
+			const listed = await runWorkspaceCommand(
+				"git",
+				["worktree", "list", "--porcelain"],
+				repository.path,
+			);
+			if (
+				listed.stdout
+					.split(/\n\n+/)
+					.some(
+						(entry) =>
+							entry.includes(`\nbranch refs/heads/${branch}`) &&
+							resolve(entry.match(/^worktree (.+)$/m)?.[1] ?? "") !==
+								resolve(repository.path),
+					)
+			)
+				throw new Error(
+					"This branch is already checked out in another worktree.",
+				);
+			const switched = await runWorkspaceCommand(
+				"git",
+				["switch", branch],
+				repository.path,
+			);
+			if (switched.exitCode !== 0)
+				throw new Error(switched.stderr.trim() || "Unable to switch branch");
 			return c.json({ branch });
-		} catch (error) { return errorResponse(c, error); }
+		} catch (error) {
+			return errorResponse(c, error);
+		}
 	});
 	app.post("/api/projects/:id/git/worktrees", async (c) => {
 		try {
 			const project = await repos.projects.getById(c.req.param("id"));
 			if (!project) return errorResponse(c, new Error("Project not found"));
 			const repository = await projectValidation.validate(project.path);
-			const { branch } = z.object({ branch: z.string().trim().min(1).max(240) }).parse(await jsonBody(c));
-			const valid = await runWorkspaceCommand("git", ["check-ref-format", "--branch", branch], repository.path);
-			if (valid.exitCode !== 0) throw new Error("Enter a valid new branch name.");
-			const slug = branch.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^[-.]+|[-.]+$/g, "");
-			const path = join(dataDirectory(), "worktrees", project.id, `${slug}-${randomUUID().slice(0, 8)}`);
+			const { branch } = z
+				.object({ branch: z.string().trim().min(1).max(240) })
+				.parse(await jsonBody(c));
+			const valid = await runWorkspaceCommand(
+				"git",
+				["check-ref-format", "--branch", branch],
+				repository.path,
+			);
+			if (valid.exitCode !== 0)
+				throw new Error("Enter a valid new branch name.");
+			const slug = branch
+				.replace(/[^a-zA-Z0-9._-]+/g, "-")
+				.replace(/^[-.]+|[-.]+$/g, "");
+			const path = join(
+				dataDirectory(),
+				"worktrees",
+				project.id,
+				`${slug}-${randomUUID().slice(0, 8)}`,
+			);
 			await mkdir(dirname(path), { recursive: true });
-			const created = await runWorkspaceCommand("git", ["worktree", "add", "-b", branch, path, "HEAD"], repository.path, 30_000);
-			if (created.exitCode !== 0) throw new Error(created.stderr.trim() || "Unable to create worktree");
+			const created = await runWorkspaceCommand(
+				"git",
+				["worktree", "add", "-b", branch, path, "HEAD"],
+				repository.path,
+				30_000,
+			);
+			if (created.exitCode !== 0)
+				throw new Error(created.stderr.trim() || "Unable to create worktree");
 			return c.json({ path, branch }, 201);
-		} catch (error) { return errorResponse(c, error); }
+		} catch (error) {
+			return errorResponse(c, error);
+		}
 	});
 	app.get("/api/projects/:id/pull-requests", async (c) => {
 		const project = await repos.projects.getById(c.req.param("id"));
@@ -1625,7 +2224,15 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		const project = await repos.projects.getById(c.req.param("id"));
 		if (!project) return errorResponse(c, new Error("Project not found"));
 		if (terminalManager.hasLiveSessions(project.id))
-			return c.json({ error: { message: "Stop active terminal sessions before removing this project." } }, 409);
+			return c.json(
+				{
+					error: {
+						message:
+							"Stop active terminal sessions before removing this project.",
+					},
+				},
+				409,
+			);
 		await repos.projects.delete(project.id);
 		return c.body(null, 204);
 	});
@@ -1655,9 +2262,341 @@ export async function createApp(options: DaemonAppOptions = {}) {
 				executablePath: connection?.executablePath ?? null,
 			};
 		});
+	const customProviderInputSchema = z.object({
+		name: z.string().trim().min(1).max(80),
+		baseUrl: z.string().trim().min(1).max(2048),
+		apiKey: z.string().max(4096).default(""),
+	});
+	const parseCustomProviderInput = (value: unknown) => {
+		const input = customProviderInputSchema.parse(value);
+		const url = new URL(input.baseUrl);
+		if (
+			!["http:", "https:"].includes(url.protocol) ||
+			url.username ||
+			url.password ||
+			url.search ||
+			url.hash
+		)
+			throw new Error(
+				"Base URL must be an HTTP(S) endpoint without embedded credentials, query, or fragment",
+			);
+		return { ...input, baseUrl: url.toString().replace(/\/$/, "") };
+	};
+	const persistCustomProviders = async (
+		providers: CustomOpenCodeProviderConfig[],
+	) => {
+		await mkdir(dirname(customProviderPath), { recursive: true, mode: 0o700 });
+		await writeFile(
+			customProviderPath,
+			`${JSON.stringify(providers, null, 2)}\n`,
+			{ encoding: "utf8", mode: 0o600 },
+		);
+		await chmod(customProviderPath, 0o600).catch(() => {});
+		customProviderConfigs = providers;
+		persistProviderModelCache();
+	};
+	app.get("/api/custom-providers", async (c) => {
+		await discoverProviders();
+		return c.json(
+			customProviderConfigs.map((provider) => ({
+				id: provider.id,
+				name: provider.name,
+				baseUrl: provider.baseUrl,
+				status: providerManager.get(provider.id)?.status ?? "disconnected",
+				models: provider.models,
+			})),
+		);
+	});
+	app.post("/api/custom-providers/test", async (c) => {
+		try {
+			const raw = await jsonBody(c);
+			const input = parseCustomProviderInput(raw);
+			const providerId =
+				raw && typeof raw === "object" && "providerId" in raw &&
+				typeof raw.providerId === "string"
+					? raw.providerId
+					: undefined;
+			const existing = customProviderConfigs.find(
+				(provider) => provider.id === providerId,
+			);
+			const models = await discoverCustomModels(
+				input.baseUrl,
+				input.apiKey || existing?.apiKey || "",
+			);
+			return c.json({ connected: true, models });
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.post("/api/providers/:providerId/models/test", async (c) => {
+		const providerId = c.req.param("providerId");
+		let runtime: AgentRuntime | undefined;
+		let runtimeModel: RuntimeModel | undefined;
+		try {
+			const raw = await jsonBody(c);
+			const modelId =
+				raw && typeof raw === "object" && "modelId" in raw &&
+				typeof raw.modelId === "string"
+					? raw.modelId.trim()
+					: "";
+			if (!modelId) return c.json({ error: "A model ID is required" }, 400);
+
+			const adapter = providerManager.registry.get(providerId);
+			if (adapter) {
+				if (adapter instanceof CustomOpenCodeProviderAdapter) {
+					await testCustomModel(
+						adapter.config.baseUrl,
+						adapter.config.apiKey,
+						modelId,
+					);
+					return c.json({ connected: true, providerId, modelId });
+				}
+				if (providerManager.get(providerId)?.status !== "connected")
+					await providerManager.refresh(providerId, { refreshModels: true });
+				const selectedModel = providerManager.catalog
+					.listByProvider(providerId)
+					.find((model) => {
+						const metadata = model.metadata ?? {};
+						return [
+							model.name,
+							model.displayName,
+							metadata.modelId,
+							`${metadata.upstreamProviderId}/${metadata.providerModelId}`,
+						].some((candidate) => candidate === modelId);
+					});
+				if (!selectedModel)
+					return c.json({ error: "Model is not available from this provider" }, 404);
+				runtime = adapter.getRuntime?.();
+				const metadata = selectedModel.metadata ?? {};
+				const upstreamProviderId = metadata.upstreamProviderId;
+				const actualModelId = metadata.providerModelId ?? metadata.modelId;
+				runtimeModel = {
+					providerID:
+						typeof upstreamProviderId === "string"
+							? upstreamProviderId
+							: providerId,
+					modelID:
+						typeof actualModelId === "string" ? actualModelId : modelId,
+				};
+			} else {
+				const openCodeCatalog = await openCodeRuntime.request<{
+					providers?: Array<{
+						id: string;
+						models: Record<string, { id?: string }>;
+					}>;
+				}>("/config/providers");
+				const provider = openCodeCatalog.providers?.find(
+					(item) => item.id === providerId,
+				);
+				const matchedModel = Object.entries(provider?.models ?? {}).find(
+					([key, model]) => key === modelId || model.id === modelId,
+				);
+				if (!matchedModel)
+					return c.json({ error: "Model is not available from this provider" }, 404);
+				const [modelKey, model] = matchedModel;
+				runtime = openCodeRuntime;
+				runtimeModel = {
+					providerID: providerId,
+					modelID: model.id ?? modelKey,
+				};
+			}
+			if (!runtime || !runtimeModel)
+				return c.json({ error: "Provider runtime is unavailable" }, 409);
+
+			const session = await runtime.createSession({
+				cwd: process.cwd(),
+				title: "Loom model connectivity check",
+				readOnly: true,
+			});
+			let completed = false;
+			try {
+				await runtime.prompt({
+					sessionId: session.id,
+					prompt: "Connectivity check. Reply with exactly OK. Do not use tools.",
+					system:
+						"This is a short model connectivity check. Do not call tools, inspect files, or make changes. Reply with OK.",
+					model: runtimeModel,
+					permission: { mode: "read-only" },
+				});
+				const status = await runtime.wait(session.id, {
+					timeoutMs: 25_000,
+					pollIntervalMs: 300,
+				});
+				if (status !== "completed") {
+					const detail = await runtime.lastError?.(session.id);
+					throw new Error(detail || `Model run ended with status: ${status}`);
+				}
+				completed = true;
+				const output = await runtime.readOutput?.(session.id);
+				if (!output?.output.trim())
+					throw new Error("Model completed without returning a text response");
+				return c.json({ connected: true, providerId, modelId });
+			} finally {
+				if (!completed) await runtime.abort(session.id).catch(() => {});
+				if (runtime.deleteSession)
+					await runtime.deleteSession(session.id).catch(() => {});
+			}
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.post("/api/custom-providers", async (c) => {
+		try {
+			const input = parseCustomProviderInput(await jsonBody(c));
+			const models = await discoverCustomModels(input.baseUrl, input.apiKey);
+			const slug = input.name
+				.toLowerCase()
+				.replace(/[^a-z0-9]+/g, "-")
+				.replace(/^-|-$/g, "")
+				.slice(0, 28);
+			const provider: CustomOpenCodeProviderConfig = {
+				id: `loom_custom_${slug || "provider"}_${randomUUID().slice(0, 8)}`,
+				name: input.name,
+				baseUrl: input.baseUrl,
+				apiKey: input.apiKey,
+				models,
+			};
+			const adapter = new CustomOpenCodeProviderAdapter(provider);
+			providerRegistry.register(adapter);
+			const connection = await providerManager.refresh(provider.id, {
+				refreshModels: true,
+			});
+			if (connection.status !== "connected") {
+				providerRegistry.unregister(provider.id);
+				throw new Error(connection.error ?? "Provider connection failed");
+			}
+			await persistCustomProviders([...customProviderConfigs, provider]);
+			return c.json(
+				{
+					provider: {
+						id: provider.id,
+						name: provider.name,
+						baseUrl: provider.baseUrl,
+						status: connection.status,
+					},
+					models: providerManager.getModels(provider.id),
+				},
+				201,
+			);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.put("/api/custom-providers/:id", async (c) => {
+		const providerId = c.req.param("id");
+		const current = customProviderConfigs.find(
+			(provider) => provider.id === providerId,
+		);
+		if (!current) return c.json({ error: "Custom provider not found" }, 404);
+		let swapped = false;
+		try {
+			const input = parseCustomProviderInput(await jsonBody(c));
+			const apiKey = input.apiKey || current.apiKey;
+			const models = await discoverCustomModels(input.baseUrl, apiKey);
+			const updated: CustomOpenCodeProviderConfig = {
+				...current,
+				name: input.name,
+				baseUrl: input.baseUrl,
+				apiKey,
+				models,
+			};
+			providerRegistry.unregister(providerId);
+			providerRegistry.register(new CustomOpenCodeProviderAdapter(updated));
+			swapped = true;
+			const connection = await providerManager.refresh(providerId, {
+				refreshModels: true,
+			});
+			if (connection.status !== "connected")
+				throw new Error(connection.error ?? "Provider connection failed");
+			await persistCustomProviders(
+				customProviderConfigs.map((provider) =>
+					provider.id === providerId ? updated : provider,
+				),
+			);
+			return c.json({
+				provider: {
+					id: updated.id,
+					name: updated.name,
+					baseUrl: updated.baseUrl,
+					status: connection.status,
+				},
+				models: providerManager.getModels(providerId),
+			});
+		} catch (error) {
+			if (swapped) {
+				try {
+					providerRegistry.unregister(providerId);
+					providerRegistry.register(new CustomOpenCodeProviderAdapter(current));
+					await providerManager.refresh(providerId, { refreshModels: true });
+				} catch {}
+			}
+			return errorResponse(c, error);
+		}
+	});
+	app.delete("/api/custom-providers/:id", async (c) => {
+		const providerId = c.req.param("id");
+		const current = customProviderConfigs.find(
+			(provider) => provider.id === providerId,
+		);
+		if (!current) return c.json({ error: "Custom provider not found" }, 404);
+		try {
+			await providerManager.disconnect(providerId);
+			providerRegistry.unregister(providerId);
+			await persistCustomProviders(
+				customProviderConfigs.filter((provider) => provider.id !== providerId),
+			);
+			return c.json({ deleted: true, id: providerId });
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
 	app.get("/api/providers", async (c) => {
 		await discoverProviders();
 		return c.json(serializeProviders());
+	});
+	app.get("/api/providers/models", async (c) => {
+		await loadProviderModels();
+		const config = await openCodeRuntime
+			.request<{
+				providers?: Array<{
+					id: string;
+					name?: string;
+					models: Record<
+						string,
+					{ id?: string; name?: string; limit?: { context?: number } }
+					>;
+				}>;
+			}>("/config/providers")
+			.catch(() => ({ providers: [] }));
+		const managedModels = providerManager.catalog.listAvailable().map((model) => ({
+			providerID: model.providerId,
+			modelID:
+				typeof model.metadata?.upstreamProviderId === "string" &&
+				typeof model.metadata?.providerModelId === "string"
+					? `${model.metadata.upstreamProviderId}/${model.metadata.providerModelId}`
+					: String(model.metadata?.modelId ?? model.name),
+			name: model.displayName,
+			provider:
+				typeof model.metadata?.providerName === "string"
+					? model.metadata.providerName
+					: model.providerId,
+			contextWindow: model.contextWindow,
+		}));
+		const managedProviderIds = new Set(
+			managedModels.map((model) => model.providerID),
+		);
+		const openCodeModels = (config.providers ?? []).flatMap((provider) =>
+			managedProviderIds.has(provider.id)
+				? []
+				: Object.entries(provider.models).map(([modelID, model]) => ({
+						providerID: provider.id,
+						modelID: model.id ?? modelID,
+						name: model.name || modelID,
+						provider: provider.name || provider.id,
+						contextWindow: model.limit?.context,
+					})),
+		);
+		return c.json([...openCodeModels, ...managedModels]);
 	});
 	app.post("/api/providers/refresh-all", async (c) => {
 		const connections = await providerManager.refreshAll();
@@ -1667,16 +2606,19 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	app.post("/api/providers/check-updates", async (c) => {
 		await discoverProviders();
 		const updates = await Promise.all(
-			providerManager.registry.list().map(async (adapter) => {
-				const connection = providerManager.get(adapter.definition.id);
-				return checkProviderUpdate({
-					providerId: adapter.definition.id,
-					name: adapter.definition.name,
-					installed: connection?.installed ?? false,
-					currentVersion: connection?.version ?? null,
-					executablePath: connection?.executablePath ?? null,
-				});
-			}),
+			providerManager.registry
+				.list()
+				.filter((adapter) => !adapter.definition.id.startsWith("loom_custom_"))
+				.map(async (adapter) => {
+					const connection = providerManager.get(adapter.definition.id);
+					return checkProviderUpdate({
+						providerId: adapter.definition.id,
+						name: adapter.definition.name,
+						installed: connection?.installed ?? false,
+						currentVersion: connection?.version ?? null,
+						executablePath: connection?.executablePath ?? null,
+					});
+				}),
 		);
 		return c.json({ checkedAt: new Date().toISOString(), updates });
 	});
@@ -1695,7 +2637,11 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		const refreshed = await providerManager.refresh(providerId);
 		if (refreshed.status === "connected")
 			void refreshConnectedProviderModels([refreshed]);
-		return c.json({ ...result, version: refreshed.version, provider: refreshed });
+		return c.json({
+			...result,
+			version: refreshed.version,
+			provider: refreshed,
+		});
 	});
 	app.get("/api/providers/:id", async (c) => {
 		const connection = await providerManager.refresh(c.req.param("id"));
@@ -2079,9 +3025,119 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	});
 	app.post("/api/tasks", async (c) => {
 		try {
-			const task = await orchestrator.create(
-				createTaskInputSchema.parse(await jsonBody(c)),
-			);
+			const input = createTaskInputSchema.parse(await jsonBody(c));
+			if (!input.executor)
+				return c.json(
+					{
+						error: {
+							message:
+								"Choose a Kanban agent or provider before creating this task",
+						},
+					},
+					400,
+				);
+			if (!input.acceptanceCriteria?.length)
+				return c.json(
+					{
+						error: {
+							message:
+								"Add at least one acceptance criterion before creating this task",
+						},
+					},
+					400,
+				);
+			if (input.targetBranch) {
+				const project = await repos.projects.getById(input.projectId);
+				if (!project) throw new Error("Project not found");
+				const repository = await projectValidation.validate(project.path);
+				const valid = await runWorkspaceCommand(
+					"git",
+					["check-ref-format", "--branch", input.targetBranch],
+					repository.path,
+				);
+				const exists = await runWorkspaceCommand(
+					"git",
+					["rev-parse", "--verify", `${input.targetBranch}^{commit}`],
+					repository.path,
+				);
+				if (valid.exitCode !== 0 || exists.exitCode !== 0)
+					throw new Error(
+						`Target branch does not exist or is invalid: ${input.targetBranch}`,
+					);
+			}
+			if (input.executor.kind === "agent") {
+				const agent = await db.query.customAgents.findFirst({
+					where: eq(customAgents.id, input.executor.agentId),
+				});
+				if (
+					!agent ||
+					agent.status !== "active" ||
+					!agent.allowKanban ||
+					(agent.projectId && agent.projectId !== input.projectId)
+				)
+					return c.json(
+						{
+							error: {
+								message: "Selected agent is disabled or unavailable for Kanban",
+							},
+						},
+						403,
+					);
+				if (agent.approvalPolicy === "read_only")
+					return c.json(
+						{
+							error: {
+								message: `Agent “${agent.label}” is read-only and cannot implement Kanban tasks. Choose a writable coding agent or a direct provider/model.`,
+							},
+						},
+						400,
+					);
+			} else {
+				const connection = providerManager.get(input.executor.providerId);
+				if (connection?.status !== "connected")
+					return c.json(
+						{
+							error: {
+								message: `Provider is not connected: ${input.executor.providerId}`,
+							},
+						},
+						409,
+					);
+				const adapter = providerManager.registry.require(
+					input.executor.providerId,
+				);
+				if (!adapter.getRuntime?.())
+					return c.json(
+						{
+							error: { message: "Selected provider has no execution runtime" },
+						},
+						409,
+					);
+				const directExecutor = input.executor;
+				if (directExecutor.modelId) {
+					const known = providerManager.catalog
+						.listByProvider(directExecutor.providerId)
+						.some(
+							(model) =>
+								model.metadata?.modelId === directExecutor.modelId ||
+								model.name === directExecutor.modelId ||
+								model.id === directExecutor.modelId,
+						);
+					if (
+						!known &&
+						!adapter.definition.capabilities.includes("custom-model")
+					)
+						return c.json(
+							{
+								error: {
+									message: "Selected model is not available for this provider",
+								},
+							},
+							400,
+						);
+				}
+			}
+			const task = await orchestrator.create(input);
 			return c.json(task, 201);
 		} catch (error) {
 			return errorResponse(c, error);
@@ -2091,6 +3147,23 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		try {
 			const projectId = c.req.param("projectId");
 			const input = createTaskBatchInputSchema.parse(await jsonBody(c));
+			if (input.tasks.some((task) => !task.executor))
+				return c.json(
+					{
+						error: { message: "Every Kanban task needs an explicit executor" },
+					},
+					400,
+				);
+			if (input.tasks.some((task) => !task.acceptanceCriteria?.length))
+				return c.json(
+					{
+						error: {
+							message:
+								"Every Kanban task needs at least one acceptance criterion",
+						},
+					},
+					400,
+				);
 			if (!(await repos.projects.getById(projectId)))
 				throw new Error("Project not found");
 			const results: Array<{
@@ -2135,6 +3208,156 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		return c.json({
 			...recordToTask(task),
 		});
+	});
+	app.get("/api/tasks/:id/dependencies", async (c) => {
+		try {
+			const taskId = c.req.param("id");
+			if (!(await repos.tasks.getById(taskId)))
+				throw new Error("Task not found");
+			const edges = await planStore.dependencies(taskId);
+			return c.json({
+				dependencies: await Promise.all(
+					edges.map(async (edge) => ({
+						...edge,
+						producer: recordToTask(
+							await repos.tasks.getById(edge.dependsOnTaskId),
+						),
+						artifact: edge.artifactId
+							? await repos.taskArtifacts.getById(edge.artifactId)
+							: null,
+					})),
+				),
+			});
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.get("/api/tasks/:id/reviews", async (c) => {
+		try {
+			return c.json({
+				reviews: await repos.taskReviews.list(c.req.param("id")),
+			});
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.get("/api/tasks/:id/artifacts", async (c) => {
+		try {
+			return c.json({
+				artifacts: await repos.taskArtifacts.listByTask(c.req.param("id")),
+			});
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.post("/api/tasks/:id/artifacts", async (c) => {
+		try {
+			const body = await jsonBody(c);
+			if (!body || typeof body !== "object")
+				throw new Error("Invalid artifact request");
+			const input = body as {
+				kind?: unknown;
+				version?: unknown;
+				relativePath?: unknown;
+			};
+			if (
+				!(
+					["contract", "generated_client", "schema", "evidence"] as unknown[]
+				).includes(input.kind)
+			)
+				throw new Error("Unsupported artifact kind");
+			if (
+				typeof input.version !== "string" ||
+				typeof input.relativePath !== "string"
+			)
+				throw new Error("Artifact version and relativePath are required");
+			const artifact = await orchestrator.publishArtifact(c.req.param("id"), {
+				kind: input.kind as
+					| "contract"
+					| "generated_client"
+					| "schema"
+					| "evidence",
+				version: input.version,
+				relativePath: input.relativePath,
+			});
+			return c.json({ artifact }, 201);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.post("/api/tasks/:id/review/approve", async (c) => {
+		try {
+			const review = await orchestrator.approveReview(c.req.param("id"));
+			return c.json({ review }, 201);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.post("/api/tasks/:id/review/run", async (c) => {
+		try {
+			const review = await orchestrator.runTaskReview(c.req.param("id"));
+			return c.json({ review }, 201);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.post("/api/tasks/:id/dependencies", async (c) => {
+		try {
+			const taskId = c.req.param("id");
+			const body = await jsonBody(c);
+			if (!body || typeof body !== "object")
+				throw new Error("Invalid dependency request");
+			const input = body as {
+				dependsOnTaskId?: unknown;
+				requiredMilestone?: unknown;
+				artifactId?: unknown;
+			};
+			if (
+				typeof input.dependsOnTaskId !== "string" ||
+				!input.dependsOnTaskId.trim()
+			)
+				throw new Error("dependsOnTaskId is required");
+			const milestone = input.requiredMilestone ?? "implementation_ready";
+			if (
+				![
+					"contract_published",
+					"artifact_ready",
+					"implementation_ready",
+					"integrated",
+				].includes(String(milestone))
+			)
+				throw new Error("Unsupported dependency milestone");
+			if (
+				input.artifactId !== undefined &&
+				input.artifactId !== null &&
+				typeof input.artifactId !== "string"
+			)
+				throw new Error("artifactId must be a string");
+			const edge = await planStore.addDependency(
+				taskId,
+				input.dependsOnTaskId,
+				milestone as
+					| "contract_published"
+					| "artifact_ready"
+					| "implementation_ready"
+					| "integrated",
+				input.artifactId as string | null | undefined,
+			);
+			await orchestrator.refreshEligibility(taskId);
+			return c.json({ dependency: edge }, 201);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.delete("/api/tasks/:id/dependencies/:producerId", async (c) => {
+		try {
+			const taskId = c.req.param("id");
+			await planStore.removeDependency(taskId, c.req.param("producerId"));
+			await orchestrator.refreshEligibility(taskId);
+			return c.json({ removed: true });
+		} catch (error) {
+			return errorResponse(c, error);
+		}
 	});
 	app.get("/api/tasks/:id/runs", async (c) => {
 		try {
@@ -2187,8 +3410,49 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			return errorResponse(c, error);
 		}
 	});
+	const assertTaskProjectRunnable = async (taskId: string) => {
+		const task = await repos.tasks.getById(taskId);
+		if (!task) throw new Error("Task not found");
+		const project = await repos.projects.getById(task.projectId);
+		if (!project) throw new Error("Project not found");
+		if (task.executorConfig) {
+			let selection: ReturnType<typeof taskExecutorSchema.parse> | null = null;
+			try {
+				selection = taskExecutorSchema.parse(JSON.parse(task.executorConfig));
+			} catch {
+				// Let executor resolution report malformed legacy configurations.
+			}
+			if (selection?.kind === "agent") {
+				const agent = await db.query.customAgents.findFirst({
+					where: eq(customAgents.id, selection.agentId),
+				});
+				if (agent?.approvalPolicy === "read_only")
+					throw new Error(
+						`Agent “${agent.label}” is read-only and cannot implement Kanban tasks. Choose a writable coding agent or a direct provider/model, then retry.`,
+					);
+			}
+		}
+		let repository;
+		try {
+			repository = await projectValidation.validate(project.path);
+		} catch (error) {
+			if (
+				error instanceof ProjectValidationError &&
+				/ not a git repository/i.test(error.message)
+			)
+				throw new Error(
+					"This project has no Git repository. Kanban tasks can be planned, but running them requires Git and an initial commit.",
+				);
+			throw error;
+		}
+		if (!repository.head)
+			throw new Error(
+				"This Git repository has no commits yet. Create an initial commit before running Kanban tasks.",
+			);
+	};
 	app.post("/api/tasks/:id/retry", async (c) => {
 		try {
+			await assertTaskProjectRunnable(c.req.param("id"));
 			return c.json(await orchestrator.retry(c.req.param("id")), 202);
 		} catch (error) {
 			return errorResponse(c, error);
@@ -2233,6 +3497,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	app.post("/api/tasks/:id/start", async (c) => {
 		try {
 			await taskIdInputSchema.parseAsync({ taskId: c.req.param("id") });
+			await assertTaskProjectRunnable(c.req.param("id"));
 			await orchestrator.enqueue(c.req.param("id"));
 			return c.json({ accepted: true });
 		} catch (error) {
@@ -2254,9 +3519,109 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			return errorResponse(c, error);
 		}
 	});
+	app.post("/api/tasks/:id/checkpoint", async (c) => {
+		try {
+			const { outputSha } = await orchestrator.checkpoint(c.req.param("id"));
+			return c.json({ outputSha });
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
 	app.post("/api/tasks/:id/merge", async (c) => {
 		try {
 			return c.json(await orchestrator.merge(c.req.param("id")));
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.post("/api/integration-batches", async (c) => {
+		try {
+			const body = await jsonBody(c);
+			if (!body || typeof body !== "object")
+				throw new Error("Invalid integration batch request");
+			const input = body as { taskIds?: unknown; requiredChecks?: unknown };
+			if (
+				!Array.isArray(input.taskIds) ||
+				input.taskIds.some((id) => typeof id !== "string")
+			)
+				throw new Error("taskIds must be an array of task IDs");
+			if (
+				input.requiredChecks !== undefined &&
+				!Array.isArray(input.requiredChecks)
+			)
+				throw new Error("requiredChecks must be an array");
+			const result = await orchestrator.createIntegrationBatch(
+				input.taskIds as string[],
+				{
+					requiredChecks: input.requiredChecks as
+						| Array<{
+								name: string;
+								command: string;
+								args: string[];
+								timeoutMs?: number;
+						  }>
+						| undefined,
+				},
+			);
+			return c.json(result, 201);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.get("/api/integration-batches", async (c) => {
+		const projectId = c.req.query("projectId");
+		if (!projectId) return errorResponse(c, new Error("projectId is required"));
+		const batches = await repos.integrationBatches.listByProject(projectId);
+		return c.json({
+			batches: await Promise.all(
+				batches.map(async (batch) => ({
+					...batch,
+					checks: await repos.integrationBatches.listChecks(batch.id),
+				})),
+			),
+		});
+	});
+	app.get("/api/integration-batches/:id", async (c) => {
+		try {
+			const batch = await repos.integrationBatches.getById(c.req.param("id"));
+			if (!batch) throw new Error("Integration batch not found");
+			const members = await repos.integrationBatches.listMembers(batch.id);
+			return c.json({
+				batch,
+				checks: await repos.integrationBatches.listChecks(batch.id),
+				members: await Promise.all(
+					members.map(async (member) => ({
+						...member,
+						task: recordToTask(await repos.tasks.getById(member.taskId)),
+					})),
+				),
+			});
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.get("/api/integration-batches/:id/diff", async (c) => {
+		try {
+			return c.json(await orchestrator.integrationBatchDiff(c.req.param("id")));
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.post("/api/integration-batches/:id/review/approve", async (c) => {
+		try {
+			const review = await orchestrator.approveIntegrationBatch(
+				c.req.param("id"),
+			);
+			return c.json({ review }, 201);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.post("/api/integration-batches/:id/promote", async (c) => {
+		try {
+			return c.json(
+				await orchestrator.promoteIntegrationBatch(c.req.param("id")),
+			);
 		} catch (error) {
 			return errorResponse(c, error);
 		}

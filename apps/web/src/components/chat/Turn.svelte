@@ -14,8 +14,10 @@ import { toast } from "svelte-sonner";
 import {
 	type ChatMessage,
 	type ChatPart,
+	type Catalog,
 	chat,
 	type FileDiff,
+	providerDisplayName,
 } from "$lib/chat";
 import { Button } from "$lib/components/ui/button";
 import { Badge } from "$lib/components/ui/badge";
@@ -26,12 +28,14 @@ import Markdown from "./Markdown.svelte";
 
 let {
 	messages,
+	catalog,
 	sessionId,
 	projectId,
 	onfile,
 	onbranch,
 }: {
 	messages: ChatMessage[];
+	catalog: Catalog;
 	sessionId: string;
 	projectId: string;
 	onfile: (path: string) => void;
@@ -44,15 +48,7 @@ const agent = $derived(messages.find((m) => m.info.agent)?.info.agent);
 const providerID = $derived(
 	messages.find((m) => m.info.providerID)?.info.providerID,
 );
-const providerLabel = $derived(
-	providerID === "agy" || providerID === "antigravity"
-		? "Agy"
-		: providerID === "claude"
-			? "Claude"
-			: providerID === "codex"
-				? "Codex"
-				: "OpenCode",
-);
+const providerLabel = $derived(providerDisplayName(catalog, providerID));
 const modelTone = $derived(
 	providerID === "agy" || providerID === "antigravity"
 		? "agy"
