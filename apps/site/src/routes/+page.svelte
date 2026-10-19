@@ -21,18 +21,24 @@ let view = $state("workspace");
 const screenshots = {
 	workspace: {
 		src: "workspace.png",
+		width: 1862,
+		height: 961,
 		label: "Your work, in one place",
-		alt: "Loom workspace with project navigation and a task Kanban board",
+		alt: "Loom workspace showing the project and session sidebar, a chat session with its composer, and the Agents and tasks rail with running and idle counts",
 		text: "Move from an idea to a working branch without losing track of the conversation.",
 	},
 	plan: {
 		src: "plan.png",
+		width: 1440,
+		height: 900,
 		label: "A plan you can actually review",
 		alt: "Loom plan editor showing tasks, dependencies, and project commands",
 		text: "Edit the task breakdown, dependencies, and validation commands before any agent starts.",
 	},
 	review: {
 		src: "review.png",
+		width: 1440,
+		height: 900,
 		label: "Inspect every change",
 		alt: "Loom task page with run history and independent diff review",
 		text: "Read each task's diff and run history. You decide what moves forward to integration.",
@@ -90,7 +96,7 @@ const features = [
   </section>
   <div class="principles section-width"><p>Less window switching.<br/><strong>More of the work that matters.</strong></p><span><GitBranch size={17}/> Git worktrees</span><span><MessageSquare size={17}/> Provider-backed chats</span><span><ShieldCheck size={17}/> Human approval</span></div>
   <section id="inside" class="inside section-width"><div class="section-heading"><div><p class="eyebrow">A PLACE FOR THE WHOLE PROCESS</p><h2>Follow the work.<br/><span>Keep the context.</span></h2></div><p>Your plan, conversations, and changes belong together. Loom gives them a shared home.</p></div>
-    <Tabs.Root bind:value={view}><Tabs.List class="screenshot-tabs" aria-label="Explore Loom screenshots"><Tabs.Trigger value="workspace">01 · Workspace</Tabs.Trigger><Tabs.Trigger value="plan">02 · Plan</Tabs.Trigger><Tabs.Trigger value="review">03 · Review</Tabs.Trigger></Tabs.List><div class="screenshot-stage"><div class="browser-frame"><div class="browser-bar"><div class="window-dots"><i></i><i></i><i></i></div><span>loom / {view}</span><span class="local-indicator"><span class="live-dot"></span> Local workspace</span></div><img src={sitePath(`/screenshots/${shot.src}`)} alt={shot.alt} width="1440" height="900" loading="lazy"/></div></div></Tabs.Root>
+    <Tabs.Root bind:value={view}><Tabs.List class="screenshot-tabs" aria-label="Explore Loom screenshots"><Tabs.Trigger value="workspace">01 · Workspace</Tabs.Trigger><Tabs.Trigger value="plan">02 · Plan</Tabs.Trigger><Tabs.Trigger value="review">03 · Review</Tabs.Trigger></Tabs.List><div class="screenshot-stage"><div class="browser-frame"><div class="browser-bar"><div class="window-dots"><i></i><i></i><i></i></div><span>loom / {view}</span><span class="local-indicator"><span class="live-dot"></span> Local workspace</span></div><img src={sitePath(`/screenshots/${shot.src}`)} alt={shot.alt} width={shot.width} height={shot.height} loading="lazy"/></div></div></Tabs.Root>
     <div class="screenshot-caption"><strong>{shot.label}</strong><p>{shot.text}</p><span>Captured in Loom</span></div>
   </section>
   <section id="features" class="features section-width"><div class="section-heading"><div><p class="eyebrow">BUILT FOR WORK THAT HAS MOVING PARTS</p><h2>Give the agents space.<br/><span>Keep yourself in control.</span></h2></div><a class="text-link" href={sitePath("/docs/parallel-tasks/")}>How parallel work works <ArrowUpRight size={16}/></a></div><div class="feature-grid">{#each features as feature}<article class="feature-card glass"><div class="feature-icon"><feature.icon size={22} strokeWidth={1.5}/></div><p class="feature-tag">{feature.tag}</p><h3>{feature.title}</h3><p>{feature.text}</p></article>{/each}</div></section>

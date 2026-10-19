@@ -1183,10 +1183,14 @@ export function createChatRoutes(options: {
 					message: `Provider is not connected: ${providerId}`,
 				});
 			if (input.attachments.length || input.agents.length)
-				throw new HTTPException(400, {
-					message:
-						"This provider does not support attachments or agent mentions in chat yet",
-				});
+				if (
+					input.agents.length ||
+					input.attachments.some((item) => !item.mime.startsWith("image/"))
+				)
+					throw new HTTPException(400, {
+						message:
+							"This provider supports image attachments, but not file or agent mentions yet",
+					});
 			if ((providerId === "agy" || providerId === "antigravity") && !agyEnabled)
 				throw new HTTPException(503, {
 					message:
@@ -1266,8 +1270,14 @@ export function createChatRoutes(options: {
 			turn.persistedMessages = JSON.stringify(turn.messages);
 			await options.providerHistory?.save(current.id, turn.messages);
 			const isAgy = providerId === "agy" || providerId === "antigravity";
+			const isCustomProvider =
+				options.providerManager?.registry
+					.get(providerId)
+					?.definition.capabilities.includes("custom-model") === true;
 			const permissionToken =
-				isAgy && agyEnabled && (!customAgent || customAgentCanWriteFiles)
+				((isAgy && agyEnabled) ||
+					(isCustomProvider && !!options.permissions)) &&
+				(!customAgent || customAgentCanWriteFiles)
 					? randomBytes(24).toString("hex")
 					: undefined;
 			const autoAccept =
@@ -1281,6 +1291,29 @@ export function createChatRoutes(options: {
 					sessionId: current.id,
 					autoAccept,
 				});
+			let toolStep = 0;
+			const authorizeTool =
+				permissionToken && options.permissions
+					? async (request: {
+							toolName: string;
+							args: Record<string, unknown>;
+							reason: string;
+						}) => {
+							const submitted = options.permissions?.submit(
+								{
+									token: permissionToken,
+									conversationId: current.id,
+									toolName: request.toolName,
+									args: { ...request.args, reason: request.reason },
+									stepIdx: ++toolStep,
+								},
+								120_000,
+							);
+							if (!submitted || submitted.status === "unknown") return false;
+							if (submitted.status === "auto") return true;
+							return (await submitted.decision) === "allow";
+						}
+					: undefined;
 			turn.permissionToken = permissionToken;
 			providerSessions.set(current.id, turn);
 			// CLI runtimes start a new process each turn; carry forward the conversation.
@@ -1340,7 +1373,28 @@ export function createChatRoutes(options: {
 										},
 									},
 								}
-							: {}),
+							: isCustomProvider
+								? {
+										permission: {
+											mode: customAgent
+												? customAgentCanWriteFiles
+													? ("ask" as const)
+													: ("read-only" as const)
+												: autoAccept
+													? ("auto" as const)
+													: ("ask" as const),
+										},
+									}
+								: {}),
+					...(isCustomProvider && authorizeTool ? { authorizeTool } : {}),
+					...(input.attachments.length
+						? {
+								images: input.attachments.map((attachment) => ({
+									mime: attachment.mime,
+									data: attachment.data,
+								})),
+							}
+						: {}),
 				});
 			} catch (error) {
 				if (permissionToken && options.permissions)

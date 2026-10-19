@@ -56,6 +56,14 @@ export type RuntimePermission = {
 	env?: Record<string, string>;
 };
 
+export type RuntimeToolAuthorization = (input: {
+	toolName: string;
+	args: Record<string, unknown>;
+	reason: string;
+	sessionId?: string;
+	cwd?: string;
+}) => Promise<boolean>;
+
 export type AgentRuntime = {
 	createSession(input: {
 		cwd: string;
@@ -72,8 +80,10 @@ export type AgentRuntime = {
 		thinkingMode?: string;
 		/** Base64 images (pasted photos, mockups) sent alongside the text. */
 		images?: Array<{ mime: string; data: string }>;
-		/** Tool-permission policy for this run; CLI providers only. */
+		/** Tool-permission policy for this run. */
 		permission?: RuntimePermission;
+		/** Host authorization hook for runtimes that execute model-requested tools. */
+		authorizeTool?: RuntimeToolAuthorization;
 	}): Promise<void>;
 	status(sessionId: string): Promise<AgentRunStatus>;
 	lastError?(sessionId: string): Promise<string | null>;

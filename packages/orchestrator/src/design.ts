@@ -19,7 +19,11 @@ import type {
 	DesignPermissionRequest,
 	DesignViewport,
 } from "@loom/protocol";
-import type { AgentRuntime, RuntimeModel } from "@loom/providers/core";
+import type {
+	AgentRuntime,
+	RuntimeModel,
+	RuntimeToolAuthorization,
+} from "@loom/providers/core";
 
 type DesignPermissionGate = {
 	url: string;
@@ -44,6 +48,18 @@ type DesignPermissionGate = {
 		get(id: string): { sessionId: string } | undefined;
 		decide(id: string, decision: "allow" | "deny"): boolean;
 		enableAutoAccept(sessionId: string): void;
+		submit(
+			input: {
+				token: string;
+				conversationId: string;
+				toolName: string;
+				args: Record<string, unknown>;
+				stepIdx: number;
+			},
+			timeoutMs: number,
+		):
+			| { status: "unknown" | "auto" }
+			| { status: "pending"; decision: Promise<"allow" | "deny"> };
 	};
 };
 
@@ -448,24 +464,29 @@ export class DesignService {
 			data: attachment.data,
 		}));
 		const runtime = this.runtimeFor(model);
-		// Draft the design in a temporary working directory. Agy tool calls are
-		// gated through Loom's permission hook; publishing remains a separate,
-		// explicit action after the user reviews the mockup.
-		const workdir = join(tmpdir(), "loom-design", project.id, nodeId);
+		const selectedModel = model ?? (await this.storedModel(node));
+		const isCustomProvider =
+			selectedModel?.providerID.startsWith("loom_custom_") === true;
+		// CLI providers draft in an isolated directory. Custom providers can inspect
+		// the real project and write there only after Loom permission approval.
+		// Publishing the generated mockup remains an explicit user action.
+		const workdir = isCustomProvider
+			? project.path
+			: join(tmpdir(), "loom-design", project.id, nodeId);
 		mkdirSync(workdir, { recursive: true });
 		const session = await runtime.createSession({
 			cwd: workdir,
 			title: `Loom design · ${node.title}`,
-			readOnly: true,
+			readOnly: !isCustomProvider || !this.permissionGate,
 		});
 		await this.store.updateNode(nodeId, { sessionId: session.id });
-		const selectedModel = model ?? (await this.storedModel(node));
 		if (selectedModel?.providerID === "agy" && !this.permissionGate?.url)
 			throw new Error(
 				"Agy permission approval is unavailable. Restart Loom and check that its Agy permission hook is configured, then retry.",
 			);
 		const permissionToken =
-			selectedModel?.providerID === "agy" && this.permissionGate?.url
+			(selectedModel?.providerID === "agy" && this.permissionGate?.url) ||
+			(isCustomProvider && this.permissionGate)
 				? randomUUID()
 				: undefined;
 		if (permissionToken && this.permissionGate)
@@ -474,6 +495,25 @@ export class DesignService {
 				sessionId: session.id,
 				autoAccept: false,
 			});
+		let toolStep = 0;
+		const authorizeTool: RuntimeToolAuthorization | undefined =
+			permissionToken && this.permissionGate
+				? async (request) => {
+						const submitted = this.permissionGate?.store.submit(
+							{
+								token: permissionToken,
+								conversationId: nodeId,
+								toolName: request.toolName,
+								args: { ...request.args, reason: request.reason },
+								stepIdx: ++toolStep,
+							},
+							120_000,
+						);
+						if (!submitted || submitted.status !== "pending")
+							return submitted?.status === "auto";
+						return (await submitted.decision) === "allow";
+					}
+				: undefined;
 		const startedAt = Date.now();
 		try {
 			const reply = await this.runSession(
@@ -485,12 +525,17 @@ export class DesignService {
 				permissionToken && this.permissionGate
 					? {
 							mode: "ask",
-							env: {
-								LOOM_PERMISSION_URL: this.permissionGate.url,
-								LOOM_PERMISSION_TOKEN: permissionToken,
-							},
+							...(selectedModel?.providerID === "agy" && this.permissionGate.url
+								? {
+										env: {
+											LOOM_PERMISSION_URL: this.permissionGate.url,
+											LOOM_PERMISSION_TOKEN: permissionToken,
+										},
+									}
+								: {}),
 						}
 					: undefined,
+				authorizeTool,
 			);
 			await this.persist(
 				nodeId,
@@ -514,6 +559,7 @@ export class DesignService {
 		model?: RuntimeModel,
 		images?: Array<{ mime: string; data: string }>,
 		permission?: { mode: "auto" | "ask"; env?: Record<string, string> },
+		authorizeTool?: RuntimeToolAuthorization,
 	): Promise<string> {
 		await runtime.prompt({
 			sessionId,
@@ -521,6 +567,7 @@ export class DesignService {
 			model,
 			images: images?.length ? images : undefined,
 			permission,
+			authorizeTool,
 		});
 		const status = await runtime.wait(sessionId, {
 			timeoutMs: DESIGN_TIMEOUT_MS,
@@ -875,7 +922,11 @@ export class DesignService {
 		model: RuntimeModel | undefined,
 		images: Array<{ mime: string; data: string }>,
 	): Promise<string> {
-		const workdir = join(tmpdir(), "loom-design", "chat", project.id);
+		const isCustomProvider =
+			model?.providerID.startsWith("loom_custom_") === true;
+		const workdir = isCustomProvider
+			? project.path
+			: join(tmpdir(), "loom-design", "chat", project.id);
 		mkdirSync(workdir, { recursive: true });
 		const runtime = this.runtimeFor(model);
 		const conversationKey = `${project.id}\0${model?.providerID ?? "default"}`;

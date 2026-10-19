@@ -1,8 +1,4 @@
-import {
-	createHash,
-	randomBytes,
-	randomUUID,
-} from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
 	access,
 	chmod,
@@ -94,6 +90,7 @@ import type {
 	AgentRuntime,
 	RuntimeModel,
 	RuntimePermission,
+	RuntimeToolAuthorization,
 } from "@loom/providers/core";
 import {
 	MergeConflictError,
@@ -603,9 +600,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		openCodeRuntime,
 	);
 	for (const provider of customProviderConfigs)
-		providerRegistry.register(
-			new CustomOpenCodeProviderAdapter(provider),
-		);
+		providerRegistry.register(new CustomOpenCodeProviderAdapter(provider));
 	const providerManager = new ProviderManager({
 		registry: providerRegistry,
 		onEvent: (event) => {
@@ -764,6 +759,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		}
 	}
 	const resolveTaskExecutor = async (task: {
+		id: string;
 		executorConfig: string | null;
 		projectId: string;
 		source: string;
@@ -850,6 +846,13 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			throw new Error(
 				`Selected provider has no task execution runtime: ${providerId}`,
 			);
+		const isCustomProvider =
+			adapter.definition.capabilities.includes("custom-model");
+		if (isCustomProvider)
+			system = [
+				system,
+				"Use list_files and read_file to inspect the assigned project before editing. Implement changes with write_file or edit_file and use run_command for checks. This task runs in its own Loom worktree, so file changes stay isolated until the user reviews and integrates them. Do not ask the user to paste files that these tools can inspect. Loom will ask the user before each edit or command; if denied, continue without that operation.",
+			].join("\n\n");
 		let model: RuntimeModel | undefined;
 		if (modelId) {
 			const catalogModel = providerManager.catalog
@@ -885,7 +888,50 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			model,
 			timeoutMs: agent ? agent.maxRunDurationMinutes * 60_000 : undefined,
 			system,
-			permission: { mode: permissionMode },
+			permission: { mode: permissionMode as RuntimePermission["mode"] },
+			...(isCustomProvider
+				? {
+						authorizeTool: async ({
+							toolName,
+							args,
+							reason,
+							cwd,
+						}: Parameters<RuntimeToolAuthorization>[0]) => {
+							const runs = await orchestrator.listRuns(task.id);
+							const activeRun = runs.find((run) =>
+								["running", "waiting_permission"].includes(run.status),
+							);
+							if (!activeRun) return false;
+							const request = await orchestrator.requestPermission({
+								taskId: task.id,
+								runId: activeRun.id,
+								command: `${toolName}: ${JSON.stringify(args)}`.slice(
+									0,
+									20_000,
+								),
+								cwd: cwd ?? "",
+								reason,
+							});
+							const deadline = Date.now() + 120_000;
+							while (Date.now() < deadline) {
+								const current = await repos.permissionRequests.getById(
+									request.id,
+								);
+								if (!current || current.status !== "pending") {
+									await repos.agentRuns.update(activeRun.id, {
+										status: "running",
+									});
+									return (
+										current?.status === "allow" ||
+										current?.status === "allow_once"
+									);
+								}
+								await new Promise((resolve) => setTimeout(resolve, 250));
+							}
+							return false;
+						},
+					}
+				: {}),
 			...(adapter.definition.id === "agy"
 				? {
 						permissionForSession: async (sessionId: string) => {
@@ -1427,9 +1473,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		repos,
 		options.designRuntime ?? agentRuntime,
 		designRuntimes,
-		agyPermissionError
-			? undefined
-			: { store: agyPermissions, url: agyPermissionBase },
+		{ store: agyPermissions, url: agyPermissionError ? "" : agyPermissionBase },
 	);
 	await designs.recover();
 	app.route(
@@ -2312,7 +2356,9 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			const raw = await jsonBody(c);
 			const input = parseCustomProviderInput(raw);
 			const providerId =
-				raw && typeof raw === "object" && "providerId" in raw &&
+				raw &&
+				typeof raw === "object" &&
+				"providerId" in raw &&
 				typeof raw.providerId === "string"
 					? raw.providerId
 					: undefined;
@@ -2335,7 +2381,9 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		try {
 			const raw = await jsonBody(c);
 			const modelId =
-				raw && typeof raw === "object" && "modelId" in raw &&
+				raw &&
+				typeof raw === "object" &&
+				"modelId" in raw &&
 				typeof raw.modelId === "string"
 					? raw.modelId.trim()
 					: "";
@@ -2365,7 +2413,10 @@ export async function createApp(options: DaemonAppOptions = {}) {
 						].some((candidate) => candidate === modelId);
 					});
 				if (!selectedModel)
-					return c.json({ error: "Model is not available from this provider" }, 404);
+					return c.json(
+						{ error: "Model is not available from this provider" },
+						404,
+					);
 				runtime = adapter.getRuntime?.();
 				const metadata = selectedModel.metadata ?? {};
 				const upstreamProviderId = metadata.upstreamProviderId;
@@ -2375,8 +2426,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 						typeof upstreamProviderId === "string"
 							? upstreamProviderId
 							: providerId,
-					modelID:
-						typeof actualModelId === "string" ? actualModelId : modelId,
+					modelID: typeof actualModelId === "string" ? actualModelId : modelId,
 				};
 			} else {
 				const openCodeCatalog = await openCodeRuntime.request<{
@@ -2392,7 +2442,10 @@ export async function createApp(options: DaemonAppOptions = {}) {
 					([key, model]) => key === modelId || model.id === modelId,
 				);
 				if (!matchedModel)
-					return c.json({ error: "Model is not available from this provider" }, 404);
+					return c.json(
+						{ error: "Model is not available from this provider" },
+						404,
+					);
 				const [modelKey, model] = matchedModel;
 				runtime = openCodeRuntime;
 				runtimeModel = {
@@ -2412,7 +2465,8 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			try {
 				await runtime.prompt({
 					sessionId: session.id,
-					prompt: "Connectivity check. Reply with exactly OK. Do not use tools.",
+					prompt:
+						"Connectivity check. Reply with exactly OK. Do not use tools.",
 					system:
 						"This is a short model connectivity check. Do not call tools, inspect files, or make changes. Reply with OK.",
 					model: runtimeModel,
@@ -2563,25 +2617,27 @@ export async function createApp(options: DaemonAppOptions = {}) {
 					name?: string;
 					models: Record<
 						string,
-					{ id?: string; name?: string; limit?: { context?: number } }
+						{ id?: string; name?: string; limit?: { context?: number } }
 					>;
 				}>;
 			}>("/config/providers")
 			.catch(() => ({ providers: [] }));
-		const managedModels = providerManager.catalog.listAvailable().map((model) => ({
-			providerID: model.providerId,
-			modelID:
-				typeof model.metadata?.upstreamProviderId === "string" &&
-				typeof model.metadata?.providerModelId === "string"
-					? `${model.metadata.upstreamProviderId}/${model.metadata.providerModelId}`
-					: String(model.metadata?.modelId ?? model.name),
-			name: model.displayName,
-			provider:
-				typeof model.metadata?.providerName === "string"
-					? model.metadata.providerName
-					: model.providerId,
-			contextWindow: model.contextWindow,
-		}));
+		const managedModels = providerManager.catalog
+			.listAvailable()
+			.map((model) => ({
+				providerID: model.providerId,
+				modelID:
+					typeof model.metadata?.upstreamProviderId === "string" &&
+					typeof model.metadata?.providerModelId === "string"
+						? `${model.metadata.upstreamProviderId}/${model.metadata.providerModelId}`
+						: String(model.metadata?.modelId ?? model.name),
+				name: model.displayName,
+				provider:
+					typeof model.metadata?.providerName === "string"
+						? model.metadata.providerName
+						: model.providerId,
+				contextWindow: model.contextWindow,
+			}));
 		const managedProviderIds = new Set(
 			managedModels.map((model) => model.providerID),
 		);

@@ -22,6 +22,7 @@ import {
 import type {
 	AgentRuntime,
 	RuntimeModel,
+	RuntimeToolAuthorization,
 	RuntimePermission,
 } from "@loom/providers/core";
 import {
@@ -353,6 +354,7 @@ export type ResolvedTaskExecutor = {
 	timeoutMs?: number;
 	system?: string;
 	permission?: RuntimePermission;
+	authorizeTool?: RuntimeToolAuthorization;
 	permissionForSession?: (
 		sessionId: string,
 	) => Promise<{ permission: RuntimePermission; cleanup?: () => void }>;
@@ -1120,6 +1122,9 @@ export class TaskOrchestrator {
 				...(execution.system ? { system: execution.system } : {}),
 				...(execution.model ? { model: execution.model } : {}),
 				...(permission ? { permission } : {}),
+				...(execution.authorizeTool
+					? { authorizeTool: execution.authorizeTool }
+					: {}),
 			});
 			let publishedOutput = "";
 			let publishedActivities = "";
@@ -1191,11 +1196,13 @@ export class TaskOrchestrator {
 				await this.outputLog.write(record.id, agentRunId, runtimeOutput.output);
 			}
 			if (agentRunId && runtimeOutput?.activities) {
-				const activities = runtimeOutput.activities.map(({ id, tool, status }) => ({
-					id,
-					tool,
-					status,
-				}));
+				const activities = runtimeOutput.activities.map(
+					({ id, tool, status }) => ({
+						id,
+						tool,
+						status,
+					}),
+				);
 				const activitiesJson = JSON.stringify(activities);
 				if (activitiesJson !== publishedActivities)
 					await this.publish({

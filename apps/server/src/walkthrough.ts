@@ -220,7 +220,7 @@ async function captureOnce(
 				let patch: string;
 				let fileTruncated = false;
 				let kind: WalkthroughEvidence["kind"] = "diff";
-				if (item.status === "?" || !hasHead) {
+				if (item.status.startsWith("?") || !hasHead) {
 					kind = "untracked";
 					try {
 						const content = await readUntracked(root, item.path);
