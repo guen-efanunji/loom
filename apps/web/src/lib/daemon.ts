@@ -83,6 +83,39 @@ export type McpInventory = {
 	}>;
 };
 
+export type ManagedMcpConnection = {
+	id: string;
+	label: string;
+	transport: "stdio" | "streamable-http";
+	status: "disconnected" | "connecting" | "auth_required" | "connected" | "degraded" | "error" | "interrupted" | string;
+	endpointHost?: string;
+	command?: string;
+	argumentCount: number;
+	workingDirectory?: string;
+	environmentReferenceNames: string[];
+	headerReferences: Array<{ header: string; envRef: string }>;
+	protocolVersion: string | null;
+	capabilities: Record<string, unknown>;
+	tools: Array<{ name: string; description?: string }>;
+	toolCount: number;
+	lastConnectedAt: number | null;
+	lastTestedAt: number | null;
+	lastError: string | null;
+	createdAt: number;
+	updatedAt: number;
+};
+
+export type ManagedMcpConnectionInput = {
+	label: string;
+	transport: "stdio" | "streamable-http";
+	endpoint?: string;
+	command?: string;
+	args?: string[];
+	cwd?: string;
+	envRefs?: Record<string, string>;
+	headerEnvRefs?: Record<string, string>;
+};
+
 export type ContextEntry = {
 	id: string;
 	projectId: string | null;
@@ -534,6 +567,32 @@ export const daemon = {
 		request<McpInventory>(
 			`/api/mcp/inventory${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`,
 		),
+	listManagedMcpConnections: () =>
+		request<{ connections: ManagedMcpConnection[] }>("/api/mcp/connections"),
+	createManagedMcpConnection: (input: ManagedMcpConnectionInput) =>
+		request<{ connection: ManagedMcpConnection }>("/api/mcp/connections", {
+			method: "POST",
+			body: JSON.stringify(input),
+		}),
+	updateManagedMcpConnection: (id: string, input: ManagedMcpConnectionInput) =>
+		request<{ connection: ManagedMcpConnection }>(`/api/mcp/connections/${encodeURIComponent(id)}`, {
+			method: "PUT",
+			body: JSON.stringify(input),
+		}),
+	testManagedMcpConnection: (id: string, options: { approved: true; allowPrivateNetwork: boolean }) =>
+		request<{ ok: true; protocolVersion: string | null; server: unknown; capabilities: Record<string, unknown>; tools: Array<{ name: string; description?: string }>; toolCount: number; status: "disconnected" }>(`/api/mcp/connections/${encodeURIComponent(id)}/test`, {
+			method: "POST",
+			body: JSON.stringify(options),
+		}),
+	connectManagedMcpConnection: (id: string, options: { approved: true; allowPrivateNetwork: boolean }) =>
+		request<{ connection: ManagedMcpConnection }>(`/api/mcp/connections/${encodeURIComponent(id)}/connect`, {
+			method: "POST",
+			body: JSON.stringify(options),
+		}),
+	disconnectManagedMcpConnection: (id: string) =>
+		request<{ connection: ManagedMcpConnection }>(`/api/mcp/connections/${encodeURIComponent(id)}/disconnect`, { method: "POST", body: "{}" }),
+	deleteManagedMcpConnection: (id: string) =>
+		request<{ ok: true }>(`/api/mcp/connections/${encodeURIComponent(id)}`, { method: "DELETE" }),
 	getProject: (id: string) => request<Project>(`/api/projects/${id}`),
 	getProjectReviewPolicy: (id: string) =>
 		request<{ policy: ProjectReviewPolicy; autoMergeAvailable: boolean }>(

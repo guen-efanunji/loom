@@ -28,6 +28,10 @@ let { active, search = $bindable("") }: Props = $props();
 
 const returnTo = $derived(safeWorkspaceReturnTo(page.url.searchParams.get("returnTo")));
 
+function sectionHref(item: { href: string; key?: string }) {
+	return item.key === "mcp" ? item.href : settingsHref(item.href, returnTo);
+}
+
 const sections = [
 	{
 		label: "Workspace",
@@ -82,7 +86,7 @@ const sections = [
 			{#each section.items as item}
 				{@const Icon = item.icon}
 				<Button
-					href={settingsHref(item.href, returnTo)}
+					href={sectionHref(item)}
 					variant="ghost"
 					size="sm"
 					aria-current={"key" in item && item.key === active ? "page" : undefined}
@@ -118,7 +122,7 @@ const sections = [
 					{#each section.items as item}
 						{@const Icon = item.icon}
 						<Button
-							href={settingsHref(item.href, returnTo)}
+							href={sectionHref(item)}
 							variant="ghost"
 			class={`w-full justify-start gap-2 ${"key" in item && item.key === active ? "bg-white/[0.14] text-white" : "text-neutral-400"}`}
 						>

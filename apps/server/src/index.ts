@@ -1483,7 +1483,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		"/api/context",
 		createContextHubRoutes({ db, projects: repos.projects }),
 	);
-	app.route("/api/mcp", createMcpManagerRoutes({ projects: repos.projects }));
+	app.route("/api/mcp", createMcpManagerRoutes({ db, projects: repos.projects }));
 	app.route(
 		"/api/agents",
 		createAgentSettingsRoutes({
