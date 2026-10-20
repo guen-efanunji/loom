@@ -43,9 +43,8 @@ import {
 	type ChatSession,
 	type ChatState,
 	chat,
+	canonicalModelSelection,
 	type FileDiff,
-	friendlyProviderStatus,
-	providerDisplayName,
 } from "$lib/chat";
 import {
 	type ChatPanelId,
@@ -81,6 +80,7 @@ import {
 	type Project,
 	type ProjectGitOverview,
 	type ProjectPullRequests,
+	type PermissionRequest,
 	type Task,
 	type WalkthroughDocument,
 	type WalkthroughLanguage,
@@ -91,6 +91,7 @@ import {
 import AddProjectForm from "./AddProjectForm.svelte";
 import Composer from "./chat/Composer.svelte";
 import QuestionCard from "./chat/QuestionCard.svelte";
+import TaskRunChat from "./chat/TaskRunChat.svelte";
 import SplitChatWorkspace from "./chat/SplitChatWorkspace.svelte";
 import Turn from "./chat/Turn.svelte";
 import CodeBlock from "./chat/CodeBlock.svelte";
@@ -101,7 +102,6 @@ import WorkspaceCodePreview from "./WorkspaceCodePreview.svelte";
 let projects = $state<Project[]>([]);
 let sessions = $state<ChatSession[]>([]);
 let childSessions = $state<ChatChildSession[]>([]);
-let childSessionsLoading = $state(false);
 let legacyTasks = $state<Task[]>([]);
 let monitorAgents = $state<CustomAgentMonitorItem[]>([]);
 let monitorRuns = $state<CustomAgentRunMonitorItem[]>([]);
@@ -113,9 +113,20 @@ let lastPanelSyncAt = 0;
 let monitorSocket: WebSocket | undefined;
 let monitorReconnectTimer: ReturnType<typeof setTimeout> | undefined;
 let monitorTaskOutput = $state<Record<string, string>>({});
+type MonitorTaskActivity = {
+	id: string;
+	tool: string;
+	status: "running" | "completed" | "error";
+	input?: Record<string, unknown>;
+	metadata?: Record<string, unknown>;
+};
 let monitorTaskActivities = $state<
-	Record<string, Array<{ id: string; tool: string; status: "running" | "completed" | "error" }>>
+	Record<string, MonitorTaskActivity[]>
 >({});
+let monitorTaskProgress = $state<
+	Record<string, Array<{ id: string; stage: string; message: string; timestamp: string }>>
+>({});
+let monitorPermissions = $state<PermissionRequest[]>([]);
 let selectedProjectId = $state("");
 let sessionId = $state("");
 let conversation = $state<ChatState | null>(null);
@@ -148,6 +159,7 @@ type ViewMode = "chat" | "kanban";
 type WorkspaceChatTab = {
 	id: string;
 	sessionId: string;
+	taskId?: string;
 	projectId: string;
 	label: string;
 	draft: string;
@@ -174,6 +186,12 @@ let chatTabs = $state<WorkspaceChatTab[]>([
 	},
 ]);
 let activeChatTabId = $state("chat-tab-1");
+const activeChatTab = $derived(chatTabs.find((item) => item.id === activeChatTabId));
+const activeTaskRun = $derived(
+	activeChatTab?.taskId
+		? legacyTasks.find((task) => task.id === activeChatTab.taskId)
+		: undefined,
+);
 let draggedChatTabId = $state("");
 let lastSyncedRouteSession = page.url.searchParams.get("session") ?? "";
 let draft = $state("");
@@ -383,11 +401,9 @@ $effect(() => {
 	const currentProjectId = selectedProjectId;
 	if (!currentSessionId) {
 		childSessions = [];
-		childSessionsLoading = false;
 		return;
 	}
 	let active = true;
-	childSessionsLoading = childSessions.length === 0;
 	const refresh = async () => {
 		try {
 			const children = await chat.children(currentSessionId);
@@ -399,9 +415,6 @@ $effect(() => {
 				childSessions = children;
 		} catch {
 			if (active && currentSessionId === sessionId) childSessions = [];
-		} finally {
-			if (active && currentSessionId === sessionId)
-				childSessionsLoading = false;
 		}
 	};
 	void refresh();
@@ -488,16 +501,6 @@ const contextPercent = $derived(
 		? Math.min(100, (contextTokens / contextModel.contextWindow) * 100)
 		: null,
 );
-const selectedCustomAgent = $derived(
-	customAgents.find((item) => item.id === customAgentId),
-);
-const activeProvider = $derived(
-	selectedCustomAgent?.provider ??
-		catalog.models.find(
-			(item) => `${item.providerID}/${item.modelID}` === model,
-		)?.providerID ??
-		(model.split("/")[0] || "opencode"),
-);
 $effect(() => {
 	const selected = model;
 	const models = catalog.models;
@@ -524,7 +527,6 @@ $effect(() => {
 	);
 	model = canonical ? `${providerID}/${canonical.modelID}` : "";
 });
-const providerLabel = $derived(providerDisplayName(catalog, activeProvider));
 const busy = $derived(
 	sending ||
 		!!optimistic ||
@@ -792,14 +794,7 @@ async function selectSession(id: string) {
 			(message) => message.info.role === "assistant",
 		)?.info;
 		if (recent?.providerID && recent.modelID) {
-			const openCodeModel = catalog.models.find(
-				(item) =>
-					item.providerID === "opencode" &&
-					item.modelID === `${recent.providerID}/${recent.modelID}`,
-			);
-			model = openCodeModel
-				? `opencode/${openCodeModel.modelID}`
-				: `${recent.providerID}/${recent.modelID}`;
+			model = canonicalModelSelection(catalog, recent.providerID, recent.modelID);
 		} else model = preferredModel(selectedProjectId);
 		if (recent?.agent) agent = recent.agent;
 	} catch (reason) {
@@ -860,6 +855,23 @@ function syncViewParam(mode: ViewMode) {
 	} catch {
 		// Non-fatal: the view state itself is already updated.
 	}
+}
+function openKanbanBoard(projectId = selectedProjectId) {
+	saveActiveChatTab();
+	if (projectId && projects.some((project) => project.id === projectId))
+		selectedProjectId = projectId;
+	viewMode = "kanban";
+	splitChat = false;
+	const url = new URL(window.location.href);
+	if (selectedProjectId) url.searchParams.set("project", selectedProjectId);
+	else url.searchParams.delete("project");
+	url.searchParams.set("view", "kanban");
+	try {
+		replaceState(url.toString(), {});
+	} catch {
+		// The selected project and view state remain active if shallow routing fails.
+	}
+	void refreshBoard();
 }
 function modelKey(projectId: string) {
 	return `loom.model.${projectId}`;
@@ -1012,6 +1024,13 @@ function monitorTimestamp(value: string | number | null | undefined) {
 	return Number.isFinite(parsed) ? parsed : 0;
 }
 function applyMonitorEvent(event: DaemonEvent) {
+	if (event.type === "permission.requested" || event.type === "permission.updated") {
+		monitorPermissions = [
+			...monitorPermissions.filter((request) => request.id !== event.request.id),
+			event.request,
+		];
+		return;
+	}
 	if (event.type === "task.created" || event.type === "task.updated") {
 		const exists = legacyTasks.some((task) => task.id === event.task.id);
 		legacyTasks = exists
@@ -1024,6 +1043,15 @@ function applyMonitorEvent(event: DaemonEvent) {
 	if (event.type === "run.started") {
 		monitorTaskOutput = { ...monitorTaskOutput, [event.taskId]: "" };
 		monitorTaskActivities = { ...monitorTaskActivities, [event.taskId]: [] };
+		monitorTaskProgress = { ...monitorTaskProgress, [event.taskId]: [] };
+		return;
+	}
+	if (event.type === "run.progress") {
+		const current = monitorTaskProgress[event.taskId] ?? [];
+		monitorTaskProgress = {
+			...monitorTaskProgress,
+			[event.taskId]: [...current, { id: `${event.runId}:${event.sequence}`, stage: event.stage, message: event.message, timestamp: event.timestamp }].slice(-30),
+		};
 		return;
 	}
 	if (event.type === "run.output") {
@@ -1086,7 +1114,16 @@ function monitorOutputPreview(taskId: string) {
 		.split(/\r?\n/)
 		.map((line) => line.trim())
 		.filter(Boolean);
-	return lines.at(-1)?.slice(-180) ?? "Agent is working…";
+	return lines.at(-1)?.slice(-180) ?? "Loom is working…";
+}
+function activityToolLabel(tool = "") {
+	const normalized = tool.toLowerCase().replace(/[^a-z]/g, "");
+	if (/read|view|open|cat/.test(normalized)) return "Read file";
+	if (/edit|write|patch|apply|create|delete|replace/.test(normalized))
+		return "Edited file";
+	if (/shell|bash|command|exec|terminal/.test(normalized)) return "Ran command";
+	if (/search|grep|glob|find|list/.test(normalized)) return "Searched files";
+	return tool.replace(/([a-z])([A-Z])/g, "$1 $2").replaceAll("_", " ");
 }
 async function reloadModels() {
 	catalogNonce += 1;
@@ -1147,10 +1184,11 @@ async function refreshAgentMonitor() {
 	const request = ++monitorRequest;
 	const projectId = selectedProjectId;
 	try {
-		const [agents, runs, tasks] = await Promise.all([
+		const [agents, runs, tasks, permissions] = await Promise.all([
 			daemon.listCustomAgents(projectId || undefined),
 			daemon.listCustomAgentRuns(projectId || undefined),
 			daemon.listTasks(),
+			daemon.getPermissions(),
 		]);
 		if (
 			disposed ||
@@ -1161,6 +1199,7 @@ async function refreshAgentMonitor() {
 		monitorAgents = agents;
 		monitorRuns = runs;
 		legacyTasks = tasks;
+		monitorPermissions = permissions;
 		monitorError = "";
 		const activeTasks = tasks.filter(
 			(task) =>
@@ -1189,6 +1228,19 @@ async function refreshAgentMonitor() {
 				reason instanceof Error
 					? reason.message
 					: "Unable to load agent activity.";
+	}
+}
+async function decideTaskPermission(requestId: string, decision: "allow_once" | "allow" | "deny") {
+	try {
+		const updated = await daemon.decidePermission(requestId, decision);
+		monitorPermissions = [
+			...monitorPermissions.filter((request) => request.id !== updated.id),
+			updated,
+		];
+		toast.success(decision === "deny" ? "Permission denied" : "Permission granted");
+	} catch (reason) {
+		toast.error(reason instanceof Error ? reason.message : "Unable to update permission");
+		void refreshAgentMonitor();
 	}
 }
 onMount(() => {
@@ -1294,7 +1346,7 @@ function dropChatTab(event: DragEvent, targetId: string) {
 }
 function saveActiveChatTab() {
 	const tab = chatTabs.find((item) => item.id === activeChatTabId);
-	if (!tab) return;
+	if (!tab || tab.taskId) return;
 	tab.sessionId = sessionId;
 	tab.projectId = selectedProjectId;
 	tab.draft = draft;
@@ -1356,15 +1408,72 @@ async function switchChatTab(id: string) {
 	}
 	saveActiveChatTab();
 	activeChatTabId = next.id;
+	if (next.taskId) splitChat = false;
 	selectedProjectId = next.projectId;
-	sessionId = next.sessionId;
+	sessionId = next.taskId ? "" : next.sessionId;
 	draft = next.draft;
 	model = next.model || preferredModel(next.projectId);
 	agent = next.agent;
 	customAgentId = next.customAgentId;
-	updateChatUrl(next.sessionId);
-	await selectSession(next.sessionId);
+	updateChatUrl(next.taskId ? "" : next.sessionId);
+	await selectSession(next.taskId ? "" : next.sessionId);
 	saveActiveChatTab();
+}
+async function openTaskRunTab(taskId: string) {
+	const task = legacyTasks.find((item) => item.id === taskId);
+	if (!task) return;
+	const existing = chatTabs.find((item) => item.taskId === taskId);
+	viewMode = "chat";
+	syncViewParam("chat");
+	splitChat = false;
+	if (existing) {
+		await switchChatTab(existing.id);
+		return;
+	}
+	saveActiveChatTab();
+	const tab: WorkspaceChatTab = {
+		id: `task-tab-${task.id}`,
+		sessionId: "",
+		taskId: task.id,
+		projectId: task.projectId,
+		label: task.title,
+		draft: "",
+		model: preferredModel(task.projectId),
+		agent: "build",
+		customAgentId: "",
+	};
+	chatTabs = [...chatTabs, tab];
+	activeChatTabId = tab.id;
+	selectedProjectId = task.projectId;
+	sessionId = "";
+	conversation = null;
+	optimistic = null;
+	diffs = [];
+	draft = "";
+	model = tab.model;
+	agent = tab.agent;
+	customAgentId = "";
+	error = "";
+	sessionLoading = false;
+	updateChatUrl();
+	if (window.innerWidth < 768) sidebarOpen = false;
+	void daemon.getOutput(task.id).then((result) => {
+		if (result.output.length >= (monitorTaskOutput[task.id]?.length ?? 0))
+			monitorTaskOutput = { ...monitorTaskOutput, [task.id]: result.output.slice(-4000) };
+		if (result.activities?.length)
+			monitorTaskActivities = {
+				...monitorTaskActivities,
+				[task.id]: result.activities,
+			};
+	}).catch(() => {});
+}
+async function cancelTaskRun(taskId: string) {
+	try {
+		await daemon.cancelTask(taskId);
+		await refreshBoard();
+	} catch (reason) {
+		toast.error(reason instanceof Error ? reason.message : "Unable to cancel task");
+	}
 }
 async function closeChatTab(id: string) {
 	const index = chatTabs.findIndex((item) => item.id === id);
@@ -2040,10 +2149,10 @@ async function answer(requestId: string, answers: string[][]) {
 	</div>
 {/snippet}
 
-<svelte:head><title>{conversation?.session.title ? `${conversation.session.title} · Loom` : "Loom · Workspace"}</title></svelte:head>
+<svelte:head><title>{activeTaskRun?.title ? `${activeTaskRun.title} · Loom` : conversation?.session.title ? `${conversation.session.title} · Loom` : "Loom · Workspace"}</title></svelte:head>
 <Resizable.PaneGroup direction="horizontal" class="h-svh overflow-hidden bg-background text-foreground">
   {#if sidebarOpen}
-    <Resizable.Pane defaultSize={22} minSize={15} maxSize={35} class="max-md:!absolute max-md:inset-y-0 max-md:left-0 max-md:!z-40 max-md:!w-[280px]">
+    <Resizable.Pane defaultSize={15} minSize={15} maxSize={35} class="max-md:!absolute max-md:inset-y-0 max-md:left-0 max-md:!z-40 max-md:!w-[280px]">
     <aside class="relative flex h-full w-full min-w-0 flex-col border-r bg-sidebar max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:w-[280px]" aria-label="Workspace sidebar">
       <div class="flex h-14 items-center justify-between px-4"><a href="/" class="flex items-center gap-2 text-sm font-semibold tracking-wide"><img src="/loom-mark.webp" alt="" class="size-6 object-contain" /> loom</a><Button variant="ghost" size="icon" aria-label="Collapse sidebar" onclick={() => sidebarOpen = false}><PanelLeft size={16} /></Button></div>
       <div class="space-y-2 px-3 pb-3"><Button variant="outline" class="w-full justify-start bg-background/50" onclick={() => newSession()}><MessageSquarePlus size={16} />New session<span class="ml-auto text-muted-foreground">+</span></Button><div class="flex items-center gap-1"><Button variant="ghost" size="sm" class="flex-1 justify-start text-muted-foreground" onclick={() => searchOpen = !searchOpen}><Search size={15} />Search sessions</Button><Button variant="ghost" size="icon" title="Add project" aria-label="Add project" onclick={() => addProjectOpen = true}><FolderPlus size={16} /></Button></div>{#if searchOpen}<Input aria-label="Search sessions" placeholder="Find a conversation…" bind:value={search} />{/if}</div>
@@ -2084,11 +2193,11 @@ async function answer(requestId: string, answers: string[][]) {
     </Resizable.Pane>
     <Resizable.Handle class="hidden md:flex" withHandle />
   {/if}
-  <Resizable.Pane defaultSize={sidebarOpen ? 78 : 100} minSize={40} class="h-full min-h-0 min-w-0 flex-1">
+  <Resizable.Pane defaultSize={sidebarOpen ? 85 : 100} minSize={40} class="h-full min-h-0 min-w-0 flex-1">
   <main class="flex h-full min-h-0 min-w-0 flex-col">
     <header class="flex h-[72px] shrink-0 items-center gap-2 sm:gap-3 border-b border-white/[0.08] px-3 sm:px-8">
       {#if !sidebarOpen}<Button variant="ghost" size="icon" aria-label="Open sidebar" onclick={() => sidebarOpen = true}><PanelLeft size={16} /></Button>{/if}
-      <div class="flex min-w-0 flex-1 items-center gap-2 sm:gap-3"><div class="grid size-9 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/[0.06] shadow-sm"><Sparkles size={16} class="text-cyan-300" /></div><div class="min-w-0"><p class="truncate text-sm font-semibold tracking-[-0.01em]">{viewMode === "chat" ? (conversation?.session.title ?? "New session") : `Tasks · ${selectedProject?.name ?? "No project"}`}</p>{#if selectedProject}<p class="mt-1 flex items-center gap-2 text-[11px] text-white/45"><span class="truncate">{selectedProject.name}</span><span class="text-white/20">·</span><GitBranch size={12} />{selectedProject.defaultBranch}</p>{/if}</div></div>
+      <div class="flex min-w-0 flex-1 items-center gap-2 sm:gap-3"><div class="grid size-9 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/[0.06] shadow-sm"><Sparkles size={16} class="text-cyan-300" /></div><div class="min-w-0"><p class="truncate text-sm font-semibold tracking-[-0.01em]">{viewMode === "chat" ? (activeTaskRun?.title ?? conversation?.session.title ?? "New session") : `Tasks · ${selectedProject?.name ?? "No project"}`}</p>{#if selectedProject}<p class="mt-1 flex items-center gap-2 text-[11px] text-white/45"><span class="truncate">{selectedProject.name}</span><span class="text-white/20">·</span><GitBranch size={12} />{selectedProject.defaultBranch}</p>{/if}</div></div>
       <Tabs.Root bind:value={viewMode} onValueChange={(value) => syncViewParam(value as ViewMode)} aria-label="Workspace mode"><Tabs.List class="h-auto gap-1 rounded-xl border border-white/10 bg-white/[0.04] p-1"><Tabs.Trigger value="chat" class="h-9 gap-1.5 sm:gap-2 rounded-lg px-2 sm:px-3 text-xs text-white/50 data-[state=active]:bg-white/[0.12] data-[state=active]:text-white data-[state=active]:shadow-sm"><MessageSquare size={14} /><span class="hidden sm:inline">Chat</span></Tabs.Trigger><Tabs.Trigger value="kanban" class="h-9 gap-1.5 sm:gap-2 rounded-lg px-2 sm:px-3 text-xs text-white/50 data-[state=active]:bg-white/[0.12] data-[state=active]:text-white data-[state=active]:shadow-sm"><Columns3 size={14} /><span class="hidden sm:inline">Kanban</span></Tabs.Trigger>{#if selectedProject}<a href={`/project/${selectedProject.id}/canvas`} class="inline-flex h-9 items-center gap-1.5 sm:gap-2 rounded-lg px-2 sm:px-3 text-xs font-medium text-white/50 transition hover:text-white/80" aria-label="Design canvas"><Sparkles size={14} /><span class="hidden sm:inline">Canvas</span></a>{/if}</Tabs.List></Tabs.Root>
     </header>
     {#if viewMode === "kanban"}
@@ -2096,7 +2205,7 @@ async function answer(requestId: string, answers: string[][]) {
         {#if !selectedProjectId}
           <p class="py-12 text-center text-sm text-muted-foreground">Add a project to see its task board.</p>
         {:else}
-          <KanbanBoard projectId={selectedProjectId} tasks={legacyTasks.filter((task) => task.projectId === selectedProjectId)} onChanged={refreshBoard} />
+          <KanbanBoard projectId={selectedProjectId} tasks={legacyTasks.filter((task) => task.projectId === selectedProjectId)} onChanged={refreshBoard} onTaskStarted={openTaskRunTab} />
         {/if}
       </div>
     {:else}
@@ -2112,8 +2221,9 @@ async function answer(requestId: string, answers: string[][]) {
         {#each chatTabs as tab (tab.id)}
           {@const isActive = tab.id === activeChatTabId}
           {@const agentLabel = customAgents.find((item) => item.id === tab.customAgentId)?.label}
+          {@const runTask = tab.taskId ? legacyTasks.find((item) => item.id === tab.taskId) : undefined}
           <div role="group" aria-label={`Chat tab ${tab.label}`} aria-roledescription="Draggable chat tab" draggable="true" ondragstart={(event) => beginChatTabDrag(event, tab.id)} ondragend={() => draggedChatTabId = ""} ondragover={(event) => event.preventDefault()} ondrop={(event) => dropChatTab(event, tab.id)} class={`group flex h-8 max-w-56 shrink-0 cursor-grab items-center rounded-md border transition active:cursor-grabbing ${draggedChatTabId === tab.id ? "opacity-40" : ""} ${isActive ? "border-white/15 bg-white/[0.08] text-foreground" : "border-transparent text-muted-foreground hover:bg-white/[0.04]"}`}>
-            <Button variant="ghost" role="tab" aria-selected={isActive} class="h-7 min-w-0 justify-start gap-2 px-2 text-xs" title={tab.label} onclick={() => void switchChatTab(tab.id)}><MessageSquare size={13} class="shrink-0" /><span class="max-w-40 truncate">{tab.sessionId ? tab.label : agentLabel ?? tab.label}</span>{#if isActive && sending}<span class="size-1.5 shrink-0 animate-pulse rounded-full bg-primary"></span>{/if}</Button>
+            <Button variant="ghost" role="tab" aria-selected={isActive} class="h-7 min-w-0 justify-start gap-2 px-2 text-xs" title={tab.label} onclick={() => void switchChatTab(tab.id)}>{#if tab.taskId}<Activity size={13} class="shrink-0" />{:else}<MessageSquare size={13} class="shrink-0" />{/if}<span class="max-w-40 truncate">{tab.sessionId || tab.taskId ? tab.label : agentLabel ?? tab.label}</span>{#if runTask && (runTask.status === "running" || runTask.status === "preparing")}<span class="size-1.5 shrink-0 animate-pulse rounded-full bg-sky-400" aria-label="Task running"></span>{:else if runTask && (runTask.status === "queued" || runTask.status === "ready")}<span class="size-1.5 shrink-0 rounded-full bg-amber-400" aria-label="Task queued"></span>{:else if isActive && sending}<span class="size-1.5 shrink-0 animate-pulse rounded-full bg-primary"></span>{/if}</Button>
             <Button variant="ghost" size="icon" class="mr-0.5 size-6 shrink-0 opacity-60 hover:opacity-100" aria-label={`Close ${tab.label}`} title="Close tab" onclick={(event) => { event.stopPropagation(); void closeChatTab(tab.id); }}><X size={12} /></Button>
           </div>
         {/each}
@@ -2121,6 +2231,13 @@ async function answer(requestId: string, answers: string[][]) {
         <Button variant="ghost" size="icon" class="size-8 shrink-0 text-muted-foreground" aria-label="Open split chat" title="Open split chat" disabled={!selectedProjectId} onclick={openSplitChat}><Columns3 size={15} /></Button>
       </div>
     {/if}
+    {#if activeChatTab?.taskId}
+      {#if activeTaskRun}
+        <TaskRunChat task={activeTaskRun} output={monitorTaskOutput[activeTaskRun.id] ?? ""} activities={monitorTaskActivities[activeTaskRun.id] ?? []} progress={monitorTaskProgress[activeTaskRun.id] ?? []} permissions={monitorPermissions.filter((request) => request.taskId === activeTaskRun.id)} onpermission={decideTaskPermission} onopenfile={openProjectFile} oncancel={cancelTaskRun} />
+      {:else}
+        <div class="flex min-h-0 flex-1 items-center justify-center p-8 text-sm text-muted-foreground">This task is no longer available in the workspace.</div>
+      {/if}
+    {:else}
     <div bind:this={scroller} onscroll={(event) => { const node = event.currentTarget; follow = node.scrollHeight - node.scrollTop - node.clientHeight < 100; }} class="nice-scroll min-h-0 flex-1 overflow-y-auto">
       <div class={`mx-auto flex min-h-full w-full max-w-[740px] flex-col px-5 ${sessionId ? "py-8" : "justify-center py-12"}`}>
         {#if loading || sessionLoading}<div role="status" class="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground"><LoaderCircle size={17} class="animate-spin" />Loading {loading ? "workspace" : "conversation"}…</div>
@@ -2141,20 +2258,18 @@ async function answer(requestId: string, answers: string[][]) {
                      <li class="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 hover:bg-accent/50">
                        <span class={`size-1.5 shrink-0 rounded-full ${child.status.type === "busy" || child.status.type === "running" ? "animate-pulse bg-sky-400" : child.status.type === "error" ? "bg-destructive" : "bg-emerald-400"}`} aria-hidden="true"></span>
                        <span class="min-w-0 flex-1 truncate text-xs">{child.title || "Untitled child session"}</span>
-                       <span class="shrink-0 text-[10px] text-muted-foreground">{child.status.message ?? child.status.type}</span>
+                       <span class="shrink-0 text-[10px] text-muted-foreground">{child.status.type === "busy" || child.status.type === "retry" ? "Loom is working…" : child.status.message ?? child.status.type}</span>
                        <Button variant="ghost" size="sm" class="h-7 px-2 text-xs" onclick={() => void openSession(child.id)}>Focus</Button>
                      </li>
                    {/each}
                  </ul>
                </details>
-             {:else if childSessionsLoading}
-               <p class="text-xs text-muted-foreground">Checking for child sessions…</p>
              {/if}
              {#each turns as turn (turn.key)}
                <Turn messages={turn.messages} {catalog} {sessionId} projectId={selectedProjectId} onfile={showFiles} onopenfile={openProjectFile} onbranch={startNewChatFromAnswer} />
              {/each}
            </div>
-           {#if busy}<Marker.Root variant="border" class="mt-5 flex items-center"><Marker.Icon><LoaderCircle size={14} class="animate-spin" /></Marker.Icon><Marker.Content>{conversation?.permissions.length ? "Waiting for permission" : conversation?.questions.length ? "Waiting for your answer" : friendlyProviderStatus(catalog, conversation?.status.message) || `${providerLabel} is working…`}</Marker.Content></Marker.Root>{/if}
+          {#if busy}<Marker.Root variant="border" class="mt-5 flex items-center"><Marker.Icon><LoaderCircle size={14} class="animate-spin" /></Marker.Icon><Marker.Content>{conversation?.permissions.length ? "Waiting for permission" : conversation?.questions.length ? "Waiting for your answer" : "Loom is working…"}</Marker.Content></Marker.Root>{/if}
           {#each conversation?.permissions ?? [] as request}<div role="group" aria-label={`Permission required: ${request.permission}`} class="mt-5 space-y-3 rounded-xl border border-amber-500/30 bg-card p-4"><p class="flex items-center gap-2 text-sm font-medium"><ShieldCheck size={16} />Permission required: {request.permission}</p>{#if request.patterns.length}<pre class="overflow-auto whitespace-pre-wrap break-words text-xs text-muted-foreground">{request.patterns.join("\n")}</pre>{/if}<div class="flex flex-wrap gap-2"><Button size="sm" disabled={permissionReplying === request.id} onclick={() => permission(request.id, "once")}>Accept once</Button><Button variant="outline" size="sm" disabled={permissionReplying === request.id} onclick={() => permission(request.id, "always")}>Always allow</Button><Button variant="ghost" size="sm" disabled={permissionReplying === request.id} onclick={() => permission(request.id, "reject")}>Decline</Button></div></div>{/each}
           {#each conversation?.questions ?? [] as question}<div class="mt-5"><QuestionCard {question} onanswer={(answers) => answer(question.id, answers)} /></div>{/each}
         {/if}
@@ -2169,7 +2284,8 @@ async function answer(requestId: string, answers: string[][]) {
         {/if}
       </div>
     </div>
-    {#if sessionId && viewMode === "chat"}<div class="shrink-0 border-t bg-background px-5 py-4"><div class="mx-auto max-w-3xl"><Composer projectId={selectedProjectId} {catalog} {customAgents} {busy} disabled={!conversation || sessionLoading} onsend={send} onstop={stop} bind:draft bind:model bind:agent bind:customAgentId autoAccept={selectedProject?.autoAccept ?? false} onAutoAcceptChange={selectedProject ? (value) => void setAutoAccept(value) : undefined} /></div></div>{/if}
+    {/if}
+    {#if !activeChatTab?.taskId && sessionId && viewMode === "chat"}<div class="shrink-0 border-t bg-background px-5 py-4"><div class="mx-auto max-w-3xl"><Composer projectId={selectedProjectId} {catalog} {customAgents} {busy} disabled={!conversation || sessionLoading} onsend={send} onstop={stop} bind:draft bind:model bind:agent bind:customAgentId autoAccept={selectedProject?.autoAccept ?? false} onAutoAcceptChange={selectedProject ? (value) => void setAutoAccept(value) : undefined} /></div></div>{/if}
     {/if}
     </div>
     </Resizable.Pane>
@@ -2197,18 +2313,18 @@ async function answer(requestId: string, answers: string[][]) {
                 <div class="mt-3 grid grid-cols-2 gap-2"><div class="rounded-md border bg-background/50 p-2"><p class="text-[10px] text-muted-foreground">Running tasks</p><p class="mt-1 text-lg font-semibold">{monitorRunningCount}</p></div><div class="rounded-md border bg-background/50 p-2"><p class="text-[10px] text-muted-foreground">Idle agents</p><p class="mt-1 text-lg font-semibold">{monitorIdleCount}</p></div></div>
               </section>
               <section>
-                <div class="mb-2 flex items-center justify-between"><h3 class="text-xs font-semibold">Active tasks</h3><a href={`/?project=${encodeURIComponent(selectedProjectId)}&view=kanban`} class="text-[10px] text-primary hover:underline">Open board</a></div>
+                <div class="mb-2 flex items-center justify-between"><h3 class="text-xs font-semibold">Active tasks</h3><button type="button" class="text-[10px] text-primary hover:underline" onclick={() => openKanbanBoard(selectedProjectId)}>Open board</button></div>
                 {#if !activeMonitorTasks.length}<p class="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">No tasks are running for this project.</p>
                 {:else}<div class="space-y-2">{#each activeMonitorTasks as task (task.id)}
                   {@const activities = monitorTaskActivities[task.id] ?? []}
                   {@const executor = task.executor}
                   {@const assignedAgent = executor?.kind === "agent" ? monitorAgents.find((agent) => agent.id === executor.agentId)?.label : null}
-                  <a href={`/task/${encodeURIComponent(task.id)}`} class="block rounded-lg border bg-card/40 p-3 transition-colors hover:bg-accent/40">
+                  <button type="button" class="block w-full rounded-lg border bg-card/40 p-3 text-left transition-colors hover:bg-accent/40" onclick={() => void openTaskRunTab(task.id)} aria-label={`Open ${task.title} progress in chat`}>
                     <div class="flex items-center justify-between gap-2"><p class="truncate text-xs font-medium">{task.title}</p><span class="inline-flex shrink-0 items-center gap-1.5 text-[10px] font-medium text-amber-300"><span class="size-2 animate-pulse rounded-full bg-amber-300"></span>{task.status === "preparing" ? "Preparing" : "Running"}</span></div>
-                    {#if activities.length}<p class="mt-1 truncate text-[10px] leading-4 text-muted-foreground">Activity · {activities.at(-1)?.tool} · {activities.at(-1)?.status}</p>{/if}
+                    {#if activities.length}<p class="mt-1 truncate text-[10px] leading-4 text-muted-foreground">Activity · {activityToolLabel(activities.at(-1)?.tool)} · {activities.at(-1)?.status}</p>{/if}
 					<p class="mt-1 line-clamp-2 text-[10px] leading-4 text-muted-foreground">{monitorOutputPreview(task.id)}</p>
 					{#if executor?.kind === "agent"}<p class="mt-1 text-[10px] text-muted-foreground">Agent · {assignedAgent ?? "assigned agent"}</p>{:else if executor?.kind === "direct"}<p class="mt-1 text-[10px] text-muted-foreground">Provider · {executor.providerId}</p>{:else}<p class="mt-1 text-[10px] text-muted-foreground">Default task executor</p>{/if}
-                  </a>
+                  </button>
                 {/each}</div>{/if}
               </section>
               <section>
@@ -2222,18 +2338,18 @@ async function answer(requestId: string, answers: string[][]) {
                   {@const dotTone = item.failed ? "bg-red-400" : running || queued ? "bg-amber-300" : idle ? "bg-emerald-400" : "bg-muted-foreground"}
                   <article class="rounded-lg border bg-card/40 p-3">
                     <div class="flex min-w-0 items-start gap-2"><div class="mt-0.5 grid size-7 shrink-0 place-items-center rounded-md border bg-background/60"><Bot size={14} class="text-cyan-300" /></div><div class="min-w-0 flex-1"><div class="flex items-center gap-2"><p class="min-w-0 flex-1 truncate text-xs font-medium">{item.agent.label}</p><span class={`inline-flex shrink-0 items-center gap-1.5 text-[10px] font-medium ${statusTone}`} title={item.failed ? "The most recent agent run failed" : undefined}><span class="relative inline-flex size-2"><span class={`absolute inline-flex size-full rounded-full opacity-60 ${dotTone} ${idle || running || queued ? "animate-ping" : ""}`}></span><span class={`relative inline-flex size-2 rounded-full ${dotTone}`}></span></span>{item.failed ? "Error" : running ? "Running" : queued ? "Queued" : idle ? "Idle" : "Inactive"}</span></div><p class="mt-1 truncate text-[10px] text-muted-foreground">{item.agent.role} · {item.agent.provider}</p>
-                      {#if item.kanbanTask && (running || queued)}<p class="mt-2 flex items-start gap-1.5 text-[10px] leading-4 text-muted-foreground"><Activity size={12} class={`mt-0.5 shrink-0 ${running ? "text-emerald-300" : "text-amber-200"}`} />{running ? `Working on · ${item.kanbanTask.title}` : `Queued · ${item.kanbanTask.title}`}</p>{#if running}<p class="mt-1 line-clamp-2 pl-5 text-[10px] leading-4 text-muted-foreground">{monitorOutputPreview(item.kanbanTask.id)}</p>{/if}<a href={`/task/${encodeURIComponent(item.kanbanTask.id)}`} class="mt-1 inline-block pl-5 text-[10px] text-primary hover:underline">View live progress</a>
+                      {#if item.kanbanTask && (running || queued)}<p class="mt-2 flex items-start gap-1.5 text-[10px] leading-4 text-muted-foreground"><Activity size={12} class={`mt-0.5 shrink-0 ${running ? "text-emerald-300" : "text-amber-200"}`} />{running ? `Working on · ${item.kanbanTask.title}` : `Queued · ${item.kanbanTask.title}`}</p>{#if running}<p class="mt-1 line-clamp-2 pl-5 text-[10px] leading-4 text-muted-foreground">{monitorOutputPreview(item.kanbanTask.id)}</p>{/if}<button type="button" class="mt-1 pl-5 text-[10px] text-primary hover:underline" onclick={() => void openTaskRunTab(item.kanbanTask!.id)}>View live progress in chat</button>
                       {:else if item.run && (running || queued)}<p class="mt-2 flex items-start gap-1.5 text-[10px] leading-4 text-muted-foreground"><Activity size={12} class={`mt-0.5 shrink-0 ${running ? "text-emerald-300" : "text-amber-200"}`} />{item.task ? `In use · ${item.task.title}` : item.run.trigger === "chat" ? "In use · Chat session" : "Agent run active"}</p>{/if}
                     </div></div>
                   </article>
                 {/each}</div>{/if}
               </section>
               <section>
-                <div class="mb-2 flex items-center justify-between"><h3 class="flex items-center gap-1.5 text-xs font-semibold"><ListTodo size={13} />Tasks</h3><a href={selectedProjectId ? `/?project=${encodeURIComponent(selectedProjectId)}&view=kanban` : "/?view=kanban"} class="text-[10px] text-primary hover:underline">Open board</a></div>
+                <div class="mb-2 flex items-center justify-between"><h3 class="flex items-center gap-1.5 text-xs font-semibold"><ListTodo size={13} />Tasks</h3><button type="button" class="text-[10px] text-primary hover:underline" onclick={() => openKanbanBoard(selectedProjectId)}>Open board</button></div>
                 {#if !visibleMonitorTasks.length}<p class="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">No tasks to show{selectedProject ? ` for ${selectedProject.name}` : ""}.</p>
                 {:else}<div class="space-y-1">{#each visibleMonitorTasks as task (task.id)}
                   {@const taskProject = projects.find((project) => project.id === task.projectId)}
-                  <a href={`/?project=${encodeURIComponent(task.projectId)}&view=kanban`} class="flex min-w-0 items-center gap-2 rounded-md border border-transparent px-2 py-2 transition hover:border-border hover:bg-accent/30"><span class={`size-1.5 shrink-0 rounded-full ${task.status === "running" ? "bg-emerald-400" : task.status === "failed" || task.status === "merge_conflict" ? "bg-red-400" : task.status === "completed" ? "bg-sky-300" : "bg-amber-300"}`}></span><span class="min-w-0 flex-1"><span class="block truncate text-[11px]">{task.title}</span><span class="mt-0.5 block truncate text-[9px] text-muted-foreground">{taskProject?.name ?? "Project"} · {task.status.replaceAll("_", " ")}</span></span></a>
+                  <button type="button" class="flex min-w-0 w-full items-center gap-2 rounded-md border border-transparent px-2 py-2 text-left transition hover:border-border hover:bg-accent/30" onclick={() => openKanbanBoard(task.projectId)} aria-label={`Open Kanban board for ${task.title}`}><span class={`size-1.5 shrink-0 rounded-full ${task.status === "running" ? "bg-emerald-400" : task.status === "failed" || task.status === "merge_conflict" ? "bg-red-400" : task.status === "completed" ? "bg-sky-300" : "bg-amber-300"}`}></span><span class="min-w-0 flex-1"><span class="block truncate text-[11px]">{task.title}</span><span class="mt-0.5 block truncate text-[9px] text-muted-foreground">{taskProject?.name ?? "Project"} · {task.status.replaceAll("_", " ")}</span></span></button>
                 {/each}</div>{/if}
               </section>
             </div>

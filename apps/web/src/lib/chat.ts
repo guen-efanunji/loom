@@ -117,10 +117,60 @@ export type Catalog = {
 	commands: Array<{ name: string; description?: string }>;
 };
 
+/** Resolve the selected Loom adapter when a provider reports its upstream vendor. */
+export function canonicalProviderID(
+	catalog: Catalog,
+	providerID?: string,
+	modelID?: string,
+) {
+	if (!providerID || !modelID) return providerID;
+	const reportedModel = modelID.toLowerCase();
+	const openCodeModel = catalog.models.find((item) => {
+		if (item.providerID.toLowerCase() !== "opencode") return false;
+		const catalogModel = item.modelID.toLowerCase();
+		return (
+			catalogModel === reportedModel ||
+			catalogModel.endsWith(`/${reportedModel}`) ||
+			reportedModel.endsWith(`/${catalogModel}`)
+		);
+	});
+	return openCodeModel ? "opencode" : providerID;
+}
+
+/** Resolve a runtime-reported model to the adapter/model key shown in the UI. */
+export function canonicalModelSelection(
+	catalog: Catalog,
+	providerID: string,
+	modelID: string,
+) {
+	const canonicalProvider = canonicalProviderID(catalog, providerID, modelID) ?? providerID;
+	const normalizedModel = modelID.toLowerCase();
+	const model = catalog.models.find((item) => {
+		if (item.providerID.toLowerCase() !== canonicalProvider.toLowerCase()) return false;
+		const candidate = item.modelID.toLowerCase();
+		return (
+			candidate === normalizedModel ||
+			candidate.endsWith(`/${normalizedModel}`) ||
+			normalizedModel.endsWith(`/${candidate}`)
+		);
+	});
+	return model ? `${model.providerID}/${model.modelID}` : `${canonicalProvider}/${modelID}`;
+}
+
 /** Return a user-facing provider name for both built-in and custom providers. */
-export function providerDisplayName(catalog: Catalog, providerID?: string) {
+export function providerDisplayName(
+	catalog: Catalog,
+	providerID?: string,
+	modelID?: string,
+) {
 	if (!providerID) return "Assistant";
-	const normalized = providerID.toLowerCase();
+	const normalized = (
+		canonicalProviderID(catalog, providerID, modelID) ?? providerID
+	).toLowerCase();
+	// OpenCode may report the upstream model vendor (for example, Google) in
+	// catalog metadata. The user selected the OpenCode adapter, so keep that
+	// identity in chat labels instead of exposing the upstream vendor.
+	if (normalized === "opencode") return "OpenCode";
 	const model = catalog.models.find(
 		(item) => item.providerID.toLowerCase() === normalized,
 	);
@@ -128,7 +178,6 @@ export function providerDisplayName(catalog: Catalog, providerID?: string) {
 	if (normalized === "agy" || normalized === "antigravity") return "Agy";
 	if (normalized === "claude" || normalized === "anthropic") return "Claude";
 	if (normalized === "codex" || normalized === "openai") return "Codex";
-	if (normalized === "opencode") return "OpenCode";
 	if (normalized.startsWith("loom_custom_")) {
 		const label = providerID
 			.slice("loom_custom_".length)
@@ -141,9 +190,27 @@ export function providerDisplayName(catalog: Catalog, providerID?: string) {
 }
 
 /** Hide internal custom-provider IDs if they appear in a runtime status string. */
-export function friendlyProviderStatus(catalog: Catalog, message?: string) {
+export function friendlyProviderStatus(
+	catalog: Catalog,
+	message?: string,
+	providerID?: string,
+	modelID?: string,
+) {
 	if (!message) return "";
 	let friendly = message;
+	const canonicalProvider = canonicalProviderID(catalog, providerID, modelID);
+	if (canonicalProvider === "opencode") {
+		const upstreamNames = new Set(
+			catalog.models
+				.filter((model) => model.providerID.toLowerCase() === "opencode")
+				.map((model) => model.provider?.trim())
+				.filter((name): name is string => !!name),
+		);
+		for (const upstreamName of upstreamNames) {
+			const escaped = upstreamName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+			friendly = friendly.replace(new RegExp(`\\b${escaped}\\b`, "gi"), "OpenCode");
+		}
+	}
 	const providerIDs = new Set(
 		catalog.models
 			.map((model) => model.providerID)

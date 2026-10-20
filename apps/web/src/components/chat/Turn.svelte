@@ -17,6 +17,7 @@ import {
 	type Catalog,
 	chat,
 	type FileDiff,
+	canonicalProviderID,
 	providerDisplayName,
 } from "$lib/chat";
 import { Button } from "$lib/components/ui/button";
@@ -47,10 +48,16 @@ let {
 const role = $derived(messages[0]?.info.role ?? "assistant");
 const first = $derived(messages[0]);
 const agent = $derived(messages.find((m) => m.info.agent)?.info.agent);
-const providerID = $derived(
+const reportedProviderID = $derived(
 	messages.find((m) => m.info.providerID)?.info.providerID,
 );
-const providerLabel = $derived(providerDisplayName(catalog, providerID));
+const modelID = $derived(messages.find((m) => m.info.modelID)?.info.modelID);
+const providerID = $derived(
+	canonicalProviderID(catalog, reportedProviderID, modelID),
+);
+const providerLabel = $derived(
+	providerDisplayName(catalog, reportedProviderID, modelID),
+);
 const modelTone = $derived(
 	providerID === "agy" || providerID === "antigravity"
 		? "agy"
@@ -62,7 +69,6 @@ const modelTone = $derived(
 					? "opencode"
 					: "default",
 );
-const modelID = $derived(messages.find((m) => m.info.modelID)?.info.modelID);
 const time = $derived(first ? first.info.time.created : Date.now());
 const completedAt = $derived(messages.at(-1)?.info.time.completed);
 const elapsed = $derived(
@@ -135,14 +141,16 @@ let inlineDiffs = $state<Record<string, InlineDiff | null>>({});
 let inlineDiffLoading = $state<Record<string, boolean>>({});
 let designPreviews = $state<Record<string, DesignNode>>({});
 let sessionDiffs = $state<FileDiff[] | null>(null);
-let diffPrefetchSession = "";
+let diffPrefetchSignature = "";
+let diffPrefetchRequest = 0;
 
 $effect(() => {
 	sessionId;
 	inlineDiffs = {};
 	inlineDiffLoading = {};
 	sessionDiffs = null;
-	diffPrefetchSession = "";
+	diffPrefetchSignature = "";
+	diffPrefetchRequest++;
 });
 
 function designIdOf(part: ChatPart) {
@@ -245,9 +253,15 @@ function fileOf(part: ChatPart) {
 	const input = part.state?.input as Record<string, unknown> | undefined;
 	for (const key of [
 		"filePath",
+		"fileName",
+		"file_name",
 		"TargetFile",
+		"targetFile",
 		"target_file",
+		"targetPath",
+		"target_path",
 		"file_path",
+		"absolute_path",
 		"AbsolutePath",
 		"DirectoryPath",
 		"path",
@@ -258,6 +272,15 @@ function fileOf(part: ChatPart) {
 			return input[key] as string;
 	}
 	return "";
+}
+function fileNameOf(path: string) {
+	return path.replaceAll("\\", "/").split("/").filter(Boolean).at(-1) || path;
+}
+function toolSubject(part: ChatPart, kind: ToolKind, file: string) {
+	if ((kind === "read" || kind === "edit") && file)
+		return fileNameOf(file);
+	if (kind === "read") return "file";
+	return commandOf(part);
 }
 function diffStats(part: ChatPart) {
 	const metadata = part.state?.metadata as
@@ -339,53 +362,41 @@ $effect(() => {
 	const currentSession = sessionId;
 	const editTools = messages.flatMap((message) =>
 		message.parts.flatMap((part) => {
-			if (part.type !== "tool" || kindOf(part) !== "edit" || diffStats(part))
-				return [];
+			if (part.type !== "tool" || kindOf(part) !== "edit") return [];
 			const file = fileOf(part);
-			return file
-				? [{ key: `${message.info.id}-${part.id}`, file }]
-				: [];
+			if (!file || diffStats(part)) return [];
+			return [{ key: `${message.info.id}-${part.id}`, file, status: statusOf(part) }];
 		}),
 	);
-	if (
-		!currentSession ||
-		!editTools.length
-	)
-		return;
-	if (sessionDiffs) {
-		const next = { ...inlineDiffs };
-		let changed = false;
-		for (const tool of editTools) {
-			if (next[tool.key]) continue;
-			const diff = sessionDiffs.find(
-				(item) =>
-					item.file === tool.file || tool.file.endsWith(`/${item.file}`),
-			);
-			if (!diff) continue;
-			next[tool.key] = {
-				file: diff.file,
-				patch: diff.patch,
-				additions: diff.additions,
-				deletions: diff.deletions,
-			};
-			changed = true;
-		}
-		if (changed) inlineDiffs = next;
-		return;
-	}
-	if (diffPrefetchSession === currentSession) return;
-
-	diffPrefetchSession = currentSession;
+	if (!currentSession || !editTools.length) return;
+	const signature = `${currentSession}:${editTools
+		.map((tool) => `${tool.key}:${tool.file}:${tool.status}`)
+		.join("|")}`;
+	if (signature === diffPrefetchSignature) return;
+	diffPrefetchSignature = signature;
+	const request = ++diffPrefetchRequest;
 	void chat
 		.diff(currentSession)
 		.then((diffs) => {
-			if (sessionId !== currentSession) return;
+			if (sessionId !== currentSession || request !== diffPrefetchRequest) return;
 			sessionDiffs = diffs;
+			const next = { ...inlineDiffs };
+			for (const tool of editTools) {
+				const diff = diffs.find(
+					(item) =>
+						item.file === tool.file || tool.file.endsWith(`/${item.file}`),
+				);
+				if (!diff) continue;
+				next[tool.key] = {
+					file: diff.file,
+					patch: diff.patch,
+					additions: diff.additions,
+					deletions: diff.deletions,
+				};
+			}
+			inlineDiffs = next;
 		})
-		.catch(() => {
-			if (diffPrefetchSession === currentSession)
-				diffPrefetchSession = "";
-		});
+		.catch(() => {});
 });
 
 function statusOf(part: ChatPart) {
@@ -478,7 +489,7 @@ async function copy() {
 								<button type="button" class="w-full text-left" onclick={() => (onopenfile ?? onfile)(file)} title={`Open ${file} in the project editor`}>
 									<Trace.Line class="w-full">
 										<Trace.Icon><FileCode size={14} /></Trace.Icon>
-										<Trace.Title class="min-w-0 flex-1 truncate">Read {file}</Trace.Title>
+										<Trace.Title class="min-w-0 flex-1 truncate">Read {fileNameOf(file)}</Trace.Title>
 										<Trace.Description class="shrink-0">Open file</Trace.Description>
 									</Trace.Line>
 								</button>
@@ -522,7 +533,7 @@ async function copy() {
 												<Trace.Icon>{#if kind === "shell"}<Terminal size={14} />{:else if kind === "read" || kind === "search"}<FileCode size={14} />{:else if kind === "edit"}<Pencil size={14} />{:else}<Wrench size={14} />{/if}</Trace.Icon>
 												<Trace.Title class="min-w-0 flex-1 truncate">
 													{toolStatus === "running" ? "Running" : toolStatus === "error" ? "Failed" : kind === "edit" ? "Edited" : kind === "read" ? "Read" : kind === "search" ? "Searched" : "Ran"}
-													{kind === "shell" ? commandOf(part) : (kind === "edit" || kind === "read") && file ? file : commandOf(part)}
+													{kind === "shell" ? commandOf(part) : toolSubject(part, kind, file)}
 												</Trace.Title>
 										</Trace.Line>
 									</Trace.CollapsibleTrigger>

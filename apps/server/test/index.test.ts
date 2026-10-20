@@ -40,25 +40,66 @@ async function createRepository() {
 }
 
 class FakeAgentRuntime implements AgentRuntime {
+	readonly sessionCwds: string[] = [];
+	activePrompts = 0;
+	maxConcurrentPrompts = 0;
 	private readonly sessions = new Map<
 		string,
-		{ cwd: string; status: AgentRunStatus }
+		{ cwd: string; status: AgentRunStatus; title: string; output?: string }
 	>();
 	private nextId = 0;
 
 	async createSession(input: { cwd: string; title: string }) {
 		const id = `fake-session-${++this.nextId}`;
-		this.sessions.set(id, { cwd: input.cwd, status: "queued" });
+		this.sessionCwds.push(input.cwd);
+		this.sessions.set(id, { cwd: input.cwd, status: "queued", title: input.title });
 		return { id };
 	}
 
 	async prompt(input: { sessionId: string; prompt: string }) {
 		const session = this.sessions.get(input.sessionId);
 		if (!session) throw new Error("Fake session not found");
-		await writeFile(join(session.cwd, "agent.txt"), `${input.prompt}\n`);
+		this.activePrompts++;
+		this.maxConcurrentPrompts = Math.max(this.maxConcurrentPrompts, this.activePrompts);
+		await Bun.sleep(30);
+		if (session.title.startsWith("Review:")) {
+			// Decide from the checkpoint diff: the task brief re-embeds the
+			// previous findings after every repair round, so the review must look
+			// at the fixed output, not the finding text.
+			const checkpointDiff = input.prompt.split("Checkpoint diff:").at(-1) ?? "";
+			const hasRaceBug = checkpointDiff.includes("BUG_RACE");
+			session.output = JSON.stringify({
+				decision: hasRaceBug ? "request_changes" : "approve",
+				summary: hasRaceBug ? "Race condition found" : "All checks passed",
+				findings: hasRaceBug
+					? [{ severity: "high", file: "backend-race.txt", message: "BUG_RACE: protect shared update with a lock", suggestedAction: "Add a lock around the update" }]
+					: [],
+			});
+			session.status = "completed";
+			this.activePrompts--;
+			return;
+		}
+		const content = input.prompt.includes("Repair round")
+			? "FIXED_RACE\n"
+			: session.title.toLowerCase().includes("race")
+				? "BUG_RACE\n"
+				: `${input.prompt}\n`;
+		const titleSlug = session.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+		const fileName = session.title.toLowerCase().includes("race")
+			? "backend-race.txt"
+			: /^(backend|frontend)-/.test(titleSlug)
+				? `${titleSlug}.txt`
+				: "agent.txt";
+		await writeFile(join(session.cwd, fileName), content);
 		await runGit(["add", "agent.txt"], session.cwd);
-		await runGit(["commit", "-m", "agent change"], session.cwd);
+		if (fileName !== "agent.txt") await runGit(["add", fileName], session.cwd);
+		await runGit(["commit", "-m", session.title.startsWith("Review:") ? "review" : "agent change"], session.cwd);
 		session.status = "completed";
+		this.activePrompts--;
+	}
+
+	async readOutput(sessionId: string) {
+		return { output: this.sessions.get(sessionId)?.output ?? "" };
 	}
 
 	async status(sessionId: string) {
@@ -89,7 +130,7 @@ class FakeAgentRuntime implements AgentRuntime {
 	}
 }
 
-async function createTestSetup() {
+async function createTestSetup(options: { allowAutoMerge?: boolean } = {}) {
 	const root = await createRepository();
 	const home = await mkdtemp(join(tmpdir(), "loom-server-home-"));
 	const databasePath = join(home, "state.db");
@@ -101,11 +142,22 @@ async function createTestSetup() {
 		path: root,
 		defaultBranch: "main",
 	});
+	const runtime = new FakeAgentRuntime();
+	const reviewerRuntime = new FakeAgentRuntime();
 	await database.insert(customAgents).values({
 		id: "kanban-test-agent",
 		projectId: project.id,
 		label: "Test agent",
 		role: "backend",
+		provider: "opencode",
+		status: "active",
+		allowKanban: true,
+	});
+	await database.insert(customAgents).values({
+		id: "kanban-test-frontend-agent",
+		projectId: project.id,
+		label: "Test frontend agent",
+		role: "frontend",
 		provider: "opencode",
 		status: "active",
 		allowKanban: true,
@@ -116,7 +168,15 @@ async function createTestSetup() {
 		artifacts: repos.taskArtifacts,
 		integrationLeases: repos.integrationLeases,
 		worktree: new WorktreeManager({ home }),
-		runtime: new FakeAgentRuntime(),
+		runtime,
+		reviewPolicies: repos.reviewPolicies,
+		allowAutoMerge: options.allowAutoMerge,
+		resolveReviewerExecutor: async () => ({
+			runtime: reviewerRuntime,
+			providerId: "fake-reviewer",
+			modelId: null,
+			snapshot: { kind: "direct", providerId: "fake-reviewer" },
+		}),
 	});
 	const daemon = await createApp({
 		config,
@@ -126,7 +186,7 @@ async function createTestSetup() {
 		startOpenCode: false,
 		initializeProviders: false,
 	});
-	return { daemon, database, home, root, project, repos };
+	return { daemon, database, home, root, project, repos, runtime, reviewerRuntime };
 }
 
 describe("server API", () => {
@@ -525,6 +585,108 @@ describe("server API", () => {
 			expect(await readFile(join(setup.root, "agent.txt"), "utf8")).toBe(
 				"hello\n",
 			);
+		} finally {
+			await setup.daemon.close();
+			await rm(setup.root, { recursive: true, force: true });
+			await rm(setup.home, { recursive: true, force: true });
+		}
+	});
+
+	test("runs four independent Kanban tasks in isolated worktrees and repairs a reviewed race bug", async () => {
+		const setup = await createTestSetup({ allowAutoMerge: true });
+		const headers = {
+			Authorization: "Bearer test-token",
+			"Content-Type": "application/json",
+		};
+		try {
+			const previousAutoMergeFlag = process.env.LOOM_ENABLE_KANBAN_AUTO_MERGE;
+			process.env.LOOM_ENABLE_KANBAN_AUTO_MERGE = "true";
+			const policy = await setup.daemon.app.request(
+				`/api/projects/${setup.project.id}/review-policy`,
+				{
+					method: "PUT",
+					headers,
+					body: JSON.stringify({
+						mode: "automatic",
+						reviewerExecutorJson: JSON.stringify({
+							kind: "direct",
+							providerId: "fake-reviewer",
+							modelId: null,
+						}),
+						autoMerge: true,
+						requiredChecksJson: "[]",
+						maxRevisionRounds: 2,
+					}),
+				},
+			);
+			if (previousAutoMergeFlag === undefined)
+				delete process.env.LOOM_ENABLE_KANBAN_AUTO_MERGE;
+			else process.env.LOOM_ENABLE_KANBAN_AUTO_MERGE = previousAutoMergeFlag;
+			expect(policy.status).toBe(200);
+			const taskIds: string[] = [];
+			for (const [title, agentId] of [
+				["Backend race condition", "kanban-test-agent"],
+				["Backend API endpoint", "kanban-test-agent"],
+				["Frontend form validation", "kanban-test-frontend-agent"],
+				["Frontend loading state", "kanban-test-frontend-agent"],
+			] as const) {
+				const created = await setup.daemon.app.request("/api/tasks", {
+					method: "POST",
+					headers,
+					body: JSON.stringify({
+						projectId: setup.project.id,
+						title,
+						prompt: `Implement ${title}`,
+						acceptanceCriteria: [`${title} is implemented`],
+						executor: { kind: "agent", agentId },
+					}),
+				});
+				expect(created.status).toBe(201);
+				taskIds.push(((await created.json()) as { id: string }).id);
+			}
+			await Promise.all(
+				taskIds.map((id) =>
+					setup.daemon.app.request(`/api/tasks/${id}/start`, {
+						method: "POST",
+						headers,
+					}),
+				),
+			);
+			for (const id of taskIds) {
+				let status = "queued";
+				const deadline = Date.now() + 10_000;
+				while (Date.now() < deadline && status !== "completed") {
+					const response = await setup.daemon.app.request(`/api/tasks/${id}`, { headers });
+					status = ((await response.json()) as { status: string }).status;
+					if (status !== "completed") await Bun.sleep(20);
+				}
+				expect(status).toBe("completed");
+				const checkpoint = await setup.daemon.app.request(`/api/tasks/${id}/checkpoint`, {
+					method: "POST",
+					headers,
+				});
+				expect(checkpoint.status).toBe(200);
+				expect(
+					((await checkpoint.json()) as { review?: { status: string } }).review
+						?.status,
+				).toBe("approved");
+			}
+
+			for (const id of taskIds) {
+				const reviewedTask = await setup.daemon.app.request(`/api/tasks/${id}`, { headers });
+				expect(((await reviewedTask.json()) as { status: string }).status).toBe("completed");
+			}
+			const reviewedTask = await setup.daemon.app.request(`/api/tasks/${taskIds[0]}`, { headers });
+			expect(((await reviewedTask.json()) as { status: string }).status).toBe("completed");
+			expect(await readFile(join(setup.root, "backend-race.txt"), "utf8")).toBe("FIXED_RACE\n");
+
+			const distinctWorktrees = new Set(setup.runtime.sessionCwds);
+			expect(taskIds).toHaveLength(4);
+			expect(setup.runtime.sessionCwds).toHaveLength(5);
+			expect(setup.reviewerRuntime.sessionCwds).toHaveLength(5);
+			expect(distinctWorktrees.size).toBe(4);
+			expect(setup.runtime.maxConcurrentPrompts).toBeGreaterThan(1);
+			expect([...distinctWorktrees].every((path) => path !== setup.root)).toBe(true);
 		} finally {
 			await setup.daemon.close();
 			await rm(setup.root, { recursive: true, force: true });

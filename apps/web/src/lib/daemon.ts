@@ -1131,7 +1131,14 @@ export const daemon = {
 		}),
 	retryTask: (id: string) =>
 		request<{ id: string }>(`/api/tasks/${id}/retry`, { method: "POST" }),
-	renameTask: (id: string, input: { title?: string; prompt?: string }) =>
+	renameTask: (
+		id: string,
+		input: {
+			title?: string;
+			prompt?: string;
+			executor?: TaskExecutor | null;
+		},
+	) =>
 		request<Task>(`/api/tasks/${id}`, {
 			method: "PATCH",
 			body: JSON.stringify(input),
@@ -1145,7 +1152,17 @@ export const daemon = {
 		),
 	getRuns: (id: string) => request<AgentRun[]>(`/api/tasks/${id}/runs`),
 	getOutput: (id: string) =>
-		request<{ output: string; truncated: boolean }>(`/api/tasks/${id}/output`),
+		request<{
+			output: string;
+			truncated: boolean;
+			activities?: Array<{
+				id: string;
+				tool: string;
+				status: "running" | "completed" | "error";
+				input?: Record<string, unknown>;
+				metadata?: Record<string, unknown>;
+			}>;
+		}>(`/api/tasks/${id}/output`),
 	getScheduler: () => request<SchedulerState>("/api/scheduler"),
 	getPermissions: () => request<PermissionRequest[]>("/api/permissions"),
 	decidePermission: (id: string, decision: "allow_once" | "allow" | "deny") =>

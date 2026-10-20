@@ -282,13 +282,22 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 	private readonly directories = new Map<string, string>();
 	private readonly cancelled = new Set<string>();
 	private readonly lastErrors = new Map<string, string>();
+	private readonly idleSince = new Map<string, number>();
+	private readonly idleTimeoutMs: number;
 
-	constructor(options: { baseUrl?: string; fetcher?: Fetcher } = {}) {
+	constructor(
+		options: {
+			baseUrl?: string;
+			fetcher?: Fetcher;
+			idleTimeoutMs?: number;
+		} = {},
+	) {
 		this.baseUrl = (options.baseUrl ?? "http://127.0.0.1:4096").replace(
 			/\/$/,
 			"",
 		);
 		this.fetcher = options.fetcher ?? fetch;
+		this.idleTimeoutMs = options.idleTimeoutMs ?? 15_000;
 	}
 
 	async request<T = unknown>(
@@ -419,11 +428,11 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 			{},
 			directory,
 		);
-		if (
-			statuses[sessionId]?.type === "busy" ||
-			statuses[sessionId]?.type === "retry"
-		)
+		const entry = statuses[sessionId]?.type;
+		if (entry === "busy" || entry === "retry") {
+			this.idleSince.delete(sessionId);
 			return "running";
+		}
 		const messages = await this.request<
 			Array<{
 				info: {
@@ -437,12 +446,34 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 		if (last?.error) {
 			const detail = last.error.data?.message || last.error.name || "";
 			this.lastErrors.set(sessionId, detail || "the agent reported an error");
+			this.idleSince.delete(sessionId);
 			return "failed";
 		}
+		if (last?.role === "assistant" && last.time.completed) {
+			this.idleSince.delete(sessionId);
+			this.lastErrors.delete(sessionId);
+			return "completed";
+		}
+		// An absent status entry is not a sign of progress: the server may have
+		// restarted, dropped the session, or the prompt failed before any
+		// assistant response. Waiting forever here is what previously left task
+		// runs stuck as "running" with no provider output.
+		if (!entry || entry === "idle") {
+			const now = Date.now();
+			const since = this.idleSince.get(sessionId) ?? now;
+			this.idleSince.set(sessionId, since);
+			if (now - since >= this.idleTimeoutMs) {
+				this.lastErrors.set(
+					sessionId,
+					entry
+						? "OpenCode became idle without an assistant response. Check that the selected provider and model are available in OpenCode, then retry the task."
+						: "OpenCode stopped reporting status for this session without an assistant response. Check that the selected provider and model are available in OpenCode, then retry the task.",
+				);
+				return "failed";
+			}
+		}
 		this.lastErrors.delete(sessionId);
-		return last?.role === "assistant" && last.time.completed
-			? "completed"
-			: "running";
+		return "running";
 	}
 
 	/**
@@ -498,6 +529,7 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 		this.directories.delete(sessionId);
 		this.cancelled.delete(sessionId);
 		this.lastErrors.delete(sessionId);
+		this.idleSince.delete(sessionId);
 	}
 
 	async readOutput(sessionId: string): Promise<RuntimeOutput | null> {

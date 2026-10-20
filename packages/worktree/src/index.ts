@@ -327,13 +327,26 @@ export class WorktreeManager {
 			input.runId,
 		);
 		const branch = getWorktreeBranch(input.taskId, input.runId);
-		const baseCommit = input.baseRef
-			? await runGit(
+		let baseCommit = repository.head;
+		if (input.baseRef) {
+			try {
+				baseCommit = await runGit(
 					this.runner,
 					["rev-parse", "--verify", `${input.baseRef}^{commit}`],
 					repository.path,
+				);
+			} catch (error) {
+				if (
+					error instanceof WorktreeError &&
+					error.code !== "COMMAND_FAILED"
 				)
-			: repository.head;
+					throw error;
+				// The configured base branch no longer exists (e.g. a stale
+				// default branch); fall back to the repository HEAD instead of
+				// failing the task before it even starts.
+				baseCommit = repository.head;
+			}
+		}
 		if (
 			resolve(path) !== path ||
 			!resolve(path).startsWith(worktreeRoot(this.home) + sep)

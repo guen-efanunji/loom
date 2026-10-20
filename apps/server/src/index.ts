@@ -114,6 +114,7 @@ import { type ChatRequestGateway, createChatRoutes } from "./chat";
 import { type DaemonConfig, loadDaemonConfig } from "./config";
 import { createContext } from "./context";
 import { createContextHubRoutes } from "./context-hub";
+import { runtimeModelRef } from "./executor-model";
 import { createMcpManagerRoutes } from "./mcp-manager";
 import {
 	type AgyPermissionStore,
@@ -875,7 +876,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			modelId = String(
 				catalogModel?.metadata?.modelId ?? catalogModel?.name ?? modelId,
 			);
-			model = { providerID: adapter.definition.id, modelID: modelId };
+			model = runtimeModelRef(adapter.definition.id, modelId);
 		}
 		if (
 			permissionMode === "ask" &&
@@ -3639,7 +3640,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	});
 	app.post("/api/tasks/:id/review/run", async (c) => {
 		try {
-			const review = await orchestrator.runTaskReview(c.req.param("id"));
+			const review = await orchestrator.runTaskReviewWithRepairs(c.req.param("id"));
 			return c.json({ review }, 201);
 		} catch (error) {
 			return errorResponse(c, error);
@@ -3808,6 +3809,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 				.object({
 					title: z.string().trim().min(1).max(200).optional(),
 					prompt: z.string().trim().min(1).max(20000).optional(),
+					executor: taskExecutorSchema.nullable().optional(),
 				})
 				.parse(await jsonBody(c));
 			const task = await orchestrator.renameTask(c.req.param("id"), input);
@@ -3865,8 +3867,39 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	});
 	app.post("/api/tasks/:id/checkpoint", async (c) => {
 		try {
-			const { outputSha } = await orchestrator.checkpoint(c.req.param("id"));
-			return c.json({ outputSha });
+			const taskId = c.req.param("id");
+			let task = await repos.tasks.getById(taskId);
+			if (!task) return errorResponse(c, new Error("Task not found"));
+			const policy = await orchestrator.getReviewPolicy(task.projectId);
+			if (policy.mode === "automatic") {
+				// The automatic pipeline checkpoints and reviews on completion and
+				// can already merge an approved task. Repeat checkpoints must wait
+				// for that pipeline to settle, then return the settled review
+				// instead of failing on the discarded workspace.
+				const deadline = Date.now() + 5_000;
+				while (
+					Date.now() < deadline &&
+					!(task.status === "completed" && !task.workspaceId)
+				) {
+					await Bun.sleep(50);
+					task = await repos.tasks.getById(taskId);
+					if (!task) return errorResponse(c, new Error("Task not found"));
+				}
+				if (task.status === "completed" && !task.workspaceId) {
+					const latest = await repos.taskReviews.list(taskId);
+					const settled = latest.at(0);
+					return c.json({
+						outputSha: settled?.subjectSha ?? "",
+						...(settled ? { review: settled } : {}),
+					});
+				}
+			}
+			const { outputSha } = await orchestrator.checkpoint(taskId);
+			const review =
+				policy.mode === "automatic"
+					? await orchestrator.runTaskReviewWithRepairs(taskId)
+					: undefined;
+			return c.json({ outputSha, ...(review ? { review } : {}) });
 		} catch (error) {
 			return errorResponse(c, error);
 		}

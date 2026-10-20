@@ -15,15 +15,16 @@ let {
 	projectId,
 	tasks = [],
 	onChanged,
+	onTaskStarted,
 }: {
 	projectId: string;
 	tasks?: Task[];
 	onChanged?: () => unknown;
+	onTaskStarted?: (taskId: string) => unknown;
 } = $props();
 
 const columns = [
 	{ key: "queued", label: "Backlog" },
-	{ key: "ready", label: "Ready" },
 	{ key: "running", label: "In progress" },
 	{ key: "review", label: "Review" },
 	{ key: "done", label: "Done" },
@@ -31,8 +32,7 @@ const columns = [
 ];
 
 function column(task: Task) {
-	if (task.status === "queued" || task.status === "blocked") return "queued";
-	if (task.status === "ready") return "ready";
+	if (["queued", "ready", "blocked"].includes(task.status)) return "queued";
 	if (["preparing", "running"].includes(task.status)) return "running";
 	if (
 		["ready_to_merge", "merge_conflict"].includes(task.status)
@@ -73,6 +73,9 @@ let projectGitAvailable = $state(true);
 let availableAgents = $state<
 	Array<{ id: string; label: string; provider: string; modelId: string | null }>
 >([]);
+let reviewerAgents = $state<
+	Array<{ id: string; label: string; provider: string; modelId: string | null }>
+>([]);
 let availableProviders = $state<Awaited<ReturnType<typeof daemon.listProviders>>>([]);
 let availableModels = $state<Awaited<ReturnType<typeof daemon.listProviderModels>>>([]);
 let agentsLoading = $state(false);
@@ -80,52 +83,76 @@ let modelsLoading = $state(false);
 let editTask = $state<Task | null>(null);
 let editTitle = $state("");
 let editPrompt = $state("");
+let editAgentId = $state("");
 let deleteTask = $state<Task | null>(null);
 let selectedIntegrationTaskIds = $state<string[]>([]);
+let selectedRunTaskIds = $state<string[]>([]);
 let integrationBatches = $state<IntegrationBatch[]>([]);
 let integrationDiffs = $state<Record<string, string>>({});
 let integrationChecksText = $state("");
 let reviewPolicy = $state<ProjectReviewPolicy | null>(null);
-let reviewPolicyChecksText = $state("");
-let reviewerExecutorText = $state("");
+let reviewerAgentId = $state("");
+const selectedReviewerAgent = $derived(
+	reviewerAgents.find((agent) => agent.id === reviewerAgentId),
+);
+const reviewerAgentLabel = $derived(
+	selectedReviewerAgent
+		? `${selectedReviewerAgent.label} · ${selectedReviewerAgent.provider}${selectedReviewerAgent.modelId ? ` / ${selectedReviewerAgent.modelId}` : ""}`
+		: "Choose a registered agent",
+);
 let reviewPolicyBusy = $state(false);
-let autoMergeAvailable = $state(false);
 
 onMount(() => {
 	void loadIntegrationBatches();
 	void loadReviewPolicy();
+	void loadReviewAgents();
 });
 
 async function loadReviewPolicy() {
 	try {
 		const result = await daemon.getProjectReviewPolicy(projectId);
 		reviewPolicy = result.policy;
-		autoMergeAvailable = result.autoMergeAvailable;
-		reviewerExecutorText = result.policy.reviewerExecutorJson ?? "";
-		const checks = JSON.parse(result.policy.requiredChecksJson) as Array<{ command: string; args?: string[] }>;
-		reviewPolicyChecksText = checks.map((check) => [check.command, ...(check.args ?? [])].join(" ")).join("\n");
+		try {
+			const executor = result.policy.reviewerExecutorJson
+				? JSON.parse(result.policy.reviewerExecutorJson) as { kind?: string; agentId?: string }
+				: null;
+			reviewerAgentId = executor?.kind === "agent" ? executor.agentId ?? "" : "";
+		} catch {
+			reviewerAgentId = "";
+		}
 	} catch {
 		reviewPolicy = null;
 	}
 }
 
+async function loadReviewAgents() {
+	try {
+		const agents = await daemon.listCustomAgents(projectId);
+		reviewerAgents = agents.filter((agent) => agent.status === "active");
+	} catch {
+		reviewerAgents = [];
+	}
+}
+
 async function saveReviewPolicy() {
 	if (!reviewPolicy || reviewPolicyBusy) return;
+	if (reviewPolicy.mode === "automatic" && !reviewerAgentId) {
+		toast.error("Choose an active reviewer agent first");
+		return;
+	}
 	reviewPolicyBusy = true;
 	try {
-		const requiredChecks = reviewPolicyChecksText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
-			const [command, ...args] = line.split(/\s+/);
-			return { name: command!, command: command!, args };
-		});
 		const { policy } = await daemon.setProjectReviewPolicy(projectId, {
-			mode: reviewPolicy.mode,
-			reviewerExecutorJson: reviewerExecutorText.trim() || null,
-			autoMerge: reviewPolicy.mode === "automatic" && reviewPolicy.autoMerge,
-			requiredChecksJson: JSON.stringify(requiredChecks),
+			mode: reviewPolicy.mode === "hybrid" ? "manual" : reviewPolicy.mode,
+			reviewerExecutorJson: reviewPolicy.mode === "automatic"
+				? JSON.stringify({ kind: "agent", agentId: reviewerAgentId })
+				: null,
+			autoMerge: false,
+			requiredChecksJson: reviewPolicy.requiredChecksJson,
 			maxRevisionRounds: reviewPolicy.maxRevisionRounds,
 		});
 		reviewPolicy = policy;
-		toast.success(`Review policy saved · v${policy.version}`);
+		toast.success(policy.mode === "automatic" ? "Automatic review enabled" : "Manual review enabled");
 	} catch (reason) {
 		toast.error(reason instanceof Error ? reason.message : "Unable to save review policy");
 	} finally {
@@ -150,6 +177,35 @@ function toggleIntegrationTask(taskId: string, checked: boolean) {
 	selectedIntegrationTaskIds = checked
 		? [...new Set([...selectedIntegrationTaskIds, taskId])]
 		: selectedIntegrationTaskIds.filter((id) => id !== taskId);
+}
+
+function toggleRunTask(taskId: string, checked: boolean) {
+	selectedRunTaskIds = checked
+		? [...new Set([...selectedRunTaskIds, taskId])]
+		: selectedRunTaskIds.filter((id) => id !== taskId);
+}
+
+async function runSelectedTasks() {
+	if (!selectedRunTaskIds.length || busy) return;
+	const ids = [...selectedRunTaskIds];
+	busy = true;
+	try {
+		const results = await Promise.allSettled(ids.map((id) => daemon.startTask(id)));
+		const started = results.filter((result) => result.status === "fulfilled").length;
+		const startedIds = results.flatMap((result, index) =>
+			result.status === "fulfilled" ? [ids[index]!] : [],
+		);
+		const failed = results.length - started;
+		selectedRunTaskIds = [];
+		if (failed) toast.warning(`${started} tasks queued · ${failed} could not start`);
+		else toast.success(`${started} tasks queued · Loom will run eligible tasks in parallel`);
+		await refresh();
+		for (const id of startedIds) onTaskStarted?.(id);
+	} catch (reason) {
+		toast.error(reason instanceof Error ? reason.message : "Unable to queue tasks");
+	} finally {
+		busy = false;
+	}
 }
 
 async function createIntegrationBatch() {
@@ -385,19 +441,51 @@ async function doAdd() {
 	}
 }
 
+async function loadKanbanAgents() {
+	agentsLoading = true;
+	try {
+		const agents = await daemon.listCustomAgents(projectId);
+		availableAgents = agents
+			.filter(
+				(agent) =>
+					agent.status === "active" &&
+					agent.allowKanban &&
+					agent.approvalPolicy !== "read_only",
+			)
+			.map((agent) => ({
+				id: String(agent.id),
+				label: String(agent.label),
+				provider: String(agent.provider),
+				modelId: typeof agent.modelId === "string" ? agent.modelId : null,
+			}));
+	} catch {
+		availableAgents = [];
+	} finally {
+		agentsLoading = false;
+	}
+}
+
 function openEdit(task: Task) {
 	editTask = task;
 	editTitle = task.title;
 	editPrompt = task.prompt;
+	editAgentId = task.executor?.kind === "agent" ? task.executor.agentId : "";
+	if (!availableAgents.length && !agentsLoading) void loadKanbanAgents();
 }
 
 async function doEdit() {
 	if (!editTask || !editTitle.trim() || busy) return;
+	const currentAgentId =
+		editTask.executor?.kind === "agent" ? editTask.executor.agentId : "";
 	busy = true;
 	try {
 		await daemon.renameTask(editTask.id, {
 			title: editTitle.trim(),
 			prompt: editPrompt.trim() || undefined,
+			executor:
+				editAgentId && editAgentId !== currentAgentId
+					? { kind: "agent", agentId: editAgentId }
+					: undefined,
 		});
 		editTask = null;
 		toast.success("Task updated");
@@ -434,6 +522,7 @@ async function doRun(task: Task) {
 		await daemon.startTask(task.id);
 		toast.success("Task started");
 		await refresh();
+		onTaskStarted?.(task.id);
 	} catch (reason) {
 		toast.error(
 			reason instanceof Error ? reason.message : "Unable to start task",
@@ -449,10 +538,27 @@ async function doRetry(task: Task) {
 		await daemon.retryTask(task.id);
 		toast.success("Task queued for retry");
 		await refresh();
+		onTaskStarted?.(task.id);
 	} catch (reason) {
 		toast.error(
 			reason instanceof Error ? reason.message : "Unable to retry task",
 		);
+	} finally {
+		busy = false;
+	}
+}
+
+async function doReviewAndRepair(task: Task) {
+	busy = true;
+	try {
+		const { review } = await daemon.runTaskReview(task.id);
+		if (review.status === "approved") toast.success("Review passed · task is ready for integration");
+		else if (review.status === "changes_requested") toast.warning("Repair limit reached · review findings need attention");
+		else toast.warning("Review is blocked · inspect the reviewer findings");
+		await refresh();
+	} catch (reason) {
+		toast.error(reason instanceof Error ? reason.message : "Review and repair failed");
+		await refresh();
 	} finally {
 		busy = false;
 	}
@@ -478,30 +584,34 @@ async function doCancel(task: Task) {
 	<div class="flex flex-wrap items-center justify-between gap-2">
 		<p class="text-sm text-muted-foreground">{tasks.length} tasks · drag cards to reorder</p>
 		<div class="flex flex-wrap items-center gap-2">
+			{#if selectedRunTaskIds.length}<Button size="sm" variant="outline" onclick={() => void runSelectedTasks()} disabled={busy}>Run {selectedRunTaskIds.length} selected</Button>{/if}
 			{#if selectedIntegrationTaskIds.length >= 2}<Button size="sm" variant="outline" onclick={() => void createIntegrationBatch()} disabled={busy}>Assemble {selectedIntegrationTaskIds.length} outputs</Button>{/if}
 			<Button size="sm" onclick={() => void openAddTask()} disabled={busy}><Plus size={15} />Add task</Button>
 		</div>
 	</div>
 	{#if reviewPolicy}
-		<details class="rounded-lg border bg-card px-3 py-2">
-			<summary class="cursor-pointer text-sm font-medium">Review policy · {reviewPolicy.mode} · v{reviewPolicy.version}</summary>
-			<div class="mt-3 grid gap-3 md:grid-cols-[180px_1fr_1fr_auto] md:items-end">
-				<label class="grid gap-1 text-xs text-muted-foreground">Review mode
-					<select class="h-9 rounded-md border bg-background px-2 text-sm text-foreground" value={reviewPolicy.mode} onchange={(event) => { const mode = event.currentTarget.value as ProjectReviewPolicy["mode"]; reviewPolicy = { ...reviewPolicy!, mode, autoMerge: mode === "automatic" && reviewPolicy!.autoMerge }; }}>
-						<option value="manual">Manual</option><option value="hybrid">Hybrid</option><option value="automatic">Automatic review</option>
-					</select>
-				</label>
-				<label class="grid gap-1 text-xs text-muted-foreground">Required checks · one command per line
-					<Textarea bind:value={reviewPolicyChecksText} rows={2} placeholder="bun run check-types&#10;bun test" />
-				</label>
-				<label class="grid gap-1 text-xs text-muted-foreground">Reviewer executor · required for hybrid/automatic
-					<Textarea bind:value={reviewerExecutorText} rows={2} placeholder={'{"kind":"agent","agentId":"…"}'} />
-				</label>
-				<Button size="sm" variant="outline" disabled={reviewPolicyBusy} onclick={() => void saveReviewPolicy()}>{reviewPolicyBusy ? "Saving…" : "Save policy"}</Button>
+		<section class="grid gap-3 rounded-xl border bg-card/40 p-3 sm:grid-cols-[minmax(170px,220px)_minmax(220px,1fr)_auto] sm:items-end" aria-label="Task review settings">
+			<div class="grid gap-1.5">
+				<label class="text-xs font-medium text-muted-foreground" for="kanban-review-mode">Task review</label>
+				<Select.Root type="single" value={reviewPolicy.mode === "automatic" ? "automatic" : "manual"} onValueChange={(value) => { if (value === "manual" || value === "automatic") reviewPolicy = { ...reviewPolicy!, mode: value }; }}>
+					<Select.Trigger id="kanban-review-mode" class="h-9 w-full" aria-label="Task review mode"><Select.Value /></Select.Trigger>
+					<Select.Content><Select.Item value="manual">Manual review</Select.Item><Select.Item value="automatic">Automatic review</Select.Item></Select.Content>
+				</Select.Root>
 			</div>
-			{#if autoMergeAvailable}<label class="mt-3 flex items-center gap-2 text-xs text-muted-foreground"><Checkbox.Root bind:checked={reviewPolicy.autoMerge} disabled={reviewPolicy.mode !== "automatic"} aria-label="Allow automatic merge after review" /> Allow automatic merge after required checks and approved automated review</label>{/if}
-			<p class="mt-2 text-xs text-muted-foreground">Policy changes invalidate prior approvals. Automatic merge availability is controlled by the server feature flag.</p>
-		</details>
+			{#if reviewPolicy.mode === "automatic"}
+				<div class="grid gap-1.5">
+					<label class="text-xs font-medium text-muted-foreground" for="kanban-reviewer-agent">Reviewer agent</label>
+					<Select.Root type="single" value={reviewerAgentId || "__none"} onValueChange={(value) => reviewerAgentId = value === "__none" ? "" : value}>
+						<Select.Trigger id="kanban-reviewer-agent" class="h-9 w-full" aria-label="Reviewer agent">{reviewerAgentLabel}</Select.Trigger>
+						<Select.Content><Select.Item value="__none" disabled>Choose a registered agent</Select.Item>{#each reviewerAgents as agent (agent.id)}<Select.Item value={agent.id}>{agent.label} · {agent.provider}{agent.modelId ? ` / ${agent.modelId}` : ""}</Select.Item>{/each}</Select.Content>
+					</Select.Root>
+					{#if !reviewerAgents.length}<p class="text-xs text-muted-foreground">No active agents are registered for this project.</p>{/if}
+				</div>
+			{:else}
+				<p class="pb-2 text-xs text-muted-foreground">Automatic checks are off. Inspect the task output and use the task review controls when you are ready.</p>
+			{/if}
+			<Button size="sm" variant="outline" class="w-full sm:w-auto" disabled={reviewPolicyBusy || (reviewPolicy.mode === "automatic" && !reviewerAgentId)} onclick={() => void saveReviewPolicy()}>{reviewPolicyBusy ? "Saving…" : "Save review settings"}</Button>
+		</section>
 	{/if}
 	{#if integrationBatches.length}
 		<section class="space-y-2 rounded-xl border p-3" aria-label="Integration batches">
@@ -531,7 +641,7 @@ async function doCancel(task: Task) {
 			{/each}
 		</section>
 	{/if}
-	<div class="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-x-auto sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6">
+	<div class="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-x-auto sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-5">
 		{#each columns as item}
 			{@const cards = ordered.filter((task) => column(task) === item.key)}
 			<section
@@ -569,6 +679,7 @@ async function doCancel(task: Task) {
 							}}
 						>
 							<div class="flex items-start gap-1">
+								{#if ["queued", "ready"].includes(task.status)}<Checkbox.Root aria-label={`Select ${task.title} to run`} checked={selectedRunTaskIds.includes(task.id)} onCheckedChange={(checked) => toggleRunTask(task.id, checked === true)} />{/if}
 								{#if task.status === "ready_to_merge"}<Checkbox.Root aria-label={`Select ${task.title} for integration`} checked={selectedIntegrationTaskIds.includes(task.id)} onCheckedChange={(checked) => toggleIntegrationTask(task.id, checked === true)} />{/if}
 								<span class="mt-0.5 cursor-grab text-muted-foreground" title="Drag to reorder" aria-hidden="true"><GripVertical size={14} /></span>
 								<p class="min-w-0 flex-1 text-sm font-medium break-words">{task.title}</p>
@@ -583,6 +694,7 @@ async function doCancel(task: Task) {
 							</div>
 							<div class="flex flex-wrap gap-1">
 								{#if ["queued", "ready"].includes(task.status)}<Button size="sm" variant="outline" disabled={busy} onclick={() => doRun(task)}>Run</Button>{/if}
+								{#if task.status === "ready_to_merge" && reviewPolicy?.mode !== "manual"}<Button size="sm" variant="outline" disabled={busy} onclick={() => doReviewAndRepair(task)}>Review & fix</Button>{/if}
 								{#if ["failed", "cancelled"].includes(task.status)}<Button size="sm" variant="outline" disabled={busy} onclick={() => doRetry(task)}>Retry</Button>{/if}
 								{#if ["queued", "preparing", "running"].includes(task.status)}<Button size="sm" variant="ghost" disabled={busy} onclick={() => doCancel(task)}>Cancel</Button>{/if}
 								<Button size="sm" variant="ghost" href={`/task/${task.id}`}>Open</Button>
@@ -696,11 +808,25 @@ async function doCancel(task: Task) {
 	<AlertDialog.Content>
 		<AlertDialog.Header>
 			<AlertDialog.Title>Edit task</AlertDialog.Title>
-			<AlertDialog.Description>Update the title or instructions. Prompt edits are blocked while running.</AlertDialog.Description>
+			<AlertDialog.Description>Update the title, instructions, or executor agent. Prompt edits are blocked while running.</AlertDialog.Description>
 		</AlertDialog.Header>
 		<div class="space-y-3">
 			<Input aria-label="Task title" bind:value={editTitle} maxlength={200} placeholder="Task title" />
 			<Textarea aria-label="Task prompt" bind:value={editPrompt} rows={5} placeholder="Task instructions" />
+			<label class="text-sm font-medium" for="edit-task-agent">Kanban agent</label>
+			<Select.Root type="single" value={editAgentId} onValueChange={(value) => editAgentId = value}>
+				<Select.Trigger id="edit-task-agent" class="w-full" disabled={agentsLoading}>
+					<Select.Value placeholder={agentsLoading ? "Loading agents…" : "Select an agent"} />
+				</Select.Trigger>
+				<Select.Content>
+					{#each availableAgents as agent}
+						<Select.Item value={agent.id}>{agent.label} · {agent.provider}{agent.modelId ? ` / ${agent.modelId}` : ""}</Select.Item>
+					{/each}
+				</Select.Content>
+			</Select.Root>
+			{#if !agentsLoading && !availableAgents.length}
+				<p class="text-xs text-muted-foreground">No writable Kanban agents available. Create or enable a coding agent in <a class="underline underline-offset-4" href="/settings/agents">Agent settings</a>.</p>
+			{/if}
 		</div>
 		<AlertDialog.Footer>
 			<AlertDialog.Cancel>Cancel</AlertDialog.Cancel>

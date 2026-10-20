@@ -17,7 +17,7 @@ import {
 	X,
 } from "@lucide/svelte";
 import { onMount, tick } from "svelte";
-import { type Catalog, type ChatAttachment, type Model, chat } from "$lib/chat";
+import { providerDisplayName, type Catalog, type ChatAttachment, type Model, chat } from "$lib/chat";
 import { Badge } from "$lib/components/ui/badge";
 import { Button } from "$lib/components/ui/button";
 import * as Command from "$lib/components/ui/command";
@@ -198,15 +198,13 @@ const providerGroups = $derived.by(() => {
 		const id = item.providerID;
 		let group = groups.get(id);
 		if (!group) {
-			const displayName = item.provider?.trim();
+			const displayName = providerDisplayName(catalog, id, item.modelID);
 			group = {
 				id,
 				label:
-					displayName && id.startsWith("loom_custom_")
+					id.startsWith("loom_custom_")
 						? displayName
-						: displayName && displayName.toLowerCase() !== id.toLowerCase()
-							? `${displayName} · ${id}`
-							: id,
+						: displayName,
 				models: [],
 			};
 			groups.set(id, group);
@@ -592,8 +590,8 @@ function keydown(event: KeyboardEvent) {
 					<Badge
 						variant="outline"
 						class={`model-badge model-badge--${providerTone(item.providerID)} max-w-36 shrink-0 truncate px-1.5 text-[10px] uppercase tracking-wide`}
-						title={item.provider?.trim() || item.providerID}
-					>{item.provider?.trim() || item.providerID}</Badge>
+						title={providerDisplayName(catalog, item.providerID, item.modelID)}
+					>{providerDisplayName(catalog, item.providerID, item.modelID)}</Badge>
 				</span>
 				<span class="block truncate text-xs text-muted-foreground">
 					{item.modelID}{!item.providerID.startsWith("loom_custom_") && item.connectionId && item.connectionId !== item.providerID ? ` · ${item.connectionId}` : ""}
@@ -643,7 +641,7 @@ function keydown(event: KeyboardEvent) {
       {#if onAutoAcceptChange}<label class="ml-1 flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-white/50 transition hover:bg-white/[0.06]" title="Auto-approve tool permissions for this project. When off, each tool asks for your approval."><Switch checked={autoAccept} onCheckedChange={(value) => onAutoAcceptChange(value)} size="sm" /><span class="hidden sm:inline">Auto-accept</span></label>{/if}
     </div>
     <div class="flex min-w-0 flex-wrap items-center justify-end gap-1 sm:flex-nowrap">
-      <Popover.Root bind:open={modelOpen} onOpenChange={(open) => { modelOpen = open; if (!open) modelSearch = ""; }}><Popover.Trigger class="flex max-w-36 sm:max-w-56 items-center gap-1 rounded-lg px-2 py-1.5 text-xs text-white/65 transition hover:bg-white/[0.06] hover:text-white disabled:opacity-50" aria-label={selectedCustomAgent ? `Custom agent model: ${customAgentModelLabel(selectedCustomAgent)}` : selectedModel ? `Selected model: ${selectedModel.name} from ${selectedModel.provider?.trim() || selectedModel.providerID}` : "Select model"} title={selectedCustomAgent ? customAgentModelLabel(selectedCustomAgent) : selectedModel ? `${selectedModel.name} · ${selectedModel.provider?.trim() || selectedModel.providerID} · ${selectedModel.modelID}` : "Default model"} disabled={!!selectedCustomAgent}><span class="truncate">{selectedCustomAgent ? customAgentModelLabel(selectedCustomAgent) : selectedModel?.name ?? "Default model"}</span>{#if selectedModel && !selectedCustomAgent}<Badge variant="outline" class={`model-badge model-badge--${providerTone(selectedModel.providerID)} max-w-20 shrink-0 truncate px-1 text-[9px] uppercase tracking-wide`}>{selectedModel.provider?.trim() || selectedModel.providerID}</Badge>{/if}<ChevronDown size={12} /></Popover.Trigger>
+      <Popover.Root bind:open={modelOpen} onOpenChange={(open) => { modelOpen = open; if (!open) modelSearch = ""; }}><Popover.Trigger class="flex max-w-36 sm:max-w-56 items-center gap-1 rounded-lg px-2 py-1.5 text-xs text-white/65 transition hover:bg-white/[0.06] hover:text-white disabled:opacity-50" aria-label={selectedCustomAgent ? `Custom agent model: ${customAgentModelLabel(selectedCustomAgent)}` : selectedModel ? `Selected model: ${selectedModel.name} from ${providerDisplayName(catalog, selectedModel.providerID, selectedModel.modelID)}` : "Select model"} title={selectedCustomAgent ? customAgentModelLabel(selectedCustomAgent) : selectedModel ? `${selectedModel.name} · ${providerDisplayName(catalog, selectedModel.providerID, selectedModel.modelID)} · ${selectedModel.modelID}` : "Default model"} disabled={!!selectedCustomAgent}><span class="truncate">{selectedCustomAgent ? customAgentModelLabel(selectedCustomAgent) : selectedModel?.name ?? "Default model"}</span>{#if selectedModel && !selectedCustomAgent}<Badge variant="outline" class={`model-badge model-badge--${providerTone(selectedModel.providerID)} max-w-20 shrink-0 truncate px-1 text-[9px] uppercase tracking-wide`}>{providerDisplayName(catalog, selectedModel.providerID, selectedModel.modelID)}</Badge>{/if}<ChevronDown size={12} /></Popover.Trigger>
         <Popover.Content class="w-96 max-w-[calc(100vw-2rem)] p-0" align="end"><Command.Root><Command.Input bind:value={modelSearch} placeholder="Search models…" /><Command.List class="max-h-96"><Command.Empty>No configured models found.</Command.Empty>
           {#if visibleFavoriteModels.length}<Command.Group heading="Favorites">{#each visibleFavoriteModels as item (modelKey(item))}{@render modelOption(item, "favorite")}{/each}</Command.Group>{/if}
           {#if visibleRecentModels.length}<Command.Separator /><Command.Group heading="Recent">{#each visibleRecentModels as item (modelKey(item))}{@render modelOption(item, "recent")}{/each}</Command.Group>{/if}

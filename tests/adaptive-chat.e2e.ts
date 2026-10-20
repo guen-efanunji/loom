@@ -61,7 +61,7 @@ function state(sessionId: string, parentID?: string) {
 	};
 }
 
-async function stubWorkspace(browser: Browser) {
+async function stubWorkspace(browser: Browser, catalogModels: unknown[] = []) {
 	await browser.addInitScript(() => {
 		try {
 			localStorage.setItem("loom.ui.trusted", "true");
@@ -96,7 +96,7 @@ async function stubWorkspace(browser: Browser) {
 			body = null;
 		} else if (path === "/api/chat/catalog") {
 			body = {
-				models: [],
+				models: catalogModels,
 				defaults: {},
 				agents: [
 					{ name: "build", mode: "primary" },
@@ -220,7 +220,6 @@ test("keeps planning in chat when the user selects Plan mode", async ({ app, bro
 	await screen.getByRole("button", "Chat mode: build").tap();
 	await screen.getByRole("option", "plan").tap();
 	await expect(screen.getByRole("button", "Chat mode: plan")).toBeVisible();
-	await expect(screen.getByText("plan", { exact: true })).toBeVisible();
 	const composer = screen.getByRole("textbox", "Message agent");
 	await composer.fill("Build a small feature");
 	await app.screenshot("adaptive-plan-mode-stays-in-chat");
@@ -232,4 +231,51 @@ test("keeps planning in chat when the user selects Plan mode", async ({ app, bro
 	await expect(browser).toHaveURL(new RegExp(`session=${parentId}`));
 	await expect(screen.getByText("Review proposed plan")).not.toBeVisible();
 	expect(taskMutationCount).toBe(0);
+});
+
+test("shows OpenCode as the adapter when the model reports its upstream Google vendor", async ({ app, browser, screen }) => {
+	await stubWorkspace(browser, [{
+		providerID: "opencode",
+		modelID: "opencode/glm-5.3-flash-free",
+		name: "GLM-5.3-Flash Free",
+		provider: "Google",
+	}]);
+	await browser.route(`**/api/chat/sessions/${parentId}`, async (route) => {
+		const response = state(parentId);
+		response.messages = [userMessage, {
+			info: {
+				id: "assistant-opencode-response",
+				role: "assistant",
+				providerID: "google",
+				modelID: "glm-5.3-flash-free",
+				time: { created: 1_800_000_000_100, completed: 1_800_000_000_200 },
+			},
+			parts: [{ id: "assistant-opencode-text", type: "text", text: "OpenCode provider identity check." }],
+		}];
+		response.status = { type: "busy", message: "Google is working…" };
+		await route.fulfill({ contentType: "application/json", body: JSON.stringify(response) });
+	});
+	await app.open(`/?project=${projectId}&session=${parentId}`);
+
+	await expect(screen.getByText("OpenCode provider identity check.")).toBeVisible();
+	await expect(screen.getByRole("article", "OpenCode response")).toBeVisible();
+	await expect(screen.getByText("glm-5.3-flash-free")).toBeVisible();
+	await expect(screen.getByText("OpenCode is working…")).toBeVisible();
+	await expect(screen.getByText("Google is working…")).not.toBeVisible();
+	await expect(screen.getByRole("button", "Selected model: GLM-5.3-Flash Free from OpenCode")).toBeVisible();
+	await expect(screen.getByText("Checking for child sessions…")).not.toBeVisible();
+	await app.screenshot("adaptive-opencode-provider-status");
+});
+
+test("does not show a child-session loading message for an ordinary chat", async ({ app, browser, screen }) => {
+	await stubWorkspace(browser);
+	await browser.route(`**/api/chat/sessions/${parentId}/children`, async (route) => {
+		await route.fulfill({ json: [] });
+	});
+	await app.open(`/?project=${projectId}&session=${parentId}`);
+
+	await expect(screen.getByText("The feature is underway.")).toBeVisible();
+	await expect(screen.getByText("Checking for child sessions…")).not.toBeVisible();
+	await expect(screen.getByText("Child sessions (1)")).not.toBeVisible();
+	await app.screenshot("adaptive-chat-without-child-session-indicator");
 });

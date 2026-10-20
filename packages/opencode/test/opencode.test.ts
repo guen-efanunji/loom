@@ -195,4 +195,57 @@ describe("documented session lifecycle", () => {
 		expect(await runtime.readOutput("ses_test")).toEqual({ output: "answer" });
 		expect(await runtime.status("ses_test")).toBe("failed");
 	});
+	test("fails an idle session that never produces an assistant response", async () => {
+		const runtime = new OpenCodeHttpRuntime({
+			idleTimeoutMs: 0,
+			fetcher: async (url) => {
+				if (String(url).endsWith("/session/status"))
+					return Response.json({ ses_idle: { type: "idle" } });
+				return Response.json([
+					{ info: { role: "user", time: {} }, parts: [] },
+				]);
+			},
+		});
+
+		expect(await runtime.status("ses_idle")).toBe("failed");
+		await expect(runtime.lastError("ses_idle")).resolves.toContain(
+			"became idle without an assistant response",
+		);
+	});
+	test("fails when OpenCode stops reporting the session status entirely", async () => {
+		const statusPollCount = { value: 0 };
+		const runtime = new OpenCodeHttpRuntime({
+			idleTimeoutMs: 0,
+			fetcher: async (url) => {
+				if (String(url).endsWith("/session/status")) {
+					statusPollCount.value += 1;
+					return Response.json({});
+				}
+				return Response.json([
+					{ info: { role: "user", time: {} }, parts: [] },
+				]);
+			},
+		});
+
+		expect(await runtime.status("ses_gone")).toBe("failed");
+		expect(statusPollCount.value).toBe(1);
+		await expect(runtime.lastError("ses_gone")).resolves.toContain(
+			"stopped reporting status",
+		);
+	});
+	test("keeps reporting running while OpenCode retries a failing provider", async () => {
+		const runtime = new OpenCodeHttpRuntime({
+			idleTimeoutMs: 0,
+			fetcher: async (url) => {
+				if (String(url).endsWith("/session/status"))
+					return Response.json({ ses_retry: { type: "retry" } });
+				return Response.json([
+					{ info: { role: "user", time: {} }, parts: [] },
+				]);
+			},
+		});
+
+		expect(await runtime.status("ses_retry")).toBe("running");
+		await expect(runtime.lastError("ses_retry")).resolves.toBe(null);
+	});
 });

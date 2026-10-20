@@ -193,6 +193,7 @@ test("runs a task through the persisted lifecycle", async () => {
 		"run.started",
 		"task.started",
 		"task.updated",
+		"run.progress",
 		"run.output",
 		"agent.run.updated",
 		"run.completed",
@@ -523,6 +524,34 @@ test("rejects prompt changes once a task is running", async () => {
 		title: "Renamed",
 	});
 	expect(renamed.title).toBe("Renamed");
+});
+
+test("updates the executor agent of a queued task", async () => {
+	const setup = dependencies();
+	const task = await setup.orchestrator.create({
+		projectId: "project-1",
+		title: "Build",
+		prompt: "Build it",
+		executor: { kind: "agent", agentId: "agent-a" },
+	});
+	const updated = await setup.orchestrator.renameTask(task.id, {
+		executor: { kind: "agent", agentId: "agent-b" },
+	});
+	expect(updated.executor).toEqual({ kind: "agent", agentId: "agent-b" });
+	const stored = await setup.taskRepository.getById(task.id);
+	expect(JSON.parse(stored?.executorConfig ?? "{}")).toEqual({
+		kind: "agent",
+		agentId: "agent-b",
+	});
+	await expect(
+		setup.orchestrator.renameTask(task.id, { executor: { kind: "agent", agentId: "" } }),
+	).rejects.toThrow();
+	await setup.taskRepository.update(task.id, { status: "running" });
+	await expect(
+		setup.orchestrator.renameTask(task.id, {
+			executor: { kind: "agent", agentId: "agent-c" },
+		}),
+	).rejects.toThrow("cannot change");
 });
 
 test("removes a queued task and publishes discard", async () => {

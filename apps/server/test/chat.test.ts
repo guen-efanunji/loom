@@ -190,9 +190,10 @@ describe("chat gateway", () => {
 		}
 		const prompts = requests.filter((r) => r.url.endsWith("/prompt_async"));
 		expect(prompts).toHaveLength(2);
-		expect(await prompts[1]?.json()).toEqual({
+		expect(await prompts[1]?.json()).toMatchObject({
 			agent: "plan",
 			model: { providerID: "provider", modelID: "model" },
+			system: expect.stringContaining("Adapt execution to the user's request"),
 			parts: [
 				{ type: "text", text: "Follow up" },
 				{ type: "agent", name: "explore" },

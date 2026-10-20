@@ -21,6 +21,10 @@ const runtimeActivitySchema = z.object({
 	id: z.string().min(1),
 	tool: z.string().min(1),
 	status: z.enum(["running", "completed", "error"]),
+	input: z.record(z.string(), z.unknown()).optional(),
+	output: z.string().optional(),
+	error: z.string().optional(),
+	metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
 export const daemonEventSchema = z.discriminatedUnion("type", [
@@ -56,6 +60,20 @@ export const daemonEventSchema = z.discriminatedUnion("type", [
 			output: z.string(),
 			truncated: z.boolean(),
 			activities: z.array(runtimeActivitySchema).optional(),
+		})
+		.merge(eventMetaSchema),
+	z
+		.object({
+			type: z.literal("run.progress"),
+			...runEventSchema.shape,
+			stage: z.enum([
+				"prompt_sent",
+				"review_started",
+				"review_passed",
+				"review_changes_requested",
+				"review_blocked",
+			]),
+			message: z.string().min(1),
 		})
 		.merge(eventMetaSchema),
 	z
