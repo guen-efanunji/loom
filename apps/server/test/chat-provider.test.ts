@@ -14,6 +14,7 @@ type ChatState = {
 		info: {
 			role: string;
 			modelID?: string;
+			contextManagement?: Record<string, unknown>;
 			time: { created: number; completed?: number };
 			error: { data: { message: string } };
 		};
@@ -210,6 +211,104 @@ async function setup(
 }
 
 describe("provider chat", () => {
+	test("compacts old provider context at a completed-turn boundary and retains the original history", async () => {
+		const originalHistory = Array.from({ length: 10 }, (_, index) => ({
+			info: {
+				id: `history-${index}`,
+				role: index % 2 === 0 ? "user" : "assistant",
+				time: {
+					created: index + 1,
+					...(index % 2 ? { completed: index + 2 } : {}),
+				},
+			},
+			parts: [
+				{
+					id: `part-${index}`,
+					type: "text",
+					text:
+						index % 2 === 0
+							? `Preserve this user constraint ${index}.`
+							: `Previous response ${index}. ${index < 6 ? "historical output ".repeat(2_000) : "recent result."}`,
+				},
+			],
+		}));
+		const stored = new Map<string, unknown[]>([
+			["ses_test", structuredClone(originalHistory)],
+		]);
+		const fixture = await setup("agy", stored);
+
+		const response = await fixture.send("Continue with the current request");
+		expect(response.status).toBe(204);
+		const submittedPrompt = String(fixture.prompts[0]?.prompt);
+		expect(submittedPrompt).toContain("Loom extractive context checkpoint");
+		expect(submittedPrompt).toContain("Preserve this user constraint 0.");
+		expect(submittedPrompt).toContain("Continue with the current request");
+		expect(submittedPrompt).not.toContain("historical output ".repeat(100));
+
+		const state = await fixture.state();
+		const assistant = state.messages.at(-1);
+		expect(assistant?.info.contextManagement).toMatchObject({
+			mode: "handoff_only",
+			providerId: "agy",
+			budgetSource: "conservative_default",
+			compacted: true,
+			estimateSource: "characters_divided_by_four",
+			checkpointBoundary: {
+				coveredMessageCount: 6,
+				lastMessageId: "history-5",
+			},
+		});
+		expect(stored.get("ses_test")?.slice(0, originalHistory.length)).toEqual(
+			originalHistory,
+		);
+	});
+
+	test("keeps a long chat continuable by labeling older user-request excerpts and retaining exact originals", async () => {
+		const originalHistory = Array.from({ length: 12 }, (_, index) => ({
+			info: {
+				id: `long-history-${index}`,
+				role: index % 2 === 0 ? "user" : "assistant",
+				time: {
+					created: index + 1,
+					...(index % 2 ? { completed: index + 2 } : {}),
+				},
+			},
+			parts: [
+				{
+					id: `long-part-${index}`,
+					type: "text",
+					text:
+						index % 2 === 0
+							? `Earlier request ${index}:\n- Must preserve the project theme and existing features.\n${"Additional historical context. ".repeat(index < 8 ? 1_800 : 1)}`
+							: `Long assistant response ${index}. ${"Old implementation details. ".repeat(index < 8 ? 1_800 : 1)}`,
+				},
+			],
+		}));
+		const stored = new Map<string, unknown[]>([
+			["ses_test", structuredClone(originalHistory)],
+		]);
+		const fixture = await setup("agy", stored);
+
+		const response = await fixture.send("Continue with the current request");
+		expect(response.status).toBe(204);
+		const submittedPrompt = String(fixture.prompts[0]?.prompt);
+		expect(submittedPrompt).toContain(
+			"Older user request excerpt (lossy; original event retained)",
+		);
+		expect(submittedPrompt).toContain(
+			"Must preserve the project theme and existing features.",
+		);
+		expect(submittedPrompt).toContain("Continue with the current request");
+
+		const state = await fixture.state();
+		expect(state.messages.at(-1)?.info.contextManagement).toMatchObject({
+			compacted: true,
+		});
+		expect(stored.get("ses_test")?.slice(0, originalHistory.length)).toEqual(
+			originalHistory,
+		);
+	});
+
 	test("uses the runtime for a provider registered after chat routes initialize", async () => {
 		const fixture = await setup("agy");
 		const providerId = "loom_custom_agent_c194aec3";
@@ -230,9 +329,9 @@ describe("provider chat", () => {
 		await fixture.providerManager.refresh(providerId);
 		fixture.runtimes.set(providerId, fixture.runtime);
 
-		expect((await fixture.send("Hello custom provider", providerId)).status).toBe(
-			204,
-		);
+		expect(
+			(await fixture.send("Hello custom provider", providerId)).status,
+		).toBe(204);
 		expect(fixture.prompts[0]?.model).toEqual({
 			providerID: providerId,
 			modelID: "custom-model",
@@ -284,16 +383,14 @@ describe("provider chat", () => {
 	for (const provider of ["agy", "claude", "codex"]) {
 		test(`${provider}: supplies adaptive execution guidance without another model call`, async () => {
 			const fixture = await setup(provider);
-			expect((await fixture.send("What does this project do?", provider)).status).toBe(
-				204,
-			);
+			expect(
+				(await fixture.send("What does this project do?", provider)).status,
+			).toBe(204);
 			expect(fixture.prompts).toHaveLength(1);
 			expect(fixture.prompts[0]?.system).toContain(
 				"For simple requests, answer or work directly",
 			);
-			expect(fixture.prompts[0]?.system).toContain(
-				"without simulating it",
-			);
+			expect(fixture.prompts[0]?.system).toContain("without simulating it");
 		});
 	}
 
@@ -377,9 +474,7 @@ describe("provider chat", () => {
 				url?: string;
 			}>;
 		};
-		expect(payload.system).toContain(
-			"authoritative visual specification",
-		);
+		expect(payload.system).toContain("authoritative visual specification");
 		expect(payload.system).toContain(
 			"For simple requests, answer or work directly",
 		);

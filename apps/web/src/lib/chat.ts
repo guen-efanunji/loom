@@ -49,6 +49,24 @@ export type ChatMessage = {
 			reasoning?: number;
 			cache?: { read?: number; write?: number };
 		};
+		contextManagement?: {
+			mode: "loom_owned" | "native_assisted" | "handoff_only";
+			providerId: string;
+			modelId?: string;
+			contextWindowTokens: number | null;
+			budgetTokens: number;
+			estimatedInputTokens: number;
+			estimateSource: "characters_divided_by_four";
+			budgetSource: "model_catalog" | "conservative_default";
+			compacted: boolean;
+			compactionReason?: string;
+			checkpointBoundary?: {
+				coveredMessageCount: number;
+				lastMessageId: string;
+				sourceReferences: string[];
+			};
+			limitations: string[];
+		};
 		time: { created: number; completed?: number };
 	};
 	parts: ChatPart[];

@@ -9,6 +9,11 @@ import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import type { AgyPermissionStore } from "./permissions";
 import {
+	buildContextPacket,
+	ContextBudgetError,
+	type ContextMessage,
+} from "./context-compaction";
+import {
 	createWorkspaceDirectory,
 	createWorkspaceFile,
 	listWorkspaceDirectory,
@@ -71,6 +76,7 @@ type ProviderMessage = {
 			cache?: { read?: number; write?: number };
 		};
 		error?: { name: string; data: { message: string } };
+		contextManagement?: import("./context-compaction").ContextManagementInfo;
 		time: { created: number; completed?: number };
 	};
 	parts: Array<{
@@ -1241,6 +1247,50 @@ export function createChatRoutes(options: {
 					current.directory,
 				),
 			);
+			const isCustomProvider =
+				options.providerManager?.registry
+					.get(providerId)
+					?.definition.capabilities.includes("custom-model") === true;
+			const modelEntry = options.providerManager?.catalog
+				.listByProvider(providerId)
+				.find((candidate) => {
+					const wanted = (runtimeModel?.modelID ?? requestedModel?.modelID ?? "").toLowerCase();
+					return [candidate.name, candidate.displayName, candidate.metadata?.modelId].some(
+						(value) => typeof value === "string" && value.toLowerCase() === wanted,
+					);
+				});
+			const catalogWindow = cachedCatalog?.models.find((model) =>
+				model.providerID === providerId &&
+				model.modelID.toLowerCase() === (runtimeModel?.modelID ?? requestedModel?.modelID ?? "").toLowerCase(),
+			)?.contextWindow;
+			const thinkingContext =
+				providerId !== "claude" && providerId !== "codex"
+					? thinkingGuidance(input.thinkingMode ?? "")
+					: "";
+			const referencedPaths = files.length
+				? `Referenced project paths (files or folders):\n${files.join("\n")}`
+				: "";
+			const attachmentAccounting = input.attachments
+				.map((attachment) => `[image attachment ${attachment.filename}; ${attachment.data.length} encoded characters]`)
+				.join("\n");
+			let contextPacket;
+			try {
+				contextPacket = buildContextPacket({
+					providerId,
+					modelId: runtimeModel?.modelID ?? requestedModel?.modelID,
+					mode: isCustomProvider ? "loom_owned" : "handoff_only",
+					history: history as ContextMessage[],
+					currentPrompt: [thinkingContext, promptText, referencedPaths, attachmentAccounting]
+						.filter(Boolean)
+						.join("\n\n"),
+					fixedPrompt: [customAgentInstructions, adaptiveExecutionGuidance].filter(Boolean).join("\n\n"),
+					contextWindowTokens: modelEntry?.contextWindow ?? catalogWindow ?? null,
+				});
+			} catch (error) {
+				if (error instanceof ContextBudgetError)
+					throw new HTTPException(413, { message: error.message });
+				throw error;
+			}
 			const created = await runtime.createSession({
 				cwd: current.directory,
 				title: current.title,
@@ -1253,6 +1303,7 @@ export function createChatRoutes(options: {
 					role: "assistant",
 					providerID: providerId,
 					modelID: runtimeModel?.modelID,
+					contextManagement: contextPacket.info,
 					time: { created: now },
 				},
 				parts: [],
@@ -1300,10 +1351,6 @@ export function createChatRoutes(options: {
 			turn.persistedMessages = JSON.stringify(turn.messages);
 			await options.providerHistory?.save(current.id, turn.messages);
 			const isAgy = providerId === "agy" || providerId === "antigravity";
-			const isCustomProvider =
-				options.providerManager?.registry
-					.get(providerId)
-					?.definition.capabilities.includes("custom-model") === true;
 			const permissionToken =
 				((isAgy && agyEnabled) ||
 					(isCustomProvider && !!options.permissions)) &&
@@ -1347,24 +1394,11 @@ export function createChatRoutes(options: {
 			turn.permissionToken = permissionToken;
 			providerSessions.set(current.id, turn);
 			// CLI runtimes start a new process each turn; carry forward the conversation.
-			const context = history
-				.map(
-					(message) =>
-						`${message.info.role}: ${message.parts
-							.filter((part) => part.type === "text")
-							.map((part) => part.text)
-							.join("\n")}`,
-				)
-				.join("\n\n");
 			const prompt = [
-				context ? `Previous conversation:\n${context}` : "",
-				providerId !== "claude" && providerId !== "codex"
-					? thinkingGuidance(input.thinkingMode ?? "")
-					: "",
+				contextPacket.context ? `Previous conversation:\n${contextPacket.context}` : "",
+				thinkingContext,
 				promptText,
-				files.length
-					? `Referenced project paths (files or folders):\n${files.join("\n")}`
-					: "",
+				referencedPaths,
 			]
 				.filter(Boolean)
 				.join("\n\n");

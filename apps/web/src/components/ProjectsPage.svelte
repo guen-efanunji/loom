@@ -13,6 +13,7 @@ import {
 	FolderPlus,
 	GitBranch,
 	GitPullRequest,
+	Globe,
 	ListTodo,
 	ListTree,
 	LoaderCircle,
@@ -81,6 +82,7 @@ import {
 	type ProjectGitOverview,
 	type ProjectPullRequests,
 	type PermissionRequest,
+	type ManagedMcpConnection,
 	type Task,
 	type WalkthroughDocument,
 	type WalkthroughLanguage,
@@ -105,6 +107,7 @@ let childSessions = $state<ChatChildSession[]>([]);
 let legacyTasks = $state<Task[]>([]);
 let monitorAgents = $state<CustomAgentMonitorItem[]>([]);
 let monitorRuns = $state<CustomAgentRunMonitorItem[]>([]);
+let monitorMcpConnections = $state<ManagedMcpConnection[]>([]);
 let monitorError = $state("");
 let monitorRequest = 0;
 let monitorTimer: ReturnType<typeof setInterval> | undefined;
@@ -120,11 +123,12 @@ type MonitorTaskActivity = {
 	input?: Record<string, unknown>;
 	metadata?: Record<string, unknown>;
 };
-let monitorTaskActivities = $state<
-	Record<string, MonitorTaskActivity[]>
->({});
+let monitorTaskActivities = $state<Record<string, MonitorTaskActivity[]>>({});
 let monitorTaskProgress = $state<
-	Record<string, Array<{ id: string; stage: string; message: string; timestamp: string }>>
+	Record<
+		string,
+		Array<{ id: string; stage: string; message: string; timestamp: string }>
+	>
 >({});
 let monitorPermissions = $state<PermissionRequest[]>([]);
 let selectedProjectId = $state("");
@@ -186,7 +190,9 @@ let chatTabs = $state<WorkspaceChatTab[]>([
 	},
 ]);
 let activeChatTabId = $state("chat-tab-1");
-const activeChatTab = $derived(chatTabs.find((item) => item.id === activeChatTabId));
+const activeChatTab = $derived(
+	chatTabs.find((item) => item.id === activeChatTabId),
+);
 const activeTaskRun = $derived(
 	activeChatTab?.taskId
 		? legacyTasks.find((task) => task.id === activeChatTab.taskId)
@@ -303,7 +309,10 @@ const selectedProject = $derived(
 );
 function settingsUrl(path: string, params: Record<string, string> = {}) {
 	const query = new URLSearchParams(params);
-	query.set("returnTo", `${page.url.pathname}${page.url.search}${page.url.hash}`);
+	query.set(
+		"returnTo",
+		`${page.url.pathname}${page.url.search}${page.url.hash}`,
+	);
 	return `${path}?${query.toString()}`;
 }
 $effect(() => {
@@ -328,11 +337,7 @@ $effect(() => {
 	walkthroughDocumentFingerprint = "";
 	walkthroughStepId = "";
 	if (panel === "agents") void refreshAgentMonitor();
-	if (
-		panel === "git" ||
-		panel === "pull-requests" ||
-		panel === "walkthrough"
-	)
+	if (panel === "git" || panel === "pull-requests" || panel === "walkthrough")
 		void showPanel(panel, true);
 });
 $effect(() => {
@@ -347,21 +352,28 @@ $effect(() => {
 		return;
 	}
 	panelLoading = true;
-	void chat.diff(currentSession).then((result) => {
-		if (
-			!disposed &&
-			request === panelRequest &&
-			activePanel === "changes" &&
-			currentSession === sessionId &&
-			projectId === selectedProjectId
-		)
-			diffs = result;
-	}).catch((reason) => {
-		if (request === panelRequest)
-			panelError = reason instanceof Error ? reason.message : "Unable to load session changes";
-	}).finally(() => {
-		if (request === panelRequest) panelLoading = false;
-	});
+	void chat
+		.diff(currentSession)
+		.then((result) => {
+			if (
+				!disposed &&
+				request === panelRequest &&
+				activePanel === "changes" &&
+				currentSession === sessionId &&
+				projectId === selectedProjectId
+			)
+				diffs = result;
+		})
+		.catch((reason) => {
+			if (request === panelRequest)
+				panelError =
+					reason instanceof Error
+						? reason.message
+						: "Unable to load session changes";
+		})
+		.finally(() => {
+			if (request === panelRequest) panelLoading = false;
+		});
 });
 $effect(() => {
 	const id = selectedProjectId;
@@ -371,14 +383,20 @@ $effect(() => {
 	}
 	let active = true;
 	workspaceLoading = true;
-	void daemon.getProjectGit(id).then((result) => {
-		if (active && id === selectedProjectId) workspaceOverview = result;
-	}).catch(() => {
-		if (active) workspaceOverview = null;
-	}).finally(() => {
-		if (active) workspaceLoading = false;
-	});
-	return () => { active = false; };
+	void daemon
+		.getProjectGit(id)
+		.then((result) => {
+			if (active && id === selectedProjectId) workspaceOverview = result;
+		})
+		.catch(() => {
+			if (active) workspaceOverview = null;
+		})
+		.finally(() => {
+			if (active) workspaceLoading = false;
+		});
+	return () => {
+		active = false;
+	};
 });
 const availableChatPanels = $derived(
 	chatPanelRegistry.filter((panel) =>
@@ -794,7 +812,11 @@ async function selectSession(id: string) {
 			(message) => message.info.role === "assistant",
 		)?.info;
 		if (recent?.providerID && recent.modelID) {
-			model = canonicalModelSelection(catalog, recent.providerID, recent.modelID);
+			model = canonicalModelSelection(
+				catalog,
+				recent.providerID,
+				recent.modelID,
+			);
 		} else model = preferredModel(selectedProjectId);
 		if (recent?.agent) agent = recent.agent;
 	} catch (reason) {
@@ -946,7 +968,9 @@ const agentMonitorRows = $derived.by(() =>
 		const task =
 			agentTasks.find((item) => item.status === "running") ??
 			agentTasks.find((item) => item.status === "preparing") ??
-			agentTasks.find((item) => item.status === "queued" || item.status === "ready") ??
+			agentTasks.find(
+				(item) => item.status === "queued" || item.status === "ready",
+			) ??
 			agentTasks.find((item) => item.status === "failed");
 		const recentRuns = monitorRuns
 			.filter((item) => item.agentId === agent.id)
@@ -955,9 +979,10 @@ const agentMonitorRows = $derived.by(() =>
 					monitorTimestamp(b.startedAt ?? b.createdAt) -
 					monitorTimestamp(a.startedAt ?? a.createdAt),
 			);
-		const run = recentRuns.find(
-			(item) => item.status === "queued" || item.status === "running",
-		) ?? (recentRuns[0]?.status === "failed" ? recentRuns[0] : undefined);
+		const run =
+			recentRuns.find(
+				(item) => item.status === "queued" || item.status === "running",
+			) ?? (recentRuns[0]?.status === "failed" ? recentRuns[0] : undefined);
 		const chatTask = run?.taskId
 			? legacyTasks.find((item) => item.id === run.taskId)
 			: undefined;
@@ -969,8 +994,7 @@ const agentMonitorRows = $derived.by(() =>
 			task: kanbanTask ?? chatTask,
 			kanbanTask,
 			failed:
-				!runActive &&
-				(task?.status === "failed" || run?.status === "failed"),
+				!runActive && (task?.status === "failed" || run?.status === "failed"),
 		};
 	}),
 );
@@ -999,12 +1023,8 @@ const monitorRunningCount = $derived(
 const monitorIdleCount = $derived(
 	agentMonitorRows.filter(
 		({ run, kanbanTask, agent, failed }) =>
-			agent.status === "active" &&
-			!run &&
-			!kanbanTask &&
-			!failed,
-	)
-		.length,
+			agent.status === "active" && !run && !kanbanTask && !failed,
+	).length,
 );
 const visibleMonitorTasks = $derived(
 	legacyTasks
@@ -1024,9 +1044,14 @@ function monitorTimestamp(value: string | number | null | undefined) {
 	return Number.isFinite(parsed) ? parsed : 0;
 }
 function applyMonitorEvent(event: DaemonEvent) {
-	if (event.type === "permission.requested" || event.type === "permission.updated") {
+	if (
+		event.type === "permission.requested" ||
+		event.type === "permission.updated"
+	) {
 		monitorPermissions = [
-			...monitorPermissions.filter((request) => request.id !== event.request.id),
+			...monitorPermissions.filter(
+				(request) => request.id !== event.request.id,
+			),
 			event.request,
 		];
 		return;
@@ -1050,7 +1075,15 @@ function applyMonitorEvent(event: DaemonEvent) {
 		const current = monitorTaskProgress[event.taskId] ?? [];
 		monitorTaskProgress = {
 			...monitorTaskProgress,
-			[event.taskId]: [...current, { id: `${event.runId}:${event.sequence}`, stage: event.stage, message: event.message, timestamp: event.timestamp }].slice(-30),
+			[event.taskId]: [
+				...current,
+				{
+					id: `${event.runId}:${event.sequence}`,
+					stage: event.stage,
+					message: event.message,
+					timestamp: event.timestamp,
+				},
+			].slice(-30),
 		};
 		return;
 	}
@@ -1070,9 +1103,12 @@ function applyMonitorEvent(event: DaemonEvent) {
 		return;
 	}
 	if (
-		["task.started", "task.completed", "task.failed", "task.cancelled"].includes(
-			event.type,
-		)
+		[
+			"task.started",
+			"task.completed",
+			"task.failed",
+			"task.cancelled",
+		].includes(event.type)
 	)
 		void refreshAgentMonitor();
 }
@@ -1085,9 +1121,7 @@ async function connectMonitorSocket() {
 		monitorSocket = socket;
 		socket.onmessage = (message) => {
 			try {
-				applyMonitorEvent(
-					parseDaemonEvent(JSON.parse(String(message.data))),
-				);
+				applyMonitorEvent(parseDaemonEvent(JSON.parse(String(message.data))));
 			} catch {
 				// Ignore unrelated or malformed daemon events.
 			}
@@ -1135,7 +1169,10 @@ async function poll() {
 		if (sessionId && !sessionLoading && !sending)
 			await refreshSession(sessionId);
 		if (viewMode !== "chat" && ready) await refreshBoard();
-		if (activePanel && ["git", "changes", "pull-requests", "walkthrough"].includes(activePanel)) {
+		if (
+			activePanel &&
+			["git", "changes", "pull-requests", "walkthrough"].includes(activePanel)
+		) {
 			const now = Date.now();
 			const interval = activePanel === "pull-requests" ? 15_000 : 2_000;
 			if (now - lastPanelSyncAt >= interval) {
@@ -1158,7 +1195,8 @@ async function refreshVisiblePanel() {
 	if (panel === "changes") {
 		if (!currentSession) return;
 		const result = await chat.diff(currentSession).catch(() => null);
-		if (result && activePanel === panel && sessionId === currentSession) diffs = result;
+		if (result && activePanel === panel && sessionId === currentSession)
+			diffs = result;
 		return;
 	}
 	if (!projectId) return;
@@ -1166,9 +1204,16 @@ async function refreshVisiblePanel() {
 		const request = ++panelSyncRequest;
 		const [git, prs] = await Promise.all([
 			daemon.getProjectGit(projectId),
-			panel === "pull-requests" ? daemon.getProjectPullRequests(projectId) : Promise.resolve(null),
+			panel === "pull-requests"
+				? daemon.getProjectPullRequests(projectId)
+				: Promise.resolve(null),
 		]).catch(() => [null, null] as const);
-		if (request !== panelSyncRequest || projectId !== selectedProjectId || activePanel !== panel) return;
+		if (
+			request !== panelSyncRequest ||
+			projectId !== selectedProjectId ||
+			activePanel !== panel
+		)
+			return;
 		if (git) {
 			gitOverview = git;
 		}
@@ -1176,20 +1221,25 @@ async function refreshVisiblePanel() {
 		return;
 	}
 	if (panel === "walkthrough") {
-		const result = await daemon.getProjectWalkthroughSnapshot(projectId).catch(() => null);
-		if (result && projectId === selectedProjectId && activePanel === panel) walkthroughSnapshot = result.snapshot;
+		const result = await daemon
+			.getProjectWalkthroughSnapshot(projectId)
+			.catch(() => null);
+		if (result && projectId === selectedProjectId && activePanel === panel)
+			walkthroughSnapshot = result.snapshot;
 	}
 }
 async function refreshAgentMonitor() {
 	const request = ++monitorRequest;
 	const projectId = selectedProjectId;
 	try {
-		const [agents, runs, tasks, permissions] = await Promise.all([
-			daemon.listCustomAgents(projectId || undefined),
-			daemon.listCustomAgentRuns(projectId || undefined),
-			daemon.listTasks(),
-			daemon.getPermissions(),
-		]);
+		const [agents, runs, tasks, permissions, mcpConnections] =
+			await Promise.all([
+				daemon.listCustomAgents(projectId || undefined),
+				daemon.listCustomAgentRuns(projectId || undefined),
+				daemon.listTasks(),
+				daemon.getPermissions(),
+				daemon.listManagedMcpConnections(),
+			]);
 		if (
 			disposed ||
 			request !== monitorRequest ||
@@ -1200,6 +1250,7 @@ async function refreshAgentMonitor() {
 		monitorRuns = runs;
 		legacyTasks = tasks;
 		monitorPermissions = permissions;
+		monitorMcpConnections = mcpConnections.connections;
 		monitorError = "";
 		const activeTasks = tasks.filter(
 			(task) =>
@@ -1230,16 +1281,23 @@ async function refreshAgentMonitor() {
 					: "Unable to load agent activity.";
 	}
 }
-async function decideTaskPermission(requestId: string, decision: "allow_once" | "allow" | "deny") {
+async function decideTaskPermission(
+	requestId: string,
+	decision: "allow_once" | "allow" | "deny",
+) {
 	try {
 		const updated = await daemon.decidePermission(requestId, decision);
 		monitorPermissions = [
 			...monitorPermissions.filter((request) => request.id !== updated.id),
 			updated,
 		];
-		toast.success(decision === "deny" ? "Permission denied" : "Permission granted");
+		toast.success(
+			decision === "deny" ? "Permission denied" : "Permission granted",
+		);
 	} catch (reason) {
-		toast.error(reason instanceof Error ? reason.message : "Unable to update permission");
+		toast.error(
+			reason instanceof Error ? reason.message : "Unable to update permission",
+		);
 		void refreshAgentMonitor();
 	}
 }
@@ -1457,22 +1515,30 @@ async function openTaskRunTab(taskId: string) {
 	sessionLoading = false;
 	updateChatUrl();
 	if (window.innerWidth < 768) sidebarOpen = false;
-	void daemon.getOutput(task.id).then((result) => {
-		if (result.output.length >= (monitorTaskOutput[task.id]?.length ?? 0))
-			monitorTaskOutput = { ...monitorTaskOutput, [task.id]: result.output.slice(-4000) };
-		if (result.activities?.length)
-			monitorTaskActivities = {
-				...monitorTaskActivities,
-				[task.id]: result.activities,
-			};
-	}).catch(() => {});
+	void daemon
+		.getOutput(task.id)
+		.then((result) => {
+			if (result.output.length >= (monitorTaskOutput[task.id]?.length ?? 0))
+				monitorTaskOutput = {
+					...monitorTaskOutput,
+					[task.id]: result.output.slice(-4000),
+				};
+			if (result.activities?.length)
+				monitorTaskActivities = {
+					...monitorTaskActivities,
+					[task.id]: result.activities,
+				};
+		})
+		.catch(() => {});
 }
 async function cancelTaskRun(taskId: string) {
 	try {
 		await daemon.cancelTask(taskId);
 		await refreshBoard();
 	} catch (reason) {
-		toast.error(reason instanceof Error ? reason.message : "Unable to cancel task");
+		toast.error(
+			reason instanceof Error ? reason.message : "Unable to cancel task",
+		);
 	}
 }
 async function closeChatTab(id: string) {
@@ -1680,15 +1746,22 @@ async function generateCommitMessage() {
 	}
 	gitGeneratingMessage = true;
 	try {
-		const result = await daemon.generateProjectCommitMessage(selectedProjectId, {
-			providerId: commitModelSelection.slice(0, separator),
-			modelId: commitModelSelection.slice(separator + 1),
-		});
+		const result = await daemon.generateProjectCommitMessage(
+			selectedProjectId,
+			{
+				providerId: commitModelSelection.slice(0, separator),
+				modelId: commitModelSelection.slice(separator + 1),
+			},
+		);
 		gitCommitMessage = result.message;
-		toast.success(`Commit message generated with ${result.provider.providerId}`);
+		toast.success(
+			`Commit message generated with ${result.provider.providerId}`,
+		);
 	} catch (reason) {
 		toast.error(
-			reason instanceof Error ? reason.message : "Unable to generate commit message",
+			reason instanceof Error
+				? reason.message
+				: "Unable to generate commit message",
 		);
 	} finally {
 		gitGeneratingMessage = false;
@@ -1704,11 +1777,14 @@ async function commitChanges(push: boolean) {
 			gitCommitMessage,
 			push,
 		);
-		toast.success(result.synced ? "Changes committed and synced" : "Changes committed");
+		toast.success(
+			result.synced ? "Changes committed and synced" : "Changes committed",
+		);
 		gitCommitMessage = "";
 		gitOverview = await daemon.getProjectGit(selectedProjectId);
 		if (activePanel === "walkthrough") {
-			const snapshot = await daemon.getProjectWalkthroughSnapshot(selectedProjectId);
+			const snapshot =
+				await daemon.getProjectWalkthroughSnapshot(selectedProjectId);
 			walkthroughSnapshot = snapshot.snapshot;
 			walkthroughDocument = null;
 			walkthroughDocumentFingerprint = "";
@@ -1719,7 +1795,9 @@ async function commitChanges(push: boolean) {
 		} catch {
 			// Keep the original commit/push error visible in the toast.
 		}
-		toast.error(reason instanceof Error ? reason.message : "Unable to commit changes");
+		toast.error(
+			reason instanceof Error ? reason.message : "Unable to commit changes",
+		);
 	} finally {
 		gitBusy = false;
 	}
@@ -1741,7 +1819,11 @@ async function createPullRequest() {
 		createdPullRequestUrl = result.url;
 		await showPanel("pull-requests", true);
 	} catch (reason) {
-		toast.error(reason instanceof Error ? reason.message : "Unable to create pull request");
+		toast.error(
+			reason instanceof Error
+				? reason.message
+				: "Unable to create pull request",
+		);
 	} finally {
 		pullRequestBusy = false;
 	}
@@ -1971,7 +2053,9 @@ async function renameProject() {
 		projectRenameTarget = null;
 		toast.success("Project renamed");
 	} catch (reason) {
-		toast.error(reason instanceof Error ? reason.message : "Unable to rename project");
+		toast.error(
+			reason instanceof Error ? reason.message : "Unable to rename project",
+		);
 	}
 }
 async function removeProject() {
@@ -1984,7 +2068,9 @@ async function removeProject() {
 		await refreshProjects();
 		toast.success("Project removed from Loom");
 	} catch (reason) {
-		toast.error(reason instanceof Error ? reason.message : "Unable to remove project");
+		toast.error(
+			reason instanceof Error ? reason.message : "Unable to remove project",
+		);
 	}
 }
 async function refreshBoard() {
@@ -2087,7 +2173,9 @@ async function switchProjectWorkspace(value: string) {
 		} else if (value.startsWith("worktree:")) {
 			const path = decodeURIComponent(value.slice("worktree:".length));
 			const updated = await daemon.updateProject(project.id, { path });
-			projects = projects.map((item) => item.id === updated.id ? updated : item);
+			projects = projects.map((item) =>
+				item.id === updated.id ? updated : item,
+			);
 			workspaceOverview = await daemon.getProjectGit(project.id);
 			toast.success("Worktree selected");
 		} else if (value === "__new_worktree") {
@@ -2105,8 +2193,12 @@ async function createProjectWorktree() {
 	worktreeCreating = true;
 	try {
 		const workspace = await daemon.createProjectWorktree(project.id, branch);
-		const updated = await daemon.updateProject(project.id, { path: workspace.path });
-		projects = projects.map((item) => item.id === updated.id ? updated : item);
+		const updated = await daemon.updateProject(project.id, {
+			path: workspace.path,
+		});
+		projects = projects.map((item) =>
+			item.id === updated.id ? updated : item,
+		);
 		workspaceOverview = await daemon.getProjectGit(project.id);
 		worktreeDialogOpen = false;
 		toast.success(`Worktree ${workspace.branch} created`);
@@ -2313,18 +2405,17 @@ async function answer(requestId: string, answers: string[][]) {
                 <div class="mt-3 grid grid-cols-2 gap-2"><div class="rounded-md border bg-background/50 p-2"><p class="text-[10px] text-muted-foreground">Running tasks</p><p class="mt-1 text-lg font-semibold">{monitorRunningCount}</p></div><div class="rounded-md border bg-background/50 p-2"><p class="text-[10px] text-muted-foreground">Idle agents</p><p class="mt-1 text-lg font-semibold">{monitorIdleCount}</p></div></div>
               </section>
               <section>
-                <div class="mb-2 flex items-center justify-between"><h3 class="text-xs font-semibold">Active tasks</h3><button type="button" class="text-[10px] text-primary hover:underline" onclick={() => openKanbanBoard(selectedProjectId)}>Open board</button></div>
-                {#if !activeMonitorTasks.length}<p class="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">No tasks are running for this project.</p>
-                {:else}<div class="space-y-2">{#each activeMonitorTasks as task (task.id)}
-                  {@const activities = monitorTaskActivities[task.id] ?? []}
-                  {@const executor = task.executor}
-                  {@const assignedAgent = executor?.kind === "agent" ? monitorAgents.find((agent) => agent.id === executor.agentId)?.label : null}
-                  <button type="button" class="block w-full rounded-lg border bg-card/40 p-3 text-left transition-colors hover:bg-accent/40" onclick={() => void openTaskRunTab(task.id)} aria-label={`Open ${task.title} progress in chat`}>
-                    <div class="flex items-center justify-between gap-2"><p class="truncate text-xs font-medium">{task.title}</p><span class="inline-flex shrink-0 items-center gap-1.5 text-[10px] font-medium text-amber-300"><span class="size-2 animate-pulse rounded-full bg-amber-300"></span>{task.status === "preparing" ? "Preparing" : "Running"}</span></div>
-                    {#if activities.length}<p class="mt-1 truncate text-[10px] leading-4 text-muted-foreground">Activity · {activityToolLabel(activities.at(-1)?.tool)} · {activities.at(-1)?.status}</p>{/if}
-					<p class="mt-1 line-clamp-2 text-[10px] leading-4 text-muted-foreground">{monitorOutputPreview(task.id)}</p>
-					{#if executor?.kind === "agent"}<p class="mt-1 text-[10px] text-muted-foreground">Agent · {assignedAgent ?? "assigned agent"}</p>{:else if executor?.kind === "direct"}<p class="mt-1 text-[10px] text-muted-foreground">Provider · {executor.providerId}</p>{:else}<p class="mt-1 text-[10px] text-muted-foreground">Default task executor</p>{/if}
-                  </button>
+                <div class="mb-2 flex items-center justify-between"><h3 class="text-xs font-semibold">MCP servers</h3><a href={settingsUrl("/settings/mcp")} class="text-[10px] text-primary hover:underline">Manage</a></div>
+                {#if !monitorMcpConnections.length}<p class="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">No MCP connections configured.</p>
+                {:else}<div class="space-y-2">{#each monitorMcpConnections as connection (connection.id)}
+                  {@const isConnected = connection.status === "connected"}
+                  {@const isError = connection.status === "error" || connection.status === "degraded"}
+                  {@const isPending = connection.status === "connecting" || connection.status === "auth_required"}
+                  {@const tone = isConnected ? "text-emerald-400" : isError ? "text-red-400" : isPending ? "text-amber-300" : "text-muted-foreground"}
+                  {@const dot = isConnected ? "bg-emerald-400" : isError ? "bg-red-400" : isPending ? "bg-amber-300" : "bg-muted-foreground"}
+                  <article class="rounded-lg border bg-card/40 p-3">
+                    <div class="flex min-w-0 items-start gap-2"><div class="mt-0.5 grid size-7 shrink-0 place-items-center rounded-md border bg-background/60"><Globe size={14} class="text-cyan-300" /></div><div class="min-w-0 flex-1"><div class="flex items-center justify-between gap-2"><p class="truncate text-xs font-medium">{connection.label}</p><span class={`inline-flex shrink-0 items-center gap-1.5 text-[10px] font-medium ${tone}`}><span class={`size-2 rounded-full ${dot} ${connection.status === "connecting" ? "animate-pulse" : ""}`}></span>{connection.status.replaceAll("_", " ")}</span></div><p class="mt-1 truncate text-[10px] text-muted-foreground">{connection.transport === "stdio" ? connection.command ?? "Local process" : connection.endpointHost ?? "Remote endpoint"}{connection.toolCount ? ` · ${connection.toolCount} tools` : ""}</p>{#if connection.lastError}<p class="mt-1 line-clamp-2 text-[10px] leading-4 text-red-300">{connection.lastError}</p>{/if}</div></div>
+                  </article>
                 {/each}</div>{/if}
               </section>
               <section>

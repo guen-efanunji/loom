@@ -448,7 +448,21 @@ async function copy() {
 			</div>
 		{/each}
 	{:else}
+		{@const contextInfo = messages.find((message) => message.info.contextManagement)?.info.contextManagement}
 		<div class="min-w-0 py-1">
+			{#if contextInfo}
+				<section class="mb-3 rounded-lg border bg-muted/20 px-3 py-2 text-xs" aria-label="Context management">
+					<div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+						<span class="font-medium">Loom context · {contextInfo.mode === "handoff_only" ? "handoff only" : contextInfo.mode === "native_assisted" ? "native assisted" : "Loom managed"}</span>
+						<span class="text-muted-foreground">~{contextInfo.estimatedInputTokens.toLocaleString()} / {contextInfo.budgetTokens.toLocaleString()} estimated tokens</span>
+						<span class="text-muted-foreground">{contextInfo.budgetSource === "model_catalog" ? "model catalog budget" : "conservative default budget"}</span>
+					</div>
+					{#if contextInfo.compacted}
+						<p class="mt-1 text-muted-foreground">Checkpoint covers {contextInfo.checkpointBoundary?.coveredMessageCount ?? 0} earlier messages. Original chat history is retained.</p>
+					{/if}
+					<p class="mt-1 text-[11px] text-muted-foreground">{contextInfo.limitations[0]}</p>
+				</section>
+			{/if}
 			{#if nativeTodos}
 				<section class="mb-4 rounded-lg border bg-muted/20 p-3" aria-label="Runtime todo progress">
 					<div class="mb-2 flex items-center justify-between gap-3">
