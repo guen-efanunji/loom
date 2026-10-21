@@ -292,7 +292,7 @@
 	}
 	async function send(input: Parameters<typeof chat.send>[1]) {
 		const tab = active;
-		if (!tab || !tab.projectId || sendingIds.includes(tab.id)) return false;
+		if (!tab?.projectId || sendingIds.includes(tab.id)) return false;
 		const tabId = tab.id;
 		sendingIds = [...sendingIds, tabId];
 		tab.error = "";

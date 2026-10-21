@@ -790,7 +790,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		let agent: typeof customAgents.$inferSelect | undefined;
 		let system =
 			"You are Loom's Kanban coding agent. Implement the requested task in the assigned worktree, follow acceptance criteria, inspect relevant code before editing, and report concrete results. Never commit, push, merge, deploy, or delete branches; Loom checkpoints and integrates output through explicit user actions.";
-		let permissionMode: RuntimePermission["mode"] = "ask";
+		const permissionMode: RuntimePermission["mode"] = "ask";
 		let agentSkills: Array<{ name: string; instructions: string }> = [];
 		let providerId: string;
 		let modelId: string | null;
@@ -799,8 +799,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 				where: eq(customAgents.id, selection.agentId),
 			});
 			if (
-				!agent ||
-				agent.status !== "active" ||
+				agent?.status !== "active" ||
 				!agent.allowKanban ||
 				(agent.projectId && agent.projectId !== task.projectId)
 			)
@@ -920,7 +919,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 								const current = await repos.permissionRequests.getById(
 									request.id,
 								);
-								if (!current || current.status !== "pending") {
+								if (current?.status !== "pending") {
 									await repos.agentRuns.update(activeRun.id, {
 										status: "running",
 									});
@@ -3434,8 +3433,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 					where: eq(customAgents.id, input.executor.agentId),
 				});
 				if (
-					!agent ||
-					agent.status !== "active" ||
+					agent?.status !== "active" ||
 					!agent.allowKanban ||
 					(agent.projectId && agent.projectId !== input.projectId)
 				)

@@ -700,7 +700,7 @@ export class DesignService {
 							},
 							120_000,
 						);
-						if (!submitted || submitted.status !== "pending")
+						if (submitted?.status !== "pending")
 							return submitted?.status === "auto";
 						return (await submitted.decision) === "allow";
 					}

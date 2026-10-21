@@ -24,7 +24,7 @@ export {
 	Choice,
 	ChoiceDescription,
 	Input,
-	ErrorComponent,
+	ErrorComponent as Error,
 	Actions,
 	Previous,
 	Skip,

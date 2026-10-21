@@ -93,7 +93,7 @@ export function redact(value: unknown): unknown {
 		);
 	if (typeof value === "string")
 		return value
-			.replace(/(Bearer\s+)[\w.\-]+/gi, "$1[REDACTED]")
+			.replace(/(Bearer\s+)[\w.-]+/gi, "$1[REDACTED]")
 			.replace(
 				/((?:token|secret|password|api[_-]?key)=)[^\s&]+/gi,
 				"$1[REDACTED]",

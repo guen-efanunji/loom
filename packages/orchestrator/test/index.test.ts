@@ -349,7 +349,7 @@ test("assembles, reviews and promotes pinned outputs as one integration batch", 
 	);
 	worktree.promoteIntegrationCandidate = mock(async () => "candidate-sha");
 	worktree.runIntegrationCheck = mock(
-		async (workspace: WorktreeWorkspace, check: { name: string }) => ({
+		async (_workspace: WorktreeWorkspace, check: { name: string }) => ({
 			name: check.name,
 			status: "passed" as const,
 			exitCode: 0,

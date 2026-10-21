@@ -109,7 +109,7 @@
 				].includes(name);
 			});
 		const latest = snapshots.at(-1);
-		if (!latest || latest.type !== "tool" || !latest.state) return null;
+		if (latest?.type !== "tool" || !latest.state) return null;
 		const input = latest.state.input as Record<string, unknown> | undefined;
 		if (!input) return null;
 		const raw = [input.todos, input.tasks, input.plan, input.steps].find(

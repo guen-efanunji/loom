@@ -555,7 +555,7 @@ window.addEventListener('resize',apply);apply();
 
 	function openPreview() {
 		const node = selected ?? nodes.at(-1) ?? null;
-		if (!node || node.status !== "ready" || !node.html) {
+		if (node?.status !== "ready" || !node.html) {
 			toast.error("Generate a design before opening the preview.");
 			return;
 		}
@@ -569,7 +569,7 @@ window.addEventListener('resize',apply);apply();
 	}
 
 	function focusChat() {
-		if (!selected || selected.status !== "ready" || !selected.html) return;
+		if (selected?.status !== "ready" || !selected.html) return;
 		refiningNodeId = selected.id;
 		const el = document.getElementById("design-composer-input");
 		if (el) el.focus();

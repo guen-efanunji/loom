@@ -455,7 +455,7 @@ export type WorktreeManagerLike = Pick<
 	merge: (
 		workspace: WorktreeWorkspace,
 		expectedHead?: string,
-	) => Promise<string | void>;
+	) => Promise<string | undefined>;
 	checkpoint?: (
 		workspace: WorktreeWorkspace,
 		message: string,
@@ -2175,8 +2175,7 @@ export class TaskOrchestrator {
 			throw new Error("Integration review storage is unavailable");
 		const batch = await batches.getById(batchId);
 		if (
-			!batch ||
-			batch.status !== "pending_review" ||
+			batch?.status !== "pending_review" ||
 			!batch.candidateSha ||
 			!batch.workspacePath ||
 			!batch.workspaceBranch
@@ -2343,7 +2342,7 @@ export class TaskOrchestrator {
 		if (!batches || !this.dependencies.worktree.inspectHead)
 			throw new Error("Integration batch inspection is unavailable");
 		const batch = await batches.getById(batchId);
-		if (!batch || !batch.candidateSha)
+		if (!batch?.candidateSha)
 			throw new Error("Integration candidate is not available");
 		const project = await this.requireProject(batch.projectId);
 		const workspace = this.integrationWorkspace(batch, project);
@@ -2374,8 +2373,7 @@ export class TaskOrchestrator {
 		const batch = await batches.getById(batchId);
 		const review = await reviews.latestApproved(batchId);
 		if (
-			!batch ||
-			batch.status !== "approved" ||
+			batch?.status !== "approved" ||
 			!batch.candidateSha ||
 			!batch.workspacePath ||
 			!batch.workspaceBranch
