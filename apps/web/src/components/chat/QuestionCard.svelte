@@ -25,7 +25,9 @@
 			const key = `q${index}`;
 			return item.multiple
 				? form.getAll(key).map(String).filter(Boolean)
-				: [form.get(key)].map((v) => (v == null ? "" : String(v))).filter(Boolean);
+				: [form.get(key)]
+						.map((v) => (v == null ? "" : String(v)))
+						.filter(Boolean);
 		});
 		void onanswer(answers);
 	}
@@ -34,7 +36,7 @@
 <Questionnaire.Root
 	class="rounded-xl border bg-card p-4"
 	defaultItem="q0"
-	items={items}
+	{items}
 	shortcuts="numbers"
 	onSubmit={handleSubmit}
 >

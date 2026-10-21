@@ -27,7 +27,7 @@
 	class={cn(
 		buttonVariants({ size, variant }),
 		"col-start-3 row-start-1 min-h-11 justify-self-end sm:min-h-0",
-		className
+		className,
 	)}
 	{...restProps}
 />

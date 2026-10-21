@@ -77,28 +77,39 @@ function toPublicRuntimeActivities(activities: RuntimeActivity[]) {
 		if (filediff && typeof filediff === "object" && !Array.isArray(filediff)) {
 			const diff = filediff as Record<string, unknown>;
 			publicMetadata.filediff = Object.fromEntries(
-				["file", "filePath", "relativePath", "additions", "deletions"].flatMap((key) => {
-					const value = diff[key];
-					return (typeof value === "string" && value.length <= 2000) ||
-						typeof value === "number"
-						? [[key, value]]
-						: [];
-				}),
-			);
-		}
-		if (Array.isArray(metadata?.files)) {
-			publicMetadata.files = metadata.files.slice(0, 50).flatMap((entry) => {
-				if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
-				const file = entry as Record<string, unknown>;
-				return [Object.fromEntries(
-					["file", "filePath", "relativePath", "additions", "deletions"].flatMap((key) => {
-						const value = file[key];
+				["file", "filePath", "relativePath", "additions", "deletions"].flatMap(
+					(key) => {
+						const value = diff[key];
 						return (typeof value === "string" && value.length <= 2000) ||
 							typeof value === "number"
 							? [[key, value]]
 							: [];
-					}),
-				)];
+					},
+				),
+			);
+		}
+		if (Array.isArray(metadata?.files)) {
+			publicMetadata.files = metadata.files.slice(0, 50).flatMap((entry) => {
+				if (!entry || typeof entry !== "object" || Array.isArray(entry))
+					return [];
+				const file = entry as Record<string, unknown>;
+				return [
+					Object.fromEntries(
+						[
+							"file",
+							"filePath",
+							"relativePath",
+							"additions",
+							"deletions",
+						].flatMap((key) => {
+							const value = file[key];
+							return (typeof value === "string" && value.length <= 2000) ||
+								typeof value === "number"
+								? [[key, value]]
+								: [];
+						}),
+					),
+				];
 			});
 		}
 		return {
@@ -106,7 +117,9 @@ function toPublicRuntimeActivities(activities: RuntimeActivity[]) {
 			tool,
 			status,
 			...(Object.keys(publicInput).length ? { input: publicInput } : {}),
-			...(Object.keys(publicMetadata).length ? { metadata: publicMetadata } : {}),
+			...(Object.keys(publicMetadata).length
+				? { metadata: publicMetadata }
+				: {}),
 		};
 	});
 }
@@ -874,7 +887,10 @@ export class TaskOrchestrator {
 		const prompt = input.prompt?.trim() ?? "";
 		let executor: TaskExecutor | null | undefined;
 		if (input.executor !== undefined) {
-			executor = input.executor === null ? null : taskExecutorSchema.parse(input.executor);
+			executor =
+				input.executor === null
+					? null
+					: taskExecutorSchema.parse(input.executor);
 		}
 		if (!title && !prompt && executor === undefined)
 			throw new Error("Nothing to update");
@@ -1019,9 +1035,7 @@ export class TaskOrchestrator {
 			: undefined;
 	}
 
-	async output(
-		taskId: string,
-	): Promise<{
+	async output(taskId: string): Promise<{
 		output: string;
 		truncated: boolean;
 		activities: ReturnType<typeof toPublicRuntimeActivities>;
@@ -1236,7 +1250,9 @@ export class TaskOrchestrator {
 				if (!agentRunId || !execution.runtime.readOutput) return;
 				const runtimeOutput = await execution.runtime.readOutput(session.id);
 				const output = runtimeOutput?.output ?? "";
-				const activities = toPublicRuntimeActivities(runtimeOutput?.activities ?? []);
+				const activities = toPublicRuntimeActivities(
+					runtimeOutput?.activities ?? [],
+				);
 				const activitiesJson = JSON.stringify(activities);
 				const activitiesChanged = activitiesJson !== publishedActivities;
 				if (
@@ -1376,13 +1392,20 @@ export class TaskOrchestrator {
 		}
 		// Allow the scheduler to release this run's slot before an automatic
 		// review queues repair runs. This also works with concurrency set to one.
-		if (completedNormally && agentRunId && !this.automaticReviewsInFlight.has(taskId))
+		if (
+			completedNormally &&
+			agentRunId &&
+			!this.automaticReviewsInFlight.has(taskId)
+		)
 			setTimeout(() => {
 				void this.reviewCompletedTask(taskId, agentRunId!).catch(() => {});
 			}, 0);
 	}
 
-	private async reviewCompletedTask(taskId: string, runId: string): Promise<void> {
+	private async reviewCompletedTask(
+		taskId: string,
+		runId: string,
+	): Promise<void> {
 		if (this.automaticReviewsInFlight.has(taskId)) return;
 		const task = await this.requireTask(taskId);
 		if (task.status !== "completed") return;
@@ -1403,7 +1426,10 @@ export class TaskOrchestrator {
 				"review_started",
 				"Reviewer is checking the task changes against the task brief and acceptance criteria.",
 			);
-			const review = await this.runTaskReviewWithRepairs(taskId, "kanban-auto-review");
+			const review = await this.runTaskReviewWithRepairs(
+				taskId,
+				"kanban-auto-review",
+			);
 			if (review.status === "approved") {
 				const current = await this.requireTask(taskId);
 				if (current.status === "ready_to_merge")
@@ -1436,7 +1462,9 @@ export class TaskOrchestrator {
 				taskId,
 				runId,
 				"review_blocked",
-				error instanceof Error ? `Automatic review blocked: ${error.message}` : "Automatic review blocked.",
+				error instanceof Error
+					? `Automatic review blocked: ${error.message}`
+					: "Automatic review blocked.",
 			).catch(() => {});
 		} finally {
 			this.automaticReviewsInFlight.delete(taskId);
@@ -1446,7 +1474,12 @@ export class TaskOrchestrator {
 	private async publishRunProgress(
 		taskId: string,
 		runId: string,
-		stage: "prompt_sent" | "review_started" | "review_passed" | "review_changes_requested" | "review_blocked",
+		stage:
+			| "prompt_sent"
+			| "review_started"
+			| "review_passed"
+			| "review_changes_requested"
+			| "review_blocked",
 		message: string,
 	): Promise<void> {
 		await this.publish({
@@ -1712,16 +1745,24 @@ export class TaskOrchestrator {
 
 	/** Run a bounded review/repair loop. The reviewer remains read-only; fixes are
 	 * sent to the task's selected implementation executor in its existing worktree. */
-	async runTaskReviewWithRepairs(taskId: string, reviewerIdentity = "review-agent") {
+	async runTaskReviewWithRepairs(
+		taskId: string,
+		reviewerIdentity = "review-agent",
+	) {
 		const initial = await this.requireTask(taskId);
 		const policy = await this.getReviewPolicy(initial.projectId);
 		let review = await this.runTaskReview(taskId, reviewerIdentity);
-		for (let round = 0; review.status === "changes_requested" && round < policy.maxRevisionRounds; round++) {
+		for (
+			let round = 0;
+			review.status === "changes_requested" && round < policy.maxRevisionRounds;
+			round++
+		) {
 			const verdict = parseAutomatedVerdict(review.verdictJson ?? "");
 			if (!verdict.findings.length) break;
 			const current = await this.requireTask(taskId);
 			if (current.status !== "ready_to_merge") break;
-			const previousRun = await this.dependencies.agentRuns?.getByTaskId?.(taskId);
+			const previousRun =
+				await this.dependencies.agentRuns?.getByTaskId?.(taskId);
 			const repairInstructions = [
 				"An independent reviewer found issues in your latest checkpoint. Fix only these findings in the existing task worktree, preserve the original acceptance criteria, and run relevant checks.",
 				`Repair round ${round + 1} of ${policy.maxRevisionRounds}.`,
@@ -1740,7 +1781,10 @@ export class TaskOrchestrator {
 				status: "queued",
 				retryOfRunId: previousRun?.id ?? null,
 			});
-			if (!run) throw new Error("Agent run repository is unavailable for automatic repair");
+			if (!run)
+				throw new Error(
+					"Agent run repository is unavailable for automatic repair",
+				);
 			await this.publishRun(run, {});
 			await this.scheduler.enqueue(taskId, true);
 			const runState = await this.scheduler.wait(taskId);

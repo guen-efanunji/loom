@@ -37,9 +37,7 @@ test("includes both OpenCode model limits when a context window is known", () =>
 		name: "agent",
 		baseUrl: "http://localhost:20128/v1",
 		apiKey: "test-key",
-		models: [
-			{ id: "BACKEND", name: "BACKEND", contextWindow: 272_000 },
-		],
+		models: [{ id: "BACKEND", name: "BACKEND", contextWindow: 272_000 }],
 	});
 
 	expect(
@@ -115,7 +113,8 @@ test("runs a custom model directly against its OpenAI-compatible endpoint", asyn
 
 test("surfaces direct custom provider HTTP failures as failed runs", async () => {
 	const originalFetch = globalThis.fetch;
-	globalThis.fetch = async () => new Response("upstream unavailable", { status: 503 });
+	globalThis.fetch = async () =>
+		new Response("upstream unavailable", { status: 503 });
 	try {
 		const adapter = new CustomProviderAdapter({
 			id: "loom_custom_agent_test",

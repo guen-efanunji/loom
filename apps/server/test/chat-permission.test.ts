@@ -146,7 +146,8 @@ describe("agy chat permissions", () => {
 	test("shows Agy command and file targets in permission cards", async () => {
 		const fixture = await setup();
 		await fixture.send();
-		const token = fixture.prompts[0]?.permission?.env?.LOOM_PERMISSION_TOKEN ?? "";
+		const token =
+			fixture.prompts[0]?.permission?.env?.LOOM_PERMISSION_TOKEN ?? "";
 		const command = fixture.permissions.submit(
 			{
 				token,
@@ -162,7 +163,10 @@ describe("agy chat permissions", () => {
 				token,
 				conversationId: "conv",
 				toolName: "write_to_file",
-				args: { TargetFile: "/tmp/src/login.ts", Description: "Create login page" },
+				args: {
+					TargetFile: "/tmp/src/login.ts",
+					Description: "Create login page",
+				},
 				stepIdx: 1,
 			},
 			5000,
@@ -172,8 +176,10 @@ describe("agy chat permissions", () => {
 			["bun run build"],
 			["/tmp/src/login.ts", "Create login page"],
 		]);
-		if (command.status === "pending") fixture.permissions.decide(command.request.id, "deny");
-		if (edit.status === "pending") fixture.permissions.decide(edit.request.id, "deny");
+		if (command.status === "pending")
+			fixture.permissions.decide(command.request.id, "deny");
+		if (edit.status === "pending")
+			fixture.permissions.decide(edit.request.id, "deny");
 	});
 
 	test("reject denies the tool while keeping the run alive", async () => {

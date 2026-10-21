@@ -15,7 +15,7 @@
 	data-slot="marker-content"
 	class={cn(
 		"cn-marker-content group-data-[variant=separator]/marker:flex-none group-data-[variant=separator]/marker:text-center *:[a]:hover:text-foreground *:[a]:underline *:[a]:underline-offset-3",
-		className
+		className,
 	)}
 	{...restProps}
 >

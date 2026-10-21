@@ -45,10 +45,48 @@ function canvasOf(viewport: "desktop" | "mobile"): string {
 	return viewport === "mobile" ? "390x844" : "1440x900";
 }
 
+function designProjectIdentity(input: {
+	projectName?: string;
+	projectPath?: string;
+}): string {
+	const lines = [
+		"Design for the user's project, not Loom. Loom is only the tool hosting this canvas.",
+	];
+	if (input.projectName) lines.push(`Project name: ${input.projectName}`);
+	if (input.projectPath) lines.push(`Project folder: ${input.projectPath}`);
+	lines.push(
+		"The session may run in an isolated scratch working directory, not the project folder. Do not infer the project identity from the current working directory or assume the project files are accessible there. Use only the project references and attachments supplied in this prompt; do not read or change project files.",
+	);
+	return lines.join("\n");
+}
+
+export function designReferencePaths(
+	text: string,
+	files: string[],
+	selectedPaths: string[] = [],
+): string[] {
+	const mentionedPaths = text.match(/[\w@.-]+(?:\/[\w@.-]+)+\/?/g) ?? [];
+	const selected = new Set<string>();
+	for (const path of [...mentionedPaths, ...selectedPaths]) {
+		const normalized = path.replace(/^@/, "").replace(/\/$/, "");
+		const knownFile = files.find((file) => file === normalized);
+		if (knownFile) {
+			selected.add(knownFile);
+			continue;
+		}
+		const children = files.filter((file) => file.startsWith(`${normalized}/`));
+		selected.add(normalized);
+		for (const file of children) selected.add(file);
+	}
+	return [...selected];
+}
+
 export function buildDesignPrompt(input: {
 	brief: string;
 	viewport: "desktop" | "mobile";
 	context?: ProjectContext;
+	projectName?: string;
+	projectPath?: string;
 }): string {
 	const canvas = canvasOf(input.viewport);
 	const lines = [
@@ -56,8 +94,14 @@ export function buildDesignPrompt(input: {
 		"",
 		DESIGN_SYSTEM_PROMPT,
 		"",
+		designProjectIdentity({
+			projectName: input.projectName ?? input.context?.projectName,
+			projectPath: input.projectPath ?? input.context?.projectPath,
+		}),
+		"",
 		`Return a single complete, self-contained HTML document for a ${input.viewport} screen (${canvas}). Put all CSS in one <style> block, use no external resources, and do not create or edit any files.`,
-		"Do not call tools, run shell commands, read or write files, or inspect the project. Loom already supplied the relevant project context and references; produce the visual design directly from those inputs and return the HTML document.",
+		"Use the project references and attached materials Loom supplied with this prompt. Image attachments arrive as visual inputs; inspect their layout, colors, typography, and flow. Do not ask the user to paste files that are already attached or referenced.",
+		"Do not call tools, run shell commands, or create or edit project files. Produce the visual design directly from the supplied context and return the HTML document.",
 		DESIGN_CRAFT_PROMPT,
 	];
 	if (input.context?.theme)
@@ -70,10 +114,14 @@ export function buildRefinePrompt(input: {
 	message: string;
 	viewport: "desktop" | "mobile";
 	previousHtml: string;
+	projectName?: string;
+	projectPath?: string;
 }): string {
 	const canvas = canvasOf(input.viewport);
 	return [
 		DESIGN_REFINE_PROMPT,
+		"",
+		designProjectIdentity(input),
 		"",
 		"Original brief:",
 		input.brief.trim(),
@@ -144,6 +192,7 @@ export function buildDesignAssistantPrompt(input: {
 		"3. DESIGN - a clear request to build or change a screen: you may open with a short plain-text design note, then output one or more complete, self-contained HTML documents following the Craft requirements below.",
 		"",
 		"Theme fidelity: when Project theme tokens are provided, style designs with those exact tokens - never invent a new palette, font or radius.",
+		"Loom may include the contents of files selected with @mentions and image attachments alongside the user's message. Read those supplied references before answering or designing. Do not claim you cannot inspect a file or image that Loom attached; if no attachment or file content was supplied, say which reference is missing.",
 	];
 	if (identity.length) lines.push("", "Project context:", ...identity);
 	lines.push(
@@ -184,7 +233,7 @@ export function looksLikeDesignRequest(text: string): boolean {
 const EXPLICIT_NEW_DESIGN_PATTERN =
 	/\b(buatkan|rancang|desainkan|design|redesign|re-design|create|generate|build|draw|gambarkan|buat)\b/i;
 const DESIGN_SCREEN_PATTERN =
-	/\b(halaman|page|screen|layar|landing|dashboard|mockup|wireframe|ui\s*\/?\s*ux|uiux|tampilan|layout|form|login|register|signup|checkout|komponen|component)\b/i;
+	/\b(halaman|page|screen|layar|landing|dashboard|mockup|wireframe|ui\s*\/?\s*ux|uiux|tampilan|layout|form|login|register|signup|checkout|komponen|component|tema|theme|desain|design)\b/i;
 
 /** Avoid a slow model-based intent pass when the user clearly asks for a new screen. */
 export function isExplicitNewDesignRequest(text: string): boolean {

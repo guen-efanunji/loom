@@ -247,7 +247,12 @@ summary:focus-visible {
 }
 
 :root[data-theme="dark"] .screenshot-stage {
-	background: radial-gradient(ellipse at 50% 100%, #36432a, #242a20 55%, #1c211b);
+	background: radial-gradient(
+		ellipse at 50% 100%,
+		#36432a,
+		#242a20 55%,
+		#1c211b
+	);
 	border-color: #394332;
 }
 

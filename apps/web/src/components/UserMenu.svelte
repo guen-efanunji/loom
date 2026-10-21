@@ -1,22 +1,22 @@
 <script lang="ts">
-import { Button } from "$lib/components/ui/button";
-import { goto } from "$app/navigation";
-import { authClient } from "$lib/auth-client";
+	import { Button } from "$lib/components/ui/button";
+	import { goto } from "$app/navigation";
+	import { authClient } from "$lib/auth-client";
 
-const sessionQuery = authClient.useSession();
+	const sessionQuery = authClient.useSession();
 
-async function handleSignOut() {
-	await authClient.signOut({
-		fetchOptions: {
-			onSuccess: () => {
-				goto("/");
+	async function handleSignOut() {
+		await authClient.signOut({
+			fetchOptions: {
+				onSuccess: () => {
+					goto("/");
+				},
+				onError: (error) => {
+					console.error("Sign out failed:", error);
+				},
 			},
-			onError: (error) => {
-				console.error("Sign out failed:", error);
-			},
-		},
-	});
-}
+		});
+	}
 </script>
 
 <div class="relative">
@@ -25,10 +25,14 @@ async function handleSignOut() {
 	{:else if $sessionQuery.data?.user}
 		{@const user = $sessionQuery.data.user}
 		<div class="flex items-center gap-3">
-			<span class="text-sm text-neutral-300 hidden sm:inline" title={user.email}>
-				{user.name || user.email?.split('@')[0] || 'User'}
+			<span
+				class="text-sm text-neutral-300 hidden sm:inline"
+				title={user.email}
+			>
+				{user.name || user.email?.split("@")[0] || "User"}
 			</span>
-			<Button type="submit"
+			<Button
+				type="submit"
 				onclick={handleSignOut}
 				class="rounded px-3 py-1 text-sm bg-red-600 hover:bg-red-700 text-white transition-colors"
 			>

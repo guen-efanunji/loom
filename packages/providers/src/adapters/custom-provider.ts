@@ -477,7 +477,9 @@ async function executeWorkspaceTool(
 		try {
 			before = await readFile(path, "utf8");
 		} catch (error) {
-			if (!(error instanceof Error && "code" in error && error.code === "ENOENT"))
+			if (
+				!(error instanceof Error && "code" in error && error.code === "ENOENT")
+			)
 				throw error;
 		}
 		await writeFile(path, args.content, { encoding: "utf8", mode: 0o644 });
@@ -567,7 +569,8 @@ function describeLineChanges(before: string, after: string) {
 		prefix < oldLines.length &&
 		prefix < newLines.length &&
 		oldLines[prefix] === newLines[prefix]
-	) prefix += 1;
+	)
+		prefix += 1;
 	let oldEnd = oldLines.length;
 	let newEnd = newLines.length;
 	while (
@@ -615,8 +618,7 @@ function describeLineChanges(before: string, after: string) {
 			} else if (
 				oldIndex < oldMiddle.length &&
 				(newIndex >= newMiddle.length ||
-					table[oldIndex + 1]![newIndex]! >=
-						table[oldIndex]![newIndex + 1]!)
+					table[oldIndex + 1]![newIndex]! >= table[oldIndex]![newIndex + 1]!)
 			) {
 				operations.push(`-${oldMiddle[oldIndex]}`);
 				oldIndex += 1;
@@ -636,7 +638,8 @@ function describeLineChanges(before: string, after: string) {
 	const oldStart = oldMiddle.length ? prefix + 1 : prefix;
 	const newStart = newMiddle.length ? prefix + 1 : prefix;
 	const header = `@@ -${oldStart},${oldMiddle.length} +${newStart},${newMiddle.length} @@`;
-	let patch = additions || deletions ? `${header}\n${operations.join("\n")}` : "";
+	let patch =
+		additions || deletions ? `${header}\n${operations.join("\n")}` : "";
 	if (Buffer.byteLength(patch, "utf8") > 120_000) {
 		patch = `${patch.slice(0, 120_000)}\n[Diff preview truncated]`;
 	}

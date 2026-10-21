@@ -87,15 +87,25 @@ describe("agy hook registration", () => {
 		await seedSettings(home, {
 			hooks: {
 				loom: {
-					PreToolUse: [{ matcher: "run_command", hooks: [{ command: '"/missing/loom" agy-hook' }] }],
+					PreToolUse: [
+						{
+							matcher: "run_command",
+							hooks: [{ command: '"/missing/loom" agy-hook' }],
+						},
+					],
 				},
 			},
 		});
-		const result = await registerAgyPermissionHook({ home, env: { LOOM_CLI_ENTRY: cliEntry } });
+		const result = await registerAgyPermissionHook({
+			home,
+			env: { LOOM_CLI_ENTRY: cliEntry },
+		});
 		expect(result.changed).toBe(true);
 		const settings = JSON.parse(await readFile(result.settingsPath, "utf8"));
 		expect(settings.hooks.loom.PreToolUse).toHaveLength(1);
-		expect(settings.hooks.loom.PreToolUse[0].hooks[0].command).toBe(result.command);
+		expect(settings.hooks.loom.PreToolUse[0].hooks[0].command).toBe(
+			result.command,
+		);
 	});
 
 	test("writes a backup before mutating an existing file", async () => {

@@ -1,5 +1,11 @@
 {
-  "extends": "@loom/config/tsconfig.base.json",
-  "compilerOptions": { "composite": true, "declaration": true, "emitDeclarationOnly": true, "outDir": "dist", "rootDir": "src" },
-  "include": ["src/**/*.ts"]
+	"extends": "@loom/config/tsconfig.base.json",
+	"compilerOptions": {
+		"composite": true,
+		"declaration": true,
+		"emitDeclarationOnly": true,
+		"outDir": "dist",
+		"rootDir": "src"
+	},
+	"include": ["src/**/*.ts"]
 }

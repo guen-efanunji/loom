@@ -63,7 +63,10 @@ const tasks = [
 const reviewPolicy = {
 	projectId,
 	mode: "automatic",
-	reviewerExecutorJson: JSON.stringify({ kind: "agent", agentId: reviewerAgentId }),
+	reviewerExecutorJson: JSON.stringify({
+		kind: "agent",
+		agentId: reviewerAgentId,
+	}),
 	autoMerge: false,
 	requiredChecksJson: "[]",
 	maxRevisionRounds: 3,
@@ -90,14 +93,16 @@ async function stubKanbanWorkspace(browser: Browser) {
 		let status = 200;
 
 		if (path === "/api/projects") {
-			body = [{
-				id: projectId,
-				name: "Parallel E2E Project",
-				path: projectDirectory,
-				defaultBranch: "main",
-				autoAccept: false,
-				createdAt: "2026-10-20T00:00:00.000Z",
-			}];
+			body = [
+				{
+					id: projectId,
+					name: "Parallel E2E Project",
+					path: projectDirectory,
+					defaultBranch: "main",
+					autoAccept: false,
+					createdAt: "2026-10-20T00:00:00.000Z",
+				},
+			];
 		} else if (path === "/api/tasks") {
 			body = currentTasks;
 		} else if (path === `/api/tasks/${tasks[1].id}`) {
@@ -123,7 +128,14 @@ async function stubKanbanWorkspace(browser: Browser) {
 			body = { automationMode: "review" };
 		} else if (path === "/api/chat/catalog") {
 			body = {
-				models: [{ providerID: "agy", modelID: "fixture-model", name: "Fixture model", provider: "Antigravity" }],
+				models: [
+					{
+						providerID: "agy",
+						modelID: "fixture-model",
+						name: "Fixture model",
+						provider: "Antigravity",
+					},
+				],
 				defaults: {},
 				agents: [{ name: "build", mode: "primary" }],
 				commands: [],
@@ -131,20 +143,22 @@ async function stubKanbanWorkspace(browser: Browser) {
 		} else if (path === "/api/chat/sessions") {
 			body = [];
 		} else if (path === "/api/agents") {
-			body = [{
-				id: reviewerAgentId,
-				label: "BACKEND",
-				role: "backend",
-				status: "active",
-				allowChat: true,
-				allowCanvas: false,
-				allowKanban: true,
-				approvalPolicy: "manual",
-				projectId,
-				provider: "opencode",
-				modelId: "opencode/glm-5.3-flash-free",
-				lastUsedAt: null,
-			}];
+			body = [
+				{
+					id: reviewerAgentId,
+					label: "BACKEND",
+					role: "backend",
+					status: "active",
+					allowChat: true,
+					allowCanvas: false,
+					allowKanban: true,
+					approvalPolicy: "manual",
+					projectId,
+					provider: "opencode",
+					modelId: "opencode/glm-5.3-flash-free",
+					lastUsedAt: null,
+				},
+			];
 		} else if (path === "/api/chat/preferences") {
 			body = { favoriteModels: [] };
 		} else if (path === "/api/events/replay") {
@@ -153,21 +167,58 @@ async function stubKanbanWorkspace(browser: Browser) {
 			body = { token: "e2e-fixture-token" };
 		} else if (path === "/api" || path === "/api/health") {
 			body = { ok: true };
-		} else if (/^\/api\/tasks\/[^/]+\/start$/.test(path) && request.method === "POST") {
+		} else if (
+			/^\/api\/tasks\/[^/]+\/start$/.test(path) &&
+			request.method === "POST"
+		) {
 			const taskId = path.split("/").at(-2);
-			currentTasks = currentTasks.map((task) => task.id === taskId ? { ...task, status: "running", startedAt: "2026-10-20T00:05:00.000Z" } : task);
+			currentTasks = currentTasks.map((task) =>
+				task.id === taskId
+					? {
+							...task,
+							status: "running",
+							startedAt: "2026-10-20T00:05:00.000Z",
+						}
+					: task,
+			);
 			body = { accepted: true };
 		} else if (/^\/api\/tasks\/[^/]+\/output$/.test(path)) {
 			body = {
-				output: "Agent progress: inspecting the task workspace\nFound the relevant files; implementing the requested change now.\n",
+				output:
+					"Agent progress: inspecting the task workspace\nFound the relevant files; implementing the requested change now.\n",
 				truncated: false,
 				activities: [
-					{ id: "read-login", tool: "read_file", status: "completed", input: { path: "/tmp/loom-kanban-e2e-project/login.html" } },
-					{ id: "edit-login", tool: "edit_file", status: "completed", input: { filePath: "/tmp/loom-kanban-e2e-project/login.html" }, metadata: { filediff: { file: "/tmp/loom-kanban-e2e-project/login.html", additions: 12, deletions: 3 } } },
-					{ id: "run-check", tool: "run_command", status: "running", input: { command: "bun test", cwd: "/tmp/loom-kanban-e2e-project" } },
+					{
+						id: "read-login",
+						tool: "read_file",
+						status: "completed",
+						input: { path: "/tmp/loom-kanban-e2e-project/login.html" },
+					},
+					{
+						id: "edit-login",
+						tool: "edit_file",
+						status: "completed",
+						input: { filePath: "/tmp/loom-kanban-e2e-project/login.html" },
+						metadata: {
+							filediff: {
+								file: "/tmp/loom-kanban-e2e-project/login.html",
+								additions: 12,
+								deletions: 3,
+							},
+						},
+					},
+					{
+						id: "run-check",
+						tool: "run_command",
+						status: "running",
+						input: { command: "bun test", cwd: "/tmp/loom-kanban-e2e-project" },
+					},
 				],
 			};
-		} else if (/^\/api\/tasks\/[^/]+\/review\/run$/.test(path) && request.method === "POST") {
+		} else if (
+			/^\/api\/tasks\/[^/]+\/review\/run$/.test(path) &&
+			request.method === "POST"
+		) {
 			body = { review: { id: "approved-fixture-review", status: "approved" } };
 		} else if (request.method !== "GET") {
 			status = 501;
@@ -181,12 +232,18 @@ async function stubKanbanWorkspace(browser: Browser) {
 	});
 }
 
-test("queues two Backend and two Frontend tasks together from Kanban", async ({ app, browser, screen }) => {
+test("queues two Backend and two Frontend tasks together from Kanban", async ({
+	app,
+	browser,
+	screen,
+}) => {
 	const startedTaskIds: string[] = [];
 	await stubKanbanWorkspace(browser);
 	await browser.route("**/api/tasks/*/start", async (route) => {
 		if (route.request.method === "POST") {
-			startedTaskIds.push(new URL(route.request.url).pathname.split("/").at(-2) ?? "");
+			startedTaskIds.push(
+				new URL(route.request.url).pathname.split("/").at(-2) ?? "",
+			);
 		}
 		return route.fallback();
 	});
@@ -197,16 +254,30 @@ test("queues two Backend and two Frontend tasks together from Kanban", async ({ 
 	await expect(screen.getByText("Backend · add API validation")).toBeVisible();
 	await expect(screen.getByText("Backend · fix race condition")).toBeVisible();
 	await expect(screen.getByText("Frontend · build signup form")).toBeVisible();
-	await expect(screen.getByText("Frontend · improve mobile layout")).toBeVisible();
-	await screen.getByRole("checkbox", "Select Backend · add API validation to run").check();
-	await screen.getByRole("checkbox", "Select Backend · fix race condition to run").check();
-	await screen.getByRole("checkbox", "Select Frontend · build signup form to run").check();
-	await screen.getByRole("checkbox", "Select Frontend · improve mobile layout to run").check();
+	await expect(
+		screen.getByText("Frontend · improve mobile layout"),
+	).toBeVisible();
+	await screen
+		.getByRole("checkbox", "Select Backend · add API validation to run")
+		.check();
+	await screen
+		.getByRole("checkbox", "Select Backend · fix race condition to run")
+		.check();
+	await screen
+		.getByRole("checkbox", "Select Frontend · build signup form to run")
+		.check();
+	await screen
+		.getByRole("checkbox", "Select Frontend · improve mobile layout to run")
+		.check();
 	await expect(screen.getByRole("button", "Run 4 selected")).toBeVisible();
 	await app.screenshot("kanban-parallel-four-tasks-selected");
 
 	await screen.getByRole("button", "Run 4 selected").tap();
-	await expect(screen.getByText("4 tasks queued · Loom will run eligible tasks in parallel")).toBeVisible();
+	await expect(
+		screen.getByText(
+			"4 tasks queued · Loom will run eligible tasks in parallel",
+		),
+	).toBeVisible();
 	expect(startedTaskIds.sort()).toEqual([
 		"backend-api-task",
 		"backend-race-task",
@@ -216,61 +287,100 @@ test("queues two Backend and two Frontend tasks together from Kanban", async ({ 
 	await app.screenshot("kanban-parallel-tasks-queued");
 });
 
-test("offers an automated review action for a task awaiting review", async ({ app, browser, screen }) => {
+test("offers an automated review action for a task awaiting review", async ({
+	app,
+	browser,
+	screen,
+}) => {
 	let reviewedTaskId = "";
 	await stubKanbanWorkspace(browser);
 	await browser.route("**/api/tasks/*/review/run", async (route) => {
 		if (route.request.method === "POST") {
-			reviewedTaskId = new URL(route.request.url).pathname.split("/").at(-3) ?? "";
+			reviewedTaskId =
+				new URL(route.request.url).pathname.split("/").at(-3) ?? "";
 		}
 		return route.fallback();
 	});
 	await app.open(`/?project=${projectId}&view=kanban`);
 
-	await expect(screen.getByText("BACKEND · opencode / opencode/glm-5.3-flash-free")).toBeVisible();
+	await expect(
+		screen.getByText("BACKEND · opencode / opencode/glm-5.3-flash-free"),
+	).toBeVisible();
 	await expect(screen.getByText(reviewerAgentId)).toBeHidden();
-	await expect(screen.getByText("Backend · race condition repair candidate")).toBeVisible();
+	await expect(
+		screen.getByText("Backend · race condition repair candidate"),
+	).toBeVisible();
 	await expect(screen.getByRole("button", "Review & fix")).toBeVisible();
 	await app.screenshot("kanban-automatic-review-available");
 	await screen.getByRole("button", "Review & fix").tap();
-	await expect(screen.getByText("Review passed · task is ready for integration")).toBeVisible();
+	await expect(
+		screen.getByText("Review passed · task is ready for integration"),
+	).toBeVisible();
 	expect(reviewedTaskId).toBe("review-race-task");
 	await app.screenshot("kanban-automatic-review-passed");
 });
 
-test("opens a live task run in a Chat tab and preserves the user's chat draft", async ({ app, browser, screen }) => {
+test("opens a live task run in a Chat tab and preserves the user's chat draft", async ({
+	app,
+	browser,
+	screen,
+}) => {
 	await stubKanbanWorkspace(browser);
 	await app.open(`/?project=${projectId}`);
-	const composer = screen.getByPlaceholder("Ask anything… @ for files and agents");
+	const composer = screen.getByPlaceholder(
+		"Ask anything… @ for files and agents",
+	);
 	await composer.fill("Keep this draft while I check the task run.");
 	await screen.getByRole("tab", "Kanban").tap();
 	await screen.getByRole("button", "Run").nth(1).tap();
 
 	await expect(screen.getByRole("heading", "Agent progress")).toBeVisible();
-	await expect(screen.getByRole("heading", "Backend · fix race condition")).toBeVisible();
-	await expect(screen.getByText("Fix the race condition and add a regression check.")).toBeVisible();
-	await expect(screen.getByText(/Found the relevant files; implementing the requested change now\./).first()).toBeVisible();
+	await expect(
+		screen.getByRole("heading", "Backend · fix race condition"),
+	).toBeVisible();
+	await expect(
+		screen.getByText("Fix the race condition and add a regression check."),
+	).toBeVisible();
+	await expect(
+		screen
+			.getByText(
+				/Found the relevant files; implementing the requested change now\./,
+			)
+			.first(),
+	).toBeVisible();
 	const toolActivity = screen.getByRole("list", "Agent tool activity");
 	await expect(toolActivity).toBeVisible();
-	await expect(screen.getByText("/tmp/loom-kanban-e2e-project/login.html").first()).toBeVisible();
+	await expect(
+		screen.getByText("/tmp/loom-kanban-e2e-project/login.html").first(),
+	).toBeVisible();
 	await expect(screen.getByText("+12")).toBeVisible();
 	await expect(screen.getByText("−3")).toBeVisible();
 	await expect(screen.getByText("bun test").first()).toBeVisible();
 	await app.screenshot("kanban-task-run-chat-progress");
 
 	await screen.getByRole("tab", "New chat").tap();
-	await expect(screen.getByPlaceholder("Ask anything… @ for files and agents")).toHaveValue("Keep this draft while I check the task run.");
+	await expect(
+		screen.getByPlaceholder("Ask anything… @ for files and agents"),
+	).toHaveValue("Keep this draft while I check the task run.");
 	await app.screenshot("kanban-task-run-parent-chat-draft-preserved");
 });
 
-test("shows live tool activity on the task detail page without orchestration jargon", async ({ app, browser, screen }) => {
+test("shows live tool activity on the task detail page without orchestration jargon", async ({
+	app,
+	browser,
+	screen,
+}) => {
 	await stubKanbanWorkspace(browser);
 	await app.open(`/task/${tasks[1].id}`);
 
-	await expect(screen.getByRole("heading", "Backend · fix race condition")).toBeVisible();
+	await expect(
+		screen.getByRole("heading", "Backend · fix race condition"),
+	).toBeVisible();
 	await expect(screen.getByRole("heading", "Agent progress")).toBeVisible();
 	await expect(screen.getByRole("list", "Agent tool activity")).toBeVisible();
-	await expect(screen.getByText("/tmp/loom-kanban-e2e-project/login.html").first()).toBeVisible();
+	await expect(
+		screen.getByText("/tmp/loom-kanban-e2e-project/login.html").first(),
+	).toBeVisible();
 	await expect(screen.getByText("+12")).toBeVisible();
 	await expect(screen.getByText("−3")).toBeVisible();
 	await expect(screen.getByText("bun test").first()).toBeVisible();
@@ -279,22 +389,37 @@ test("shows live tool activity on the task detail page without orchestration jar
 	await app.screenshot("task-detail-live-agent-progress");
 });
 
-test("opens the Kanban view and live task progress from the Agents & tasks panel", async ({ app, browser, screen }) => {
+test("opens the Kanban view and live task progress from the Agents & tasks panel", async ({
+	app,
+	browser,
+	screen,
+}) => {
 	await stubKanbanWorkspace(browser);
 	await app.open(`/?project=${projectId}`);
 	const agentsPanel = screen.getByRole("button", "Agents & tasks");
-	if ((await agentsPanel.getAttribute("aria-pressed")) !== "true") await agentsPanel.tap();
+	if ((await agentsPanel.getAttribute("aria-pressed")) !== "true")
+		await agentsPanel.tap();
 	await expect(screen.getByText("Tasks")).toBeVisible();
 	await screen.getByRole("button", "Open board").last().tap();
-	await expect(screen.getByRole("tab", "Kanban")).toHaveAttribute("aria-selected", "true");
+	await expect(screen.getByRole("tab", "Kanban")).toHaveAttribute(
+		"aria-selected",
+		"true",
+	);
 	await expect(screen.getByText("Tasks · Parallel E2E Project")).toBeVisible();
-	await expect(browser).toHaveURL(new RegExp(`project=${projectId}.*view=kanban`));
+	await expect(browser).toHaveURL(
+		new RegExp(`project=${projectId}.*view=kanban`),
+	);
 
 	await screen.getByRole("button", "Run").nth(1).tap();
 	await expect(screen.getByRole("heading", "Agent progress")).toBeVisible();
-	if ((await agentsPanel.getAttribute("aria-pressed")) !== "true") await agentsPanel.tap();
-	await screen.getByRole("button", "Open Backend · fix race condition progress in chat").tap();
-	await expect(screen.getByRole("heading", "Backend · fix race condition")).toBeVisible();
+	if ((await agentsPanel.getAttribute("aria-pressed")) !== "true")
+		await agentsPanel.tap();
+	await screen
+		.getByRole("button", "Open Backend · fix race condition progress in chat")
+		.tap();
+	await expect(
+		screen.getByRole("heading", "Backend · fix race condition"),
+	).toBeVisible();
 	await expect(browser).toHaveURL(/\?project=e2e-kanban-project/);
 	await app.screenshot("kanban-agent-panel-opens-live-chat-tab");
 });

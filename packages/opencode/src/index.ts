@@ -571,7 +571,8 @@ function openCodeResponseErrorDetail(body: string): string {
 				errors?: unknown;
 				issues?: Array<{ path?: unknown[]; message?: unknown }>;
 			};
-			const validationIssues = value.issues ??
+			const validationIssues =
+				value.issues ??
 				(Array.isArray(value.errors)
 					? (value.errors as Array<{ path?: unknown[]; message?: unknown }>)
 					: undefined);

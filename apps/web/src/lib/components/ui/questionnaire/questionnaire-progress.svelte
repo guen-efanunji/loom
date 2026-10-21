@@ -14,7 +14,7 @@
 	data-slot="questionnaire-progress"
 	class={cn(
 		"text-xs min-h-[1lh] w-fit min-w-[14ch] font-medium text-muted-foreground tabular-nums",
-		className
+		className,
 	)}
 	{...restProps}
 />

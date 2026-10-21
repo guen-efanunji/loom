@@ -174,8 +174,16 @@ body {
 }
 
 .model-badge[data-slot="badge"] {
-	border-color: color-mix(in oklab, var(--model-badge-accent) 30%, var(--border));
-	background: color-mix(in oklab, var(--model-badge-accent) 12%, var(--background));
+	border-color: color-mix(
+		in oklab,
+		var(--model-badge-accent) 30%,
+		var(--border)
+	);
+	background: color-mix(
+		in oklab,
+		var(--model-badge-accent) 12%,
+		var(--background)
+	);
 	color: var(--model-badge-accent);
 }
 
@@ -302,18 +310,36 @@ body {
 }
 
 @keyframes hero-orbit {
-	from { transform: rotate(0deg); }
-	to { transform: rotate(360deg); }
+	from {
+		transform: rotate(0deg);
+	}
+	to {
+		transform: rotate(360deg);
+	}
 }
 
 @keyframes hero-pulse {
-	0%, 100% { transform: scale(0.92); opacity: 0.55; }
-	50% { transform: scale(1.08); opacity: 1; }
+	0%,
+	100% {
+		transform: scale(0.92);
+		opacity: 0.55;
+	}
+	50% {
+		transform: scale(1.08);
+		opacity: 1;
+	}
 }
 
 @keyframes hero-node {
-	0%, 100% { transform: translate3d(0, 0, 0); opacity: 0.45; }
-	50% { transform: translate3d(3px, -5px, 0); opacity: 1; }
+	0%,
+	100% {
+		transform: translate3d(0, 0, 0);
+		opacity: 0.45;
+	}
+	50% {
+		transform: translate3d(3px, -5px, 0);
+		opacity: 1;
+	}
 }
 
 .hero-orbit {
@@ -335,7 +361,9 @@ body {
 	content: "";
 }
 
-.hero-orbit-one { animation: hero-orbit 8s linear infinite; }
+.hero-orbit-one {
+	animation: hero-orbit 8s linear infinite;
+}
 .hero-orbit-two {
 	inset: 15px;
 	transform: rotate(55deg);
@@ -359,13 +387,26 @@ body {
 	box-shadow: 0 0 10px rgb(255 255 255 / 0.7);
 	animation: hero-node 2.8s ease-in-out infinite;
 }
-.hero-node-one { top: 8px; right: 13px; }
-.hero-node-two { bottom: 13px; left: 7px; animation-delay: -1.2s; }
-.hero-node-three { right: 0; bottom: 28px; animation-delay: -0.5s; }
+.hero-node-one {
+	top: 8px;
+	right: 13px;
+}
+.hero-node-two {
+	bottom: 13px;
+	left: 7px;
+	animation-delay: -1.2s;
+}
+.hero-node-three {
+	right: 0;
+	bottom: 28px;
+	animation-delay: -0.5s;
+}
 
 @media (prefers-reduced-motion: reduce) {
 	.hero-orbit-one,
 	.hero-orbit-two,
 	.hero-core,
-	.hero-node { animation: none; }
+	.hero-node {
+		animation: none;
+	}
 }

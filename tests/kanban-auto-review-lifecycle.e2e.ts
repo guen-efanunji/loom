@@ -141,7 +141,10 @@ const timeline: Timeline = {
 const reviewPolicy = {
 	projectId,
 	mode: "automatic",
-	reviewerExecutorJson: JSON.stringify({ kind: "agent", agentId: reviewerAgentId }),
+	reviewerExecutorJson: JSON.stringify({
+		kind: "agent",
+		agentId: reviewerAgentId,
+	}),
 	autoMerge: false,
 	requiredChecksJson: "[]",
 	maxRevisionRounds: 2,
@@ -166,8 +169,10 @@ class StubWorkspace {
 					task.prompt = `${task.prompt}\n\n${repairPromptMarker} — the reviewer requested changes. Fix only these findings returned by the reviewer:\n- [high] backend-race.txt · BUG_RACE: the shared queue is updated without a lock. Suggested action: protect the update with a mutex before the next checkpoint.`;
 				}
 				task.status = step.status;
-				if (step.status === "running") task.startedAt = "2026-10-20T00:06:00.000Z";
-				if (step.status === "completed") task.completedAt = "2026-10-20T00:12:00.000Z";
+				if (step.status === "running")
+					task.startedAt = "2026-10-20T00:06:00.000Z";
+				if (step.status === "completed")
+					task.completedAt = "2026-10-20T00:12:00.000Z";
 			}
 		}
 	}
@@ -236,15 +241,17 @@ async function stubWorkspace(browser: Browser) {
 		let body: unknown = [];
 		let status = 200;
 
-		if (path === "/api/projects") {
-			body = [{
-				id: projectId,
-				name: "Auto review E2E project",
-				path: projectDirectory,
-				defaultBranch: "main",
-				autoAccept: false,
-				createdAt: "2026-10-20T00:00:00.000Z",
-			}];
+		if (path === "/api/projects" && request.method === "GET") {
+			body = [
+				{
+					id: projectId,
+					name: "Auto review E2E project",
+					path: projectDirectory,
+					defaultBranch: "main",
+					autoAccept: false,
+					createdAt: "2026-10-20T00:00:00.000Z",
+				},
+			];
 		} else if (path === "/api/tasks" && request.method === "GET") {
 			workspace.advancePoll();
 			body = workspace.currentTasks;
@@ -255,7 +262,10 @@ async function stubWorkspace(browser: Browser) {
 			const task = workspace.currentTasks.find((item) => item.id === id);
 			body = task ?? {};
 			if (!task) status = 404;
-		} else if (/^\/api\/tasks\/[^/]+\/start$/.test(path) && request.method === "POST") {
+		} else if (
+			/^\/api\/tasks\/[^/]+\/start$/.test(path) &&
+			request.method === "POST"
+		) {
 			const id = path.split("/").at(-2) ?? "";
 			workspace.startedTaskIds.push(id);
 			const task = workspace.currentTasks.find((item) => item.id === id);
@@ -272,15 +282,22 @@ async function stubWorkspace(browser: Browser) {
 			const id = path.split("/").at(-2) ?? "";
 			const task = workspace.currentTasks.find((item) => item.id === id);
 			body = task?.startedAt
-				? [{
-						id: `run-${id}`,
-						taskId: id,
-						status: task.status === "completed" ? "completed" : task.status === "running" ? "running" : "queued",
-						startedAt: task.startedAt,
-						completedAt: task.completedAt,
-						errorMessage: null,
-						retryOfRunId: null,
-					}]
+				? [
+						{
+							id: `run-${id}`,
+							taskId: id,
+							status:
+								task.status === "completed"
+									? "completed"
+									: task.status === "running"
+										? "running"
+										: "queued",
+							startedAt: task.startedAt,
+							completedAt: task.completedAt,
+							errorMessage: null,
+							retryOfRunId: null,
+						},
+					]
 				: [];
 		} else if (/^\/api\/tasks\/[^/]+\/output$/.test(path)) {
 			const id = path.split("/").at(-2) ?? "";
@@ -291,22 +308,49 @@ async function stubWorkspace(browser: Browser) {
 					: "Agent progress: inspecting the task workspace before editing files.\n",
 				truncated: false,
 				activities: [
-					{ id: `read-${id}`, tool: "read_file", status: "completed", input: { path: `${projectDirectory}/login.html` } },
-					{ id: `edit-${id}`, tool: "edit_file", status: "completed", input: { filePath: `${projectDirectory}/login.html` }, metadata: { filediff: { file: `${projectDirectory}/login.html`, additions: 4, deletions: 1 } } },
+					{
+						id: `read-${id}`,
+						tool: "read_file",
+						status: "completed",
+						input: { path: `${projectDirectory}/login.html` },
+					},
+					{
+						id: `edit-${id}`,
+						tool: "edit_file",
+						status: "completed",
+						input: { filePath: `${projectDirectory}/login.html` },
+						metadata: {
+							filediff: {
+								file: `${projectDirectory}/login.html`,
+								additions: 4,
+								deletions: 1,
+							},
+						},
+					},
 				],
 			};
 		} else if (/^\/api\/tasks\/[^/]+\/diff$/.test(path)) {
-			body = { diff: "diff --git a/login.html b/login.html\nindex a1..a2\n--- a/login.html\n+++ b/login.html\n@@ -1,1 +1,2 @@\n+<h1>Login</h1>\n" };
+			body = {
+				diff: "diff --git a/login.html b/login.html\nindex a1..a2\n--- a/login.html\n+++ b/login.html\n@@ -1,1 +1,2 @@\n+<h1>Login</h1>\n",
+			};
 		} else if (/^\/api\/tasks\/[^/]+\/reviews$/.test(path)) {
 			body = { reviews: [] };
-		} else if (/^\/api\/tasks\/[^/]+\/review\/run$/.test(path) && request.method === "POST") {
+		} else if (
+			/^\/api\/tasks\/[^/]+\/review\/run$/.test(path) &&
+			request.method === "POST"
+		) {
 			body = { review: { id: "fixture-review", status: "approved" } };
 		} else if (/^\/api\/permissions$/.test(path)) {
 			body = [];
 		} else if (/^\/api\/projects\/[^/]+\/review-policy$/.test(path)) {
 			body = { policy: reviewPolicy, autoMergeAvailable: false };
 		} else if (/^\/api\/projects\/[^/]+\/git$/.test(path)) {
-			body = { branch: "master", defaultBranch: "main", branches: ["main", "master"], gitAvailable: true };
+			body = {
+				branch: "master",
+				defaultBranch: "main",
+				branches: ["main", "master"],
+				gitAvailable: true,
+			};
 		} else if (/^\/api\/integration-batches$/.test(path)) {
 			body = { batches: [] };
 		} else if (/^\/api\/automation\/settings$/.test(path)) {
@@ -315,7 +359,14 @@ async function stubWorkspace(browser: Browser) {
 			body = agents;
 		} else if (/^\/api\/chat\/catalog$/.test(path)) {
 			body = {
-				models: [{ providerID: "opencode", modelID: "glm-5.3-flash-free", name: "GLM 5.3 Flash", provider: "OpenCode" }],
+				models: [
+					{
+						providerID: "opencode",
+						modelID: "glm-5.3-flash-free",
+						name: "GLM 5.3 Flash",
+						provider: "OpenCode",
+					},
+				],
 				defaults: {},
 				agents: [{ name: "build", mode: "primary" }],
 				commands: [],
@@ -344,7 +395,11 @@ async function stubWorkspace(browser: Browser) {
 	return workspace;
 }
 
-test("runs two Backend and two Frontend tasks together, auto-repairs the race bug, and the reviewer agent moves passing work to Done", async ({ app, browser, screen }) => {
+test("runs two Backend and two Frontend tasks together, auto-repairs the race bug, and the reviewer agent moves passing work to Done", async ({
+	app,
+	browser,
+	screen,
+}) => {
 	const workspace = await stubWorkspace(browser);
 	await app.open(`/?project=${projectId}&view=kanban`);
 
@@ -355,16 +410,24 @@ test("runs two Backend and two Frontend tasks together, auto-repairs the race bu
 	await expect(screen.getByRole("option", "Automatic review")).toBeVisible();
 	await screen.getByRole("option", "Automatic review").tap();
 	await expect(screen.getByRole("button", "Reviewer agent")).toBeVisible();
-	await expect(screen.getByText("REVIEWER · opencode / opencode/glm-5.3-flash-free")).toBeVisible();
+	await expect(
+		screen.getByText("REVIEWER · opencode / opencode/glm-5.3-flash-free"),
+	).toBeVisible();
 	await app.screenshot("kanban-auto-review-configured");
 
 	await screen.getByRole("checkbox", `Select ${titles.beRace} to run`).check();
 	await screen.getByRole("checkbox", `Select ${titles.beApi} to run`).check();
 	await screen.getByRole("checkbox", `Select ${titles.feForm} to run`).check();
-	await screen.getByRole("checkbox", `Select ${titles.feMobile} to run`).check();
+	await screen
+		.getByRole("checkbox", `Select ${titles.feMobile} to run`)
+		.check();
 	await expect(screen.getByRole("button", "Run 4 selected")).toBeVisible();
 	await screen.getByRole("button", "Run 4 selected").tap();
-	await expect(screen.getByText("4 tasks queued · Loom will run eligible tasks in parallel")).toBeVisible();
+	await expect(
+		screen.getByText(
+			"4 tasks queued · Loom will run eligible tasks in parallel",
+		),
+	).toBeVisible();
 	expect(workspace.startedTaskIds.sort()).toEqual([
 		"task-backend-api",
 		"task-backend-race",
@@ -382,14 +445,20 @@ test("runs two Backend and two Frontend tasks together, auto-repairs the race bu
 	const done = screen.getByRole("region", "Done column");
 	await expect(done.getByText(titles.beApi)).toBeVisible({ timeout: 20_000 });
 	await expect(done.getByText(titles.feForm)).toBeVisible({ timeout: 20_000 });
-	await expect(done.getByText(titles.feMobile)).toBeVisible({ timeout: 20_000 });
+	await expect(done.getByText(titles.feMobile)).toBeVisible({
+		timeout: 20_000,
+	});
 	// The race task fails review once, comes back with a findings-backed
 	// repair prompt, and only then passes review.
 	await expect(done.getByText(titles.beRace)).toBeVisible({ timeout: 20_000 });
 	await app.screenshot("kanban-reviewed-work-moved-to-done");
 });
 
-test("sends reviewer findings back to the Backend agent as a repair prompt for the next round", async ({ app, browser, screen }) => {
+test("sends reviewer findings back to the Backend agent as a repair prompt for the next round", async ({
+	app,
+	browser,
+	screen,
+}) => {
 	await browser.addInitScript(() => {
 		try {
 			localStorage.setItem("loom.ui.trusted", "true");
@@ -399,8 +468,8 @@ test("sends reviewer findings back to the Backend agent as a repair prompt for t
 		}
 	});
 	await browser.route("**/api/**", async (route) => {
-		const path = (new URL(route.request.url)).pathname;
-		if (path === `/api/tasks/task-backend-race`) {
+		const path = new URL(route.request.url).pathname;
+		if (path === "/api/tasks/task-backend-race") {
 			await route.fulfill({
 				status: 200,
 				contentType: "application/json",
@@ -434,7 +503,8 @@ test("sends reviewer findings back to the Backend agent as a repair prompt for t
 				status: 200,
 				contentType: "application/json",
 				body: JSON.stringify({
-					output: "Repair round 1 of 2: protecting the shared queue update with a lock before the next checkpoint.\n",
+					output:
+						"Repair round 1 of 2: protecting the shared queue update with a lock before the next checkpoint.\n",
 					truncated: false,
 					activities: [],
 				}),
@@ -445,15 +515,17 @@ test("sends reviewer findings back to the Backend agent as a repair prompt for t
 			await route.fulfill({
 				status: 200,
 				contentType: "application/json",
-				body: JSON.stringify([{
-					id: "run-race",
-					taskId: "task-backend-race",
-					status: "running",
-					startedAt: "2026-10-20T00:06:00.000Z",
-					completedAt: null,
-					errorMessage: null,
-					retryOfRunId: null,
-				}]),
+				body: JSON.stringify([
+					{
+						id: "run-race",
+						taskId: "task-backend-race",
+						status: "running",
+						startedAt: "2026-10-20T00:06:00.000Z",
+						completedAt: null,
+						errorMessage: null,
+						retryOfRunId: null,
+					},
+				]),
 			});
 			return;
 		}
@@ -493,7 +565,22 @@ test("sends reviewer findings back to the Backend agent as a repair prompt for t
 			await route.fulfill({
 				status: 200,
 				contentType: "application/json",
-				body: JSON.stringify([{ id: backendAgentId, label: "BACKEND", role: "backend", status: "active", allowChat: false, allowCanvas: false, allowKanban: true, approvalPolicy: "manual", projectId, provider: "opencode", modelId: "opencode/glm-5.3-flash-free", lastUsedAt: null }]),
+				body: JSON.stringify([
+					{
+						id: backendAgentId,
+						label: "BACKEND",
+						role: "backend",
+						status: "active",
+						allowChat: false,
+						allowCanvas: false,
+						allowKanban: true,
+						approvalPolicy: "manual",
+						projectId,
+						provider: "opencode",
+						modelId: "opencode/glm-5.3-flash-free",
+						lastUsedAt: null,
+					},
+				]),
 			});
 			return;
 		}
@@ -521,18 +608,28 @@ test("sends reviewer findings back to the Backend agent as a repair prompt for t
 			});
 			return;
 		}
-		await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([]) });
+		await route.fulfill({
+			status: 200,
+			contentType: "application/json",
+			body: JSON.stringify([]),
+		});
 	});
-	await app.open(`/task/task-backend-race`);
+	await app.open("/task/task-backend-race");
 
 	await expect(screen.getByRole("heading", titles.beRace)).toBeVisible();
 	await expect(screen.getByText(/Repair round 1 of 2/).first()).toBeVisible();
 	await expect(screen.getByText(/BUG_RACE/).first()).toBeVisible();
-	await expect(screen.getByText("Agent is running this task").first()).toBeVisible();
+	await expect(
+		screen.getByText("Agent is running this task").first(),
+	).toBeVisible();
 	await app.screenshot("kanban-repair-prompt-round-1");
 });
 
-test("surfaces a stalled provider run as failed with the watchdog reason instead of running forever", async ({ app, browser, screen }) => {
+test("surfaces a stalled provider run as failed with the watchdog reason instead of running forever", async ({
+	app,
+	browser,
+	screen,
+}) => {
 	const stalledTask = baseTask(
 		"task-backend-stalled",
 		titles.stalled,
@@ -552,7 +649,7 @@ test("surfaces a stalled provider run as failed with the watchdog reason instead
 		}
 	});
 	await browser.route("**/api/**", async (route) => {
-		const path = (new URL(route.request.url)).pathname;
+		const path = new URL(route.request.url).pathname;
 		if (path === "/api/tasks/task-backend-stalled") {
 			await route.fulfill({
 				status: 200,
@@ -565,16 +662,18 @@ test("surfaces a stalled provider run as failed with the watchdog reason instead
 			await route.fulfill({
 				status: 200,
 				contentType: "application/json",
-				body: JSON.stringify([{
-					id: "run-stalled",
-					taskId: "task-backend-stalled",
-					status: "failed",
-					startedAt: "2026-10-20T00:05:00.000Z",
-					completedAt: "2026-10-20T00:11:00.000Z",
-					errorMessage:
-						"OpenCode stopped reporting status for this session without an assistant response. Check that the selected provider and model are available in OpenCode, then retry the task.",
-					retryOfRunId: null,
-				}]),
+				body: JSON.stringify([
+					{
+						id: "run-stalled",
+						taskId: "task-backend-stalled",
+						status: "failed",
+						startedAt: "2026-10-20T00:05:00.000Z",
+						completedAt: "2026-10-20T00:11:00.000Z",
+						errorMessage:
+							"OpenCode stopped reporting status for this session without an assistant response. Check that the selected provider and model are available in OpenCode, then retry the task.",
+						retryOfRunId: null,
+					},
+				]),
 			});
 			return;
 		}
@@ -598,7 +697,22 @@ test("surfaces a stalled provider run as failed with the watchdog reason instead
 			await route.fulfill({
 				status: 200,
 				contentType: "application/json",
-				body: JSON.stringify([{ id: backendAgentId, label: "BACKEND", role: "backend", status: "active", allowChat: false, allowCanvas: false, allowKanban: true, approvalPolicy: "manual", projectId, provider: "opencode", modelId: "opencode/glm-5.3-flash-free", lastUsedAt: null }]),
+				body: JSON.stringify([
+					{
+						id: backendAgentId,
+						label: "BACKEND",
+						role: "backend",
+						status: "active",
+						allowChat: false,
+						allowCanvas: false,
+						allowKanban: true,
+						approvalPolicy: "manual",
+						projectId,
+						provider: "opencode",
+						modelId: "opencode/glm-5.3-flash-free",
+						lastUsedAt: null,
+					},
+				]),
 			});
 			return;
 		}
@@ -626,13 +740,19 @@ test("surfaces a stalled provider run as failed with the watchdog reason instead
 			});
 			return;
 		}
-		await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([]) });
+		await route.fulfill({
+			status: 200,
+			contentType: "application/json",
+			body: JSON.stringify([]),
+		});
 	});
-	await app.open(`/task/task-backend-stalled`);
+	await app.open("/task/task-backend-stalled");
 
 	await expect(screen.getByRole("heading", titles.stalled)).toBeVisible();
 	await expect(screen.getByText("Failed").first()).toBeVisible();
-	await expect(screen.getByText(/OpenCode stopped reporting status/).first()).toBeVisible({ timeout: 10_000 });
+	await expect(
+		screen.getByText(/OpenCode stopped reporting status/).first(),
+	).toBeVisible({ timeout: 10_000 });
 	await expect(screen.getByRole("button", "Retry").first()).toBeVisible();
 	await app.screenshot("kanban-stalled-run-failed-with-watchdog-reason");
 });

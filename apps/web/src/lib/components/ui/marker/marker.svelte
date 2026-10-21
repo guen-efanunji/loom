@@ -49,7 +49,13 @@
 		},
 	})}
 {:else}
-	<div bind:this={ref} data-slot="marker" data-variant={variant} class={classValue()} {...restProps}>
+	<div
+		bind:this={ref}
+		data-slot="marker"
+		data-variant={variant}
+		class={classValue()}
+		{...restProps}
+	>
 		{@render children?.()}
 	</div>
 {/if}

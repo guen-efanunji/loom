@@ -52,7 +52,11 @@ class FakeAgentRuntime implements AgentRuntime {
 	async createSession(input: { cwd: string; title: string }) {
 		const id = `fake-session-${++this.nextId}`;
 		this.sessionCwds.push(input.cwd);
-		this.sessions.set(id, { cwd: input.cwd, status: "queued", title: input.title });
+		this.sessions.set(id, {
+			cwd: input.cwd,
+			status: "queued",
+			title: input.title,
+		});
 		return { id };
 	}
 
@@ -60,19 +64,30 @@ class FakeAgentRuntime implements AgentRuntime {
 		const session = this.sessions.get(input.sessionId);
 		if (!session) throw new Error("Fake session not found");
 		this.activePrompts++;
-		this.maxConcurrentPrompts = Math.max(this.maxConcurrentPrompts, this.activePrompts);
+		this.maxConcurrentPrompts = Math.max(
+			this.maxConcurrentPrompts,
+			this.activePrompts,
+		);
 		await Bun.sleep(30);
 		if (session.title.startsWith("Review:")) {
 			// Decide from the checkpoint diff: the task brief re-embeds the
 			// previous findings after every repair round, so the review must look
 			// at the fixed output, not the finding text.
-			const checkpointDiff = input.prompt.split("Checkpoint diff:").at(-1) ?? "";
+			const checkpointDiff =
+				input.prompt.split("Checkpoint diff:").at(-1) ?? "";
 			const hasRaceBug = checkpointDiff.includes("BUG_RACE");
 			session.output = JSON.stringify({
 				decision: hasRaceBug ? "request_changes" : "approve",
 				summary: hasRaceBug ? "Race condition found" : "All checks passed",
 				findings: hasRaceBug
-					? [{ severity: "high", file: "backend-race.txt", message: "BUG_RACE: protect shared update with a lock", suggestedAction: "Add a lock around the update" }]
+					? [
+							{
+								severity: "high",
+								file: "backend-race.txt",
+								message: "BUG_RACE: protect shared update with a lock",
+								suggestedAction: "Add a lock around the update",
+							},
+						]
 					: [],
 			});
 			session.status = "completed";
@@ -84,7 +99,10 @@ class FakeAgentRuntime implements AgentRuntime {
 			: session.title.toLowerCase().includes("race")
 				? "BUG_RACE\n"
 				: `${input.prompt}\n`;
-		const titleSlug = session.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+		const titleSlug = session.title
+			.toLowerCase()
+			.replace(/[^a-z0-9]+/g, "-")
+			.replace(/^-|-$/g, "");
 		const fileName = session.title.toLowerCase().includes("race")
 			? "backend-race.txt"
 			: /^(backend|frontend)-/.test(titleSlug)
@@ -93,7 +111,14 @@ class FakeAgentRuntime implements AgentRuntime {
 		await writeFile(join(session.cwd, fileName), content);
 		await runGit(["add", "agent.txt"], session.cwd);
 		if (fileName !== "agent.txt") await runGit(["add", fileName], session.cwd);
-		await runGit(["commit", "-m", session.title.startsWith("Review:") ? "review" : "agent change"], session.cwd);
+		await runGit(
+			[
+				"commit",
+				"-m",
+				session.title.startsWith("Review:") ? "review" : "agent change",
+			],
+			session.cwd,
+		);
 		session.status = "completed";
 		this.activePrompts--;
 	}
@@ -186,7 +211,16 @@ async function createTestSetup(options: { allowAutoMerge?: boolean } = {}) {
 		startOpenCode: false,
 		initializeProviders: false,
 	});
-	return { daemon, database, home, root, project, repos, runtime, reviewerRuntime };
+	return {
+		daemon,
+		database,
+		home,
+		root,
+		project,
+		repos,
+		runtime,
+		reviewerRuntime,
+	};
 }
 
 describe("server API", () => {
@@ -656,15 +690,20 @@ describe("server API", () => {
 				let status = "queued";
 				const deadline = Date.now() + 10_000;
 				while (Date.now() < deadline && status !== "completed") {
-					const response = await setup.daemon.app.request(`/api/tasks/${id}`, { headers });
+					const response = await setup.daemon.app.request(`/api/tasks/${id}`, {
+						headers,
+					});
 					status = ((await response.json()) as { status: string }).status;
 					if (status !== "completed") await Bun.sleep(20);
 				}
 				expect(status).toBe("completed");
-				const checkpoint = await setup.daemon.app.request(`/api/tasks/${id}/checkpoint`, {
-					method: "POST",
-					headers,
-				});
+				const checkpoint = await setup.daemon.app.request(
+					`/api/tasks/${id}/checkpoint`,
+					{
+						method: "POST",
+						headers,
+					},
+				);
 				expect(checkpoint.status).toBe(200);
 				expect(
 					((await checkpoint.json()) as { review?: { status: string } }).review
@@ -673,12 +712,24 @@ describe("server API", () => {
 			}
 
 			for (const id of taskIds) {
-				const reviewedTask = await setup.daemon.app.request(`/api/tasks/${id}`, { headers });
-				expect(((await reviewedTask.json()) as { status: string }).status).toBe("completed");
+				const reviewedTask = await setup.daemon.app.request(
+					`/api/tasks/${id}`,
+					{ headers },
+				);
+				expect(((await reviewedTask.json()) as { status: string }).status).toBe(
+					"completed",
+				);
 			}
-			const reviewedTask = await setup.daemon.app.request(`/api/tasks/${taskIds[0]}`, { headers });
-			expect(((await reviewedTask.json()) as { status: string }).status).toBe("completed");
-			expect(await readFile(join(setup.root, "backend-race.txt"), "utf8")).toBe("FIXED_RACE\n");
+			const reviewedTask = await setup.daemon.app.request(
+				`/api/tasks/${taskIds[0]}`,
+				{ headers },
+			);
+			expect(((await reviewedTask.json()) as { status: string }).status).toBe(
+				"completed",
+			);
+			expect(await readFile(join(setup.root, "backend-race.txt"), "utf8")).toBe(
+				"FIXED_RACE\n",
+			);
 
 			const distinctWorktrees = new Set(setup.runtime.sessionCwds);
 			expect(taskIds).toHaveLength(4);
@@ -686,7 +737,9 @@ describe("server API", () => {
 			expect(setup.reviewerRuntime.sessionCwds).toHaveLength(5);
 			expect(distinctWorktrees.size).toBe(4);
 			expect(setup.runtime.maxConcurrentPrompts).toBeGreaterThan(1);
-			expect([...distinctWorktrees].every((path) => path !== setup.root)).toBe(true);
+			expect([...distinctWorktrees].every((path) => path !== setup.root)).toBe(
+				true,
+			);
 		} finally {
 			await setup.daemon.close();
 			await rm(setup.root, { recursive: true, force: true });

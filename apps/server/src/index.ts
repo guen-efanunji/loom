@@ -1483,7 +1483,10 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		"/api/context",
 		createContextHubRoutes({ db, projects: repos.projects }),
 	);
-	app.route("/api/mcp", createMcpManagerRoutes({ db, projects: repos.projects }));
+	app.route(
+		"/api/mcp",
+		createMcpManagerRoutes({ db, projects: repos.projects }),
+	);
 	app.route(
 		"/api/agents",
 		createAgentSettingsRoutes({
@@ -1961,8 +1964,14 @@ export async function createApp(options: DaemonAppOptions = {}) {
 					.split(/\r?\n/)[0]
 					?.replace(/^['"`]|['"`]$/g, "")
 					.trim();
-				if (!message) throw new Error("The selected model returned an empty commit message.");
-				return c.json({ message, provider: { providerId, modelId: runtimeModelId } });
+				if (!message)
+					throw new Error(
+						"The selected model returned an empty commit message.",
+					);
+				return c.json({
+					message,
+					provider: { providerId, modelId: runtimeModelId },
+				});
 			} catch (error) {
 				await runtime.abort(created.id).catch(() => undefined);
 				throw error;
@@ -1970,8 +1979,18 @@ export async function createApp(options: DaemonAppOptions = {}) {
 				await runtime.deleteSession?.(created.id).catch(() => undefined);
 			}
 		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unable to generate commit message";
-			return errorResponse(c, new Error(message.replace(/\bBearer\s+\S+/gi, "Bearer [redacted]").slice(0, 600)));
+			const message =
+				error instanceof Error
+					? error.message
+					: "Unable to generate commit message";
+			return errorResponse(
+				c,
+				new Error(
+					message
+						.replace(/\bBearer\s+\S+/gi, "Bearer [redacted]")
+						.slice(0, 600),
+				),
+			);
 		}
 	});
 	app.post("/api/projects/:id/git/commit", async (c) => {
@@ -3640,7 +3659,9 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	});
 	app.post("/api/tasks/:id/review/run", async (c) => {
 		try {
-			const review = await orchestrator.runTaskReviewWithRepairs(c.req.param("id"));
+			const review = await orchestrator.runTaskReviewWithRepairs(
+				c.req.param("id"),
+			);
 			return c.json({ review }, 201);
 		} catch (error) {
 			return errorResponse(c, error);
@@ -3777,7 +3798,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 					);
 			}
 		}
-		let repository;
+		let repository: Awaited<ReturnType<typeof projectValidation.validate>>;
 		try {
 			repository = await projectValidation.validate(project.path);
 		} catch (error) {

@@ -13,10 +13,9 @@
 	function toggleTheme() {
 		theme = theme === "dark" ? "light" : "dark";
 		document.documentElement.dataset.theme = theme;
-		document.querySelector('meta[name="theme-color"]')?.setAttribute(
-			"content",
-			theme === "dark" ? "#171a15" : "#f5f6f2",
-		);
+		document
+			.querySelector('meta[name="theme-color"]')
+			?.setAttribute("content", theme === "dark" ? "#171a15" : "#f5f6f2");
 		try {
 			localStorage.setItem("loom-site-theme", theme);
 		} catch {

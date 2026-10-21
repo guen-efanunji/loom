@@ -179,7 +179,7 @@ export function buildContextPacket(input: {
 		Number.isSafeInteger(input.contextWindowTokens) &&
 		(input.contextWindowTokens ?? 0) > 0;
 	const contextWindowTokens = windowFromCatalog
-		? input.contextWindowTokens!
+		? (input.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW)
 		: DEFAULT_CONTEXT_WINDOW;
 	// Respect small reported windows too. A fixed 1k-token floor can silently
 	// exceed the provider's actual limit for compact or test models.
@@ -210,10 +210,11 @@ export function buildContextPacket(input: {
 			.filter(Boolean)
 			.join("\n\n");
 		compacted = olderMessages.length > 0;
-		if (compacted) {
+		const lastOlderMessage = olderMessages.at(-1);
+		if (compacted && lastOlderMessage) {
 			checkpointBoundary = {
 				coveredMessageCount: olderMessages.length,
-				lastMessageId: olderMessages.at(-1)!.info.id,
+				lastMessageId: lastOlderMessage.info.id,
 				sourceReferences: olderMessages.map((message) => message.info.id),
 			};
 		}

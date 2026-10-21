@@ -21,7 +21,7 @@
 		data-slot="trace-collapsible-content-inner"
 		class={cn(
 			"mt-2 mb-1 ml-[calc(--spacing(2)_-_1px)] border-l pr-1 pl-4 leading-relaxed min-w-0 wrap-break-word text-muted-foreground",
-			className
+			className,
 		)}
 	>
 		{@render children?.()}

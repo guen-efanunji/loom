@@ -109,7 +109,11 @@ export class MergeConflictError extends WorktreeError {
 	readonly files: string[];
 	readonly integrationWorkspace?: Workspace;
 
-	constructor(files: string[], message = "Merge conflict detected", integrationWorkspace?: Workspace) {
+	constructor(
+		files: string[],
+		message = "Merge conflict detected",
+		integrationWorkspace?: Workspace,
+	) {
 		super("COMMAND_FAILED", message, { files: files.join("\n") });
 		this.name = "MergeConflictError";
 		this.files = files;
@@ -182,7 +186,12 @@ function validateSegment(value: string, label: string): void {
 }
 
 function worktreeRoot(home: string) {
-	return resolve(home === homedir() && process.env.LOOM_HOME ? process.env.LOOM_HOME : join(home, ".loom"), "worktrees");
+	return resolve(
+		home === homedir() && process.env.LOOM_HOME
+			? process.env.LOOM_HOME
+			: join(home, ".loom"),
+		"worktrees",
+	);
 }
 
 export function getWorktreePath(
@@ -312,9 +321,7 @@ export class WorktreeManager {
 				"This Git repository has no commits yet. Create an initial commit before running Kanban tasks.",
 				{ path: repository.path },
 			);
-		if (
-			resolve(input.projectPath) === worktreeRoot(this.home)
-		) {
+		if (resolve(input.projectPath) === worktreeRoot(this.home)) {
 			throw new WorktreeError(
 				"SAFETY_ERROR",
 				"Main workspace cannot be a managed worktree",
@@ -336,10 +343,7 @@ export class WorktreeManager {
 					repository.path,
 				);
 			} catch (error) {
-				if (
-					error instanceof WorktreeError &&
-					error.code !== "COMMAND_FAILED"
-				)
+				if (error instanceof WorktreeError && error.code !== "COMMAND_FAILED")
 					throw error;
 				// The configured base branch no longer exists (e.g. a stale
 				// default branch); fall back to the repository HEAD instead of
@@ -436,12 +440,7 @@ export class WorktreeManager {
 		await this.assertWorkspacePath(workspace);
 		const tracked = await runGit(
 			this.runner,
-			[
-				"diff",
-				"--no-ext-diff",
-				"--binary",
-				workspace.baseCommit,
-			],
+			["diff", "--no-ext-diff", "--binary", workspace.baseCommit],
 			workspace.path,
 		);
 		const untracked = await runGit(
@@ -455,7 +454,10 @@ export class WorktreeManager {
 			try {
 				const content = await readFile(join(workspace.path, path), "utf8");
 				additions.push(
-					`diff --git a/${path} b/${path}\nnew file mode 100644\n--- /dev/null\n+++ b/${path}\n${content.split("\n").map((line) => `+${line}`).join("\n")}`,
+					`diff --git a/${path} b/${path}\nnew file mode 100644\n--- /dev/null\n+++ b/${path}\n${content
+						.split("\n")
+						.map((line) => `+${line}`)
+						.join("\n")}`,
 				);
 			} catch {
 				additions.push(`New binary file: ${path}`);
@@ -496,7 +498,11 @@ export class WorktreeManager {
 			.map((entry) => entry.slice(3))
 			.filter((path) => path && !isExcludedCheckpointPath(path));
 		if (!paths.length) {
-			const head = await runGit(this.runner, ["rev-parse", "HEAD"], workspace.path);
+			const head = await runGit(
+				this.runner,
+				["rev-parse", "HEAD"],
+				workspace.path,
+			);
 			if (head === workspace.baseCommit)
 				throw new WorktreeError("NOT_FOUND", "No checkpointable changes found");
 			const ancestry = await this.runner(
@@ -505,15 +511,26 @@ export class WorktreeManager {
 				{ cwd: workspace.path },
 			);
 			if (ancestry.exitCode !== 0)
-				throw new WorktreeError("SAFETY_ERROR", "Checkpoint HEAD is not based on the recorded task baseline");
-			const committedPaths = (await runGit(
-				this.runner,
-				["diff", "--name-only", "-z", `${workspace.baseCommit}..${head}`],
-				workspace.path,
-			)).split("\0").filter(Boolean);
+				throw new WorktreeError(
+					"SAFETY_ERROR",
+					"Checkpoint HEAD is not based on the recorded task baseline",
+				);
+			const committedPaths = (
+				await runGit(
+					this.runner,
+					["diff", "--name-only", "-z", `${workspace.baseCommit}..${head}`],
+					workspace.path,
+				)
+			)
+				.split("\0")
+				.filter(Boolean);
 			const excludedCommitted = committedPaths.filter(isExcludedCheckpointPath);
 			if (excludedCommitted.length)
-				throw new WorktreeError("SAFETY_ERROR", "Committed output contains secret, generated, or Loom metadata paths", { paths: excludedCommitted.join("\n") });
+				throw new WorktreeError(
+					"SAFETY_ERROR",
+					"Committed output contains secret, generated, or Loom metadata paths",
+					{ paths: excludedCommitted.join("\n") },
+				);
 			if (!committedPaths.length)
 				throw new WorktreeError("NOT_FOUND", "No checkpointable changes found");
 			return head;
@@ -561,39 +578,68 @@ export class WorktreeManager {
 		return runGit(this.runner, ["rev-parse", "HEAD"], workspace.path);
 	}
 
-	async inspectHead(workspace: Workspace): Promise<{ head: string; clean: boolean }> {
+	async inspectHead(
+		workspace: Workspace,
+	): Promise<{ head: string; clean: boolean }> {
 		await this.assertWorkspacePath(workspace);
 		const [head, status] = await Promise.all([
 			runGit(this.runner, ["rev-parse", "HEAD"], workspace.path),
-			runGit(this.runner, ["status", "--porcelain", "--untracked-files=all"], workspace.path),
+			runGit(
+				this.runner,
+				["status", "--porcelain", "--untracked-files=all"],
+				workspace.path,
+			),
 		]);
 		return {
 			head,
-			clean: status
-				.split("\n")
-				.filter((line) => line.trim() && !line.endsWith(".loom-worktree.json")).length === 0,
+			clean:
+				status
+					.split("\n")
+					.filter(
+						(line) => line.trim() && !line.endsWith(".loom-worktree.json"),
+					).length === 0,
 		};
 	}
 
-	async readTextAtCommit(workspace: Workspace, commitSha: string, relativePath: string): Promise<string> {
+	async readTextAtCommit(
+		workspace: Workspace,
+		commitSha: string,
+		relativePath: string,
+	): Promise<string> {
 		await this.assertWorkspacePath(workspace);
 		const normalized = relativePath.replaceAll("\\", "/");
 		if (
 			!normalized ||
 			isAbsolute(relativePath) ||
-			normalized.split("/").some((segment) => !segment || segment === "." || segment === "..") ||
+			normalized
+				.split("/")
+				.some((segment) => !segment || segment === "." || segment === "..") ||
 			isExcludedCheckpointPath(normalized) ||
 			normalized.length > 500
 		)
-			throw new WorktreeError("SAFETY_ERROR", "Artifact path is unsafe or excluded", { path: normalized });
-		const size = Number(await runGit(
-			this.runner,
-			["cat-file", "-s", `${commitSha}:${normalized}`],
-			workspace.path,
-		));
+			throw new WorktreeError(
+				"SAFETY_ERROR",
+				"Artifact path is unsafe or excluded",
+				{ path: normalized },
+			);
+		const size = Number(
+			await runGit(
+				this.runner,
+				["cat-file", "-s", `${commitSha}:${normalized}`],
+				workspace.path,
+			),
+		);
 		if (!Number.isSafeInteger(size) || size > 2_000_000)
-			throw new WorktreeError("SAFETY_ERROR", "Artifact must be a text file smaller than 2 MB", { path: normalized, size: String(size) });
-		return runGit(this.runner, ["show", `${commitSha}:${normalized}`], workspace.path);
+			throw new WorktreeError(
+				"SAFETY_ERROR",
+				"Artifact must be a text file smaller than 2 MB",
+				{ path: normalized, size: String(size) },
+			);
+		return runGit(
+			this.runner,
+			["show", `${commitSha}:${normalized}`],
+			workspace.path,
+		);
 	}
 
 	async remove(workspace: Workspace): Promise<void> {
@@ -688,8 +734,14 @@ export class WorktreeManager {
 		return { ...repository, head, branchExists };
 	}
 
-	async isCommitIntegrated(workspace: Workspace, commitSha: string): Promise<boolean> {
-		const repository = await validateRepository(workspace.projectPath, this.runner);
+	async isCommitIntegrated(
+		workspace: Workspace,
+		commitSha: string,
+	): Promise<boolean> {
+		const repository = await validateRepository(
+			workspace.projectPath,
+			this.runner,
+		);
 		const targetBranch = workspace.targetBranch || repository.defaultBranch;
 		const result = await this.runner(
 			"git",
@@ -708,9 +760,16 @@ export class WorktreeManager {
 		if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(input.batchId))
 			throw new WorktreeError("SAFETY_ERROR", "Invalid integration batch ID");
 		if (!input.members.length)
-			throw new WorktreeError("SAFETY_ERROR", "Integration batch has no members");
+			throw new WorktreeError(
+				"SAFETY_ERROR",
+				"Integration batch has no members",
+			);
 		const repository = await validateRepository(input.projectPath, this.runner);
-		await runGit(this.runner, ["check-ref-format", "--branch", input.targetBranch], repository.path);
+		await runGit(
+			this.runner,
+			["check-ref-format", "--branch", input.targetBranch],
+			repository.path,
+		);
 		const targetBaseSha = await runGit(
 			this.runner,
 			["rev-parse", "--verify", `${input.targetBaseSha}^{commit}`],
@@ -722,36 +781,60 @@ export class WorktreeManager {
 			repository.path,
 		);
 		if (targetBranchSha !== targetBaseSha)
-			throw new WorktreeError("SAFETY_ERROR", "Target branch moved before integration assembly", {
-				expectedHead: targetBaseSha,
-				actualHead: targetBranchSha,
-			});
+			throw new WorktreeError(
+				"SAFETY_ERROR",
+				"Target branch moved before integration assembly",
+				{
+					expectedHead: targetBaseSha,
+					actualHead: targetBranchSha,
+				},
+			);
 		const memberShas: string[] = [];
 		for (const member of input.members) {
 			if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(member.taskId))
-				throw new WorktreeError("SAFETY_ERROR", "Invalid task ID in integration batch");
+				throw new WorktreeError(
+					"SAFETY_ERROR",
+					"Invalid task ID in integration batch",
+				);
 			const outputSha = await runGit(
 				this.runner,
 				["rev-parse", "--verify", `${member.outputSha}^{commit}`],
 				repository.path,
 			);
 			if (memberShas.includes(outputSha))
-				throw new WorktreeError("SAFETY_ERROR", "Integration batch contains a duplicate output SHA");
+				throw new WorktreeError(
+					"SAFETY_ERROR",
+					"Integration batch contains a duplicate output SHA",
+				);
 			memberShas.push(outputSha);
 		}
 		const taskId = `integration-${input.batchId}`;
 		const path = getWorktreePath(input.projectId, taskId, this.home);
 		const branch = `loom/integration/${input.batchId}`;
-		if (resolve(path) !== path || !path.startsWith(worktreeRoot(this.home) + sep))
-			throw new WorktreeError("SAFETY_ERROR", "Integration worktree path is outside the managed directory");
+		if (
+			resolve(path) !== path ||
+			!path.startsWith(worktreeRoot(this.home) + sep)
+		)
+			throw new WorktreeError(
+				"SAFETY_ERROR",
+				"Integration worktree path is outside the managed directory",
+			);
 		try {
 			await stat(path);
-			throw new WorktreeError("SAFETY_ERROR", "Integration worktree path already exists", { path });
+			throw new WorktreeError(
+				"SAFETY_ERROR",
+				"Integration worktree path already exists",
+				{ path },
+			);
 		} catch (error) {
 			if (error instanceof WorktreeError) throw error;
 		}
 		await mkdir(dirname(path), { recursive: true });
-		await runGit(this.runner, ["worktree", "add", "-b", branch, path, targetBaseSha], repository.path);
+		await runGit(
+			this.runner,
+			["worktree", "add", "-b", branch, path, targetBaseSha],
+			repository.path,
+		);
 		const workspace: Workspace = {
 			id: taskId,
 			taskId,
@@ -772,17 +855,37 @@ export class WorktreeManager {
 				try {
 					await runGit(
 						this.runner,
-						["merge", "--no-ff", "-m", `Integrate task ${member.taskId} (${sha.slice(0, 12)})`, "--", sha],
+						[
+							"merge",
+							"--no-ff",
+							"-m",
+							`Integrate task ${member.taskId} (${sha.slice(0, 12)})`,
+							"--",
+							sha,
+						],
 						path,
 					);
 				} catch (error) {
 					const files = await this.conflictFiles(path);
-					if (files.length) throw new MergeConflictError(files, "Integration batch has merge conflicts", workspace);
+					if (files.length)
+						throw new MergeConflictError(
+							files,
+							"Integration batch has merge conflicts",
+							workspace,
+						);
 					throw error;
 				}
 			}
-			await runGit(this.runner, ["diff", "--check", `${targetBaseSha}..HEAD`], path);
-			const candidateSha = await runGit(this.runner, ["rev-parse", "HEAD"], path);
+			await runGit(
+				this.runner,
+				["diff", "--check", `${targetBaseSha}..HEAD`],
+				path,
+			);
+			const candidateSha = await runGit(
+				this.runner,
+				["rev-parse", "HEAD"],
+				path,
+			);
 			return { workspace, targetBaseSha, memberShas, candidateSha };
 		} catch (error) {
 			if (error instanceof MergeConflictError)
@@ -797,7 +900,10 @@ export class WorktreeManager {
 		input: { expectedTargetSha: string; candidateSha: string },
 	): Promise<string> {
 		await this.assertWorkspacePath(workspace);
-		const repository = await validateRepository(workspace.projectPath, this.runner);
+		const repository = await validateRepository(
+			workspace.projectPath,
+			this.runner,
+		);
 		const targetBranch = workspace.targetBranch || repository.defaultBranch;
 		const targetRef = `refs/heads/${targetBranch}`;
 		const currentTargetSha = await runGit(
@@ -806,10 +912,14 @@ export class WorktreeManager {
 			repository.path,
 		);
 		if (currentTargetSha !== input.expectedTargetSha)
-			throw new WorktreeError("SAFETY_ERROR", "Target branch moved after candidate review", {
-				expectedHead: input.expectedTargetSha,
-				actualHead: currentTargetSha,
-			});
+			throw new WorktreeError(
+				"SAFETY_ERROR",
+				"Target branch moved after candidate review",
+				{
+					expectedHead: input.expectedTargetSha,
+					actualHead: currentTargetSha,
+				},
+			);
 		const candidateSha = await runGit(
 			this.runner,
 			["rev-parse", "--verify", `${input.candidateSha}^{commit}`],
@@ -817,36 +927,75 @@ export class WorktreeManager {
 		);
 		const inspected = await this.inspectHead(workspace);
 		if (!inspected.clean || inspected.head !== candidateSha)
-			throw new WorktreeError("SAFETY_ERROR", "Integration candidate changed after review", {
-				expectedHead: candidateSha,
-				actualHead: inspected.head,
-			});
-		const currentBranch = await runGit(this.runner, ["branch", "--show-current"], repository.path);
-		const worktreeList = await runGit(this.runner, ["worktree", "list", "--porcelain"], repository.path);
+			throw new WorktreeError(
+				"SAFETY_ERROR",
+				"Integration candidate changed after review",
+				{
+					expectedHead: candidateSha,
+					actualHead: inspected.head,
+				},
+			);
+		const currentBranch = await runGit(
+			this.runner,
+			["branch", "--show-current"],
+			repository.path,
+		);
+		const worktreeList = await runGit(
+			this.runner,
+			["worktree", "list", "--porcelain"],
+			repository.path,
+		);
 		const targetRefLine = `branch ${targetRef}`;
-		const targetWorktree = worktreeList.split("\n\n").find((item) => item.split("\n").includes(targetRefLine));
+		const targetWorktree = worktreeList
+			.split("\n\n")
+			.find((item) => item.split("\n").includes(targetRefLine));
 		if (targetWorktree) {
-			const checkedOutAt = targetWorktree.split("\n")[0]?.replace(/^worktree /, "");
+			const checkedOutAt = targetWorktree
+				.split("\n")[0]
+				?.replace(/^worktree /, "");
 			if (resolve(checkedOutAt ?? "") !== repository.path)
-				throw new WorktreeError("SAFETY_ERROR", "Target branch is checked out in another worktree", {
-					targetBranch,
-					checkedOutAt: checkedOutAt ?? "unknown",
-				});
+				throw new WorktreeError(
+					"SAFETY_ERROR",
+					"Target branch is checked out in another worktree",
+					{
+						targetBranch,
+						checkedOutAt: checkedOutAt ?? "unknown",
+					},
+				);
 		}
 		if (currentBranch === targetBranch) {
-			const status = await runGit(this.runner, ["status", "--porcelain", "--untracked-files=all"], repository.path);
+			const status = await runGit(
+				this.runner,
+				["status", "--porcelain", "--untracked-files=all"],
+				repository.path,
+			);
 			if (status.trim())
-				throw new WorktreeError("SAFETY_ERROR", "Target checkout is dirty; refusing promotion", { path: repository.path });
-			await runGit(this.runner, ["merge", "--ff-only", candidateSha], repository.path);
+				throw new WorktreeError(
+					"SAFETY_ERROR",
+					"Target checkout is dirty; refusing promotion",
+					{ path: repository.path },
+				);
+			await runGit(
+				this.runner,
+				["merge", "--ff-only", candidateSha],
+				repository.path,
+			);
 		} else {
-			await runGit(this.runner, ["update-ref", targetRef, candidateSha, currentTargetSha], repository.path);
+			await runGit(
+				this.runner,
+				["update-ref", targetRef, candidateSha, currentTargetSha],
+				repository.path,
+			);
 		}
 		return candidateSha;
 	}
 
 	async runIntegrationCheck(workspace: Workspace, check: IntegrationCheck) {
 		await this.assertWorkspacePath(workspace);
-		const timeoutMs = Math.max(1_000, Math.min(check.timeoutMs ?? 10 * 60_000, 30 * 60_000));
+		const timeoutMs = Math.max(
+			1_000,
+			Math.min(check.timeoutMs ?? 10 * 60_000, 30 * 60_000),
+		);
 		const startedAt = new Date();
 		const outputHash = createHash("sha256");
 		const maxCapturedBytes = 8_000;
@@ -860,7 +1009,8 @@ export class WorktreeManager {
 		});
 		const capture = (stream: "stdout" | "stderr", chunk: Buffer) => {
 			outputHash.update(stream).update(chunk);
-			if (stream === "stdout") stdout = appendBounded(stdout, chunk.toString(), maxCapturedBytes);
+			if (stream === "stdout")
+				stdout = appendBounded(stdout, chunk.toString(), maxCapturedBytes);
 			else stderr = appendBounded(stderr, chunk.toString(), maxCapturedBytes);
 		};
 		child.stdout.on("data", (chunk: Buffer) => capture("stdout", chunk));
@@ -877,18 +1027,32 @@ export class WorktreeManager {
 			killTree("SIGTERM");
 			setTimeout(() => killTree("SIGKILL"), 1_500).unref();
 		}, timeoutMs);
-		const result = await new Promise<{ exitCode: number | null; spawnError?: Error }>((resolvePromise) => {
-			child.once("error", (error) => resolvePromise({ exitCode: null, spawnError: error }));
+		const result = await new Promise<{
+			exitCode: number | null;
+			spawnError?: Error;
+		}>((resolvePromise) => {
+			child.once("error", (error) =>
+				resolvePromise({ exitCode: null, spawnError: error }),
+			);
 			child.once("close", (exitCode) => {
 				if (timedOut) killTree("SIGKILL");
 				resolvePromise({ exitCode });
 			});
 		});
 		clearTimeout(timer);
-		if (result.spawnError) stderr = appendBounded(stderr, result.spawnError.message, maxCapturedBytes);
+		if (result.spawnError)
+			stderr = appendBounded(
+				stderr,
+				result.spawnError.message,
+				maxCapturedBytes,
+			);
 		return {
 			name: check.name,
-			status: timedOut ? "timed_out" as const : result.exitCode === 0 ? "passed" as const : "failed" as const,
+			status: timedOut
+				? ("timed_out" as const)
+				: result.exitCode === 0
+					? ("passed" as const)
+					: ("failed" as const),
 			exitCode: result.exitCode,
 			stdout,
 			stderr,
@@ -901,26 +1065,44 @@ export class WorktreeManager {
 	async discardIntegrationCandidate(workspace: Workspace): Promise<void> {
 		await this.remove(workspace);
 		try {
-			await runGit(this.runner, ["branch", "-D", workspace.branch], workspace.projectPath);
+			await runGit(
+				this.runner,
+				["branch", "-D", workspace.branch],
+				workspace.projectPath,
+			);
 		} catch {}
 	}
 
 	private async writeWorkspaceMetadata(workspace: Workspace): Promise<void> {
-		const excludePath = await runGit(this.runner, ["rev-parse", "--git-path", "info/exclude"], workspace.path);
+		const excludePath = await runGit(
+			this.runner,
+			["rev-parse", "--git-path", "info/exclude"],
+			workspace.path,
+		);
 		const absoluteExcludePath = resolve(workspace.path, excludePath);
 		await mkdir(dirname(absoluteExcludePath), { recursive: true });
 		let existingExcludes = "";
-		try { existingExcludes = await readFile(absoluteExcludePath, "utf8"); } catch {}
+		try {
+			existingExcludes = await readFile(absoluteExcludePath, "utf8");
+		} catch {}
 		if (!existingExcludes.split(/\r?\n/).includes("/.loom-worktree.json")) {
-			await writeFile(absoluteExcludePath, `${existingExcludes}${existingExcludes.endsWith("\n") || !existingExcludes ? "" : "\n"}/.loom-worktree.json\n`, "utf8");
+			await writeFile(
+				absoluteExcludePath,
+				`${existingExcludes}${existingExcludes.endsWith("\n") || !existingExcludes ? "" : "\n"}/.loom-worktree.json\n`,
+				"utf8",
+			);
 		}
-		await writeFile(join(workspace.path, ".loom-worktree.json"), JSON.stringify({
-			owner: "loom",
-			projectId: workspace.projectId,
-			taskId: workspace.taskId,
-			runId: workspace.runId ?? null,
-			branch: workspace.branch,
-		}), "utf8");
+		await writeFile(
+			join(workspace.path, ".loom-worktree.json"),
+			JSON.stringify({
+				owner: "loom",
+				projectId: workspace.projectId,
+				taskId: workspace.taskId,
+				runId: workspace.runId ?? null,
+				branch: workspace.branch,
+			}),
+			"utf8",
+		);
 	}
 
 	async merge(workspace: Workspace, expectedHead?: string): Promise<string> {
@@ -959,43 +1141,89 @@ export class WorktreeManager {
 			try {
 				await runGit(
 					this.runner,
-					["merge", "--no-ff", "-m", `Integrate task ${workspace.taskId}`, "--", workspace.branch],
+					[
+						"merge",
+						"--no-ff",
+						"-m",
+						`Integrate task ${workspace.taskId}`,
+						"--",
+						workspace.branch,
+					],
 					integrationPath,
 				);
 			} catch (error) {
 				const files = await this.conflictFiles(integrationPath);
-				try { await runGit(this.runner, ["merge", "--abort"], integrationPath); } catch {}
+				try {
+					await runGit(this.runner, ["merge", "--abort"], integrationPath);
+				} catch {}
 				if (files.length > 0) throw new MergeConflictError(files);
 				throw error;
 			}
-			await runGit(this.runner, ["diff", "--check", `${repository.head}..HEAD`], integrationPath);
-			candidateHead = await runGit(this.runner, ["rev-parse", "HEAD"], integrationPath);
+			await runGit(
+				this.runner,
+				["diff", "--check", `${repository.head}..HEAD`],
+				integrationPath,
+			);
+			candidateHead = await runGit(
+				this.runner,
+				["rev-parse", "HEAD"],
+				integrationPath,
+			);
 			const currentBranch = await runGit(
 				this.runner,
 				["branch", "--show-current"],
 				repository.path,
 			);
-			const worktreeList = await runGit(this.runner, ["worktree", "list", "--porcelain"], repository.path);
+			const worktreeList = await runGit(
+				this.runner,
+				["worktree", "list", "--porcelain"],
+				repository.path,
+			);
 			const targetRef = `refs/heads/${targetBranch}`;
 			const targetWorktree = worktreeList
 				.split("\n\n")
 				.find((item) => item.split("\n").includes(`branch ${targetRef}`));
 			if (targetWorktree && currentBranch !== targetBranch) {
-				const checkedOutAt = targetWorktree.split("\n")[0]?.replace(/^worktree /, "");
+				const checkedOutAt = targetWorktree
+					.split("\n")[0]
+					?.replace(/^worktree /, "");
 				if (resolve(checkedOutAt ?? "") !== repository.path)
-					throw new WorktreeError("SAFETY_ERROR", "Target branch is checked out in another worktree", { targetBranch, checkedOutAt: checkedOutAt ?? "unknown" });
+					throw new WorktreeError(
+						"SAFETY_ERROR",
+						"Target branch is checked out in another worktree",
+						{ targetBranch, checkedOutAt: checkedOutAt ?? "unknown" },
+					);
 			}
 			if (repository.head !== expectedTargetHead)
-				throw new WorktreeError("SAFETY_ERROR", "Target branch changed before promotion", { expectedHead: expectedTargetHead ?? repository.head, actualHead: repository.head });
+				throw new WorktreeError(
+					"SAFETY_ERROR",
+					"Target branch changed before promotion",
+					{
+						expectedHead: expectedTargetHead ?? repository.head,
+						actualHead: repository.head,
+					},
+				);
 			if (currentBranch === targetBranch) {
-				await runGit(this.runner, ["merge", "--ff-only", candidateHead], repository.path);
+				await runGit(
+					this.runner,
+					["merge", "--ff-only", candidateHead],
+					repository.path,
+				);
 			} else {
-				await runGit(this.runner, ["update-ref", targetRef, candidateHead, repository.head], repository.path);
+				await runGit(
+					this.runner,
+					["update-ref", targetRef, candidateHead, repository.head],
+					repository.path,
+				);
 			}
 		} finally {
 			if (await isDirectory(integrationPath)) {
 				try {
-					await runGit(this.runner, ["worktree", "remove", integrationPath], repository.path);
+					await runGit(
+						this.runner,
+						["worktree", "remove", integrationPath],
+						repository.path,
+					);
 				} catch {}
 			}
 		}
@@ -1133,7 +1361,11 @@ export class WorktreeManager {
 	}
 }
 
-function appendBounded(existing: string, addition: string, maxBytes: number): string {
+function appendBounded(
+	existing: string,
+	addition: string,
+	maxBytes: number,
+): string {
 	if (Buffer.byteLength(existing) >= maxBytes) return existing;
 	const remaining = maxBytes - Buffer.byteLength(existing);
 	return existing + Buffer.from(addition).subarray(0, remaining).toString();
@@ -1143,7 +1375,9 @@ function isExcludedCheckpointPath(path: string): boolean {
 	const normalized = path.replaceAll("\\", "/");
 	if (
 		normalized === ".loom-worktree.json" ||
-		/(^|\/)(\.git|\.loom|node_modules|dist|build|coverage)(\/|$)/i.test(normalized)
+		/(^|\/)(\.git|\.loom|node_modules|dist|build|coverage)(\/|$)/i.test(
+			normalized,
+		)
 	)
 		return true;
 	return isSensitiveCheckpointPath(path);
@@ -1151,9 +1385,20 @@ function isExcludedCheckpointPath(path: string): boolean {
 
 function isSensitiveCheckpointPath(path: string): boolean {
 	const normalized = path.replaceAll("\\", "/");
-	const basename = normalized.slice(normalized.lastIndexOf("/") + 1).toLowerCase();
-	if (basename === ".env" || (basename.startsWith(".env.") && !/\.(example|sample|template)$/.test(basename))) return true;
-	return /(^|[-_.])(secret|secrets|credential|credentials|private[-_]?key)([-_.]|$)/i.test(basename) || /\.(pem|key|p12|pfx)$/i.test(basename);
+	const basename = normalized
+		.slice(normalized.lastIndexOf("/") + 1)
+		.toLowerCase();
+	if (
+		basename === ".env" ||
+		(basename.startsWith(".env.") &&
+			!/\.(example|sample|template)$/.test(basename))
+	)
+		return true;
+	return (
+		/(^|[-_.])(secret|secrets|credential|credentials|private[-_]?key)([-_.]|$)/i.test(
+			basename,
+		) || /\.(pem|key|p12|pfx)$/i.test(basename)
+	);
 }
 
 export async function removeManagedDirectory(

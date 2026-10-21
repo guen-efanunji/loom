@@ -55,14 +55,7 @@ export async function git(cwd: string, ...args: string[]): Promise<string> {
 export async function snapshotWorkspace(cwd: string, message: string) {
 	if (await git(cwd, "diff", "--name-only", "--diff-filter=U"))
 		throw new Error("Unresolved merge conflicts remain in workspace");
-	await git(
-		cwd,
-		"add",
-		"-A",
-		"--",
-		".",
-		":(exclude).loom-worktree.json",
-	);
+	await git(cwd, "add", "-A", "--", ".", ":(exclude).loom-worktree.json");
 	const staged = await git(cwd, "diff", "--cached", "--name-only");
 	// A conflict resolution can have an empty tree diff while still needing a merge commit.
 	const merging = await runCommand(

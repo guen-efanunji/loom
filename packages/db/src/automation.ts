@@ -108,7 +108,11 @@ export function planRepository(db: Database) {
 			} catch (error) {
 				// Older local databases may predate planner metadata. Migrate lazily
 				// so API calls remain usable even when a cached package was loaded.
-				if (!(error instanceof Error) || !error.message.includes("no column named")) throw error;
+				if (
+					!(error instanceof Error) ||
+					!error.message.includes("no column named")
+				)
+					throw error;
 				for (const column of [
 					"source_message text NOT NULL DEFAULT ''",
 					"source_session_id text",
@@ -116,9 +120,14 @@ export function planRepository(db: Database) {
 					"started_at integer",
 					"cancelled_at integer",
 				]) {
-					try { await db.run(`ALTER TABLE plans ADD COLUMN ${column}`); }
-					catch (migrationError) {
-						if (!(migrationError instanceof Error) || !migrationError.message.includes("duplicate column")) throw migrationError;
+					try {
+						await db.run(`ALTER TABLE plans ADD COLUMN ${column}`);
+					} catch (migrationError) {
+						if (
+							!(migrationError instanceof Error) ||
+							!migrationError.message.includes("duplicate column")
+						)
+							throw migrationError;
 					}
 				}
 				inserted = await db.insert(plans).values(values).returning();
@@ -151,26 +160,27 @@ export function planRepository(db: Database) {
 			tasks: ConvertedPlanTask[],
 		): Promise<PlanTaskRecord[]> {
 			return db.transaction((tx) => {
-			tx.delete(planTasks).where(eq(planTasks.planId, planId)).run();
-			if (!tasks.length) return [];
-			const rows = tx
-				.insert(planTasks)
-				.values(
-					tasks.map((task) => ({
-						id: randomUUID(),
-						planId,
-						key: task.key,
-						title: task.title,
-						description: task.description,
-						priority: task.priority,
-						dependencies: JSON.stringify(task.dependsOn),
-						acceptanceCriteria: JSON.stringify(task.acceptanceCriteria),
-						suggestedFiles: JSON.stringify(task.suggestedFiles),
-						parallelGroup: task.parallelGroup ?? null,
-					})),
-				)
-				.returning().all();
-			return rows.map(toPlanTask);
+				tx.delete(planTasks).where(eq(planTasks.planId, planId)).run();
+				if (!tasks.length) return [];
+				const rows = tx
+					.insert(planTasks)
+					.values(
+						tasks.map((task) => ({
+							id: randomUUID(),
+							planId,
+							key: task.key,
+							title: task.title,
+							description: task.description,
+							priority: task.priority,
+							dependencies: JSON.stringify(task.dependsOn),
+							acceptanceCriteria: JSON.stringify(task.acceptanceCriteria),
+							suggestedFiles: JSON.stringify(task.suggestedFiles),
+							parallelGroup: task.parallelGroup ?? null,
+						})),
+					)
+					.returning()
+					.all();
+				return rows.map(toPlanTask);
 			});
 		},
 		async planTasks(planId: string): Promise<PlanTaskRecord[]> {
@@ -277,40 +287,76 @@ export function planRepository(db: Database) {
 		async addDependency(
 			taskId: string,
 			dependsOnTaskId: string,
-			requiredMilestone: "contract_published" | "artifact_ready" | "implementation_ready" | "integrated" = "implementation_ready",
+			requiredMilestone:
+				| "contract_published"
+				| "artifact_ready"
+				| "implementation_ready"
+				| "integrated" = "implementation_ready",
 			artifactId?: string | null,
 		) {
-		if (taskId === dependsOnTaskId) throw new Error("A task cannot depend on itself");
-		db.$client.exec("BEGIN IMMEDIATE");
-		try {
-			const task = db.$client.query("SELECT project_id FROM tasks WHERE id = ?").get(taskId) as { project_id: string } | null;
-			const producer = db.$client.query("SELECT project_id FROM tasks WHERE id = ?").get(dependsOnTaskId) as { project_id: string } | null;
-			if (!task || !producer) throw new Error("Dependency task not found");
-			if (task.project_id !== producer.project_id)
-				throw new Error("Cross-project dependencies are not allowed");
-			if (["contract_published", "artifact_ready"].includes(requiredMilestone) && !artifactId)
-				throw new Error("Artifact dependencies must pin an artifact ID");
-			if (artifactId) {
-				const artifact = db.$client.query("SELECT task_id, status FROM task_artifacts WHERE id = ?").get(artifactId) as { task_id: string; status: string } | null;
-				if (!artifact || artifact.task_id !== dependsOnTaskId || artifact.status !== "ready")
-					throw new Error("Dependency artifact is missing, unready, or owned by another producer");
+			if (taskId === dependsOnTaskId)
+				throw new Error("A task cannot depend on itself");
+			db.$client.exec("BEGIN IMMEDIATE");
+			try {
+				const task = db.$client
+					.query("SELECT project_id FROM tasks WHERE id = ?")
+					.get(taskId) as { project_id: string } | null;
+				const producer = db.$client
+					.query("SELECT project_id FROM tasks WHERE id = ?")
+					.get(dependsOnTaskId) as { project_id: string } | null;
+				if (!task || !producer) throw new Error("Dependency task not found");
+				if (task.project_id !== producer.project_id)
+					throw new Error("Cross-project dependencies are not allowed");
+				if (
+					["contract_published", "artifact_ready"].includes(
+						requiredMilestone,
+					) &&
+					!artifactId
+				)
+					throw new Error("Artifact dependencies must pin an artifact ID");
+				if (artifactId) {
+					const artifact = db.$client
+						.query("SELECT task_id, status FROM task_artifacts WHERE id = ?")
+						.get(artifactId) as { task_id: string; status: string } | null;
+					if (
+						!artifact ||
+						artifact.task_id !== dependsOnTaskId ||
+						artifact.status !== "ready"
+					)
+						throw new Error(
+							"Dependency artifact is missing, unready, or owned by another producer",
+						);
+				}
+				const edges = db.$client
+					.query("SELECT task_id, depends_on_task_id FROM task_dependencies")
+					.all() as Array<{ task_id: string; depends_on_task_id: string }>;
+				const seen = new Set<string>();
+				const visit = (current: string): boolean => {
+					if (current === taskId) return true;
+					if (seen.has(current)) return false;
+					seen.add(current);
+					return edges
+						.filter((edge) => edge.task_id === current)
+						.some((edge) => visit(edge.depends_on_task_id));
+				};
+				if (visit(dependsOnTaskId))
+					throw new Error("Dependency would create a cycle");
+				db.$client
+					.query(
+						"INSERT INTO task_dependencies (task_id, depends_on_task_id, required_milestone, artifact_id) VALUES (?, ?, ?, ?)",
+					)
+					.run(taskId, dependsOnTaskId, requiredMilestone, artifactId ?? null);
+				db.$client.exec("COMMIT");
+				return {
+					taskId,
+					dependsOnTaskId,
+					requiredMilestone,
+					artifactId: artifactId ?? null,
+				};
+			} catch (error) {
+				db.$client.exec("ROLLBACK");
+				throw error;
 			}
-			const edges = db.$client.query("SELECT task_id, depends_on_task_id FROM task_dependencies").all() as Array<{ task_id: string; depends_on_task_id: string }>;
-			const seen = new Set<string>();
-			const visit = (current: string): boolean => {
-				if (current === taskId) return true;
-				if (seen.has(current)) return false;
-				seen.add(current);
-				return edges.filter((edge) => edge.task_id === current).some((edge) => visit(edge.depends_on_task_id));
-			};
-			if (visit(dependsOnTaskId)) throw new Error("Dependency would create a cycle");
-			db.$client.query("INSERT INTO task_dependencies (task_id, depends_on_task_id, required_milestone, artifact_id) VALUES (?, ?, ?, ?)").run(taskId, dependsOnTaskId, requiredMilestone, artifactId ?? null);
-			db.$client.exec("COMMIT");
-			return { taskId, dependsOnTaskId, requiredMilestone, artifactId: artifactId ?? null };
-		} catch (error) {
-			db.$client.exec("ROLLBACK");
-			throw error;
-		}
 		},
 		dependents(taskId: string) {
 			return db

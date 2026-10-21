@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { open, stat } from "node:fs/promises";
+import { open, readdir, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { buildAutomationContext, type ProjectContext } from "@loom/automation";
+import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { buildDesignFileContext, type ProjectContext } from "@loom/automation";
 import type {
 	DesignMessageRecord,
 	DesignNodeRecord,
@@ -69,8 +69,10 @@ import {
 	buildIntentClassifierPrompt,
 	buildRefinePrompt,
 	chatReplyText,
+	DesignOutputError,
 	deriveDesignTitle,
 	designChatSummary,
+	designReferencePaths,
 	extractDesignScreens,
 	hasDesignDoc,
 	isExplicitNewDesignRequest,
@@ -122,6 +124,58 @@ function friendlyRuntimeError(error: unknown): string {
 const REFERENCE_FILE_LIMIT = 12;
 const REFERENCE_PER_FILE = 12_000;
 const REFERENCE_TOTAL_BUDGET = 40_000;
+const ATTACHMENT_TEXT_LIMIT = 12_000;
+const ATTACHMENT_TEXT_BUDGET = 40_000;
+const REFERENCE_IMAGE_LIMIT = 8_000_000;
+
+function isTextAttachment(attachment: DesignAttachment): boolean {
+	if (attachment.mime.startsWith("text/")) return true;
+	if (
+		/^(application\/(json|xml|javascript|typescript|x-sh|yaml)|image\/svg\+xml)$/i.test(
+			attachment.mime,
+		)
+	)
+		return true;
+	return /\.(txt|md|mdx|json|ya?ml|xml|html?|css|[cm]?[jt]sx?|svelte|vue|svg|sh|sql|toml|ini|csv)$/i.test(
+		attachment.filename,
+	);
+}
+
+function attachmentReferencesBlock(
+	attachments: DesignAttachment[] = [],
+): string {
+	let budget = ATTACHMENT_TEXT_BUDGET;
+	const chunks: string[] = [];
+	const images: string[] = [];
+	for (const attachment of attachments) {
+		if (attachment.mime.startsWith("image/")) {
+			images.push(attachment.filename);
+			continue;
+		}
+		if (!isTextAttachment(attachment) || budget <= 0) continue;
+		let content = "";
+		try {
+			content = Buffer.from(attachment.data, "base64")
+				.toString("utf8")
+				.slice(0, Math.min(ATTACHMENT_TEXT_LIMIT, budget));
+		} catch {
+			continue;
+		}
+		if (!content.trim()) continue;
+		budget -= content.length;
+		chunks.push(`--- attached file: ${attachment.filename} ---\n${content}`);
+	}
+	const parts: string[] = [];
+	if (chunks.length)
+		parts.push(
+			`Attached text files (use their actual contents as design references):\n\n${chunks.join("\n\n")}`,
+		);
+	if (images.length)
+		parts.push(
+			`Attached images (provided to you as visual inputs): ${images.join(", ")}. Inspect their layout, colors, typography, and flow and use them as references for this design.`,
+		);
+	return parts.length ? `\n\n${parts.join("\n\n")}` : "";
+}
 
 async function readBounded(path: string, limit: number): Promise<string> {
 	const info = await stat(path);
@@ -143,12 +197,22 @@ async function readBounded(path: string, limit: number): Promise<string> {
 async function referenceFilesBlock(
 	projectPath: string,
 	paths: string[],
-): Promise<string> {
+): Promise<{
+	block: string;
+	images: Array<{ mime: string; data: string; filename: string }>;
+	files: string[];
+}> {
 	const root = resolve(projectPath);
 	const chunks: string[] = [];
+	const images: Array<{ mime: string; data: string; filename: string }> = [];
+	const files: string[] = [];
 	let budget = REFERENCE_TOTAL_BUDGET;
-	for (const rel of paths.slice(0, REFERENCE_FILE_LIMIT)) {
-		if (budget <= 0) break;
+	const pending = [...paths];
+	const visited = new Set<string>();
+	while (pending.length && visited.size < REFERENCE_FILE_LIMIT && budget > 0) {
+		const rel = pending.shift();
+		if (!rel || visited.has(rel)) continue;
+		visited.add(rel);
 		const target = resolve(root, rel);
 		const local = relative(root, target);
 		if (
@@ -158,6 +222,47 @@ async function referenceFilesBlock(
 			isAbsolute(local)
 		)
 			continue;
+		const info = await stat(target).catch(() => null);
+		if (!info) continue;
+		if (info.isDirectory()) {
+			try {
+				const entries = await readdir(target, { withFileTypes: true });
+				for (const entry of entries.sort((a, b) =>
+					a.name.localeCompare(b.name),
+				)) {
+					if (entry.name.startsWith(".")) continue;
+					if (entry.isDirectory()) pending.push(join(rel, entry.name));
+					else if (entry.isFile()) pending.push(join(rel, entry.name));
+					if (pending.length + visited.size >= REFERENCE_FILE_LIMIT) break;
+				}
+			} catch {}
+			continue;
+		}
+		if (!info.isFile()) continue;
+		const extension = extname(local).toLowerCase();
+		const imageMime: Record<string, string> = {
+			".avif": "image/avif",
+			".bmp": "image/bmp",
+			".gif": "image/gif",
+			".jpeg": "image/jpeg",
+			".jpg": "image/jpeg",
+			".png": "image/png",
+			".webp": "image/webp",
+		};
+		const imageMimeType = imageMime[extension];
+		if (imageMimeType) {
+			if (info.size <= REFERENCE_IMAGE_LIMIT) {
+				try {
+					images.push({
+						mime: imageMimeType,
+						data: (await readFile(target)).toString("base64"),
+						filename: local.split(sep).join("/"),
+					});
+					files.push(local.split(sep).join("/"));
+				} catch {}
+			}
+			continue;
+		}
 		let text = "";
 		try {
 			text = await readBounded(target, Math.min(REFERENCE_PER_FILE, budget));
@@ -166,10 +271,44 @@ async function referenceFilesBlock(
 		}
 		if (!text.trim()) continue;
 		budget -= text.length;
+		files.push(local.split(sep).join("/"));
 		chunks.push(`--- ${local.split(sep).join("/")} ---\n${text}`);
+		const links = [
+			...text.matchAll(/(?:src|href)=["']([^"']+)["']/gi),
+			...text.matchAll(
+				/(?:@import\s+(?:url\()?\s*|\bfrom\s*)["']([^"']+)["']/gi,
+			),
+		];
+		for (const match of links) {
+			const link = match[1]?.split(/[?#]/, 1)[0];
+			if (!link || link.startsWith("/") || /^[a-z][a-z\d+.-]*:/i.test(link))
+				continue;
+			const related = resolve(target, "..", link);
+			const relatedPath = relative(root, related);
+			if (
+				relatedPath &&
+				relatedPath !== ".." &&
+				!relatedPath.startsWith(`..${sep}`) &&
+				!isAbsolute(relatedPath) &&
+				!visited.has(relatedPath)
+			)
+				pending.push(relatedPath);
+		}
 	}
-	if (!chunks.length) return "";
-	return `\n\nReference files from the project (match their markup, design tokens and component patterns):\n\n${chunks.join("\n\n")}`;
+	const parts: string[] = [];
+	if (chunks.length)
+		parts.push(
+			`Reference files from the project (match their markup, design tokens and component patterns):\n\n${chunks.join("\n\n")}`,
+		);
+	if (images.length)
+		parts.push(
+			`Project images attached as visual references: ${images.map((image) => image.filename).join(", ")}. Inspect their layout, colors, typography, and flow.`,
+		);
+	return {
+		block: parts.length ? `\n\n${parts.join("\n\n")}` : "",
+		images,
+		files,
+	};
 }
 
 export type DesignThreadRecord = {
@@ -179,11 +318,17 @@ export type DesignThreadRecord = {
 
 export class DesignService {
 	private readonly busy = new Map<string, Promise<unknown>>();
+	/** Keep transient user references available when a failed node is retried. */
+	private readonly generationContext = new Map<
+		string,
+		{ files: string[]; attachments: DesignAttachment[] }
+	>();
 	/** Separate conversation sessions per project and selected provider. */
 	private readonly chatSessions = new Map<
 		string,
 		{ id: string; runtime: AgentRuntime }
 	>();
+	private readonly chatTurns = new Map<string, Promise<void>>();
 	/** Transient "what is it doing" feed per generating node (never persisted). */
 	private readonly activity = new Map<string, DesignActivity>();
 
@@ -316,14 +461,17 @@ export class DesignService {
 		return { x, y };
 	}
 
-	async create(input: {
-		projectId: string;
-		brief: string;
-		viewport?: DesignViewport;
-		model?: RuntimeModel;
-		files?: string[];
-		attachments?: DesignAttachment[];
-	}): Promise<{ nodeId: string; status: string }> {
+	async create(
+		input: {
+			projectId: string;
+			brief: string;
+			viewport?: DesignViewport;
+			model?: RuntimeModel;
+			files?: string[];
+			attachments?: DesignAttachment[];
+		},
+		recordUser = true,
+	): Promise<{ nodeId: string; status: string }> {
 		const project = await this.requireProject(input.projectId);
 		const brief = input.brief.trim();
 		if (!brief) throw new Error("A design brief is required");
@@ -331,6 +479,10 @@ export class DesignService {
 		const size = designNodeSize(viewport);
 		const slot = await this.nextSlot(project.id);
 		const id = randomUUID();
+		this.generationContext.set(id, {
+			files: input.files ?? [],
+			attachments: input.attachments ?? [],
+		});
 		await this.store.createNode({
 			id,
 			projectId: project.id,
@@ -343,13 +495,14 @@ export class DesignService {
 			width: size.width,
 			height: size.height,
 		});
-		await this.store.addMessage({
-			projectId: project.id,
-			nodeId: id,
-			role: "user",
-			text: brief,
-			model: modelLabel(input.model),
-		});
+		if (recordUser)
+			await this.store.addMessage({
+				projectId: project.id,
+				nodeId: id,
+				role: "user",
+				text: brief,
+				model: modelLabel(input.model),
+			});
 		this.launch(id, () =>
 			this.generate(
 				id,
@@ -388,34 +541,59 @@ export class DesignService {
 		mode: "create" | "refine",
 		message?: string,
 		files?: string[],
-	): Promise<string> {
+		attachments?: DesignAttachment[],
+	): Promise<{
+		prompt: string;
+		images: Array<{ mime: string; data: string; filename: string }>;
+	}> {
 		const viewport = viewportOf(node.viewport);
-		let prompt: string;
-		const read = new Set<string>();
-		if (mode === "refine" && message && node.html)
-			prompt = buildRefinePrompt({
-				brief: node.brief,
-				message,
-				viewport,
-				previousHtml: node.html,
-			});
-		else {
-			const context: ProjectContext | undefined = await buildAutomationContext(
-				project.path,
-				project.name,
-			).catch(() => undefined);
-			for (const file of context?.readFiles ?? []) read.add(file);
-			prompt = buildDesignPrompt({ brief: node.brief, viewport, context });
-		}
-		if (files?.length) for (const file of files) read.add(file);
+		const context: ProjectContext | undefined = await buildDesignFileContext(
+			project.path,
+			project.name,
+		).catch(() => undefined);
+		const read = new Set(context?.readFiles ?? []);
+		const referencePaths = designReferencePaths(
+			[node.brief, message ?? ""].join("\n"),
+			context?.files ?? [],
+			files,
+		);
+		const references = referencePaths.length
+			? await referenceFilesBlock(project.path, referencePaths)
+			: { block: "", images: [], files: [] };
+		for (const file of references.files) read.add(file);
+		const attachmentReferences = attachmentReferencesBlock(attachments);
 		this.setActivity(node.id, {
 			phase: "reading",
 			files: [...read].slice(0, 80),
 		});
-		const references = files?.length
-			? await referenceFilesBlock(project.path, files)
-			: "";
-		return prompt + references;
+		if (mode === "refine" && message && node.html)
+			return {
+				prompt:
+					buildRefinePrompt({
+						brief: node.brief,
+						message,
+						viewport,
+						previousHtml: node.html,
+						projectName: project.name,
+						projectPath: project.path,
+					}) +
+					references.block +
+					attachmentReferences,
+				images: references.images,
+			};
+		return {
+			prompt:
+				buildDesignPrompt({
+					brief: node.brief,
+					viewport,
+					context,
+					projectName: project.name,
+					projectPath: project.path,
+				}) +
+				references.block +
+				attachmentReferences,
+			images: references.images,
+		};
 	}
 
 	/**
@@ -454,15 +632,28 @@ export class DesignService {
 			status: "generating",
 			errorMessage: null,
 		});
-		const prompt = await this.buildPrompt(node, project, mode, message, files);
+		const built = await this.buildPrompt(
+			node,
+			project,
+			mode,
+			message,
+			files,
+			attachments,
+		);
+		const prompt = built.prompt;
 		this.setActivity(nodeId, {
 			phase: "drafting",
 			files: this.activity.get(nodeId)?.files ?? [],
 		});
-		const images = (attachments ?? []).map((attachment) => ({
-			mime: attachment.mime,
-			data: attachment.data,
-		}));
+		const images = [
+			...built.images.map(({ mime, data }) => ({ mime, data })),
+			...(attachments ?? [])
+				.filter((attachment) => attachment.mime.startsWith("image/"))
+				.map((attachment) => ({
+					mime: attachment.mime,
+					data: attachment.data,
+				})),
+		];
 		const runtime = this.runtimeFor(model);
 		const selectedModel = model ?? (await this.storedModel(node));
 		const isCustomProvider =
@@ -516,15 +707,10 @@ export class DesignService {
 				: undefined;
 		const startedAt = Date.now();
 		try {
-			const reply = await this.runSession(
-				runtime,
-				session.id,
-				prompt,
-				selectedModel,
-				images,
+			const permission =
 				permissionToken && this.permissionGate
 					? {
-							mode: "ask",
+							mode: "ask" as const,
 							...(selectedModel?.providerID === "agy" && this.permissionGate.url
 								? {
 										env: {
@@ -534,9 +720,27 @@ export class DesignService {
 									}
 								: {}),
 						}
-					: undefined,
-				authorizeTool,
-			);
+					: undefined;
+			const run = (request: string) =>
+				this.runSession(
+					runtime,
+					session.id,
+					request,
+					selectedModel,
+					images,
+					permission,
+					authorizeTool,
+				);
+			let reply = await run(prompt);
+			try {
+				extractDesignScreens(reply);
+			} catch (error) {
+				if (!(error instanceof DesignOutputError)) throw error;
+				const previous = reply.trim().slice(0, 8_000);
+				reply = await run(
+					`${prompt}\n\nThe previous answer did not contain usable HTML. Use the same brief, project references, attached files, and visual inputs above. Return only one complete HTML document beginning with <!doctype html> and ending with </html>. Do not explain, ask questions, or call tools.${previous ? `\n\nPrevious answer to correct:\n${previous}` : ""}`,
+				);
+			}
 			await this.persist(
 				nodeId,
 				project,
@@ -683,6 +887,7 @@ export class DesignService {
 			files?: string[];
 			attachments?: DesignAttachment[];
 		},
+		recordUser = true,
 	): Promise<{ nodeId: string; status: string }> {
 		const node = await this.requireNode(nodeId);
 		if (this.busy.has(nodeId))
@@ -692,13 +897,18 @@ export class DesignService {
 		if (!message) throw new Error("Describe what to change");
 
 		const model = input.model ?? (await this.storedModel(node));
-		await this.store.addMessage({
-			projectId: project.id,
-			nodeId,
-			role: "user",
-			text: message,
-			model: modelLabel(model),
+		this.generationContext.set(nodeId, {
+			files: input.files ?? [],
+			attachments: input.attachments ?? [],
 		});
+		if (recordUser)
+			await this.store.addMessage({
+				projectId: project.id,
+				nodeId,
+				role: "user",
+				text: message,
+				model: modelLabel(model),
+			});
 
 		this.launchRefine(
 			node,
@@ -723,6 +933,7 @@ export class DesignService {
 		const instruction = node.html ? await this.lastInstruction(node) : null;
 		const mode: "create" | "refine" =
 			instruction && node.html ? "refine" : "create";
+		const context = this.generationContext.get(nodeId);
 		await this.store.updateNode(nodeId, {
 			status: "queued",
 			errorMessage: null,
@@ -735,6 +946,8 @@ export class DesignService {
 				selectedModel,
 				mode,
 				instruction ?? undefined,
+				context?.files,
+				context?.attachments,
 			),
 		);
 		return { nodeId, status: "queued" };
@@ -761,125 +974,154 @@ export class DesignService {
 			? await this.store.getNode(input.nodeId).catch(() => null)
 			: null;
 
-		const intent =
-			target?.html || isExplicitNewDesignRequest(message)
-				? "design"
-				: await this.classifyIntent(project, message, false, input.model);
-
-		if (intent === "design") {
-			// A change request that names the whole set ("pada keduanya", "ubah warna
-			// di semua canvas") refines every ready node at once - one message, one
-			// shared turn - instead of forcing the user to iterate card by card.
-			const readyNodes = (await this.store.listNodes(project.id)).filter(
-				(node) =>
-					node.html && node.status === "ready" && !this.busy.has(node.id),
-			);
-			if (readyNodes.length >= 2 && wantsAllNodes(message)) {
-				const primary =
-					readyNodes.find((node) => node.id === target?.id) ?? readyNodes[0];
-				if (primary) {
-					await this.store.addMessage({
-						projectId: project.id,
-						nodeId: primary.id,
-						role: "user",
-						text: message,
-						model: modelLabel(input.model),
-					});
-					for (const node of readyNodes) {
-						const model = input.model ?? (await this.storedModel(node));
-						this.launchRefine(
-							node,
-							project,
-							message,
-							model,
-							input.files,
-							input.attachments,
-						);
-					}
-					return { kind: "design", nodeId: primary.id, status: "queued" };
-				}
-			}
-			if (target?.html) {
-				const refined = await this.refine(target.id, {
-					message,
-					model: input.model,
-					files: input.files,
-					attachments: input.attachments,
-				});
-				return { kind: "design", nodeId: refined.nodeId, status: "queued" };
-			}
-			const created = await this.create({
-				projectId: project.id,
-				brief: message,
-				model: input.model,
-				files: input.files,
-				attachments: input.attachments,
-			});
-			return { kind: "design", nodeId: created.nodeId, status: "queued" };
-		}
-
-		const images = (input.attachments ?? []).map((attachment) => ({
-			mime: attachment.mime,
-			data: attachment.data,
-		}));
-		const references = input.files?.length
-			? await referenceFilesBlock(project.path, input.files)
-			: "";
-		const reply = await this.runChatTurn(
-			project,
-			message + references,
-			input.model,
-			images,
-		);
-
-		const question = parseDesignQuestions(reply);
-		if (question) {
-			const note = chatReplyText(reply) || "I need a little more detail first.";
-			await this.store.addMessage({
-				projectId: project.id,
-				nodeId: null,
-				role: "user",
-				text: message,
-				model: modelLabel(input.model),
-			});
-			await this.store.addMessage({
-				projectId: project.id,
-				nodeId: null,
-				role: "assistant",
-				text: note,
-				model: modelLabel(input.model),
-			});
-			return { kind: "question", question };
-		}
-
-		// Defensive: the classifier said chat but the model produced a design
-		// anyway - honour it so the work is never lost to a misclassification.
-		if (hasDesignDoc(reply)) {
-			const nodeId = await this.materializeReplyAsDesign(
-				project,
-				message,
-				reply,
-				input.model,
-			);
-			return { kind: "design", nodeId, status: "ready" };
-		}
-
-		const text = chatReplyText(reply) || reply.trim();
-		await this.store.addMessage({
+		const userTurn = await this.store.addMessage({
 			projectId: project.id,
-			nodeId: null,
+			nodeId: target?.html ? target.id : null,
 			role: "user",
 			text: message,
 			model: modelLabel(input.model),
 		});
-		await this.store.addMessage({
-			projectId: project.id,
-			nodeId: null,
-			role: "assistant",
-			text,
-			model: modelLabel(input.model),
-		});
-		return { kind: "chat", text };
+		try {
+			const intent =
+				target?.html || isExplicitNewDesignRequest(message)
+					? "design"
+					: await this.classifyIntent(project, message, false, input.model);
+
+			if (intent === "design") {
+				// A change request that names the whole set ("pada keduanya", "ubah warna
+				// di semua canvas") refines every ready node at once - one message, one
+				// shared turn - instead of forcing the user to iterate card by card.
+				const readyNodes = (await this.store.listNodes(project.id)).filter(
+					(node) =>
+						node.html && node.status === "ready" && !this.busy.has(node.id),
+				);
+				if (readyNodes.length >= 2 && wantsAllNodes(message)) {
+					const primary =
+						readyNodes.find((node) => node.id === target?.id) ?? readyNodes[0];
+					if (primary) {
+						for (const node of readyNodes) {
+							const model = input.model ?? (await this.storedModel(node));
+							this.generationContext.set(node.id, {
+								files: input.files ?? [],
+								attachments: input.attachments ?? [],
+							});
+							this.launchRefine(
+								node,
+								project,
+								message,
+								model,
+								input.files,
+								input.attachments,
+							);
+						}
+						return { kind: "design", nodeId: primary.id, status: "queued" };
+					}
+				}
+				if (target?.html) {
+					const refined = await this.refine(
+						target.id,
+						{
+							message,
+							model: input.model,
+							files: input.files,
+							attachments: input.attachments,
+						},
+						false,
+					);
+					return { kind: "design", nodeId: refined.nodeId, status: "queued" };
+				}
+				const created = await this.create(
+					{
+						projectId: project.id,
+						brief: message,
+						model: input.model,
+						files: input.files,
+						attachments: input.attachments,
+					},
+					false,
+				);
+				return { kind: "design", nodeId: created.nodeId, status: "queued" };
+			}
+
+			const images = (input.attachments ?? [])
+				.filter((attachment) => attachment.mime.startsWith("image/"))
+				.map((attachment) => ({
+					mime: attachment.mime,
+					data: attachment.data,
+				}));
+			const context = await buildDesignFileContext(
+				project.path,
+				project.name,
+			).catch(() => undefined);
+			const referencePaths = designReferencePaths(
+				message,
+				context?.files ?? [],
+				input.files,
+			);
+			const references = referencePaths.length
+				? await referenceFilesBlock(project.path, referencePaths)
+				: { block: "", images: [], files: [] };
+			images.push(
+				...references.images.map(({ mime, data }) => ({ mime, data })),
+			);
+			const reply = await this.runChatTurn(
+				project,
+				message +
+					references.block +
+					attachmentReferencesBlock(input.attachments),
+				input.model,
+				images,
+				userTurn.id,
+			);
+
+			const question = parseDesignQuestions(reply);
+			if (question) {
+				const note =
+					chatReplyText(reply) || "I need a little more detail first.";
+				await this.store.addMessage({
+					projectId: project.id,
+					nodeId: null,
+					role: "assistant",
+					text: note,
+					model: modelLabel(input.model),
+				});
+				return { kind: "question", question };
+			}
+
+			// Defensive: the classifier said chat but the model produced a design
+			// anyway - honour it so the work is never lost to a misclassification.
+			if (hasDesignDoc(reply)) {
+				const nodeId = await this.materializeReplyAsDesign(
+					project,
+					message,
+					reply,
+					input.model,
+				);
+				return { kind: "design", nodeId, status: "ready" };
+			}
+
+			const text = chatReplyText(reply) || reply.trim();
+			await this.store.addMessage({
+				projectId: project.id,
+				nodeId: null,
+				role: "assistant",
+				text,
+				model: modelLabel(input.model),
+			});
+			return { kind: "chat", text };
+		} catch (error) {
+			await this.store
+				.addMessage({
+					projectId: project.id,
+					nodeId: target?.html ? target.id : null,
+					role: "assistant",
+					text: "",
+					errorMessage: friendlyRuntimeError(error),
+					model: modelLabel(input.model),
+				})
+				.catch(() => undefined);
+			throw error;
+		}
 	}
 
 	/** DESIGN vs CHAT. Model answer wins; regex is the safety net. */
@@ -921,6 +1163,40 @@ export class DesignService {
 		userText: string,
 		model: RuntimeModel | undefined,
 		images: Array<{ mime: string; data: string }>,
+		userTurnId: string,
+	): Promise<string> {
+		const conversationKey = `${project.id}\0${model?.providerID ?? "default"}\0${model?.modelID ?? "default"}`;
+		const previous = this.chatTurns.get(conversationKey);
+		const turn = (async () => {
+			if (previous) await previous;
+			return this.executeChatTurn(
+				project,
+				userText,
+				model,
+				images,
+				userTurnId,
+				conversationKey,
+			);
+		})();
+		const settled = turn.then(
+			() => undefined,
+			() => undefined,
+		);
+		this.chatTurns.set(conversationKey, settled);
+		void settled.then(() => {
+			if (this.chatTurns.get(conversationKey) === settled)
+				this.chatTurns.delete(conversationKey);
+		});
+		return turn;
+	}
+
+	private async executeChatTurn(
+		project: ProjectRecord,
+		userText: string,
+		model: RuntimeModel | undefined,
+		images: Array<{ mime: string; data: string }>,
+		userTurnId: string,
+		conversationKey: string,
 	): Promise<string> {
 		const isCustomProvider =
 			model?.providerID.startsWith("loom_custom_") === true;
@@ -929,7 +1205,6 @@ export class DesignService {
 			: join(tmpdir(), "loom-design", "chat", project.id);
 		mkdirSync(workdir, { recursive: true });
 		const runtime = this.runtimeFor(model);
-		const conversationKey = `${project.id}\0${model?.providerID ?? "default"}`;
 		let conversation = this.chatSessions.get(conversationKey);
 		let seed = false;
 		if (!conversation) {
@@ -942,41 +1217,52 @@ export class DesignService {
 			this.chatSessions.set(conversationKey, conversation);
 			seed = true;
 		}
-		let prompt = userText;
-		const isStatelessProvider = Boolean(model && runtime !== this.runtime);
-		if (isStatelessProvider) {
-			const context = await buildAutomationContext(
-				project.path,
-				project.name,
-			).catch(() => undefined);
-			const previous = (await this.store.listMessages(project.id))
-				.filter((item) => item.nodeId === null && item.text.trim())
-				.slice(-20)
-				.map((item) => `${item.role}: ${item.text}`)
-				.join("\n\n");
-			prompt = `${buildDesignAssistantPrompt({
-				context,
-				projectName: project.name,
-				projectPath: project.path,
-			})}\n\n${previous ? `Conversation so far:\n${previous}\n\n` : ""}User message:\n${userText}`;
-		} else if (seed) {
-			const context = await buildAutomationContext(
-				project.path,
-				project.name,
-			).catch(() => undefined);
-			prompt = `${buildDesignAssistantPrompt({
-				context,
-				projectName: project.name,
-				projectPath: project.path,
-			})}\n\nUser message:\n${userText}`;
+		try {
+			let prompt = userText;
+			const isStatelessProvider = Boolean(model && runtime !== this.runtime);
+			if (isStatelessProvider) {
+				const context = await buildDesignFileContext(
+					project.path,
+					project.name,
+				).catch(() => undefined);
+				const messages = await this.store.listMessages(project.id);
+				const previous = messages
+					.slice(
+						0,
+						messages.findIndex((item) => item.id === userTurnId),
+					)
+					.filter((item) => item.nodeId === null && item.text.trim())
+					.slice(-20)
+					.map((item) => `${item.role}: ${item.text}`)
+					.join("\n\n");
+				prompt = `${buildDesignAssistantPrompt({
+					context,
+					projectName: project.name,
+					projectPath: project.path,
+				})}\n\n${previous ? `Conversation so far:\n${previous}\n\n` : ""}User message:\n${userText}`;
+			} else if (seed) {
+				const context = await buildDesignFileContext(
+					project.path,
+					project.name,
+				).catch(() => undefined);
+				prompt = `${buildDesignAssistantPrompt({
+					context,
+					projectName: project.name,
+					projectPath: project.path,
+				})}\n\nUser message:\n${userText}`;
+			}
+			return await this.runChatPrompt(
+				conversation.runtime,
+				conversation.id,
+				prompt,
+				model,
+				images,
+			);
+		} catch (error) {
+			if (this.chatSessions.get(conversationKey) === conversation)
+				this.chatSessions.delete(conversationKey);
+			throw error;
 		}
-		return this.runChatPrompt(
-			conversation.runtime,
-			conversation.id,
-			prompt,
-			model,
-			images,
-		);
 	}
 
 	/** One blocking assistant turn; returns raw text without requiring HTML. */
@@ -1060,13 +1346,6 @@ export class DesignService {
 		await this.store.addMessage({
 			projectId: project.id,
 			nodeId: id,
-			role: "user",
-			text: brief,
-			model: modelLabel(model),
-		});
-		await this.store.addMessage({
-			projectId: project.id,
-			nodeId: id,
 			role: "assistant",
 			text: designChatSummary(reply, screens),
 			model: modelLabel(model),
@@ -1110,6 +1389,7 @@ export class DesignService {
 		if (this.busy.has(nodeId))
 			throw new Error("This design is still generating");
 		await this.store.deleteNode(nodeId);
+		this.generationContext.delete(nodeId);
 	}
 
 	async clear(projectId: string): Promise<void> {
@@ -1127,6 +1407,7 @@ export class DesignService {
 			await conversation.runtime.abort(conversation.id).catch(() => undefined);
 			this.chatSessions.delete(key);
 		}
+		for (const node of nodes) this.generationContext.delete(node.id);
 		await this.store.clearProject(projectId);
 	}
 

@@ -78,7 +78,10 @@ export function validateAutomationPlan(input: unknown): PlanValidation {
 			});
 		seen.add(task.key);
 		if (new Set(task.dependencies).size !== task.dependencies.length)
-			issues.push({ code: "duplicate-dependency", message: `Task ${task.key} repeats a dependency` });
+			issues.push({
+				code: "duplicate-dependency",
+				message: `Task ${task.key} repeats a dependency`,
+			});
 		if (!task.acceptanceCriteria.length)
 			issues.push({
 				code: "missing-acceptance-criteria",

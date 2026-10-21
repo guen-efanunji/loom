@@ -7,6 +7,7 @@ import {
 	chatReplyText,
 	DesignOutputError,
 	deriveDesignTitle,
+	designReferencePaths,
 	extractDesignHtml,
 	hasDesignDoc,
 	isExplicitNewDesignRequest,
@@ -50,9 +51,27 @@ describe("design prompts", () => {
 		expect(prompt).toContain("self-contained HTML document");
 		expect(prompt).toContain("do not create or edit any files");
 		expect(prompt).toContain("Do not call tools, run shell commands");
+		expect(prompt).toContain("Project name: demo");
+		expect(prompt).toContain("not Loom");
+		expect(prompt).toContain("isolated scratch working directory");
+		expect(prompt).toContain("do not read or change project files");
 		// No heavy context/lecture is injected anymore.
 		expect(prompt).not.toContain("Stack: Svelte");
 		expect(prompt).not.toContain("Use tabs.");
+	});
+
+	test("generation uses explicit project identity when context is unavailable", () => {
+		const prompt = buildDesignPrompt({
+			brief: "Login screen",
+			viewport: "desktop",
+			projectName: "Warehouse",
+			projectPath: "/PROJECT/Warehouse",
+		});
+		expect(prompt).toContain("Project name: Warehouse");
+		expect(prompt).toContain("Project folder: /PROJECT/Warehouse");
+		expect(prompt).toContain(
+			"Do not infer the project identity from the current working directory",
+		);
 	});
 
 	test("refine prompt carries the previous document and the change request", () => {
@@ -61,11 +80,56 @@ describe("design prompts", () => {
 			message: "Tambahkan grafik pengiriman",
 			viewport: "desktop",
 			previousHtml: DOCUMENT,
+			projectName: "Warehouse",
+			projectPath: "/PROJECT/Warehouse",
 		});
+		expect(prompt).toContain("Project name: Warehouse");
+		expect(prompt).toContain("Project folder: /PROJECT/Warehouse");
+		expect(prompt).toContain("isolated scratch working directory");
+		expect(prompt).toContain(
+			"Do not call tools, run shell commands, read or write files",
+		);
 		expect(prompt).toContain("Tambahkan grafik pengiriman");
 		expect(prompt).toContain("Dashboard logistik");
 		expect(prompt).toContain("<!DOCTYPE html>");
 		expect(prompt).toContain("1440x900");
+	});
+});
+
+describe("designReferencePaths", () => {
+	test("does not select project files without a reference", () => {
+		expect(
+			designReferencePaths("Buatkan desain tema bersih", [
+				"package.json",
+				"README.md",
+				"app.css",
+			]),
+		).toEqual([]);
+	});
+
+	test("selects only the referenced file, not unrelated siblings", () => {
+		expect(
+			designReferencePaths("Cek src/lib/themes/after-hours/Theme.svelte", [
+				"src/lib/themes/after-hours/Theme.svelte",
+				"src/lib/themes/after-hours/colors.css",
+				"src/lib/themes/after-hours/README.md",
+				"src/lib/themes/base.css",
+			]),
+		).toEqual(["src/lib/themes/after-hours/Theme.svelte"]);
+	});
+
+	test("selects files under a referenced directory", () => {
+		expect(
+			designReferencePaths("Gunakan tema src/lib/themes/after-hours", [
+				"src/lib/themes/after-hours/Theme.svelte",
+				"src/lib/themes/after-hours/palette.css",
+				"src/lib/themes/default/Theme.svelte",
+			]),
+		).toEqual([
+			"src/lib/themes/after-hours",
+			"src/lib/themes/after-hours/Theme.svelte",
+			"src/lib/themes/after-hours/palette.css",
+		]);
 	});
 });
 
@@ -124,6 +188,9 @@ describe("design agent chat helpers", () => {
 			isExplicitNewDesignRequest("buatkan halaman login dan register"),
 		).toBe(true);
 		expect(isExplicitNewDesignRequest("design a dashboard")).toBe(true);
+		expect(
+			isExplicitNewDesignRequest("buatkan saya 1 theme seperti referensi ini"),
+		).toBe(true);
 		expect(isExplicitNewDesignRequest("apa fungsi halaman login?")).toBe(false);
 	});
 

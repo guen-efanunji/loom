@@ -442,23 +442,44 @@ export class AutomationService {
 				if (!task) return false;
 				if (task.planId) {
 					if ((await this.store.get(task.planId))?.cancelledAt) return false;
-					if (!["ready", "blocked", "queued"].includes(task.status ?? "")) return false;
+					if (!["ready", "blocked", "queued"].includes(task.status ?? ""))
+						return false;
 				}
 				for (const dep of await this.store.dependencies(taskId)) {
 					const producer = await this.repos.tasks.getById(dep.dependsOnTaskId);
 					if (!producer || producer.projectId !== task.projectId) return false;
-					if (dep.requiredMilestone === "contract_published" || dep.requiredMilestone === "artifact_ready") {
+					if (
+						dep.requiredMilestone === "contract_published" ||
+						dep.requiredMilestone === "artifact_ready"
+					) {
 						if (!dep.artifactId || !this.repos.taskArtifacts) return false;
-						const artifact = await this.repos.taskArtifacts.getById(dep.artifactId);
-						if (!artifact || artifact.taskId !== producer.id || artifact.status !== "ready") return false;
-						if (dep.requiredMilestone === "contract_published" && artifact.kind !== "contract") return false;
+						const artifact = await this.repos.taskArtifacts.getById(
+							dep.artifactId,
+						);
+						if (
+							!artifact ||
+							artifact.taskId !== producer.id ||
+							artifact.status !== "ready"
+						)
+							return false;
+						if (
+							dep.requiredMilestone === "contract_published" &&
+							artifact.kind !== "contract"
+						)
+							return false;
 						continue;
 					}
-					const output = await this.repos.agentRuns.getByTaskId(dep.dependsOnTaskId);
+					const output = await this.repos.agentRuns.getByTaskId(
+						dep.dependsOnTaskId,
+					);
 					if (!output?.outputSha) return false;
 					if (dep.requiredMilestone === "integrated") {
 						if (producer.status !== "completed") return false;
-					} else if (dep.requiredMilestone !== "implementation_ready" || !(["ready_to_merge", "completed"].includes(producer.status))) return false;
+					} else if (
+						dep.requiredMilestone !== "implementation_ready" ||
+						!["ready_to_merge", "completed"].includes(producer.status)
+					)
+						return false;
 				}
 				return true;
 			},
@@ -527,7 +548,12 @@ export class AutomationService {
 			const dependent = await this.repos.tasks.getById(link.taskId);
 			if (dependent?.status !== "blocked") continue;
 			const deps = await this.store.dependencies(dependent.id);
-			if (!(await Promise.all(deps.map((dep) => this.dependencyReady(dep)))).every(Boolean)) continue;
+			if (
+				!(
+					await Promise.all(deps.map((dep) => this.dependencyReady(dep)))
+				).every(Boolean)
+			)
+				continue;
 			await this.repos.tasks.update(dependent.id, { status: "ready" });
 			await this.tasks.publishDaemonEvent({
 				type: "task.ready",
@@ -558,14 +584,25 @@ export class AutomationService {
 			await this.store.update(task.planId, { status: "completed" });
 	}
 
-	private async dependencyReady(dep: { dependsOnTaskId: string; requiredMilestone: string; artifactId?: string | null }) {
+	private async dependencyReady(dep: {
+		dependsOnTaskId: string;
+		requiredMilestone: string;
+		artifactId?: string | null;
+	}) {
 		const producer = await this.repos.tasks.getById(dep.dependsOnTaskId);
 		if (!producer) return false;
-		if (["contract_published", "artifact_ready"].includes(dep.requiredMilestone)) {
+		if (
+			["contract_published", "artifact_ready"].includes(dep.requiredMilestone)
+		) {
 			if (!dep.artifactId || !this.repos.taskArtifacts) return false;
 			const artifact = await this.repos.taskArtifacts.getById(dep.artifactId);
-			return !!artifact && artifact.taskId === producer.id && artifact.status === "ready" &&
-				(dep.requiredMilestone !== "contract_published" || artifact.kind === "contract");
+			return (
+				!!artifact &&
+				artifact.taskId === producer.id &&
+				artifact.status === "ready" &&
+				(dep.requiredMilestone !== "contract_published" ||
+					artifact.kind === "contract")
+			);
 		}
 		const output = await this.repos.agentRuns.getByTaskId(dep.dependsOnTaskId);
 		if (!output?.outputSha) return false;

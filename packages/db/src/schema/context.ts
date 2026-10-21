@@ -59,11 +59,11 @@ export const contextVersions = sqliteTable(
 		entryId: text("entry_id")
 			.notNull()
 			.references(() => contextEntries.id, { onDelete: "cascade" }),
-			version: integer("version").notNull(),
-			content: text("content").notNull(),
-			contentHash: text("content_hash").notNull(),
-			metadata: text("metadata").notNull().default("{}"),
-			createdAt: created(),
+		version: integer("version").notNull(),
+		content: text("content").notNull(),
+		contentHash: text("content_hash").notNull(),
+		metadata: text("metadata").notNull().default("{}"),
+		createdAt: created(),
 	},
 	(table) => [
 		uniqueIndex("context_versions_entry_version_uidx").on(
@@ -74,16 +74,22 @@ export const contextVersions = sqliteTable(
 	],
 );
 
-export const contextEntriesRelations = relations(contextEntries, ({ many }) => ({
-	versions: many(contextVersions),
-}));
-
-export const contextVersionsRelations = relations(contextVersions, ({ one }) => ({
-	entry: one(contextEntries, {
-		fields: [contextVersions.entryId],
-		references: [contextEntries.id],
+export const contextEntriesRelations = relations(
+	contextEntries,
+	({ many }) => ({
+		versions: many(contextVersions),
 	}),
-}));
+);
+
+export const contextVersionsRelations = relations(
+	contextVersions,
+	({ one }) => ({
+		entry: one(contextEntries, {
+			fields: [contextVersions.entryId],
+			references: [contextEntries.id],
+		}),
+	}),
+);
 
 export const contextMemoryDecisions = sqliteTable(
 	"context_memory_decisions",
@@ -92,15 +98,20 @@ export const contextMemoryDecisions = sqliteTable(
 		entryId: text("entry_id")
 			.notNull()
 			.references(() => contextEntries.id, { onDelete: "cascade" }),
-			version: integer("version").notNull(),
-			proposedBy: text("proposed_by").notNull(),
-			decidedBy: text("decided_by"),
-			decision: text("decision").notNull(),
-			supersedesId: text("supersedes_id"),
-			lastVerifiedAt: integer("last_verified_at", { mode: "timestamp_ms" }),
-			createdAt: created(),
+		version: integer("version").notNull(),
+		proposedBy: text("proposed_by").notNull(),
+		decidedBy: text("decided_by"),
+		decision: text("decision").notNull(),
+		supersedesId: text("supersedes_id"),
+		lastVerifiedAt: integer("last_verified_at", { mode: "timestamp_ms" }),
+		createdAt: created(),
 	},
-	(table) => [index("context_memory_decisions_entry_idx").on(table.entryId, table.createdAt)],
+	(table) => [
+		index("context_memory_decisions_entry_idx").on(
+			table.entryId,
+			table.createdAt,
+		),
+	],
 );
 
 export const contextMemoryEvidence = sqliteTable(
@@ -113,7 +124,9 @@ export const contextMemoryEvidence = sqliteTable(
 		sourceType: text("source_type").notNull(),
 		sourceId: text("source_id").notNull(),
 		sourceHash: text("source_hash"),
-		verificationStatus: text("verification_status").notNull().default("unverified"),
+		verificationStatus: text("verification_status")
+			.notNull()
+			.default("unverified"),
 		createdAt: created(),
 	},
 	(table) => [index("context_memory_evidence_entry_idx").on(table.entryId)],

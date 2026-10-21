@@ -63,8 +63,8 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
 	};
 	if (
 		config.maxConcurrentAgents < 1 ||
-		config.maxConcurrentAgentsPerProject < 1
-		|| config.maxConcurrentAgentsPerProvider < 1
+		config.maxConcurrentAgentsPerProject < 1 ||
+		config.maxConcurrentAgentsPerProvider < 1
 	)
 		throw new Error("Scheduler concurrency limits must be at least 1");
 
@@ -136,12 +136,14 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
 				}
 				const taskId = queue.splice(nextIndex, 1)[0];
 				if (!taskId) {
-					if (claimedTaskId && options.release) await options.release(claimedTaskId);
+					if (claimedTaskId && options.release)
+						await options.release(claimedTaskId);
 					break;
 				}
 				const task = tasks.get(taskId);
 				if (task?.state !== "queued") {
-					if (claimedTaskId && options.release) await options.release(claimedTaskId);
+					if (claimedTaskId && options.release)
+						await options.release(claimedTaskId);
 					continue;
 				}
 				task.state = "running";
@@ -166,13 +168,16 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
 		let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
 		if (options.heartbeat) {
 			heartbeatTimer = setInterval(() => {
-				void options.heartbeat?.(task.taskId).then((owned) => {
-					if (!owned) {
-						if (heartbeatTimer) clearInterval(heartbeatTimer);
-						heartbeatTimer = undefined;
-						void options.onLeaseLost?.(task.taskId);
-					}
-				}).catch(() => {});
+				void options
+					.heartbeat?.(task.taskId)
+					.then((owned) => {
+						if (!owned) {
+							if (heartbeatTimer) clearInterval(heartbeatTimer);
+							heartbeatTimer = undefined;
+							void options.onLeaseLost?.(task.taskId);
+						}
+					})
+					.catch(() => {});
 			}, 15_000);
 			heartbeatTimer.unref?.();
 		}

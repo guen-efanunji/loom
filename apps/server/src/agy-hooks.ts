@@ -34,15 +34,19 @@ function resolveHookCommand(
 			return { reason: "Configured Loom CLI hook entry was not found" };
 		return { command: `bun ${quote(env.LOOM_CLI_ENTRY)} agy-hook` };
 	}
-	if (existsSync(launcher))
-		return { command: `${quote(launcher)} agy-hook` };
-	const sourceEntry = fileURLToPath(new URL("../../cli/src/index.ts", import.meta.url));
+	if (existsSync(launcher)) return { command: `${quote(launcher)} agy-hook` };
+	const sourceEntry = fileURLToPath(
+		new URL("../../cli/src/index.ts", import.meta.url),
+	);
 	if (existsSync(sourceEntry))
 		return { command: `bun ${quote(sourceEntry)} agy-hook` };
 	return { reason: "Loom CLI hook executable was not found" };
 }
 
-function hasLoomHook(settings: Record<string, unknown>, command: string): boolean {
+function hasLoomHook(
+	settings: Record<string, unknown>,
+	command: string,
+): boolean {
 	const hooks = settings.hooks as
 		| Record<
 				string,
@@ -124,8 +128,15 @@ export async function registerAgyPermissionHook(
 		...(existingLoom ?? {}),
 		enabled: true,
 		PreToolUse: [
-			...((existingLoom?.PreToolUse as Array<{ hooks?: Array<{ command?: string }> }> | undefined) ?? []).filter(
-				(matcher) => !(matcher.hooks ?? []).some((hook) => hook.command?.includes("agy-hook")),
+			...(
+				(existingLoom?.PreToolUse as
+					| Array<{ hooks?: Array<{ command?: string }> }>
+					| undefined) ?? []
+			).filter(
+				(matcher) =>
+					!(matcher.hooks ?? []).some((hook) =>
+						hook.command?.includes("agy-hook"),
+					),
 			),
 			{
 				matcher: GATED_TOOLS,

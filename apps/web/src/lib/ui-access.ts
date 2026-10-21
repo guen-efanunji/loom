@@ -11,7 +11,8 @@ export function getUiPassword(): string {
 export function isTrustedDevice(): boolean {
 	return (
 		typeof localStorage !== "undefined" &&
-		(localStorage.getItem(trustedKey) === "true" || sessionStorage.getItem("loom.ui.unlocked") === "true")
+		(localStorage.getItem(trustedKey) === "true" ||
+			sessionStorage.getItem("loom.ui.unlocked") === "true")
 	);
 }
 

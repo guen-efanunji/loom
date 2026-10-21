@@ -130,7 +130,10 @@ test("checkpointed outputs unlock dependents and keep the plan open for review",
 	await tasks.getScheduler().wait(ready.id);
 	const readyWorkspace = await repos.workspaces.getByTaskId(ready.id);
 	if (!readyWorkspace) throw new Error("ready workspace missing");
-	await writeFile(join(readyWorkspace.path, "base.html"), "<main>base</main>\n");
+	await writeFile(
+		join(readyWorkspace.path, "base.html"),
+		"<main>base</main>\n",
+	);
 	await tasks.checkpoint(ready.id);
 	const top = detail.tasks.find((task) => task.status === "blocked");
 	if (!top) throw new Error("blocked task missing");
@@ -157,7 +160,9 @@ test("checkpointed outputs unlock dependents and keep the plan open for review",
 		"task.unblocked",
 	] as const)
 		expect(types).toContain(type);
-	expect(blocked && pendingReview.tasks.find((t) => t.id === blocked.id)?.status).toBe("ready_to_merge");
+	expect(
+		blocked && pendingReview.tasks.find((t) => t.id === blocked.id)?.status,
+	).toBe("ready_to_merge");
 });
 
 test("rejects invalid edits, premature actions, and failed dependencies stay blocked", async () => {

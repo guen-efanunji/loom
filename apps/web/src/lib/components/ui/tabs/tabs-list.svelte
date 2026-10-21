@@ -14,7 +14,9 @@
 		},
 	});
 
-	export type TabsListVariant = VariantProps<typeof tabsListVariants>["variant"];
+	export type TabsListVariant = VariantProps<
+		typeof tabsListVariants
+	>["variant"];
 </script>
 
 <script lang="ts">

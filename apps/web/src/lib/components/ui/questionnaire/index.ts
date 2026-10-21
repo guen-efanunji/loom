@@ -3,7 +3,7 @@ import ChoiceDescription from "./questionnaire-choice-description.svelte";
 import Choice from "./questionnaire-choice.svelte";
 import Choices from "./questionnaire-choices.svelte";
 import Description from "./questionnaire-description.svelte";
-import Error from "./questionnaire-error.svelte";
+import ErrorComponent from "./questionnaire-error.svelte";
 import Input from "./questionnaire-input.svelte";
 import Item from "./questionnaire-item.svelte";
 import Next from "./questionnaire-next.svelte";
@@ -24,7 +24,7 @@ export {
 	Choice,
 	ChoiceDescription,
 	Input,
-	Error,
+	ErrorComponent,
 	Actions,
 	Previous,
 	Skip,
@@ -40,7 +40,7 @@ export {
 	Choice as QuestionnaireChoice,
 	ChoiceDescription as QuestionnaireChoiceDescription,
 	Input as QuestionnaireInput,
-	Error as QuestionnaireError,
+	ErrorComponent as QuestionnaireError,
 	Actions as QuestionnaireActions,
 	Previous as QuestionnairePrevious,
 	Skip as QuestionnaireSkip,

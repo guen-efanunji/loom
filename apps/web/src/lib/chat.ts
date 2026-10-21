@@ -161,10 +161,12 @@ export function canonicalModelSelection(
 	providerID: string,
 	modelID: string,
 ) {
-	const canonicalProvider = canonicalProviderID(catalog, providerID, modelID) ?? providerID;
+	const canonicalProvider =
+		canonicalProviderID(catalog, providerID, modelID) ?? providerID;
 	const normalizedModel = modelID.toLowerCase();
 	const model = catalog.models.find((item) => {
-		if (item.providerID.toLowerCase() !== canonicalProvider.toLowerCase()) return false;
+		if (item.providerID.toLowerCase() !== canonicalProvider.toLowerCase())
+			return false;
 		const candidate = item.modelID.toLowerCase();
 		return (
 			candidate === normalizedModel ||
@@ -172,7 +174,9 @@ export function canonicalModelSelection(
 			normalizedModel.endsWith(`/${candidate}`)
 		);
 	});
-	return model ? `${model.providerID}/${model.modelID}` : `${canonicalProvider}/${modelID}`;
+	return model
+		? `${model.providerID}/${model.modelID}`
+		: `${canonicalProvider}/${modelID}`;
 }
 
 /** Return a user-facing provider name for both built-in and custom providers. */
@@ -226,13 +230,18 @@ export function friendlyProviderStatus(
 		);
 		for (const upstreamName of upstreamNames) {
 			const escaped = upstreamName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-			friendly = friendly.replace(new RegExp(`\\b${escaped}\\b`, "gi"), "OpenCode");
+			friendly = friendly.replace(
+				new RegExp(`\\b${escaped}\\b`, "gi"),
+				"OpenCode",
+			);
 		}
 	}
 	const providerIDs = new Set(
 		catalog.models
 			.map((model) => model.providerID)
-			.filter((providerID) => providerID.toLowerCase().startsWith("loom_custom_")),
+			.filter((providerID) =>
+				providerID.toLowerCase().startsWith("loom_custom_"),
+			),
 	);
 	for (const providerID of providerIDs) {
 		const label = providerDisplayName(catalog, providerID);
@@ -350,7 +359,8 @@ export const chat = {
 		request<string[]>(
 			`${root}/files?${new URLSearchParams({ projectId, query })}`,
 		),
-	preferences: () => request<{ favoriteModels: string[] }>(`${root}/preferences`),
+	preferences: () =>
+		request<{ favoriteModels: string[] }>(`${root}/preferences`),
 	savePreferences: (favoriteModels: string[]) =>
 		request<{ favoriteModels: string[] }>(`${root}/preferences`, {
 			method: "PUT",

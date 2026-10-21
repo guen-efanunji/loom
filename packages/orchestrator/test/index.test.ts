@@ -30,7 +30,13 @@ function dependencies(runtime: AgentRuntime = new MockAgentRuntime()) {
 	const tasks = new Map<string, TaskRecord>();
 	const workspaces = new Map<string, WorkspaceRecord>();
 	const runs = new Map<string, AgentRunRecord>();
-	const reviews: Array<{ taskId: string; baseSha: string; subjectSha: string; evidenceHash: string; status: string }> = [];
+	const reviews: Array<{
+		taskId: string;
+		baseSha: string;
+		subjectSha: string;
+		evidenceHash: string;
+		status: string;
+	}> = [];
 	let reviewHead = "checkpoint-sha";
 	let integratedCommit = false;
 	const events: DaemonEvent[] = [];
@@ -132,12 +138,26 @@ function dependencies(runtime: AgentRuntime = new MockAgentRuntime()) {
 		),
 	};
 	const reviewRepository = {
-		create: mock(async (input: { taskId: string; baseSha: string; subjectSha: string; evidenceHash: string; status?: string }) => {
-			const review = { ...input, status: input.status ?? "approved" };
-			reviews.push(review);
-			return review;
-		}),
-		latestApproved: mock(async (taskId: string) => [...reviews].reverse().find((review) => review.taskId === taskId && review.status === "approved")),
+		create: mock(
+			async (input: {
+				taskId: string;
+				baseSha: string;
+				subjectSha: string;
+				evidenceHash: string;
+				status?: string;
+			}) => {
+				const review = { ...input, status: input.status ?? "approved" };
+				reviews.push(review);
+				return review;
+			},
+		),
+		latestApproved: mock(async (taskId: string) =>
+			[...reviews]
+				.reverse()
+				.find(
+					(review) => review.taskId === taskId && review.status === "approved",
+				),
+		),
 	};
 	return {
 		projectRepository,
@@ -147,8 +167,12 @@ function dependencies(runtime: AgentRuntime = new MockAgentRuntime()) {
 		worktree,
 		reviewRepository,
 		reviews,
-		setReviewHead: (head: string) => { reviewHead = head; },
-		setIntegratedCommit: (integrated: boolean) => { integratedCommit = integrated; },
+		setReviewHead: (head: string) => {
+			reviewHead = head;
+		},
+		setIntegratedCommit: (integrated: boolean) => {
+			integratedCommit = integrated;
+		},
 		events,
 		runtime,
 		orchestrator: new TaskOrchestrator({
@@ -184,7 +208,9 @@ test("runs a task through the persisted lifecycle", async () => {
 	expect(stored?.status).toBe("completed");
 	expect(run?.executorSnapshotJson).toBeTruthy();
 	expect(run?.snapshotHash).toBe(
-		createHash("sha256").update(run?.executorSnapshotJson ?? "").digest("hex"),
+		createHash("sha256")
+			.update(run?.executorSnapshotJson ?? "")
+			.digest("hex"),
 	);
 	expect(setup.events.map((event) => event.type)).toEqual([
 		"task.created",
@@ -204,24 +230,38 @@ test("runs a task through the persisted lifecycle", async () => {
 
 test("reconciles a promotion completed by Git before the daemon recorded it", async () => {
 	const setup = dependencies();
-	const task = await setup.orchestrator.create({ projectId: "project-1", title: "Recover merge", prompt: "Implement" });
+	const task = await setup.orchestrator.create({
+		projectId: "project-1",
+		title: "Recover merge",
+		prompt: "Implement",
+	});
 	await setup.orchestrator.start(task.id);
 	await setup.orchestrator.checkpoint(task.id);
 	setup.setIntegratedCommit(true);
 	await setup.orchestrator.reconcile();
 	const recovered = await setup.taskRepository.getById(task.id);
 	expect(recovered?.status).toBe("completed");
-	expect(setup.events.some((event) => event.type === "task.merged" && event.taskId === task.id)).toBe(true);
+	expect(
+		setup.events.some(
+			(event) => event.type === "task.merged" && event.taskId === task.id,
+		),
+	).toBe(true);
 });
 
 test("requires checkpoint and keeps manual approval bound to the reviewed SHA", async () => {
 	const setup = dependencies();
-	const task = await setup.orchestrator.create({ projectId: "project-1", title: "Review", prompt: "Implement" });
+	const task = await setup.orchestrator.create({
+		projectId: "project-1",
+		title: "Review",
+		prompt: "Implement",
+	});
 	await setup.orchestrator.start(task.id);
 	await setup.orchestrator.checkpoint(task.id);
 	const run = await setup.agentRunRepository.getByTaskId(task.id);
 	expect(run?.outputSha).toBe("checkpoint-sha");
-	await expect(setup.orchestrator.merge(task.id)).rejects.toThrow("review approval");
+	await expect(setup.orchestrator.merge(task.id)).rejects.toThrow(
+		"review approval",
+	);
 	await setup.orchestrator.approveReview(task.id, "tester");
 	expect(setup.reviews[0]?.subjectSha).toBe("checkpoint-sha");
 	setup.setReviewHead("changed-after-review");
@@ -235,15 +275,25 @@ test("requires checkpoint and keeps manual approval bound to the reviewed SHA", 
 
 test("assembles, reviews and promotes pinned outputs as one integration batch", async () => {
 	const setup = dependencies();
-	const first = await setup.orchestrator.create({ projectId: "project-1", title: "Frontend", prompt: "UI" });
+	const first = await setup.orchestrator.create({
+		projectId: "project-1",
+		title: "Frontend",
+		prompt: "UI",
+	});
 	const second = await setup.taskRepository.create({
 		...first,
 		id: "task-2",
 		title: "Backend",
 		createdAt: date,
 	});
-	for (const [task, workspaceId] of [[first, "ws-1"], [second, "ws-2"]] as const) {
-		await setup.taskRepository.update(task.id, { status: "ready_to_merge", workspaceId });
+	for (const [task, workspaceId] of [
+		[first, "ws-1"],
+		[second, "ws-2"],
+	] as const) {
+		await setup.taskRepository.update(task.id, {
+			status: "ready_to_merge",
+			workspaceId,
+		});
 		await setup.workspaceRepository.create({
 			id: workspaceId,
 			taskId: task.id,
@@ -253,7 +303,11 @@ test("assembles, reviews and promotes pinned outputs as one integration batch", 
 			baseCommit: "base-sha",
 			createdAt: date,
 		});
-		await setup.agentRunRepository.create({ taskId: task.id, status: "completed", outputSha: `output-${task.id}` });
+		await setup.agentRunRepository.create({
+			taskId: task.id,
+			status: "completed",
+			outputSha: `output-${task.id}`,
+		});
 	}
 	const integrationWorkspace: WorktreeWorkspace = {
 		id: "integration-batch-1",
@@ -267,44 +321,79 @@ test("assembles, reviews and promotes pinned outputs as one integration batch", 
 		createdAt: date.toISOString(),
 	};
 	const worktree = setup.worktree as WorktreeManager & Record<string, unknown>;
-	worktree.preflightMerge = mock(async () => ({ path: "/repo", defaultBranch: "main", head: "base-sha", clean: true, branchExists: true }));
-	worktree.inspectHead = mock(async (workspace: WorktreeWorkspace) => ({ head: workspace.id === integrationWorkspace.id ? "candidate-sha" : `output-${workspace.taskId}`, clean: true }));
-	const candidateRequest: Record<string, unknown>[] = [];
-	worktree.createIntegrationCandidate = mock(async (input: Record<string, unknown>) => {
-		candidateRequest.push(input);
-		return { workspace: integrationWorkspace, targetBaseSha: "base-sha", memberShas: ["output-task-1", "output-task-2"], candidateSha: "candidate-sha" };
-	});
-	worktree.promoteIntegrationCandidate = mock(async () => "candidate-sha");
-	worktree.runIntegrationCheck = mock(async (workspace: WorktreeWorkspace, check: { name: string }) => ({
-		name: check.name,
-		status: "passed" as const,
-		exitCode: 0,
-		stdout: "ok",
-		stderr: "",
-		evidenceHash: "check-evidence",
-		startedAt: date,
-		finishedAt: date,
+	worktree.preflightMerge = mock(async () => ({
+		path: "/repo",
+		defaultBranch: "main",
+		head: "base-sha",
+		clean: true,
+		branchExists: true,
 	}));
+	worktree.inspectHead = mock(async (workspace: WorktreeWorkspace) => ({
+		head:
+			workspace.id === integrationWorkspace.id
+				? "candidate-sha"
+				: `output-${workspace.taskId}`,
+		clean: true,
+	}));
+	const candidateRequest: Record<string, unknown>[] = [];
+	worktree.createIntegrationCandidate = mock(
+		async (input: Record<string, unknown>) => {
+			candidateRequest.push(input);
+			return {
+				workspace: integrationWorkspace,
+				targetBaseSha: "base-sha",
+				memberShas: ["output-task-1", "output-task-2"],
+				candidateSha: "candidate-sha",
+			};
+		},
+	);
+	worktree.promoteIntegrationCandidate = mock(async () => "candidate-sha");
+	worktree.runIntegrationCheck = mock(
+		async (workspace: WorktreeWorkspace, check: { name: string }) => ({
+			name: check.name,
+			status: "passed" as const,
+			exitCode: 0,
+			stdout: "ok",
+			stderr: "",
+			evidenceHash: "check-evidence",
+			startedAt: date,
+			finishedAt: date,
+		}),
+	);
 	const batches = new Map<string, Record<string, any>>();
 	const batchMembers = new Map<string, Array<Record<string, any>>>();
 	const batchChecks = new Map<string, Array<Record<string, any>>>();
 	const approved = new Map<string, Record<string, any>>();
 	const integrationBatches = {
 		create: mock(async (input: Record<string, any>) => {
-			const batch = { ...input, candidateSha: null, promotedSha: null, workspacePath: null, workspaceBranch: null, errorMessage: null, createdAt: date, updatedAt: date };
+			const batch = {
+				...input,
+				candidateSha: null,
+				promotedSha: null,
+				workspacePath: null,
+				workspaceBranch: null,
+				errorMessage: null,
+				createdAt: date,
+				updatedAt: date,
+			};
 			batches.set(input.id, batch);
 			return batch;
 		}),
 		getById: mock(async (id: string) => batches.get(id)),
 		listByProject: mock(async () => [...batches.values()]),
-		addMembers: mock(async (id: string, members: Array<Record<string, any>>) => {
-			const rows = members.map((member) => ({ ...member, batchId: id }));
-			batchMembers.set(id, rows);
-			return rows;
-		}),
+		addMembers: mock(
+			async (id: string, members: Array<Record<string, any>>) => {
+				const rows = members.map((member) => ({ ...member, batchId: id }));
+				batchMembers.set(id, rows);
+				return rows;
+			},
+		),
 		listMembers: mock(async (id: string) => batchMembers.get(id) ?? []),
 		addChecks: mock(async (id: string, checks: Array<Record<string, any>>) => {
-			const rows = [...(batchChecks.get(id) ?? []), ...checks.map((check) => ({ ...check, batchId: id }))];
+			const rows = [
+				...(batchChecks.get(id) ?? []),
+				...checks.map((check) => ({ ...check, batchId: id })),
+			];
 			batchChecks.set(id, rows);
 			return rows;
 		}),
@@ -341,9 +430,14 @@ test("assembles, reviews and promotes pinned outputs as one integration batch", 
 		now: () => date,
 		id: () => "batch-1",
 	});
-	const assembled = await batchOrchestrator.createIntegrationBatch([first.id, second.id], {
-		requiredChecks: [{ name: "typecheck", command: "bun", args: ["run", "check-types"] }],
-	});
+	const assembled = await batchOrchestrator.createIntegrationBatch(
+		[first.id, second.id],
+		{
+			requiredChecks: [
+				{ name: "typecheck", command: "bun", args: ["run", "check-types"] },
+			],
+		},
+	);
 	expect(assembled.candidateSha).toBe("candidate-sha");
 	expect(assembled.batch?.status).toBe("pending_review");
 	expect(batchChecks.get("batch-1")?.[0]?.status).toBe("passed");
@@ -355,8 +449,12 @@ test("assembles, reviews and promotes pinned outputs as one integration batch", 
 	await batchOrchestrator.approveIntegrationBatch("batch-1", "reviewer");
 	const promoted = await batchOrchestrator.promoteIntegrationBatch("batch-1");
 	expect(promoted.promotedSha).toBe("candidate-sha");
-	expect((await setup.taskRepository.getById(first.id))?.status).toBe("completed");
-	expect((await setup.taskRepository.getById(second.id))?.status).toBe("completed");
+	expect((await setup.taskRepository.getById(first.id))?.status).toBe(
+		"completed",
+	);
+	expect((await setup.taskRepository.getById(second.id))?.status).toBe(
+		"completed",
+	);
 	expect(batches.get("batch-1")?.status).toBe("merged");
 });
 
@@ -544,7 +642,9 @@ test("updates the executor agent of a queued task", async () => {
 		agentId: "agent-b",
 	});
 	await expect(
-		setup.orchestrator.renameTask(task.id, { executor: { kind: "agent", agentId: "" } }),
+		setup.orchestrator.renameTask(task.id, {
+			executor: { kind: "agent", agentId: "" },
+		}),
 	).rejects.toThrow();
 	await setup.taskRepository.update(task.id, { status: "running" });
 	await expect(

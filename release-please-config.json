@@ -1,13 +1,21 @@
 {
-  "packages": {
-    ".": {
-      "release-type": "node",
-      "include-component-in-tag": false,
-      "extra-files": [
-        { "type": "json", "path": "version.json", "jsonpath": "$.version" },
-        { "type": "json", "path": "apps/cli/package.json", "jsonpath": "$.version" },
-        { "type": "json", "path": "packages/distribution/package.json", "jsonpath": "$.version" }
-      ]
-    }
-  }
+	"packages": {
+		".": {
+			"release-type": "node",
+			"include-component-in-tag": false,
+			"extra-files": [
+				{ "type": "json", "path": "version.json", "jsonpath": "$.version" },
+				{
+					"type": "json",
+					"path": "apps/cli/package.json",
+					"jsonpath": "$.version"
+				},
+				{
+					"type": "json",
+					"path": "packages/distribution/package.json",
+					"jsonpath": "$.version"
+				}
+			]
+		}
+	}
 }

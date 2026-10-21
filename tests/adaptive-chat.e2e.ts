@@ -33,14 +33,26 @@ const assistantMessage = {
 				title: "Updated plan",
 				input: {
 					todos: [
-						{ id: "inspect", content: "Inspect the relevant UI", status: "completed" },
-						{ id: "implement", content: "Implement the feature", status: "in_progress" },
+						{
+							id: "inspect",
+							content: "Inspect the relevant UI",
+							status: "completed",
+						},
+						{
+							id: "implement",
+							content: "Implement the feature",
+							status: "in_progress",
+						},
 						{ id: "verify", content: "Verify the result", status: "pending" },
 					],
 				},
 			},
 		},
-		{ id: "assistant-e2e-text", type: "text", text: "The feature is underway." },
+		{
+			id: "assistant-e2e-text",
+			type: "text",
+			text: "The feature is underway.",
+		},
 	],
 };
 
@@ -151,7 +163,11 @@ async function stubWorkspace(browser: Browser, catalogModels: unknown[] = []) {
 	});
 }
 
-test("shows runtime todos and lets a user focus a child then return to its parent", async ({ app, browser, screen }) => {
+test("shows runtime todos and lets a user focus a child then return to its parent", async ({
+	app,
+	browser,
+	screen,
+}) => {
 	await stubWorkspace(browser);
 	await app.open(`/?project=${projectId}&session=${parentId}`);
 
@@ -175,11 +191,17 @@ test("shows runtime todos and lets a user focus a child then return to its paren
 	await screen.getByRole("button", "Back to parent chat").tap();
 	await expect(screen.getByText("Todo progress")).toBeVisible();
 	await expect(screen.getByText("Child sessions (1)")).toBeVisible();
-	await expect(composer).toHaveValue("Keep this parent draft while I inspect the child");
+	await expect(composer).toHaveValue(
+		"Keep this parent draft while I inspect the child",
+	);
 	await app.screenshot("adaptive-child-return-parent-draft");
 });
 
-test("does not invent todo progress when the runtime reports no structured todos", async ({ app, browser, screen }) => {
+test("does not invent todo progress when the runtime reports no structured todos", async ({
+	app,
+	browser,
+	screen,
+}) => {
 	await stubWorkspace(browser);
 	await browser.route(`**/api/chat/sessions/${parentId}`, async (route) => {
 		const noTodoState = state(parentId);
@@ -187,7 +209,13 @@ test("does not invent todo progress when the runtime reports no structured todos
 			userMessage,
 			{
 				...assistantMessage,
-				parts: [{ id: "assistant-e2e-text-only", type: "text", text: "A direct answer." }],
+				parts: [
+					{
+						id: "assistant-e2e-text-only",
+						type: "text",
+						text: "A direct answer.",
+					},
+				],
 			},
 		];
 		await route.fulfill({
@@ -202,7 +230,11 @@ test("does not invent todo progress when the runtime reports no structured todos
 	await app.screenshot("adaptive-no-runtime-todos");
 });
 
-test("keeps planning in chat when the user selects Plan mode", async ({ app, browser, screen }) => {
+test("keeps planning in chat when the user selects Plan mode", async ({
+	app,
+	browser,
+	screen,
+}) => {
 	let chatRequest: Record<string, unknown> | undefined;
 	let taskMutationCount = 0;
 	await stubWorkspace(browser);
@@ -210,11 +242,17 @@ test("keeps planning in chat when the user selects Plan mode", async ({ app, bro
 		if (route.request.method === "POST") taskMutationCount++;
 		return route.fallback();
 	});
-	await browser.route(`**/api/chat/sessions/${parentId}/messages`, async (route) => {
-		if (route.request.method !== "POST") return route.fallback();
-		chatRequest = JSON.parse(route.request.postData ?? "{}") as Record<string, unknown>;
-		await route.fulfill({ json: {} });
-	});
+	await browser.route(
+		`**/api/chat/sessions/${parentId}/messages`,
+		async (route) => {
+			if (route.request.method !== "POST") return route.fallback();
+			chatRequest = JSON.parse(route.request.postData ?? "{}") as Record<
+				string,
+				unknown
+			>;
+			await route.fulfill({ json: {} });
+		},
+	);
 	await app.open(`/?project=${projectId}&session=${parentId}`);
 
 	await screen.getByRole("button", "Chat mode: build").tap();
@@ -233,49 +271,85 @@ test("keeps planning in chat when the user selects Plan mode", async ({ app, bro
 	expect(taskMutationCount).toBe(0);
 });
 
-test("shows OpenCode as the adapter when the model reports its upstream Google vendor", async ({ app, browser, screen }) => {
-	await stubWorkspace(browser, [{
-		providerID: "opencode",
-		modelID: "opencode/glm-5.3-flash-free",
-		name: "GLM-5.3-Flash Free",
-		provider: "Google",
-	}]);
+test("shows OpenCode as the adapter when the model reports its upstream Google vendor", async ({
+	app,
+	browser,
+	screen,
+}) => {
+	await stubWorkspace(browser, [
+		{
+			providerID: "opencode",
+			modelID: "opencode/glm-5.3-flash-free",
+			name: "GLM-5.3-Flash Free",
+			provider: "Google",
+		},
+	]);
 	await browser.route(`**/api/chat/sessions/${parentId}`, async (route) => {
 		const response = state(parentId);
-		response.messages = [userMessage, {
-			info: {
-				id: "assistant-opencode-response",
-				role: "assistant",
-				providerID: "google",
-				modelID: "glm-5.3-flash-free",
-				time: { created: 1_800_000_000_100, completed: 1_800_000_000_200 },
+		response.messages = [
+			userMessage,
+			{
+				info: {
+					id: "assistant-opencode-response",
+					role: "assistant",
+					providerID: "google",
+					modelID: "glm-5.3-flash-free",
+					time: { created: 1_800_000_000_100, completed: 1_800_000_000_200 },
+				},
+				parts: [
+					{
+						id: "assistant-opencode-text",
+						type: "text",
+						text: "OpenCode provider identity check.",
+					},
+				],
 			},
-			parts: [{ id: "assistant-opencode-text", type: "text", text: "OpenCode provider identity check." }],
-		}];
+		];
 		response.status = { type: "busy", message: "Google is working…" };
-		await route.fulfill({ contentType: "application/json", body: JSON.stringify(response) });
+		await route.fulfill({
+			contentType: "application/json",
+			body: JSON.stringify(response),
+		});
 	});
 	await app.open(`/?project=${projectId}&session=${parentId}`);
 
-	await expect(screen.getByText("OpenCode provider identity check.")).toBeVisible();
+	await expect(
+		screen.getByText("OpenCode provider identity check."),
+	).toBeVisible();
 	await expect(screen.getByRole("article", "OpenCode response")).toBeVisible();
 	await expect(screen.getByText("glm-5.3-flash-free")).toBeVisible();
 	await expect(screen.getByText("OpenCode is working…")).toBeVisible();
 	await expect(screen.getByText("Google is working…")).not.toBeVisible();
-	await expect(screen.getByRole("button", "Selected model: GLM-5.3-Flash Free from OpenCode")).toBeVisible();
-	await expect(screen.getByText("Checking for child sessions…")).not.toBeVisible();
+	await expect(
+		screen.getByRole(
+			"button",
+			"Selected model: GLM-5.3-Flash Free from OpenCode",
+		),
+	).toBeVisible();
+	await expect(
+		screen.getByText("Checking for child sessions…"),
+	).not.toBeVisible();
 	await app.screenshot("adaptive-opencode-provider-status");
 });
 
-test("does not show a child-session loading message for an ordinary chat", async ({ app, browser, screen }) => {
+test("does not show a child-session loading message for an ordinary chat", async ({
+	app,
+	browser,
+	screen,
+}) => {
 	await stubWorkspace(browser);
-	await browser.route(`**/api/chat/sessions/${parentId}/children`, async (route) => {
-		await route.fulfill({ json: [] });
-	});
+	await browser.route(
+		`**/api/chat/sessions/${parentId}/children`,
+		async (route) => {
+			await route.fulfill({ json: [] });
+		},
+	);
 	await app.open(`/?project=${projectId}&session=${parentId}`);
 
 	await expect(screen.getByText("The feature is underway.")).toBeVisible();
-	await expect(screen.getByText("Checking for child sessions…")).not.toBeVisible();
+	await expect(
+		screen.getByText("Checking for child sessions…"),
+	).not.toBeVisible();
 	await expect(screen.getByText("Child sessions (1)")).not.toBeVisible();
 	await app.screenshot("adaptive-chat-without-child-session-indicator");
 });

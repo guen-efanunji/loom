@@ -201,9 +201,7 @@ describe("documented session lifecycle", () => {
 			fetcher: async (url) => {
 				if (String(url).endsWith("/session/status"))
 					return Response.json({ ses_idle: { type: "idle" } });
-				return Response.json([
-					{ info: { role: "user", time: {} }, parts: [] },
-				]);
+				return Response.json([{ info: { role: "user", time: {} }, parts: [] }]);
 			},
 		});
 
@@ -221,9 +219,7 @@ describe("documented session lifecycle", () => {
 					statusPollCount.value += 1;
 					return Response.json({});
 				}
-				return Response.json([
-					{ info: { role: "user", time: {} }, parts: [] },
-				]);
+				return Response.json([{ info: { role: "user", time: {} }, parts: [] }]);
 			},
 		});
 
@@ -239,9 +235,7 @@ describe("documented session lifecycle", () => {
 			fetcher: async (url) => {
 				if (String(url).endsWith("/session/status"))
 					return Response.json({ ses_retry: { type: "retry" } });
-				return Response.json([
-					{ info: { role: "user", time: {} }, parts: [] },
-				]);
+				return Response.json([{ info: { role: "user", time: {} }, parts: [] }]);
 			},
 		});
 

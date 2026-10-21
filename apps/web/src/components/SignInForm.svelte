@@ -1,39 +1,39 @@
 <script lang="ts">
-import { Input } from "$lib/components/ui/input";
-import { Button } from "$lib/components/ui/button";
-import { createForm } from "@tanstack/svelte-form";
-import { z } from "zod";
-import { goto } from "$app/navigation";
-import { authClient } from "$lib/auth-client";
+	import { Input } from "$lib/components/ui/input";
+	import { Button } from "$lib/components/ui/button";
+	import { createForm } from "@tanstack/svelte-form";
+	import { z } from "zod";
+	import { goto } from "$app/navigation";
+	import { authClient } from "$lib/auth-client";
 
-let { switchToSignUp } = $props<{ switchToSignUp: () => void }>();
+	let { switchToSignUp } = $props<{ switchToSignUp: () => void }>();
 
-const validationSchema = z.object({
-	email: z.email("Invalid email address"),
-	password: z.string().min(1, "Password is required"),
-});
+	const validationSchema = z.object({
+		email: z.email("Invalid email address"),
+		password: z.string().min(1, "Password is required"),
+	});
 
-const form = createForm(() => ({
-	defaultValues: { email: "", password: "" },
-	onSubmit: async ({ value }) => {
-		await authClient.signIn.email(
-			{ email: value.email, password: value.password },
-			{
-				onSuccess: () => goto("/dashboard"),
-				onError: (error) => {
-					console.log(
-						error.error.message || "Sign in failed. Please try again.",
-					);
+	const form = createForm(() => ({
+		defaultValues: { email: "", password: "" },
+		onSubmit: async ({ value }) => {
+			await authClient.signIn.email(
+				{ email: value.email, password: value.password },
+				{
+					onSuccess: () => goto("/dashboard"),
+					onError: (error) => {
+						console.log(
+							error.error.message || "Sign in failed. Please try again.",
+						);
+					},
 				},
-			},
-		);
-	},
-	validators: {
-		onSubmit: validationSchema,
-	},
-}));
+			);
+		},
+		validators: {
+			onSubmit: validationSchema,
+		},
+	}));
 
-type SubmitState = Pick<typeof form.state, "canSubmit" | "isSubmitting">;
+	type SubmitState = Pick<typeof form.state, "canSubmit" | "isSubmitting">;
 </script>
 
 <div class="mx-auto mt-10 w-full max-w-md p-6">
@@ -97,17 +97,30 @@ type SubmitState = Pick<typeof form.state, "canSubmit" | "isSubmitting">;
 			{/snippet}
 		</form.Field>
 
-		<form.Subscribe selector={(state: typeof form.state): SubmitState => ({ canSubmit: state.canSubmit, isSubmitting: state.isSubmitting })}>
+		<form.Subscribe
+			selector={(state: typeof form.state): SubmitState => ({
+				canSubmit: state.canSubmit,
+				isSubmitting: state.isSubmitting,
+			})}
+		>
 			{#snippet children(state: SubmitState)}
-				<Button type="submit" class="w-full" disabled={!state.canSubmit || state.isSubmitting}>
-					{state.isSubmitting ? 'Submitting...' : 'Sign In'}
+				<Button
+					type="submit"
+					class="w-full"
+					disabled={!state.canSubmit || state.isSubmitting}
+				>
+					{state.isSubmitting ? "Submitting..." : "Sign In"}
 				</Button>
 			{/snippet}
 		</form.Subscribe>
 	</form>
 
 	<div class="mt-4 text-center">
-		<Button type="button" class="text-indigo-600 hover:text-indigo-800" onclick={switchToSignUp}>
+		<Button
+			type="button"
+			class="text-indigo-600 hover:text-indigo-800"
+			onclick={switchToSignUp}
+		>
 			Need an account? Sign Up
 		</Button>
 	</div>

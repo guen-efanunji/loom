@@ -1,33 +1,35 @@
 <script lang="ts">
-import DOMPurify from "dompurify";
-import hljs from "highlight.js/lib/common";
-import "highlight.js/styles/github-dark.css";
-import { marked } from "marked";
-import { browser } from "$app/environment";
+	import DOMPurify from "dompurify";
+	import hljs from "highlight.js/lib/common";
+	import "highlight.js/styles/github-dark.css";
+	import { marked } from "marked";
+	import { browser } from "$app/environment";
 
-let { text }: { text: string } = $props();
-let ref = $state<HTMLDivElement>();
-const html = $derived(
-	browser
-		? DOMPurify.sanitize(marked.parse(text, { async: false }), {
-				USE_PROFILES: { html: true },
-			})
-		: "",
-);
-$effect(() => {
-	html;
-	const node = ref;
-	if (!node) return;
-	for (const block of node.querySelectorAll("pre code")) {
-		if (block instanceof HTMLElement && !block.dataset.highlighted) {
-			try {
-				hljs.highlightElement(block);
-			} catch {}
+	let { text }: { text: string } = $props();
+	let ref = $state<HTMLDivElement>();
+	const html = $derived(
+		browser
+			? DOMPurify.sanitize(marked.parse(text, { async: false }), {
+					USE_PROFILES: { html: true },
+				})
+			: "",
+	);
+	$effect(() => {
+		html;
+		const node = ref;
+		if (!node) return;
+		for (const block of node.querySelectorAll("pre code")) {
+			if (block instanceof HTMLElement && !block.dataset.highlighted) {
+				try {
+					hljs.highlightElement(block);
+				} catch {}
+			}
 		}
-	}
-});
+	});
 </script>
+
 <div bind:this={ref} class="markdown min-w-0 break-words">{@html html}</div>
+
 <style>
 	.markdown {
 		max-width: 76ch;

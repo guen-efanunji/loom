@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDb, designRepository, repositories } from "@loom/db";
@@ -43,8 +43,10 @@ const headers = {
  */
 class FakeDesignRuntime implements AgentRuntime {
 	readonly prompts: string[] = [];
+	readonly images: Array<Array<{ mime: string; data: string }>> = [];
 	readonly models: Array<AgentModel | undefined> = [];
 	readonly permissions: Array<RuntimePermission | undefined> = [];
+	designOutputs: string[] = [];
 	failNext = false;
 	/** Canned answers for the design-chat intent + assistant turns. */
 	intent = "CHAT";
@@ -65,10 +67,12 @@ class FakeDesignRuntime implements AgentRuntime {
 		prompt: string;
 		model?: AgentModel;
 		permission?: RuntimePermission;
+		images?: Array<{ mime: string; data: string }>;
 	}) {
 		if (!this.sessions.has(input.sessionId))
 			throw new Error("Fake session not found");
 		this.prompts.push(input.prompt);
+		this.images.push(input.images ?? []);
 		this.models.push(input.model);
 		this.permissions.push(input.permission);
 	}
@@ -81,6 +85,8 @@ class FakeDesignRuntime implements AgentRuntime {
 		const prompt = this.prompts[this.prompts.length - 1] ?? "";
 		if (/intent classifier/i.test(prompt)) return { output: this.intent };
 		if (/UI\/UX design agent/i.test(prompt)) return { output: this.chatReply };
+		if (this.designOutputs.length)
+			return { output: this.designOutputs.shift() ?? "" };
 		return {
 			output: `<!DOCTYPE html>\n<html lang="en">\n<head><title>${sessionId}</title></head>\n<body><h1>${prompt.slice(0, 40)}</h1></body>\n</html>`,
 		};
@@ -214,6 +220,13 @@ describe("design canvas API", () => {
 				"Landing page for a coffee roaster",
 			);
 			expect(setup.runtime.prompts[0]).toContain("1440x900");
+			expect(setup.runtime.prompts[0]).toContain("Project name: demo");
+			expect(setup.runtime.prompts[0]).toContain(
+				`Project folder: ${setup.root}`,
+			);
+			expect(setup.runtime.prompts[0]).toContain(
+				"isolated scratch working directory",
+			);
 			expect(setup.runtime.models[0]).toEqual({
 				providerID: "anthropic",
 				modelID: "claude-sonnet-4-5",
@@ -229,6 +242,126 @@ describe("design canvas API", () => {
 						message.role === "assistant" && message.text.includes("ready"),
 				),
 			).toBe(true);
+		});
+	});
+
+	test("does not read unrelated project files for an unreferenced design", async () => {
+		await withSetup(async (setup) => {
+			await writeFile(join(setup.root, "package.json"), '{"private":true}');
+			await writeFile(join(setup.root, "README.md"), "Unrelated project notes");
+			await writeFile(
+				join(setup.root, "app.css"),
+				":root { --secret-brand: orange; }",
+			);
+			const result = await setup.daemon.app.request("/api/designs", {
+				method: "POST",
+				headers,
+				body: JSON.stringify({
+					projectId: setup.project.id,
+					brief: "Design a clean login screen",
+				}),
+			});
+			const { nodeId } = (await result.json()) as { nodeId: string };
+			await waitForNode(setup.daemon.app, nodeId);
+			expect(setup.runtime.prompts[0]).not.toContain("Unrelated project notes");
+			expect(setup.runtime.prompts[0]).not.toContain("--secret-brand");
+			expect(setup.runtime.prompts[0]).not.toContain(
+				"Match these existing theme tokens",
+			);
+		});
+	});
+
+	test("supplies mentioned files, text attachments, and images to Canvas generation", async () => {
+		await withSetup(async (setup) => {
+			await mkdir(join(setup.root, "src"), { recursive: true });
+			await writeFile(
+				join(setup.root, "src", "flow.html"),
+				'<main class="checkout-flow">Step 1: account details</main>',
+			);
+			const projectImage = Buffer.from("project-image-bytes");
+			await writeFile(join(setup.root, "src", "reference.png"), projectImage);
+			const response = await setup.daemon.app.request("/api/designs", {
+				method: "POST",
+				headers,
+				body: JSON.stringify({
+					projectId: setup.project.id,
+					brief: "Design a signup screen that follows the attached flow",
+					files: ["src/flow.html", "src/reference.png"],
+					attachments: [
+						{
+							filename: "brand-notes.md",
+							mime: "text/markdown",
+							data: Buffer.from("Use the teal brand color #087f8c.").toString(
+								"base64",
+							),
+						},
+						{
+							filename: "reference-screen.png",
+							mime: "image/png",
+							data: "aW1hZ2UtYnl0ZXM=",
+						},
+					],
+				}),
+			});
+			const { nodeId } = (await response.json()) as { nodeId: string };
+			const node = await waitForNode(setup.daemon.app, nodeId);
+			expect(node.status).toBe("ready");
+			expect(setup.runtime.prompts[0]).toContain(
+				'<main class="checkout-flow">Step 1: account details</main>',
+			);
+			expect(setup.runtime.prompts[0]).toContain(
+				"Use the teal brand color #087f8c.",
+			);
+			expect(setup.runtime.prompts[0]).toContain("reference-screen.png");
+			expect(setup.runtime.prompts[0]).toContain("src/reference.png");
+			expect(setup.runtime.images[0]).toEqual([
+				{ mime: "image/png", data: projectImage.toString("base64") },
+				{ mime: "image/png", data: "aW1hZ2UtYnl0ZXM=" },
+			]);
+		});
+	});
+
+	test("repairs a non-HTML provider reply and preserves references on retry", async () => {
+		await withSetup(async (setup) => {
+			await writeFile(join(setup.root, "login.html"), "<form>Sign in</form>");
+			setup.runtime.designOutputs = [
+				"I understand the request and will create a design.",
+				"I still forgot to include the HTML.",
+			];
+			const created = await setup.daemon.app.request("/api/designs", {
+				method: "POST",
+				headers,
+				body: JSON.stringify({
+					projectId: setup.project.id,
+					brief: "Create a login screen",
+					files: ["login.html"],
+					attachments: [
+						{
+							filename: "reference.png",
+							mime: "image/png",
+							data: "cG5n",
+						},
+					],
+				}),
+			});
+			const { nodeId } = (await created.json()) as { nodeId: string };
+			const failed = await waitForNode(setup.daemon.app, nodeId);
+			expect(failed.status).toBe("failed");
+			expect(setup.runtime.prompts).toHaveLength(2);
+			expect(setup.runtime.prompts[1]).toContain("Previous answer to correct");
+
+			const retried = await setup.daemon.app.request(
+				`/api/designs/${nodeId}/retry`,
+				{ method: "POST", headers, body: JSON.stringify({}) },
+			);
+			expect(retried.status).toBe(202);
+			const ready = await waitForNode(setup.daemon.app, nodeId);
+			expect(ready.status).toBe("ready");
+			expect(setup.runtime.prompts[2]).toContain("<form>Sign in</form>");
+			expect(setup.runtime.prompts[2]).toContain("reference.png");
+			expect(setup.runtime.images[2]).toEqual([
+				{ mime: "image/png", data: "cG5n" },
+			]);
 		});
 	});
 
@@ -323,6 +456,10 @@ describe("design canvas API", () => {
 			const refinePrompt = setup.runtime.prompts.at(-1) ?? "";
 			expect(refinePrompt).toContain("Add a promo code field");
 			expect(refinePrompt).toContain("<!DOCTYPE html>");
+			expect(refinePrompt).toContain("Project name: demo");
+			expect(refinePrompt).toContain(`Project folder: ${setup.root}`);
+			expect(refinePrompt).toContain("isolated scratch working directory");
+			expect(refinePrompt).toContain("read or write files");
 			const thread = await readThread(setup.daemon.app, setup.project.id);
 			expect(thread.nodes.length).toBe(1);
 			expect(
@@ -565,6 +702,186 @@ describe("design agent chat", () => {
 		);
 		return (await response.json()) as DesignChatResult;
 	}
+
+	test("answers questions from mentioned file contents and visual attachments", async () => {
+		await withSetup(async (setup) => {
+			await writeFile(
+				join(setup.root, "flow.html"),
+				'<form><input name="email"><button>Continue</button></form>',
+			);
+			const projectImage = Buffer.from("mentioned-screen-bytes");
+			await writeFile(join(setup.root, "screen-reference.png"), projectImage);
+			setup.runtime.intent = "CHAT";
+			setup.runtime.chatReply = "The flow collects an email before continuing.";
+			const result = await chat(setup.daemon.app, setup.project.id, {
+				message: "Explain this flow",
+				files: ["flow.html", "screen-reference.png"],
+				attachments: [
+					{
+						filename: "screen.png",
+						mime: "image/png",
+						data: "c2NyZWVu",
+					},
+				],
+			});
+			expect(result.kind).toBe("chat");
+			expect(setup.runtime.prompts[1]).toContain(
+				'<form><input name="email"><button>Continue</button></form>',
+			);
+			expect(setup.runtime.prompts[1]).toContain("screen.png");
+			expect(setup.runtime.prompts[1]).toContain("screen-reference.png");
+			expect(setup.runtime.images[1]).toEqual([
+				{ mime: "image/png", data: "c2NyZWVu" },
+				{ mime: "image/png", data: projectImage.toString("base64") },
+			]);
+		});
+	});
+
+	test("serializes concurrent turns on one cached chat session", async () => {
+		await withSetup(async (setup) => {
+			class BlockingRuntime extends FakeDesignRuntime {
+				chatSessions: string[] = [];
+				active = new Set<string>();
+				started?: () => void;
+				release?: () => void;
+
+				override async createSession(input: { cwd: string; title: string }) {
+					const session = await super.createSession(input);
+					if (input.title.startsWith("Loom design chat"))
+						this.chatSessions.push(session.id);
+					return session;
+				}
+
+				override async prompt(
+					input: Parameters<FakeDesignRuntime["prompt"]>[0],
+				) {
+					if (this.active.has(input.sessionId))
+						throw new Error("Session is already running");
+					await super.prompt(input);
+					if (this.chatSessions.includes(input.sessionId))
+						this.active.add(input.sessionId);
+				}
+
+				override async readOutput(sessionId: string): Promise<RuntimeOutput> {
+					if (this.chatSessions.includes(sessionId))
+						return { output: this.chatReply };
+					return super.readOutput(sessionId);
+				}
+
+				override async wait(sessionId: string): Promise<DesignRuntime> {
+					if (this.chatSessions.includes(sessionId)) {
+						if (this.started) {
+							this.started();
+							this.started = undefined;
+							await new Promise<void>((resolve) => {
+								this.release = resolve;
+							});
+						}
+						this.active.delete(sessionId);
+					}
+					return super.wait();
+				}
+			}
+			const runtime = new BlockingRuntime();
+			const service = new DesignService(
+				designRepository(setup.database),
+				setup.repos,
+				runtime,
+			);
+			let started!: () => void;
+			const firstStarted = new Promise<void>((resolve) => {
+				started = resolve;
+			});
+			runtime.started = started;
+			const first = service.chat({
+				projectId: setup.project.id,
+				message: "hello one",
+			});
+			await firstStarted;
+			const second = service.chat({
+				projectId: setup.project.id,
+				message: "hello two",
+			});
+			for (let attempt = 0; attempt < 100; attempt++) {
+				if (
+					(await service.list(setup.project.id)).messages.filter(
+						(m) => m.role === "user",
+					).length === 2
+				)
+					break;
+				await new Promise((resolve) => setTimeout(resolve, 5));
+			}
+			expect(
+				(await service.list(setup.project.id)).messages
+					.filter((m) => m.role === "user")
+					.map((m) => m.text),
+			).toEqual(["hello one", "hello two"]);
+			expect(runtime.chatSessions).toHaveLength(1);
+			expect(
+				runtime.prompts.filter((p) => /UI\/UX design agent/.test(p)),
+			).toHaveLength(1);
+			runtime.release?.();
+			const results = await Promise.all([first, second]);
+			expect(results.map((result) => result.kind)).toEqual(["chat", "chat"]);
+			expect(runtime.chatSessions).toHaveLength(1);
+			const thread = await service.list(setup.project.id);
+			expect(thread.messages.filter((m) => m.role === "user")).toHaveLength(2);
+			expect(
+				thread.messages.filter((m) => m.role === "assistant"),
+			).toHaveLength(2);
+		});
+	});
+
+	test("persists a failed chat turn and creates a fresh session for the next turn", async () => {
+		await withSetup(async (setup) => {
+			class FailingRuntime extends FakeDesignRuntime {
+				chatSessions: string[] = [];
+				override async createSession(input: { cwd: string; title: string }) {
+					const session = await super.createSession(input);
+					if (input.title.startsWith("Loom design chat"))
+						this.chatSessions.push(session.id);
+					return session;
+				}
+				override async wait(sessionId: string): Promise<DesignRuntime> {
+					if (
+						this.chatSessions.includes(sessionId) &&
+						this.chatSessions.length === 1
+					)
+						return "failed";
+					return super.wait();
+				}
+			}
+			const runtime = new FailingRuntime();
+			const service = new DesignService(
+				designRepository(setup.database),
+				setup.repos,
+				runtime,
+			);
+			await expect(
+				service.chat({
+					projectId: setup.project.id,
+					message: "first question",
+				}),
+			).rejects.toThrow("failed");
+			const failed = await service.list(setup.project.id);
+			expect(failed.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+			expect(failed.messages[1]?.errorMessage).toContain("failed");
+			expect(
+				(
+					await service.chat({
+						projectId: setup.project.id,
+						message: "second question",
+					})
+				).kind,
+			).toBe("chat");
+			expect(runtime.chatSessions).toHaveLength(2);
+			expect(
+				(await service.list(setup.project.id)).messages
+					.filter((m) => m.role === "user")
+					.map((m) => m.text),
+			).toEqual(["first question", "second question"]);
+		});
+	});
 
 	test("answers a greeting as chat without drawing a node", async () => {
 		await withSetup(async (setup) => {

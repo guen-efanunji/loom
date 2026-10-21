@@ -12,6 +12,9 @@
 <QuestionnairePrimitive.Title
 	bind:ref
 	data-slot="questionnaire-title"
-	class={cn("text-base font-semibold [&:not(:has(~[data-slot=questionnaire-description]))]:mb-5 text-pretty", className)}
+	class={cn(
+		"text-base font-semibold [&:not(:has(~[data-slot=questionnaire-description]))]:mb-5 text-pretty",
+		className,
+	)}
 	{...restProps}
 />

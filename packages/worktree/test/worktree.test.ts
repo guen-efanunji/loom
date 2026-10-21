@@ -186,15 +186,43 @@ describe("temporary git repository", () => {
 		await run(["commit", "-m", "base"]);
 		const baseSha = (await run(["rev-parse", "HEAD"])).stdout.trim();
 		const manager = new WorktreeManager({ home });
-		const frontend = await manager.create({ projectPath: root, projectId: "batch-project", taskId: "frontend", baseRef: baseSha });
-		const backend = await manager.create({ projectPath: root, projectId: "batch-project", taskId: "backend", baseRef: baseSha });
-		for (const [workspace, file] of [[frontend, "frontend.txt"], [backend, "backend.txt"]] as const) {
+		const frontend = await manager.create({
+			projectPath: root,
+			projectId: "batch-project",
+			taskId: "frontend",
+			baseRef: baseSha,
+		});
+		const backend = await manager.create({
+			projectPath: root,
+			projectId: "batch-project",
+			taskId: "backend",
+			baseRef: baseSha,
+		});
+		for (const [workspace, file] of [
+			[frontend, "frontend.txt"],
+			[backend, "backend.txt"],
+		] as const) {
 			await writeFile(join(workspace.path, file), `${file}\n`);
 			await run(["add", file], workspace.path);
-			await run(["-c", "user.name=Loom", "-c", "user.email=loom@example.test", "commit", "-m", file], workspace.path);
+			await run(
+				[
+					"-c",
+					"user.name=Loom",
+					"-c",
+					"user.email=loom@example.test",
+					"commit",
+					"-m",
+					file,
+				],
+				workspace.path,
+			);
 		}
-		const frontendSha = (await run(["rev-parse", "HEAD"], frontend.path)).stdout.trim();
-		const backendSha = (await run(["rev-parse", "HEAD"], backend.path)).stdout.trim();
+		const frontendSha = (
+			await run(["rev-parse", "HEAD"], frontend.path)
+		).stdout.trim();
+		const backendSha = (
+			await run(["rev-parse", "HEAD"], backend.path)
+		).stdout.trim();
 		const candidate = await manager.createIntegrationCandidate({
 			projectPath: root,
 			projectId: "batch-project",
@@ -207,8 +235,12 @@ describe("temporary git repository", () => {
 			],
 		});
 		expect(candidate.memberShas).toEqual([frontendSha, backendSha]);
-		expect(await Bun.file(join(candidate.workspace.path, "frontend.txt")).text()).toBe("frontend.txt\n");
-		expect(await Bun.file(join(candidate.workspace.path, "backend.txt")).text()).toBe("backend.txt\n");
+		expect(
+			await Bun.file(join(candidate.workspace.path, "frontend.txt")).text(),
+		).toBe("frontend.txt\n");
+		expect(
+			await Bun.file(join(candidate.workspace.path, "backend.txt")).text(),
+		).toBe("backend.txt\n");
 		expect((await run(["rev-parse", "main"])).stdout.trim()).toBe(baseSha);
 		const reviewed = await manager.inspectHead(candidate.workspace);
 		expect(reviewed.head).toBe(candidate.candidateSha);
@@ -226,17 +258,30 @@ describe("temporary git repository", () => {
 			timeoutMs: 5_000,
 		});
 		expect(failedCheck.status).toBe("failed");
-		await run(["-c", "user.name=Loom", "-c", "user.email=loom@example.test", "commit", "--allow-empty", "-m", "move target"]);
-		await expect(manager.promoteIntegrationCandidate(candidate.workspace, {
-			expectedTargetSha: baseSha,
-			candidateSha: candidate.candidateSha,
-		})).rejects.toThrow("Target branch moved");
+		await run([
+			"-c",
+			"user.name=Loom",
+			"-c",
+			"user.email=loom@example.test",
+			"commit",
+			"--allow-empty",
+			"-m",
+			"move target",
+		]);
+		await expect(
+			manager.promoteIntegrationCandidate(candidate.workspace, {
+				expectedTargetSha: baseSha,
+				candidateSha: candidate.candidateSha,
+			}),
+		).rejects.toThrow("Target branch moved");
 		await run(["reset", "--hard", baseSha]);
 		await manager.promoteIntegrationCandidate(candidate.workspace, {
 			expectedTargetSha: baseSha,
 			candidateSha: candidate.candidateSha,
 		});
-		expect((await run(["rev-parse", "main"])).stdout.trim()).toBe(candidate.candidateSha);
+		expect((await run(["rev-parse", "main"])).stdout.trim()).toBe(
+			candidate.candidateSha,
+		);
 		await manager.discardIntegrationCandidate(candidate.workspace);
 		await manager.discard(frontend);
 		await manager.discard(backend);
@@ -316,7 +361,9 @@ describe("temporary git repository", () => {
 		await expect(manager.remove(workspace)).rejects.toThrow(
 			/uncheckpointed changes/,
 		);
-		expect(await Bun.file(join(workspace.path, "output.txt")).exists()).toBe(true);
+		expect(await Bun.file(join(workspace.path, "output.txt")).exists()).toBe(
+			true,
+		);
 		await manager.discard(workspace);
 	});
 
@@ -347,20 +394,33 @@ describe("temporary git repository", () => {
 			projectId: "project-checkpoint",
 			taskId: "task-checkpoint",
 		});
-		await writeFile(join(workspace.path, "output.ts"), "export const ready = true;\n");
+		await writeFile(
+			join(workspace.path, "output.ts"),
+			"export const ready = true;\n",
+		);
 		await writeFile(join(workspace.path, ".env.local"), "TOKEN=secret\n");
 		expect(await manager.diff(workspace)).toContain("output.ts");
 		expect(await manager.diff(workspace)).not.toContain("TOKEN=secret");
-		await expect(manager.checkpoint(workspace, "checkpoint output")).rejects.toThrow(
-			/secret, generated, or Loom metadata/,
-		);
+		await expect(
+			manager.checkpoint(workspace, "checkpoint output"),
+		).rejects.toThrow(/secret, generated, or Loom metadata/);
 		await rm(join(workspace.path, ".env.local"));
 		const sha = await manager.checkpoint(workspace, "checkpoint output");
-		expect((await run(["rev-parse", "HEAD"], workspace.path)).stdout.trim()).toBe(sha);
-		expect((await run(["ls-files"], workspace.path)).stdout).toContain("output.ts");
-		expect((await run(["ls-files"], workspace.path)).stdout).not.toContain(".loom-worktree.json");
-		expect(await manager.readTextAtCommit(workspace, sha, "output.ts")).toContain("ready = true");
-		await expect(manager.readTextAtCommit(workspace, sha, "../../outside")).rejects.toThrow("unsafe or excluded");
+		expect(
+			(await run(["rev-parse", "HEAD"], workspace.path)).stdout.trim(),
+		).toBe(sha);
+		expect((await run(["ls-files"], workspace.path)).stdout).toContain(
+			"output.ts",
+		);
+		expect((await run(["ls-files"], workspace.path)).stdout).not.toContain(
+			".loom-worktree.json",
+		);
+		expect(
+			await manager.readTextAtCommit(workspace, sha, "output.ts"),
+		).toContain("ready = true");
+		await expect(
+			manager.readTextAtCommit(workspace, sha, "../../outside"),
+		).rejects.toThrow("unsafe or excluded");
 		await manager.discard(workspace);
 	});
 
@@ -394,10 +454,14 @@ describe("temporary git repository", () => {
 		await writeFile(join(workspace.path, "file.txt"), "merged\n");
 		await run(["add", "."], workspace.path);
 		expect(
-			(await run(["ls-files", ".loom-worktree.json"], workspace.path)).stdout.trim(),
+			(
+				await run(["ls-files", ".loom-worktree.json"], workspace.path)
+			).stdout.trim(),
 		).toBe("");
 		await run(["commit", "-m", "change"], workspace.path);
-		const outputSha = (await run(["rev-parse", "HEAD"], workspace.path)).stdout.trim();
+		const outputSha = (
+			await run(["rev-parse", "HEAD"], workspace.path)
+		).stdout.trim();
 		const promotedSha = await manager.merge(workspace);
 		expect(await manager.isCommitIntegrated(workspace, outputSha)).toBe(true);
 		expect(promotedSha).not.toBe("");

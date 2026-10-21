@@ -1,96 +1,98 @@
 <script lang="ts">
-import {
-	ArrowRight,
-	Bot,
-	CircleAlert,
-	Eye,
-	EyeOff,
-	GitBranch,
-	LoaderCircle,
-	ShieldCheck,
-	Terminal,
-} from "@lucide/svelte";
-import { onMount } from "svelte";
-import { page } from "$app/state";
-import { Button } from "$lib/components/ui/button";
-import { Checkbox } from "$lib/components/ui/checkbox";
-import { Input } from "$lib/components/ui/input";
-import {
-	DEFAULT_UI_PASSWORD,
-	getUiPassword,
-	isTrustedDevice,
-	setTrustedDevice,
-} from "$lib/ui-access";
+	import {
+		ArrowRight,
+		Bot,
+		CircleAlert,
+		Eye,
+		EyeOff,
+		GitBranch,
+		LoaderCircle,
+		ShieldCheck,
+		Terminal,
+	} from "@lucide/svelte";
+	import { onMount } from "svelte";
+	import { page } from "$app/state";
+	import { Button } from "$lib/components/ui/button";
+	import { Checkbox } from "$lib/components/ui/checkbox";
+	import { Input } from "$lib/components/ui/input";
+	import {
+		DEFAULT_UI_PASSWORD,
+		getUiPassword,
+		isTrustedDevice,
+		setTrustedDevice,
+	} from "$lib/ui-access";
 
-let password = $state("");
-let remember = $state(false);
-let error = $state("");
-let showPassword = $state(false);
-let isSubmitting = $state(false);
-let isMounted = $state(false);
+	let password = $state("");
+	let remember = $state(false);
+	let error = $state("");
+	let showPassword = $state(false);
+	let isSubmitting = $state(false);
+	let isMounted = $state(false);
 
-onMount(() => {
-	if (isTrustedDevice()) {
+	onMount(() => {
+		if (isTrustedDevice()) {
+			const next = page.url.searchParams.get("next") || "/";
+			window.location.assign(
+				next.startsWith("/") && !next.startsWith("//") ? next : "/",
+			);
+			return;
+		}
+		requestAnimationFrame(() => {
+			isMounted = true;
+		});
+	});
+
+	async function unlock() {
+		if (!password) {
+			error = "Please enter your password";
+			return;
+		}
+
+		isSubmitting = true;
+		error = "";
+
+		await new Promise((resolve) => setTimeout(resolve, 150));
+
+		if (password !== getUiPassword()) {
+			error = "Incorrect password";
+			isSubmitting = false;
+			return;
+		}
+
+		setTrustedDevice(remember);
+		sessionStorage.setItem("loom.ui.unlocked", "true");
 		const next = page.url.searchParams.get("next") || "/";
 		window.location.assign(
 			next.startsWith("/") && !next.startsWith("//") ? next : "/",
 		);
-		return;
-	}
-	requestAnimationFrame(() => {
-		isMounted = true;
-	});
-});
-
-async function unlock() {
-	if (!password) {
-		error = "Please enter your password";
-		return;
 	}
 
-	isSubmitting = true;
-	error = "";
-
-	await new Promise((resolve) => setTimeout(resolve, 150));
-
-	if (password !== getUiPassword()) {
-		error = "Incorrect password";
-		isSubmitting = false;
-		return;
-	}
-
-	setTrustedDevice(remember);
-	sessionStorage.setItem("loom.ui.unlocked", "true");
-	const next = page.url.searchParams.get("next") || "/";
-	window.location.assign(
-		next.startsWith("/") && !next.startsWith("//") ? next : "/",
-	);
-}
-
-const features = [
-	{
-		icon: Bot,
-		title: "Multi-Agent Swarms",
-		desc: "Coordinate autonomous task runners, councils, and specialized agents.",
-	},
-	{
-		icon: GitBranch,
-		title: "Worktree Isolation",
-		desc: "Execute changes safely across isolated branches with live diff inspections.",
-	},
-	{
-		icon: Terminal,
-		title: "Real-time Telemetry",
-		desc: "Inspect live command execution, agent reasoning traces, and diagnostics.",
-	},
-];
+	const features = [
+		{
+			icon: Bot,
+			title: "Multi-Agent Swarms",
+			desc: "Coordinate autonomous task runners, councils, and specialized agents.",
+		},
+		{
+			icon: GitBranch,
+			title: "Worktree Isolation",
+			desc: "Execute changes safely across isolated branches with live diff inspections.",
+		},
+		{
+			icon: Terminal,
+			title: "Real-time Telemetry",
+			desc: "Inspect live command execution, agent reasoning traces, and diagnostics.",
+		},
+	];
 </script>
 
 <svelte:head>
 	<title>Sign in — Loom</title>
 </svelte:head>
 
-<div class="flex min-h-svh w-full flex-col bg-background text-foreground antialiased">
+<div
+	class="flex min-h-svh w-full flex-col bg-background text-foreground antialiased"
+>
 	<div class="flex flex-1">
 		<!-- Left / Main Auth Section -->
 		<div class="flex flex-1 items-center justify-center p-6 sm:p-10 lg:p-16">
@@ -114,10 +116,14 @@ const features = [
 								/>
 							</svg>
 						</div>
-						<span class="font-semibold text-xl tracking-tight text-foreground">Loom</span>
+						<span class="font-semibold text-xl tracking-tight text-foreground"
+							>Loom</span
+						>
 					</div>
 
-					<h1 class="font-bold text-2xl tracking-tight text-foreground sm:text-3xl">
+					<h1
+						class="font-bold text-2xl tracking-tight text-foreground sm:text-3xl"
+					>
 						Sign in
 					</h1>
 					<p class="mt-1.5 text-muted-foreground text-sm leading-relaxed">
@@ -134,7 +140,10 @@ const features = [
 					}}
 				>
 					<div class="space-y-2">
-						<label for="password-input" class="font-medium text-foreground text-sm">
+						<label
+							for="password-input"
+							class="font-medium text-foreground text-sm"
+						>
 							Password
 						</label>
 
@@ -243,8 +252,8 @@ const features = [
 						AI Agent Workspace
 					</h2>
 					<p class="text-muted-foreground text-sm leading-relaxed">
-						Orchestrate autonomous agent swarms, manage isolated git worktrees, and turn
-						complex ideas into shipped code.
+						Orchestrate autonomous agent swarms, manage isolated git worktrees,
+						and turn complex ideas into shipped code.
 					</p>
 				</div>
 
@@ -259,7 +268,9 @@ const features = [
 								<feature.icon class="size-5 text-foreground" />
 							</div>
 							<div>
-								<h3 class="font-medium text-foreground text-sm">{feature.title}</h3>
+								<h3 class="font-medium text-foreground text-sm">
+									{feature.title}
+								</h3>
 								<p class="mt-1 text-muted-foreground text-xs leading-relaxed">
 									{feature.desc}
 								</p>
@@ -268,7 +279,9 @@ const features = [
 					{/each}
 				</div>
 
-				<div class="flex items-center gap-2 pt-2 text-muted-foreground/70 text-xs">
+				<div
+					class="flex items-center gap-2 pt-2 text-muted-foreground/70 text-xs"
+				>
 					<ShieldCheck class="size-4 shrink-0 text-emerald-500" />
 					<span>End-to-end local session authorization active</span>
 				</div>

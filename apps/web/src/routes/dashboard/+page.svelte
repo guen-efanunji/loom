@@ -1,7 +1,7 @@
 <script lang="ts">
-import { authClient } from "$lib/auth-client";
+	import { authClient } from "$lib/auth-client";
 
-const sessionQuery = authClient.useSession();
+	const sessionQuery = authClient.useSession();
 </script>
 
 <div>

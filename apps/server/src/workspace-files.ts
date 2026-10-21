@@ -200,7 +200,8 @@ export async function searchWorkspaceEntries(root: string, query: string) {
 	const matches: WorkspaceFileEntry[] = [];
 	let visited = 0;
 	while (pending.length && visited < 500 && matches.length < 100) {
-		const directory = pending.shift()!;
+		const directory = pending.shift();
+		if (directory === undefined) break;
 		visited += 1;
 		const result = await listWorkspaceDirectory(root, directory);
 		for (const entry of result.entries) {

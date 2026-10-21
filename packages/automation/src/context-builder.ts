@@ -77,13 +77,19 @@ async function readBounded(
 	try {
 		if (root) {
 			const rel = relative(await realpath(root), await realpath(path));
-			if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return undefined;
+			if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel))
+				return undefined;
 		}
 		const info = await stat(path);
 		if (!info.isFile()) return undefined;
 		const file = await open(path, "r");
-		try { const buffer = Buffer.alloc(limit); const { bytesRead } = await file.read(buffer, 0, limit, 0); return buffer.subarray(0, bytesRead).toString("utf8"); }
-		finally { await file.close(); }
+		try {
+			const buffer = Buffer.alloc(limit);
+			const { bytesRead } = await file.read(buffer, 0, limit, 0);
+			return buffer.subarray(0, bytesRead).toString("utf8");
+		} finally {
+			await file.close();
+		}
 	} catch {
 		return undefined;
 	}
@@ -107,7 +113,8 @@ function detectPackageManager(
 	return manager || undefined;
 }
 
-const THEME_FILE = /\.(css)$|tailwind\.config\.(js|cjs|mjs|ts)$|components\.json$/i;
+const THEME_FILE =
+	/\.(css)$|tailwind\.config\.(js|cjs|mjs|ts)$|components\.json$/i;
 
 /** Keep only the lines that actually carry design tokens from a CSS file. */
 function cssTokens(css: string): string {
@@ -161,12 +168,32 @@ async function collectTheme(
 	return parts.join("\n\n").slice(0, 6000);
 }
 
+export async function buildDesignFileContext(
+	projectPath: string,
+	projectName: string,
+): Promise<ProjectContext> {
+	const files: string[] = [];
+	await walk(projectPath, "", 0, files, 200);
+	return {
+		projectName,
+		projectPath,
+		stack: [],
+		files,
+		readFiles: [],
+		scripts: {},
+	};
+}
+
 export async function buildAutomationContext(
 	projectPath: string,
 	projectName: string,
 ): Promise<ProjectContext> {
 	const readFiles = new Set<string>();
-	const pkgRaw = await readBounded(join(projectPath, "package.json"), 32000, projectPath);
+	const pkgRaw = await readBounded(
+		join(projectPath, "package.json"),
+		32000,
+		projectPath,
+	);
 	if (pkgRaw) readFiles.add("package.json");
 	let pkg: Record<string, unknown> = {};
 	try {
@@ -195,11 +222,17 @@ export async function buildAutomationContext(
 	await walk(projectPath, "", 0, files, 200);
 	const scripts = (pkg.scripts as Record<string, string> | undefined) ?? {};
 	const [conventions, currentBranch] = await Promise.all([
-		Promise.all(["AGENTS.md", "README.md", ".loom/conventions.md"].map(async name => {
-			const text = await readBounded(join(projectPath, name), 4000, projectPath);
-			if (text) readFiles.add(name);
-			return text ? `${name}:\n${text}` : "";
-		})).then(parts => parts.filter(Boolean).join("\n\n")),
+		Promise.all(
+			["AGENTS.md", "README.md", ".loom/conventions.md"].map(async (name) => {
+				const text = await readBounded(
+					join(projectPath, name),
+					4000,
+					projectPath,
+				);
+				if (text) readFiles.add(name);
+				return text ? `${name}:\n${text}` : "";
+			}),
+		).then((parts) => parts.filter(Boolean).join("\n\n")),
 		git(["branch", "--show-current"], projectPath),
 	]);
 	const context: ProjectContext = {

@@ -1254,14 +1254,29 @@ export function createChatRoutes(options: {
 			const modelEntry = options.providerManager?.catalog
 				.listByProvider(providerId)
 				.find((candidate) => {
-					const wanted = (runtimeModel?.modelID ?? requestedModel?.modelID ?? "").toLowerCase();
-					return [candidate.name, candidate.displayName, candidate.metadata?.modelId].some(
-						(value) => typeof value === "string" && value.toLowerCase() === wanted,
+					const wanted = (
+						runtimeModel?.modelID ??
+						requestedModel?.modelID ??
+						""
+					).toLowerCase();
+					return [
+						candidate.name,
+						candidate.displayName,
+						candidate.metadata?.modelId,
+					].some(
+						(value) =>
+							typeof value === "string" && value.toLowerCase() === wanted,
 					);
 				});
-			const catalogWindow = cachedCatalog?.models.find((model) =>
-				model.providerID === providerId &&
-				model.modelID.toLowerCase() === (runtimeModel?.modelID ?? requestedModel?.modelID ?? "").toLowerCase(),
+			const catalogWindow = cachedCatalog?.models.find(
+				(model) =>
+					model.providerID === providerId &&
+					model.modelID.toLowerCase() ===
+						(
+							runtimeModel?.modelID ??
+							requestedModel?.modelID ??
+							""
+						).toLowerCase(),
 			)?.contextWindow;
 			const thinkingContext =
 				providerId !== "claude" && providerId !== "codex"
@@ -1271,20 +1286,31 @@ export function createChatRoutes(options: {
 				? `Referenced project paths (files or folders):\n${files.join("\n")}`
 				: "";
 			const attachmentAccounting = input.attachments
-				.map((attachment) => `[image attachment ${attachment.filename}; ${attachment.data.length} encoded characters]`)
+				.map(
+					(attachment) =>
+						`[image attachment ${attachment.filename}; ${attachment.data.length} encoded characters]`,
+				)
 				.join("\n");
-			let contextPacket;
+			let contextPacket: ReturnType<typeof buildContextPacket>;
 			try {
 				contextPacket = buildContextPacket({
 					providerId,
 					modelId: runtimeModel?.modelID ?? requestedModel?.modelID,
 					mode: isCustomProvider ? "loom_owned" : "handoff_only",
 					history: history as ContextMessage[],
-					currentPrompt: [thinkingContext, promptText, referencedPaths, attachmentAccounting]
+					currentPrompt: [
+						thinkingContext,
+						promptText,
+						referencedPaths,
+						attachmentAccounting,
+					]
 						.filter(Boolean)
 						.join("\n\n"),
-					fixedPrompt: [customAgentInstructions, adaptiveExecutionGuidance].filter(Boolean).join("\n\n"),
-					contextWindowTokens: modelEntry?.contextWindow ?? catalogWindow ?? null,
+					fixedPrompt: [customAgentInstructions, adaptiveExecutionGuidance]
+						.filter(Boolean)
+						.join("\n\n"),
+					contextWindowTokens:
+						modelEntry?.contextWindow ?? catalogWindow ?? null,
 				});
 			} catch (error) {
 				if (error instanceof ContextBudgetError)
@@ -1395,7 +1421,9 @@ export function createChatRoutes(options: {
 			providerSessions.set(current.id, turn);
 			// CLI runtimes start a new process each turn; carry forward the conversation.
 			const prompt = [
-				contextPacket.context ? `Previous conversation:\n${contextPacket.context}` : "",
+				contextPacket.context
+					? `Previous conversation:\n${contextPacket.context}`
+					: "",
 				thinkingContext,
 				promptText,
 				referencedPaths,
@@ -1684,7 +1712,7 @@ export function createChatRoutes(options: {
 					}>;
 				}>
 			>(`/session/${current.id}/message`, current.directory);
-			messages.forEach((message) => rememberToolFiles(message.parts));
+			for (const message of messages) rememberToolFiles(message.parts);
 			diffs = messages.flatMap((message) =>
 				message.parts.flatMap((part) => {
 					if (part.type !== "tool" || part.state?.status !== "completed")
@@ -1745,7 +1773,7 @@ export function createChatRoutes(options: {
 				}
 				const relevant = changed
 					.filter(
-							({ file }) => candidatePaths.size > 0 && candidatePaths.has(file),
+						({ file }) => candidatePaths.size > 0 && candidatePaths.has(file),
 					)
 					.slice(0, 30);
 				for (const { status, file } of relevant) {

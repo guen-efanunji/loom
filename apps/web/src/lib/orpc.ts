@@ -55,7 +55,9 @@ export const link = new RPCLink({
 		dev && typeof window === "undefined" ? PUBLIC_SERVER_URL || "/" : "/",
 	)}/rpc`,
 	async fetch(url, options) {
-		const headers = new Headers(url instanceof Request ? url.headers : undefined);
+		const headers = new Headers(
+			url instanceof Request ? url.headers : undefined,
+		);
 		headers.set("Authorization", `Bearer ${await provisionDaemonToken()}`);
 		return fetch(url, {
 			...options,
