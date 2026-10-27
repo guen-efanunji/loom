@@ -135,6 +135,23 @@ export type Catalog = {
 	commands: Array<{ name: string; description?: string }>;
 };
 
+/**
+ * Provider ids that are their own first-class Loom adapter (a dedicated CLI
+ * runtime). A model reported by these adapters must keep its own identity —
+ * otherwise a shared model id (e.g. a `gpt-*` id that also appears in the
+ * OpenCode catalog) would wrongly relabel a native Codex/Claude model as
+ * "OpenCode". Models from upstream-only ids (google, openai, xai, …) that are
+ * actually served through the OpenCode adapter are still canonicalized below.
+ */
+const NATIVE_ADAPTER_IDS = new Set([
+	"opencode",
+	"codex",
+	"claude",
+	"anthropic",
+	"agy",
+	"antigravity",
+]);
+
 /** Resolve the selected Loom adapter when a provider reports its upstream vendor. */
 export function canonicalProviderID(
 	catalog: Catalog,
@@ -142,6 +159,7 @@ export function canonicalProviderID(
 	modelID?: string,
 ) {
 	if (!providerID || !modelID) return providerID;
+	if (NATIVE_ADAPTER_IDS.has(providerID.toLowerCase())) return providerID;
 	const reportedModel = modelID.toLowerCase();
 	const openCodeModel = catalog.models.find((item) => {
 		if (item.providerID.toLowerCase() !== "opencode") return false;

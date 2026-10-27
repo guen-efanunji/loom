@@ -119,6 +119,9 @@ let modelSearch = $state("");
 // Provider groups start collapsed so opening the picker renders only
 // Favorites/Recent + a handful of headers instead of every model at once.
 let expandedGroups = $state<Record<string, boolean>>({});
+// Scroll container of the model list, used to keep the reader's position when
+// a provider group is expanded (bits-ui otherwise resets the scroll to top).
+let modelListEl = $state<HTMLDivElement | null>(null);
 let query = $state<string | null>(null);
 let mentionStyle = $state("");
 let results = $state<string[]>([]);
@@ -362,7 +365,58 @@ function providerGroupExpanded(id: string) {
 	return isModelSearching || expandedGroups[id] === true;
 }
 function toggleProviderGroup(id: string) {
+	const el = modelListEl;
+	const top = el?.scrollTop ?? 0;
 	expandedGroups[id] = !expandedGroups[id];
+	if (!el) return;
+	// bits-ui scrolls the list after the DOM updates, so restore the position
+	// both on the next tick and on the following frame to win over it.
+	void tick().then(() => {
+		el.scrollTop = top;
+		requestAnimationFrame(() => {
+			el.scrollTop = top;
+		});
+	});
+}
+// The catalog reports many models with a generic provider name (e.g. every
+// gateway model shows "OpenCode"), which makes the group headers unreadable.
+// Label each group by its real provider id instead.
+const providerHeadings: Record<string, string> = {
+	opencode: "OpenCode",
+	openai: "OpenAI",
+	anthropic: "Claude",
+	claude: "Claude",
+	codex: "Codex",
+	google: "Google",
+	gemini: "Gemini",
+	xai: "xAI",
+	grok: "Grok",
+	deepseek: "DeepSeek",
+	ollama: "Ollama",
+	mistral: "Mistral",
+	github: "GitHub",
+	"github-copilot": "GitHub Copilot",
+	azure: "Azure",
+	agy: "Agy",
+	antigravity: "Antigravity",
+};
+function groupHeading(group: { id: string; label: string }) {
+	const id = group.id;
+	if (id.startsWith("loom_custom_")) {
+		// Custom providers can report a generic model provider (e.g. "OpenCode"),
+		// so derive a distinct label from the provider id instead of group.label.
+		const raw = id.slice("loom_custom_".length).replace(/_[a-f0-9]{8,}$/i, "");
+		return raw
+			.replace(/[_-]+/g, " ")
+			.replace(/\b\w/g, (letter) => letter.toUpperCase());
+	}
+	return (
+		providerHeadings[id.toLowerCase()] ??
+		id
+			.replace(/^loom_custom_/i, "")
+			.replace(/[_-]+/g, " ")
+			.replace(/\b\w/g, (letter) => letter.toUpperCase())
+	);
 }
 const selectedCustomAgent = $derived(
 	customAgents.find((item) => item.id === customAgentId),
@@ -1198,7 +1252,7 @@ function keydown(event: KeyboardEvent) {
 						><Command.Input
 							bind:value={modelSearch}
 							placeholder="Search models…"
-						/><Command.List class="max-h-96"
+						/><Command.List bind:ref={modelListEl} class="max-h-96"
 							><Command.Empty>No configured models found.</Command.Empty>
 							{#if visibleFavoriteModels.length}<Command.Group
 									heading="Favorites"
@@ -1227,17 +1281,14 @@ function keydown(event: KeyboardEvent) {
 									onclick={() => toggleProviderGroup(group.id)}
 									class="flex w-full items-center justify-between gap-2 px-4 py-1.5 text-xs font-medium text-foreground/50 transition-colors hover:text-foreground"
 								>
-									<span class="truncate">{group.label}</span>
-									<span class="flex shrink-0 items-center gap-1 text-muted-foreground">
-										{group.id.toLowerCase() !== group.label.toLowerCase()
-											? group.id
-											: ""}
-										{group.models.length}
-										<ChevronDown
-											size={12}
-											class={providerGroupExpanded(group.id) ? "" : "-rotate-90"}
-										/>
-									</span>
+									<span class="truncate">{groupHeading(group)}</span>
+									<span
+										class="flex shrink-0 items-center gap-1 text-muted-foreground"
+										>{group.models.length}<ChevronDown
+												size={12}
+												class={providerGroupExpanded(group.id) ? "" : "-rotate-90"}
+										/></span
+									>
 								</button>
 								{#if providerGroupExpanded(group.id)}
 									{#each group.models as item (modelKey(item))}

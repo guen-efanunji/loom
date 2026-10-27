@@ -1,34 +1,72 @@
 <script lang="ts">
 import DOMPurify from "dompurify";
-import hljs from "highlight.js/lib/common";
-import "highlight.js/styles/github-dark.css";
 import { marked } from "marked";
 import { browser } from "$app/environment";
+import CodeBlock from "./CodeBlock.svelte";
 
 let { text }: { text: string } = $props();
-let ref = $state<HTMLDivElement>();
-const html = $derived(
-	browser
-		? DOMPurify.sanitize(marked.parse(text, { async: false }), {
-				USE_PROFILES: { html: true },
-			})
-		: "",
-);
-$effect(() => {
-	html;
-	const node = ref;
-	if (!node) return;
-	for (const block of node.querySelectorAll("pre code")) {
-		if (block instanceof HTMLElement && !block.dataset.highlighted) {
-			try {
-				hljs.highlightElement(block);
-			} catch {}
-		}
+
+type Segment = { type: "md" | "code"; value: string; lang?: string };
+
+// Split the message into prose and fenced code so code goes through the
+// shadcn CodeBlock (Shiki highlighting, line numbers, copy) while the rest
+// stays rendered as sanitized Markdown.
+const fence = /```([\w+-]*)\r?\n?([\s\S]*?)```/g;
+const segments = $derived.by((): Segment[] => {
+	if (!browser) return [];
+	const src = text ?? "";
+	const out: Segment[] = [];
+	let last = 0;
+	fence.lastIndex = 0;
+	let match = fence.exec(src);
+	while (match) {
+		if (match.index > last)
+			out.push({ type: "md", value: src.slice(last, match.index) });
+		out.push({
+			type: "code",
+			lang: match[1] || undefined,
+			value: match[2] ?? "",
+		});
+		last = match.index + match[0].length;
+		match = fence.exec(src);
 	}
+	if (last < src.length) {
+		const rest = src.slice(last);
+		// An unterminated fence (still streaming) renders as a code block too.
+		const open = rest.match(/```([\w+-]*)\r?\n?([\s\S]*)$/);
+		if (open) {
+			const before = rest.slice(0, open.index);
+			if (before.trim()) out.push({ type: "md", value: before });
+			out.push({
+				type: "code",
+				lang: open[1] || undefined,
+				value: open[2] ?? "",
+			});
+		} else out.push({ type: "md", value: rest });
+	}
+	return out;
 });
+
+function render(value: string) {
+	return DOMPurify.sanitize(marked.parse(value, { async: false }), {
+		USE_PROFILES: { html: true },
+	});
+}
 </script>
 
-<div bind:this={ref} class="markdown min-w-0 break-words">{@html html}</div>
+<div class="flex min-w-0 flex-col gap-3 break-words">
+	{#each segments as seg, index (index)}
+		{#if seg.type === "code"}
+			<CodeBlock
+				code={seg.value.replace(/\n$/, "")}
+				language={seg.lang}
+				maxHeight="max-h-[28rem]"
+			/>
+		{:else if seg.value.trim()}
+			<div class="markdown min-w-0 break-words">{@html render(seg.value)}</div>
+		{/if}
+	{/each}
+</div>
 
 <style>
 	.markdown {
@@ -129,25 +167,6 @@ $effect(() => {
 		font-size: 0.86em;
 		font-weight: 500;
 		overflow-wrap: anywhere;
-	}
-	.markdown :global(pre) {
-		max-width: 100%;
-		margin: 1.1rem 0;
-		overflow: auto;
-		border: 1px solid var(--border);
-		border-radius: 0.75rem;
-		background: var(--background);
-		padding: 1rem 1.1rem;
-		font-size: 0.8125rem;
-		line-height: 1.7;
-	}
-	.markdown :global(pre code) {
-		border-radius: 0;
-		background: transparent;
-		padding: 0;
-		font-size: inherit;
-		font-weight: 400;
-		overflow-wrap: normal;
 	}
 	.markdown :global(table) {
 		display: block;

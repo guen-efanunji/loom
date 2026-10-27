@@ -5195,9 +5195,8 @@ async function answer(requestId: string, answers: string[][]) {
 					><ScrollArea.Root class="h-full min-h-0 rounded-lg" orientation="both"
 						><CodeBlock
 							code={fileContent || "(empty file)"}
-							language={fileName}
+							language={fileName.split(".").pop()}
 							maxHeight="max-h-none"
-							scrollable={false}
 						/></ScrollArea.Root
 					></Tabs.Content
 				></Tabs.Root

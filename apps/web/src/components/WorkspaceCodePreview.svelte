@@ -32,6 +32,7 @@ import {
 import { Button } from "$lib/components/ui/button";
 import * as Dialog from "$lib/components/ui/dialog";
 import { Input } from "$lib/components/ui/input";
+import { daemon } from "$lib/daemon";
 
 let {
 	projectId,
@@ -71,6 +72,10 @@ let entriesByDirectory = $state<Record<string, WorkspaceFileEntry[]>>({});
 let expandedDirectories = $state<string[]>([]);
 let activePath = $state<string | null>(null);
 let selectedDirectory = $state<string | null>(null);
+// Git working-tree status so the file tree can flag new (green) and modified
+// (amber) files/directories. Keyed by repo-relative path.
+let gitStatus = $state<Record<string, string>>({});
+let changedDirectories = $state<Set<string>>(new Set());
 let treeSearchQuery = $state("");
 let editing = $state(false);
 let draftContent = $state("");
@@ -350,9 +355,92 @@ async function refresh() {
 		await loadDirectory("");
 		for (const directory of expandedDirectories) await loadDirectory(directory);
 		if (activePath) await openFile(activePath);
+		void loadGitStatus();
 	} finally {
 		refreshing = false;
 	}
+}
+
+// Pull the project's git working-tree status and index it by path, plus the set
+// of ancestor directories that contain a change (so collapsed folders flag it).
+async function loadGitStatus() {
+	const project = projectId;
+	try {
+		const overview = await daemon.getProjectGit(project);
+		if (disposed || project !== projectId) return;
+		const status: Record<string, string> = {};
+		const dirs = new Set<string>();
+		for (const file of overview?.files ?? []) {
+			const path = file.path.replace(/^\.\//, "");
+			if (!path) continue;
+			status[path] = file.status;
+			const segments = path.split("/");
+			let prefix = "";
+			for (let i = 0; i < segments.length - 1; i++) {
+				prefix = prefix ? `${prefix}/${segments[i]}` : (segments[i] ?? "");
+				dirs.add(prefix);
+			}
+		}
+		gitStatus = status;
+		changedDirectories = dirs;
+	} catch {
+		if (project === projectId) {
+			gitStatus = {};
+			changedDirectories = new Set();
+		}
+	}
+}
+
+type FileChange = "added" | "modified" | "deleted" | "renamed" | null;
+function fileChange(path: string): FileChange {
+	const code = (gitStatus[path] ?? "").trim();
+	if (!code) return null;
+	if (code.startsWith("??") || code.includes("A")) return "added";
+	if (code.includes("D")) return "deleted";
+	if (code.includes("R")) return "renamed";
+	if (code.includes("M")) return "modified";
+	return "modified";
+}
+const changeText: Record<Exclude<FileChange, null>, string> = {
+	added: "text-emerald-400",
+	modified: "text-amber-400",
+	deleted: "text-red-400 line-through",
+	renamed: "text-sky-400",
+};
+const changeDot: Record<Exclude<FileChange, null>, string> = {
+	added: "bg-emerald-400",
+	modified: "bg-amber-400",
+	deleted: "bg-red-400",
+	renamed: "bg-sky-400",
+};
+const changeLabel: Record<Exclude<FileChange, null>, string> = {
+	added: "New file",
+	modified: "Modified",
+	deleted: "Deleted",
+	renamed: "Renamed",
+};
+// Highest-priority change among a directory's contents, for the folder dot.
+function directoryChange(path: string): FileChange {
+	if (!changedDirectories.has(path)) return null;
+	const prefix = `${path}/`;
+	const rank: Record<string, number> = {
+		added: 3,
+		modified: 2,
+		renamed: 1,
+		deleted: 1,
+	};
+	let best: FileChange = null;
+	let bestRank = 0;
+	for (const file of Object.keys(gitStatus)) {
+		if (!file.startsWith(prefix)) continue;
+		const change = fileChange(file);
+		const value = change ? (rank[change] ?? 0) : 0;
+		if (change && value > bestRank) {
+			bestRank = value;
+			best = change;
+		}
+	}
+	return best;
 }
 
 function beginEdit() {
@@ -643,6 +731,7 @@ onMount(async () => {
 	expanded = saved.expanded ?? false;
 	preferencesReady = true;
 	await loadDirectory("");
+	void loadGitStatus();
 	initialTreeReady = true;
 	for (const path of expandedDirectories) await loadDirectory(path);
 	if (activePath) await openFile(activePath);
@@ -653,6 +742,7 @@ onMount(async () => {
 			for (const path of expandedDirectories) await loadDirectory(path);
 			if (activePath && !unsavedChanges && !editing)
 				await openFile(activePath, true);
+			void loadGitStatus();
 		})();
 	}, 3000);
 });
@@ -703,10 +793,11 @@ $effect(() => {
 			style={`padding-left:${8 + depth * 14}px`}
 		>
 			{#if entry.type === "directory"}
+				{@const dirChange = directoryChange(entry.path)}
 				<Button
 					variant="ghost"
 					class={`h-7 min-w-0 flex-1 justify-start gap-1.5 rounded-md px-1.5 text-left text-xs ${selectedDirectory === entry.path ? "bg-accent text-accent-foreground" : "text-muted-foreground"}`}
-					title={entry.path}
+					title={dirChange ? `${entry.path}/ · contains ${changeLabel[dirChange]}` : entry.path}
 					aria-expanded={isOpen}
 					aria-label={`${isOpen ? "Collapse" : "Expand"} folder ${entry.name}`}
 					onclick={() => void toggleDirectory(entry.path)}
@@ -716,18 +807,37 @@ $effect(() => {
 						/>{/if}
 					<Folder size={14} class="shrink-0 text-amber-300/80" />
 					<span class="min-w-0 truncate">{entry.name}</span>
+					{#if dirChange}<span
+							class={`ml-auto size-1.5 shrink-0 rounded-full ${changeDot[dirChange]}`}
+							role="img"
+							aria-label={`Contains ${changeLabel[dirChange]}`}
+							title={`Contains ${changeLabel[dirChange]}`}></span
+						>{:else}<span class="ml-auto"></span>{/if}
 				</Button>
 			{:else}
+				{@const change = fileChange(entry.path)}
 				<Button
 					variant="ghost"
 					class={`h-7 min-w-0 flex-1 justify-start gap-1.5 rounded-md px-1.5 text-left text-xs ${activePath === entry.path ? "bg-accent text-accent-foreground" : "text-muted-foreground"}`}
-					title={entry.path}
+					title={change ? `${entry.path} · ${changeLabel[change]}` : entry.path}
 					aria-current={activePath === entry.path ? "page" : undefined}
 					onclick={() => void openFile(entry.path)}
 				>
 					<span class="w-[13px] shrink-0" aria-hidden="true"></span>
-					<FileCode size={14} class="shrink-0 text-sky-300/80" />
-					<span class="min-w-0 truncate">{entry.name}</span>
+					<FileCode
+						size={14}
+						class={`shrink-0 ${change ? changeText[change] : "text-sky-300/80"}`}
+					/>
+					<span
+						class={`min-w-0 truncate ${change ? changeText[change] : ""}`}
+						>{entry.name}</span
+					>
+					{#if change}<span
+							class={`ml-auto size-1.5 shrink-0 rounded-full ${changeDot[change]}`}
+							role="img"
+							aria-label={changeLabel[change]}
+							title={changeLabel[change]}></span
+						>{:else}<span class="ml-auto"></span>{/if}
 				</Button>
 			{/if}
 		</div>
