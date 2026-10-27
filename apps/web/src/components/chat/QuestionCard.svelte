@@ -1,36 +1,36 @@
 <script lang="ts">
-	import type { Question } from "$lib/chat";
-	import * as Questionnaire from "$lib/components/ui/questionnaire/index.js";
+import type { Question } from "$lib/chat";
+import * as Questionnaire from "$lib/components/ui/questionnaire/index.js";
 
-	let {
-		question,
-		onanswer,
-	}: { question: Question; onanswer: (answers: string[][]) => Promise<void> } =
-		$props();
+let {
+	question,
+	onanswer,
+}: { question: Question; onanswer: (answers: string[][]) => Promise<void> } =
+	$props();
 
-	// Each clarifying question becomes one wizard item. Choice values reuse the
-	// option label so the answer text we send back reads naturally to the agent.
-	const items = $derived(
-		question.questions.map((item, index) => ({
-			name: `q${index}`,
-			required: true,
-			choices: item.options.map((option) => ({ value: option.label })),
-		})),
-	);
+// Each clarifying question becomes one wizard item. Choice values reuse the
+// option label so the answer text we send back reads naturally to the agent.
+const items = $derived(
+	question.questions.map((item, index) => ({
+		name: `q${index}`,
+		required: true,
+		choices: item.options.map((option) => ({ value: option.label })),
+	})),
+);
 
-	function handleSubmit(event: SubmitEvent) {
-		event.preventDefault();
-		const form = new FormData(event.currentTarget as HTMLFormElement);
-		const answers = question.questions.map((item, index) => {
-			const key = `q${index}`;
-			return item.multiple
-				? form.getAll(key).map(String).filter(Boolean)
-				: [form.get(key)]
-						.map((v) => (v == null ? "" : String(v)))
-						.filter(Boolean);
-		});
-		void onanswer(answers);
-	}
+function handleSubmit(event: SubmitEvent) {
+	event.preventDefault();
+	const form = new FormData(event.currentTarget as HTMLFormElement);
+	const answers = question.questions.map((item, index) => {
+		const key = `q${index}`;
+		return item.multiple
+			? form.getAll(key).map(String).filter(Boolean)
+			: [form.get(key)]
+					.map((v) => (v == null ? "" : String(v)))
+					.filter(Boolean);
+	});
+	void onanswer(answers);
+}
 </script>
 
 <Questionnaire.Root

@@ -2,7 +2,13 @@ import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ProjectContext } from "@loom/automation";
-import { type DesignQuestion, designQuestionSchema } from "@loom/protocol";
+import {
+	DESIGN_FRAME_PRESETS,
+	type DesignFrame,
+	type DesignQuestion,
+	designQuestionSchema,
+} from "@loom/protocol";
+import { frameFromSize, frameLabel } from "./design-frame";
 
 function promptFile(name: string): string {
 	const paths = [
@@ -41,8 +47,44 @@ export function deriveDesignTitle(brief: string): string {
 	return title.length > 60 ? `${title.slice(0, 57)}…` : title;
 }
 
-function canvasOf(viewport: "desktop" | "mobile"): string {
-	return viewport === "mobile" ? "390x844" : "1440x900";
+function canvasOf(frame: DesignFrame): string {
+	return frameLabel(frame);
+}
+
+/** Preset names the model may write instead of a raw size in a screen marker. */
+function frameOfName(name: string): DesignFrame | null {
+	const wanted = name.trim().toLowerCase();
+	const preset = DESIGN_FRAME_PRESETS.find(
+		(item) => item.id === wanted || item.label.toLowerCase() === wanted,
+	);
+	return preset
+		? { kind: preset.id, width: preset.width, height: preset.height }
+		: null;
+}
+
+/**
+ * Splits a screen marker body into its title and an optional canvas size:
+ * `<!-- design: Link card | 480x640 -->` or `<!-- design: Story | story -->`.
+ * The size is what lets the canvas follow a reference image or theme instead
+ * of forcing a web viewport.
+ */
+export function parseScreenMark(value: string): {
+	title: string;
+	frame?: DesignFrame;
+} {
+	const parts = value.split("|");
+	const title = (parts[0] ?? "").trim().replace(/^["'`]+|["'`]+$/g, "");
+	const spec = parts.slice(1).join("|").trim();
+	if (!spec) return { title };
+	const size = /\b(\d{2,5})\s*(?:x|\u00d7|\*)\s*(\d{2,5})\b/i.exec(spec);
+	if (size) {
+		const width = Number(size[1]);
+		const height = Number(size[2]);
+		if (width >= 120 && height >= 120 && width <= 8192 && height <= 8192)
+			return { title, frame: frameFromSize(width, height) };
+	}
+	const preset = frameOfName(spec);
+	return preset ? { title, frame: preset } : { title };
 }
 
 function designProjectIdentity(input: {
@@ -81,14 +123,24 @@ export function designReferencePaths(
 	return [...selected];
 }
 
+/** Tells the model which canvas to draw on, and how to stay size-agnostic. */
+function frameGuidance(frame: DesignFrame): string {
+	const preset = DESIGN_FRAME_PRESETS.find((item) => item.id === frame.kind);
+	return [
+		`Canvas: ${preset?.label ?? "Custom"} at ${canvasOf(frame)} design pixels ("${frame.kind}").`,
+		"Fit the document to exactly that canvas: the root fills it, with no letterboxing and no scrollbars at that size.",
+		"Author it with a design-space unit (for example --u: calc(100cqi / BASE) where BASE is the canvas width) or other relative units, so the same document stays faithful if the canvas is resized. Do not hard-code 390px/1440px web breakpoints unless the canvas really is a web page.",
+	].join("\n");
+}
+
 export function buildDesignPrompt(input: {
 	brief: string;
-	viewport: "desktop" | "mobile";
+	frame: DesignFrame;
 	context?: ProjectContext;
 	projectName?: string;
 	projectPath?: string;
+	frameHints?: string[];
 }): string {
-	const canvas = canvasOf(input.viewport);
 	const lines = [
 		input.brief.trim(),
 		"",
@@ -99,25 +151,39 @@ export function buildDesignPrompt(input: {
 			projectPath: input.projectPath ?? input.context?.projectPath,
 		}),
 		"",
-		`Return a single complete, self-contained HTML document for a ${input.viewport} screen (${canvas}). Put all CSS in one <style> block, use no external resources, and do not create or edit any files.`,
+		frameGuidance(input.frame),
+		...(input.frameHints?.length
+			? [
+					"",
+					"What the user's references imply about the canvas:",
+					...input.frameHints,
+				]
+			: []),
+		"",
+		"Return one complete, self-contained HTML document for that canvas. Put all CSS in one <style> block, use no external resources, and do not create or edit any files.",
 		"Use the project references and attached materials Loom supplied with this prompt. Image attachments arrive as visual inputs; inspect their layout, colors, typography, and flow. Do not ask the user to paste files that are already attached or referenced.",
-		"Do not call tools, run shell commands, or create or edit project files. Produce the visual design directly from the supplied context and return the HTML document.",
+		"Do not call tools, run shell commands, read or write files, or create or edit project files. Produce the visual design directly from the supplied context and return the HTML document.",
 		DESIGN_CRAFT_PROMPT,
 	];
 	if (input.context?.theme)
-		lines.push("", "Match these existing theme tokens:", input.context.theme);
+		lines.push(
+			"",
+			"Match these existing theme tokens (exact colors, fonts and radii):",
+			input.context.theme,
+		);
 	return lines.join("\n");
 }
 
 export function buildRefinePrompt(input: {
 	brief: string;
 	message: string;
-	viewport: "desktop" | "mobile";
+	frame: DesignFrame;
+	resizeRequested?: boolean;
 	previousHtml: string;
 	projectName?: string;
 	projectPath?: string;
 }): string {
-	const canvas = canvasOf(input.viewport);
+	const canvas = canvasOf(input.frame);
 	return [
 		DESIGN_REFINE_PROMPT,
 		"",
@@ -129,7 +195,9 @@ export function buildRefinePrompt(input: {
 		"Change request:",
 		input.message.trim(),
 		"",
-		`Primary viewport stays ${input.viewport} (${canvas}); keep the revised document responsive from 390px to 1440px wide.`,
+		input.resizeRequested
+			? `The canvas becomes ${canvas}. Rebuild the layout for exactly that size while keeping the current design language, and state the new size in the screen marker.`
+			: `Canvas stays ${canvas}. Keep the document faithful to that size and apply only what the change request asks.`,
 		"",
 		"Current design:",
 		input.previousHtml.trim(),
@@ -325,12 +393,13 @@ export function extractDesignHtml(raw: string): string {
 	);
 }
 
-export type DesignScreen = { title: string; html: string };
+export type DesignScreen = { title: string; html: string; frame?: DesignFrame };
 
 /**
- * Splits an agent reply into one or more screens. Each `<!-- design: TITLE -->`
- * marker names the following document; a reply without markers is treated as a
- * single screen with an empty title so the caller keeps its provisional name.
+ * Splits an agent reply into one or more screens. Each
+ * `<!-- design: TITLE | 480x640 -->` marker names the following document and
+ * may declare the canvas it was drawn for; a reply without markers is treated
+ * as a single screen with an empty title so the caller keeps its own frame.
  */
 export function extractDesignScreens(raw: string): DesignScreen[] {
 	const text = raw.trim();
@@ -341,7 +410,7 @@ export function extractDesignScreens(raw: string): DesignScreen[] {
 		for (let index = 0; index < marks.length; index += 1) {
 			const mark = marks[index];
 			if (!mark) continue;
-			const title = (mark[1] ?? "").trim().replace(/^["'`]+|["'`]+$/g, "");
+			const { title, frame } = parseScreenMark(mark[1] ?? "");
 			const from = (mark.index ?? 0) + mark[0].length;
 			const next = marks[index + 1];
 			const to = next?.index ?? text.length;
@@ -351,7 +420,7 @@ export function extractDesignScreens(raw: string): DesignScreen[] {
 			} catch {
 				continue;
 			}
-			screens.push({ title, html });
+			screens.push(frame ? { title, html, frame } : { title, html });
 		}
 		if (screens.length) return screens;
 	}

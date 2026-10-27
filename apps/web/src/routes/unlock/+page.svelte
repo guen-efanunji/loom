@@ -1,89 +1,91 @@
 <script lang="ts">
-	import {
-		ArrowRight,
-		Bot,
-		CircleAlert,
-		Eye,
-		EyeOff,
-		GitBranch,
-		LoaderCircle,
-		ShieldCheck,
-		Terminal,
-	} from "@lucide/svelte";
-	import { onMount } from "svelte";
-	import { page } from "$app/state";
-	import { Button } from "$lib/components/ui/button";
-	import { Checkbox } from "$lib/components/ui/checkbox";
-	import { Input } from "$lib/components/ui/input";
-	import {
-		DEFAULT_UI_PASSWORD,
-		getUiPassword,
-		isTrustedDevice,
-		setTrustedDevice,
-	} from "$lib/ui-access";
+import {
+	ArrowRight,
+	CircleAlert,
+	Eye,
+	EyeOff,
+	GitBranch,
+	LoaderCircle,
+	ShieldCheck,
+	Terminal,
+} from "@lucide/svelte";
+import { onMount } from "svelte";
+import { goto } from "$app/navigation";
+import { page } from "$app/state";
+import { Button } from "$lib/components/ui/button";
+import { Input } from "$lib/components/ui/input";
+import { type UiLockState, uiLock } from "$lib/ui-access";
 
-	let password = $state("");
-	let remember = $state(false);
-	let error = $state("");
-	let showPassword = $state(false);
-	let isSubmitting = $state(false);
-	let isMounted = $state(false);
+let password = $state("");
+let error = $state("");
+let showPassword = $state(false);
+let isSubmitting = $state(false);
+let isMounted = $state(false);
+let checking = $state(true);
+let lock = $state<UiLockState | null>(null);
+let daemonOffline = $state(false);
 
-	onMount(() => {
-		if (isTrustedDevice()) {
-			const next = page.url.searchParams.get("next") || "/";
-			window.location.assign(
-				next.startsWith("/") && !next.startsWith("//") ? next : "/",
-			);
+function destination() {
+	const next = page.url.searchParams.get("next") || "/";
+	return next.startsWith("/") && !next.startsWith("//") ? next : "/";
+}
+
+onMount(async () => {
+	try {
+		lock = await uiLock.state();
+		daemonOffline = false;
+		// No password configured server-side: nothing to unlock.
+		if (lock.notInUse || lock.unlocked) {
+			void goto(destination(), { replaceState: true });
 			return;
 		}
-		requestAnimationFrame(() => {
-			isMounted = true;
-		});
-	});
-
-	async function unlock() {
-		if (!password) {
-			error = "Please enter your password";
-			return;
-		}
-
-		isSubmitting = true;
-		error = "";
-
-		await new Promise((resolve) => setTimeout(resolve, 150));
-
-		if (password !== getUiPassword()) {
-			error = "Incorrect password";
-			isSubmitting = false;
-			return;
-		}
-
-		setTrustedDevice(remember);
-		sessionStorage.setItem("loom.ui.unlocked", "true");
-		const next = page.url.searchParams.get("next") || "/";
-		window.location.assign(
-			next.startsWith("/") && !next.startsWith("//") ? next : "/",
-		);
+	} catch {
+		daemonOffline = true;
 	}
+	checking = false;
+	requestAnimationFrame(() => {
+		isMounted = true;
+	});
+});
 
-	const features = [
-		{
-			icon: Bot,
-			title: "Multi-Agent Swarms",
-			desc: "Coordinate autonomous task runners, councils, and specialized agents.",
-		},
-		{
-			icon: GitBranch,
-			title: "Worktree Isolation",
-			desc: "Execute changes safely across isolated branches with live diff inspections.",
-		},
-		{
-			icon: Terminal,
-			title: "Real-time Telemetry",
-			desc: "Inspect live command execution, agent reasoning traces, and diagnostics.",
-		},
-	];
+async function unlock() {
+	if (!password) {
+		error = "Please enter your password";
+		return;
+	}
+	isSubmitting = true;
+	error = "";
+	try {
+		await uiLock.unlock(password);
+		void goto(destination(), { replaceState: true });
+	} catch (reason) {
+		error =
+			reason instanceof Error
+				? reason.message
+				: "Unable to unlock. Is the daemon running?";
+		if (reason instanceof Error && reason.name === "UiLockedError")
+			error = "Incorrect password";
+		isSubmitting = false;
+	}
+}
+
+const features = [
+	{
+		icon: GitBranch,
+		title: "Worktree Isolation",
+		desc: "Execute changes safely across isolated branches with live diff inspections.",
+	},
+	{
+		icon: Terminal,
+		title: "Real-time Telemetry",
+		desc: "Inspect live command execution, agent reasoning traces, and diagnostics.",
+	},
+	{
+		icon: ShieldCheck,
+		title: "Server-side Lock",
+		desc: "The password is verified by the local daemon and stored only as a hash.",
+	},
+];
 </script>
 
 <svelte:head>
@@ -127,7 +129,12 @@
 						Sign in
 					</h1>
 					<p class="mt-1.5 text-muted-foreground text-sm leading-relaxed">
-						Enter your password to continue to your workspace
+						{#if checking}Checking lock status with the daemon…
+						{:else if daemonOffline}The Loom daemon is unreachable. Start it
+							with `loom serve`, then retry.
+						{:else}Enter the UI password to continue to your workspace. It is
+							verified by the local daemon — no secrets live in the browser.
+						{/if}
 					</p>
 				</div>
 
@@ -181,26 +188,13 @@
 								<span>{error}</span>
 							</div>
 						{/if}
-
-						<p class="pt-0.5 text-muted-foreground text-xs leading-relaxed">
-							Default password:
-							<code
-								class="rounded bg-muted px-1.5 py-0.5 font-medium font-mono text-[11px] text-foreground"
-							>
-								{DEFAULT_UI_PASSWORD}
-							</code>
-							(unless configured otherwise)
-						</p>
 					</div>
 
-					<div class="pt-1">
-						<label
-							class="flex cursor-pointer select-none items-center gap-2.5 text-muted-foreground text-sm transition-colors hover:text-foreground"
-						>
-							<Checkbox bind:checked={remember} disabled={isSubmitting} />
-							<span>Trust this device</span>
-						</label>
-					</div>
+					<p class="text-muted-foreground text-xs leading-relaxed">
+						No password set yet? Open the Loom UI from this machine — the lock
+						is only active once you configure a password in
+						<em>Settings → UI password</em>.
+					</p>
 
 					<Button
 						type="submit"
@@ -224,7 +218,7 @@
 					<span>Loom Workspace</span>
 					<span class="flex items-center gap-1.5">
 						<span class="size-1.5 rounded-full bg-emerald-500"></span>
-						Protected session
+						Server-verified session
 					</span>
 				</div>
 			</div>
@@ -283,7 +277,7 @@
 					class="flex items-center gap-2 pt-2 text-muted-foreground/70 text-xs"
 				>
 					<ShieldCheck class="size-4 shrink-0 text-emerald-500" />
-					<span>End-to-end local session authorization active</span>
+					<span>Local UI lock enforced by the daemon</span>
 				</div>
 			</div>
 		</div>

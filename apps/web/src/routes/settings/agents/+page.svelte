@@ -1,503 +1,493 @@
 <script lang="ts">
-	import {
-		Bot,
-		Check,
-		ChevronDown,
-		Plus,
-		Save,
-		Trash2,
-		X,
-	} from "@lucide/svelte";
-	import { onMount } from "svelte";
-	import { page } from "$app/state";
-	import { toast } from "svelte-sonner";
-	import SettingsSidebar from "$lib/components/settings/SettingsSidebar.svelte";
-	import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
-	import { Button } from "$lib/components/ui/button";
-	import * as Checkbox from "$lib/components/ui/checkbox/index.js";
-	import * as Command from "$lib/components/ui/command/index.js";
-	import { Input } from "$lib/components/ui/input";
-	import * as Popover from "$lib/components/ui/popover/index.js";
-	import * as Select from "$lib/components/ui/select/index.js";
-	import { Textarea } from "$lib/components/ui/textarea/index.js";
-	import { daemon } from "$lib/daemon";
-	import { settingsHref } from "$lib/settings-navigation";
+import { Bot, Check, ChevronDown, Plus, Save, Trash2, X } from "@lucide/svelte";
+import { onMount } from "svelte";
+import { toast } from "svelte-sonner";
+import { page } from "$app/state";
+import SettingsSidebar from "$lib/components/settings/SettingsSidebar.svelte";
+import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
+import { Button } from "$lib/components/ui/button";
+import * as Checkbox from "$lib/components/ui/checkbox/index.js";
+import * as Command from "$lib/components/ui/command/index.js";
+import { Input } from "$lib/components/ui/input";
+import * as Popover from "$lib/components/ui/popover/index.js";
+import * as Select from "$lib/components/ui/select/index.js";
+import { Textarea } from "$lib/components/ui/textarea/index.js";
+import { daemon } from "$lib/daemon";
+import { settingsHref } from "$lib/settings-navigation";
 
-	type Skill = {
-		id?: string;
-		name: string;
-		source: "custom" | "builtin";
-		instructions: string;
-		enabled: boolean;
-		allowChat: boolean;
-		allowCanvas: boolean;
-		allowKanban: boolean;
-		canReadFiles: boolean;
-		canWriteFiles: boolean;
-		canRunTests: boolean;
-		canUseNetwork: boolean;
-	};
-	type Agent = {
-		id: string;
-		label: string;
-		role: string;
-		roleDescription?: string | null;
-		provider: string;
-		modelId: string | null;
-		status: string;
-		projectId?: string | null;
-		systemInstructions?: string;
-		allowChat: boolean;
-		allowCanvas: boolean;
-		allowKanban: boolean;
-		approvalPolicy?: string;
-		executionMode?: string;
-		maxRunDurationMinutes?: number;
-		maxRetries?: number;
-		maxTaskHops?: number;
-		fallbackEnabled?: boolean;
-		fallbackProvider?: string | null;
-		fallbackModelId?: string | null;
-		effort?: string | null;
-		skills: Skill[];
-	};
-	const builtinRoles = ["uiux", "frontend", "backend", "fullstack", "qa", "pm"];
-	const roleNames: Record<string, string> = {
-		uiux: "UI/UX Designer",
-		frontend: "Frontend Developer",
-		backend: "Backend Developer",
-		fullstack: "Fullstack Developer",
-		qa: "QA Engineer",
-		pm: "Project Manager",
-		custom: "Custom Role",
-	};
-	const effortNames: Record<string, string> = {
-		"": "Default",
-		low: "Low",
-		medium: "Medium",
-		high: "High",
-		max: "Maximum",
-	};
-	const presets: Record<string, string[]> = {
-		uiux: [
-			"design-screen",
-			"design-refine",
-			"design-system-fidelity",
-			"responsive-layout",
-			"accessibility-review",
-		],
-		frontend: [
-			"inspect-frontend",
-			"implement-ui",
-			"responsive-implementation",
-			"component-testing",
-			"accessibility-check",
-		],
-		backend: [
-			"inspect-backend",
-			"implement-api",
-			"database-change",
-			"auth-and-validation",
-			"backend-testing",
-		],
-		fullstack: [
-			"inspect-project",
-			"implement-frontend",
-			"implement-backend",
-			"integration-testing",
-			"migration-review",
-		],
-		qa: [
-			"inspect-test-suite",
-			"write-tests",
-			"run-tests",
-			"analyze-failures",
-			"regression-report",
-		],
-		pm: [
-			"requirement-analysis",
-			"task-breakdown",
-			"acceptance-criteria",
-			"dependency-planning",
-			"kanban-planning",
-		],
-	};
-	let agents = $state<Agent[]>([]);
-	let providers = $state<Awaited<ReturnType<typeof daemon.listProviders>>>([]);
-	let models = $state<Awaited<ReturnType<typeof daemon.listModels>>>([]);
-	let projects = $state<Awaited<ReturnType<typeof daemon.listProjects>>>([]);
-	let promptPresets = $state<Record<string, string>>({});
-	let projectId = $state("");
-	let selectedProvider = $state("");
-	let selectedModel = $state("");
-	let search = $state("");
-	let loading = $state(true);
-	let saving = $state(false);
-	let editingId = $state("");
-	let label = $state("");
-	let role = $state("frontend");
-	let roleDescription = $state("");
-	let instructions = $state("");
-	let approvalPolicy = $state("ask_before_write");
-	let executionMode = $state("on_demand");
-	let allowChat = $state(true);
-	let allowCanvas = $state(false);
-	let allowKanban = $state(true);
-	let maxRunDurationMinutes = $state("30");
-	let maxRetries = $state("1");
-	let maxTaskHops = $state("3");
-	let skills = $state<Skill[]>([]);
-	let showForm = $state(false);
-	let fallbackEnabled = $state(false);
-	let fallbackProvider = $state("");
-	let fallbackModelId = $state("");
-	let effort = $state("");
-	let error = $state("");
-	let sidebarSearch = $state("");
-	let roleOpen = $state(false);
-	let roleQuery = $state("");
-	let modelOpen = $state(false);
-	let modelQuery = $state("");
-	let fallbackAgentId = $state("");
-	let userRoles = $state<string[]>([]);
+type Skill = {
+	id?: string;
+	name: string;
+	source: "custom" | "builtin";
+	instructions: string;
+	enabled: boolean;
+	allowChat: boolean;
+	allowCanvas: boolean;
+	allowKanban: boolean;
+	canReadFiles: boolean;
+	canWriteFiles: boolean;
+	canRunTests: boolean;
+	canUseNetwork: boolean;
+};
+type Agent = {
+	id: string;
+	label: string;
+	role: string;
+	roleDescription?: string | null;
+	provider: string;
+	modelId: string | null;
+	status: string;
+	projectId?: string | null;
+	systemInstructions?: string;
+	allowChat: boolean;
+	allowCanvas: boolean;
+	allowKanban: boolean;
+	approvalPolicy?: string;
+	executionMode?: string;
+	maxRunDurationMinutes?: number;
+	maxRetries?: number;
+	maxTaskHops?: number;
+	fallbackEnabled?: boolean;
+	fallbackProvider?: string | null;
+	fallbackModelId?: string | null;
+	effort?: string | null;
+	skills: Skill[];
+};
+const builtinRoles = ["uiux", "frontend", "backend", "fullstack", "qa", "pm"];
+const roleNames: Record<string, string> = {
+	uiux: "UI/UX Designer",
+	frontend: "Frontend Developer",
+	backend: "Backend Developer",
+	fullstack: "Fullstack Developer",
+	qa: "QA Engineer",
+	pm: "Project Manager",
+	custom: "Custom Role",
+};
+const effortNames: Record<string, string> = {
+	"": "Default",
+	low: "Low",
+	medium: "Medium",
+	high: "High",
+	max: "Maximum",
+};
+const presets: Record<string, string[]> = {
+	uiux: [
+		"design-screen",
+		"design-refine",
+		"design-system-fidelity",
+		"responsive-layout",
+		"accessibility-review",
+	],
+	frontend: [
+		"inspect-frontend",
+		"implement-ui",
+		"responsive-implementation",
+		"component-testing",
+		"accessibility-check",
+	],
+	backend: [
+		"inspect-backend",
+		"implement-api",
+		"database-change",
+		"auth-and-validation",
+		"backend-testing",
+	],
+	fullstack: [
+		"inspect-project",
+		"implement-frontend",
+		"implement-backend",
+		"integration-testing",
+		"migration-review",
+	],
+	qa: [
+		"inspect-test-suite",
+		"write-tests",
+		"run-tests",
+		"analyze-failures",
+		"regression-report",
+	],
+	pm: [
+		"requirement-analysis",
+		"task-breakdown",
+		"acceptance-criteria",
+		"dependency-planning",
+		"kanban-planning",
+	],
+};
+let agents = $state<Agent[]>([]);
+let providers = $state<Awaited<ReturnType<typeof daemon.listProviders>>>([]);
+let models = $state<Awaited<ReturnType<typeof daemon.listModels>>>([]);
+let projects = $state<Awaited<ReturnType<typeof daemon.listProjects>>>([]);
+let promptPresets = $state<Record<string, string>>({});
+let projectId = $state("");
+let selectedProvider = $state("");
+let selectedModel = $state("");
+let search = $state("");
+let loading = $state(true);
+let saving = $state(false);
+let editingId = $state("");
+let label = $state("");
+let role = $state("frontend");
+let roleDescription = $state("");
+let instructions = $state("");
+let approvalPolicy = $state("ask_before_write");
+let executionMode = $state("on_demand");
+let allowChat = $state(true);
+let allowCanvas = $state(false);
+let allowKanban = $state(true);
+let maxRunDurationMinutes = $state("30");
+let maxRetries = $state("1");
+let maxTaskHops = $state("3");
+let skills = $state<Skill[]>([]);
+let showForm = $state(false);
+let fallbackEnabled = $state(false);
+let fallbackProvider = $state("");
+let fallbackModelId = $state("");
+let effort = $state("");
+let error = $state("");
+let sidebarSearch = $state("");
+let roleOpen = $state(false);
+let roleQuery = $state("");
+let modelOpen = $state(false);
+let modelQuery = $state("");
+let fallbackAgentId = $state("");
+let userRoles = $state<string[]>([]);
 
-	const connected = $derived(
-		providers.filter((p) => p.status === "connected" && p.authenticated),
-	);
-	const providerModels = $derived(
-		models.filter((m) => m.providerId === selectedProvider),
-	);
-	const roleOptions = $derived(
-		[
-			...new Set([
-				...builtinRoles,
-				...userRoles,
-				...agents.map((agent) => agent.role),
-			]),
-		].sort(
-			(a, b) =>
-				(builtinRoles.includes(b) ? 0 : 1) -
-					(builtinRoles.includes(a) ? 0 : 1) || a.localeCompare(b),
-		),
-	);
-	const selectedRoleLabel = $derived(roleNames[role] ?? role);
-	const rolePrompt = (value: string) =>
-		promptPresets[value.toLowerCase()] ?? promptPresets.custom ?? "";
-	const selectedModelLabel = $derived(
-		selectedModel
-			? (providerModels.find(
-					(model) =>
-						String(model.metadata?.modelId ?? model.name) === selectedModel,
-				)?.displayName ?? selectedModel)
-			: "Use provider default",
-	);
-	const selectedSupportsEffort = $derived(
-		providerModels
-			.find((m) => String(m.metadata?.modelId ?? m.name) === selectedModel)
-			?.capabilities.includes("reasoning") ?? false,
-	);
-	function modelDisplayName(providerId: string, modelId: string | null) {
-		if (!modelId) return "provider default";
-		const unprefixedId = modelId.startsWith(`${providerId}/`)
-			? modelId.slice(providerId.length + 1)
-			: modelId;
-		const match = models.find((model) => {
-			if (model.providerId !== providerId) return false;
-			const id = String(model.metadata?.modelId ?? model.name);
-			return (
-				id === modelId || id === unprefixedId || model.name === unprefixedId
-			);
-		});
-		return match?.displayName ?? unprefixedId;
-	}
-	function providerDisplayName(providerId: string) {
-		return (
-			providers.find((provider) => provider.providerId === providerId)?.name ??
-			providerId
-		);
-	}
-	const visibleAgents = $derived(
-		agents.filter((a) =>
-			`${a.label} ${a.role} ${a.provider}`
-				.toLowerCase()
-				.includes(search.toLowerCase()),
-		),
-	);
-
-	onMount(async () => {
-		try {
-			// OpenCode can start outside Loom, so refresh its health before filtering
-			// the provider list for connected agents.
-			const openCode = await daemon
-				.refreshProvider("opencode")
-				.catch(() => undefined);
-			if (openCode?.status === "connected")
-				await daemon.refreshProviderModels("opencode").catch(() => undefined);
-			[providers, models, projects] = await Promise.all([
-				daemon.listProviders(),
-				daemon.listModels(),
-				daemon.listProjects(),
-			]);
-			try {
-				promptPresets = await daemon.getAgentPromptPresets();
-			} catch {
-				// Keep the prompt field editable if bundled prompt files are unavailable.
-			}
-			projectId = new URLSearchParams(location.search).get("projectId") ?? "";
-			selectedProvider = connected[0]?.providerId ?? "";
-			await reload();
-		} catch (e) {
-			error = e instanceof Error ? e.message : "Unable to load custom agents";
-		} finally {
-			loading = false;
-		}
+const connected = $derived(
+	providers.filter((p) => p.status === "connected" && p.authenticated),
+);
+const providerModels = $derived(
+	models.filter((m) => m.providerId === selectedProvider),
+);
+const roleOptions = $derived(
+	[
+		...new Set([
+			...builtinRoles,
+			...userRoles,
+			...agents.map((agent) => agent.role),
+		]),
+	].sort(
+		(a, b) =>
+			(builtinRoles.includes(b) ? 0 : 1) - (builtinRoles.includes(a) ? 0 : 1) ||
+			a.localeCompare(b),
+	),
+);
+const selectedRoleLabel = $derived(roleNames[role] ?? role);
+const rolePrompt = (value: string) =>
+	promptPresets[value.toLowerCase()] ?? promptPresets.custom ?? "";
+const selectedModelLabel = $derived(
+	selectedModel
+		? (providerModels.find(
+				(model) =>
+					String(model.metadata?.modelId ?? model.name) === selectedModel,
+			)?.displayName ?? selectedModel)
+		: "Use provider default",
+);
+const selectedSupportsEffort = $derived(
+	providerModels
+		.find((m) => String(m.metadata?.modelId ?? m.name) === selectedModel)
+		?.capabilities.includes("reasoning") ?? false,
+);
+function modelDisplayName(providerId: string, modelId: string | null) {
+	if (!modelId) return "provider default";
+	const unprefixedId = modelId.startsWith(`${providerId}/`)
+		? modelId.slice(providerId.length + 1)
+		: modelId;
+	const match = models.find((model) => {
+		if (model.providerId !== providerId) return false;
+		const id = String(model.metadata?.modelId ?? model.name);
+		return id === modelId || id === unprefixedId || model.name === unprefixedId;
 	});
+	return match?.displayName ?? unprefixedId;
+}
+function providerDisplayName(providerId: string) {
+	return (
+		providers.find((provider) => provider.providerId === providerId)?.name ??
+		providerId
+	);
+}
+const visibleAgents = $derived(
+	agents.filter((a) =>
+		`${a.label} ${a.role} ${a.provider}`
+			.toLowerCase()
+			.includes(search.toLowerCase()),
+	),
+);
 
-	async function reload() {
-		agents = (await daemon.listCustomAgents(
-			projectId || undefined,
-		)) as unknown as Agent[];
+onMount(async () => {
+	try {
+		// OpenCode can start outside Loom, so refresh its health before filtering
+		// the provider list for connected agents.
+		const openCode = await daemon
+			.refreshProvider("opencode")
+			.catch(() => undefined);
+		if (openCode?.status === "connected")
+			await daemon.refreshProviderModels("opencode").catch(() => undefined);
+		[providers, models, projects] = await Promise.all([
+			daemon.listProviders(),
+			daemon.listModels(),
+			daemon.listProjects(),
+		]);
+		try {
+			promptPresets = await daemon.getAgentPromptPresets();
+		} catch {
+			// Keep the prompt field editable if bundled prompt files are unavailable.
+		}
+		projectId = new URLSearchParams(location.search).get("projectId") ?? "";
+		selectedProvider = connected[0]?.providerId ?? "";
+		await reload();
+	} catch (e) {
+		error = e instanceof Error ? e.message : "Unable to load custom agents";
+	} finally {
+		loading = false;
 	}
-	function resetForm() {
-		editingId = "";
-		label = "";
-		role = "frontend";
-		roleDescription = "";
-		instructions = rolePrompt(role);
-		approvalPolicy = "ask_before_write";
-		executionMode = "on_demand";
+});
+
+async function reload() {
+	agents = (await daemon.listCustomAgents(
+		projectId || undefined,
+	)) as unknown as Agent[];
+}
+function resetForm() {
+	editingId = "";
+	label = "";
+	role = "frontend";
+	roleDescription = "";
+	instructions = rolePrompt(role);
+	approvalPolicy = "ask_before_write";
+	executionMode = "on_demand";
+	allowChat = true;
+	allowCanvas = false;
+	allowKanban = true;
+	maxRunDurationMinutes = "30";
+	maxRetries = "1";
+	maxTaskHops = "3";
+	skills = [];
+	fallbackEnabled = false;
+	fallbackProvider = "";
+	fallbackModelId = "";
+	fallbackAgentId = "";
+	effort = "";
+	selectedProvider = connected[0]?.providerId ?? "";
+	selectedModel = "";
+	roleQuery = "";
+	modelQuery = "";
+	showForm = true;
+	error = "";
+	applyRolePreset();
+}
+function editAgent(agent: Agent) {
+	editingId = agent.id;
+	label = agent.label;
+	role = agent.role;
+	if (!builtinRoles.includes(agent.role) && !userRoles.includes(agent.role))
+		userRoles = [...userRoles, agent.role];
+	roleDescription = agent.roleDescription ?? "";
+	instructions = agent.systemInstructions || rolePrompt(agent.role);
+	approvalPolicy = agent.approvalPolicy ?? "ask_before_write";
+	executionMode = agent.executionMode ?? "on_demand";
+	allowChat = agent.allowChat;
+	allowCanvas = agent.allowCanvas;
+	allowKanban = agent.allowKanban;
+	maxRunDurationMinutes = String(agent.maxRunDurationMinutes ?? 30);
+	maxRetries = String(agent.maxRetries ?? 1);
+	maxTaskHops = String(agent.maxTaskHops ?? 3);
+	skills = (agent.skills ?? []).map((s) => ({ ...s }));
+	fallbackEnabled = agent.fallbackEnabled ?? false;
+	fallbackProvider = agent.fallbackProvider ?? "";
+	fallbackModelId = agent.fallbackModelId ?? "";
+	fallbackAgentId =
+		agents.find(
+			(candidate) =>
+				candidate.id !== agent.id &&
+				candidate.provider === agent.fallbackProvider &&
+				candidate.modelId === agent.fallbackModelId,
+		)?.id ?? "";
+	effort = agent.effort ?? "";
+	selectedProvider = agent.provider;
+	selectedModel = agent.modelId ?? "";
+	showForm = true;
+	error = "";
+}
+function applyRolePreset() {
+	if (role === "uiux") {
+		allowChat = true;
+		allowCanvas = true;
+		allowKanban = true;
+		approvalPolicy = "read_only";
+	}
+	if (["frontend", "backend", "fullstack", "qa", "pm"].includes(role)) {
 		allowChat = true;
 		allowCanvas = false;
 		allowKanban = true;
-		maxRunDurationMinutes = "30";
-		maxRetries = "1";
-		maxTaskHops = "3";
-		skills = [];
-		fallbackEnabled = false;
-		fallbackProvider = "";
-		fallbackModelId = "";
-		fallbackAgentId = "";
-		effort = "";
-		selectedProvider = connected[0]?.providerId ?? "";
-		selectedModel = "";
-		roleQuery = "";
-		modelQuery = "";
-		showForm = true;
-		error = "";
-		applyRolePreset();
 	}
-	function editAgent(agent: Agent) {
-		editingId = agent.id;
-		label = agent.label;
-		role = agent.role;
-		if (!builtinRoles.includes(agent.role) && !userRoles.includes(agent.role))
-			userRoles = [...userRoles, agent.role];
-		roleDescription = agent.roleDescription ?? "";
-		instructions = agent.systemInstructions || rolePrompt(agent.role);
-		approvalPolicy = agent.approvalPolicy ?? "ask_before_write";
-		executionMode = agent.executionMode ?? "on_demand";
-		allowChat = agent.allowChat;
-		allowCanvas = agent.allowCanvas;
-		allowKanban = agent.allowKanban;
-		maxRunDurationMinutes = String(agent.maxRunDurationMinutes ?? 30);
-		maxRetries = String(agent.maxRetries ?? 1);
-		maxTaskHops = String(agent.maxTaskHops ?? 3);
-		skills = (agent.skills ?? []).map((s) => ({ ...s }));
-		fallbackEnabled = agent.fallbackEnabled ?? false;
-		fallbackProvider = agent.fallbackProvider ?? "";
-		fallbackModelId = agent.fallbackModelId ?? "";
-		fallbackAgentId =
-			agents.find(
-				(candidate) =>
-					candidate.id !== agent.id &&
-					candidate.provider === agent.fallbackProvider &&
-					candidate.modelId === agent.fallbackModelId,
-			)?.id ?? "";
-		effort = agent.effort ?? "";
-		selectedProvider = agent.provider;
-		selectedModel = agent.modelId ?? "";
-		showForm = true;
-		error = "";
-	}
-	function applyRolePreset() {
-		if (role === "uiux") {
-			allowChat = true;
-			allowCanvas = true;
-			allowKanban = true;
-			approvalPolicy = "read_only";
-		}
-		if (["frontend", "backend", "fullstack", "qa", "pm"].includes(role)) {
-			allowChat = true;
-			allowCanvas = false;
-			allowKanban = true;
-		}
-		if (role === "pm") approvalPolicy = "read_only";
-		const customSkills = skills.filter((skill) => skill.source === "custom");
-		skills = [
-			...(presets[role] ?? []).map((name) => ({
-				name,
-				source: "builtin" as const,
-				instructions: `Follow the ${name} procedure for relevant tasks.`,
-				enabled: true,
-				allowChat,
-				allowCanvas: role === "uiux",
-				allowKanban,
-				canReadFiles: !["uiux", "pm"].includes(role),
-				canWriteFiles: ["frontend", "backend", "fullstack"].includes(role),
-				canRunTests: ["frontend", "backend", "fullstack", "qa"].includes(role),
-				canUseNetwork: false,
-			})),
-			...(presets[role]
-				? customSkills
-				: [
-						{
-							name: `${role} assistant`,
-							source: "builtin" as const,
-							instructions: `Act as a ${role} specialist. Follow the user's requested scope and explain your work clearly.`,
-							enabled: true,
-							allowChat: true,
-							allowCanvas: false,
-							allowKanban: true,
-							canReadFiles: true,
-							canWriteFiles: false,
-							canRunTests: false,
-							canUseNetwork: false,
-						},
-					]),
-		];
-	}
-	function chooseRole(value: string) {
-		const next = value.trim();
-		if (next.length < 2 || next.length > 60) return;
-		role = next;
-		if (!builtinRoles.includes(next) && !userRoles.includes(next))
-			userRoles = [...userRoles, next];
-		instructions = rolePrompt(next);
-		roleDescription = "";
-		roleQuery = "";
-		roleOpen = false;
-		applyRolePreset();
-	}
-	function addTypedRole(event: KeyboardEvent) {
-		if (event.key !== "Enter") return;
-		const next = roleQuery.trim();
-		if (!next) return;
-		event.preventDefault();
-		chooseRole(next);
-	}
-	function chooseModel(value: string) {
-		selectedModel = value === "__default" ? "" : value;
-		modelQuery = "";
-		modelOpen = false;
-	}
-	function addTypedModel(event: KeyboardEvent) {
-		if (event.key !== "Enter") return;
-		const next = modelQuery.trim();
-		if (!next) return;
-		event.preventDefault();
-		chooseModel(next);
-	}
-	function chooseFallbackAgent(id: string) {
-		fallbackAgentId = id;
-		const agent = agents.find((item) => item.id === id);
-		fallbackEnabled = !!agent;
-		fallbackProvider = agent?.provider ?? "";
-		fallbackModelId = agent?.modelId ?? "";
-	}
-	async function saveAgent() {
-		if (
-			!label.trim() ||
-			label.trim().length < 2 ||
-			!selectedProvider ||
-			!skills.some((s) => s.enabled)
-		) {
-			error = "Isi label dan provider, lalu aktifkan minimal satu skill.";
-			return;
-		}
-		if (
-			skills.length > 20 ||
-			skills.reduce((n, s) => n + s.instructions.length, instructions.length) >
-				24000
-		) {
-			error = "Maksimum 20 skill dan 24 KB instruksi per agent.";
-			return;
-		}
-		if (
-			allowCanvas &&
-			skills.some((s) => s.enabled && s.allowCanvas && s.canWriteFiles)
-		) {
-			error = "Skill Canvas tidak boleh menulis file project.";
-			return;
-		}
-		saving = true;
-		error = "";
-		const input = {
-			projectId: projectId || null,
-			label: label.trim(),
-			role,
-			roleDescription: roleDescription.trim() || undefined,
-			provider: selectedProvider,
-			modelId: selectedModel || null,
-			effort: selectedSupportsEffort ? effort || null : null,
-			systemInstructions: instructions,
-			status: "active",
-			executionMode,
+	if (role === "pm") approvalPolicy = "read_only";
+	const customSkills = skills.filter((skill) => skill.source === "custom");
+	skills = [
+		...(presets[role] ?? []).map((name) => ({
+			name,
+			source: "builtin" as const,
+			instructions: `Follow the ${name} procedure for relevant tasks.`,
+			enabled: true,
 			allowChat,
-			allowCanvas,
+			allowCanvas: role === "uiux",
 			allowKanban,
-			approvalPolicy,
-			maxRunDurationMinutes: Number(maxRunDurationMinutes),
-			maxRetries: Number(maxRetries),
-			maxTaskHops: Number(maxTaskHops),
-			fallbackEnabled,
-			fallbackProvider: fallbackProvider || undefined,
-			fallbackModelId: fallbackModelId || undefined,
-			skills,
-		};
-		try {
-			if (editingId) await daemon.updateCustomAgent(editingId, input);
-			else await daemon.createCustomAgent(input);
-			await reload();
-			showForm = false;
-			toast.success(editingId ? "Agent updated" : "Agent created");
-		} catch (e) {
-			error = e instanceof Error ? e.message : "Unable to save agent";
-		} finally {
-			saving = false;
-		}
+			canReadFiles: !["uiux", "pm"].includes(role),
+			canWriteFiles: ["frontend", "backend", "fullstack"].includes(role),
+			canRunTests: ["frontend", "backend", "fullstack", "qa"].includes(role),
+			canUseNetwork: false,
+		})),
+		...(presets[role]
+			? customSkills
+			: [
+					{
+						name: `${role} assistant`,
+						source: "builtin" as const,
+						instructions: `Act as a ${role} specialist. Follow the user's requested scope and explain your work clearly.`,
+						enabled: true,
+						allowChat: true,
+						allowCanvas: false,
+						allowKanban: true,
+						canReadFiles: true,
+						canWriteFiles: false,
+						canRunTests: false,
+						canUseNetwork: false,
+					},
+				]),
+	];
+}
+function chooseRole(value: string) {
+	const next = value.trim();
+	if (next.length < 2 || next.length > 60) return;
+	role = next;
+	if (!builtinRoles.includes(next) && !userRoles.includes(next))
+		userRoles = [...userRoles, next];
+	instructions = rolePrompt(next);
+	roleDescription = "";
+	roleQuery = "";
+	roleOpen = false;
+	applyRolePreset();
+}
+function addTypedRole(event: KeyboardEvent) {
+	if (event.key !== "Enter") return;
+	const next = roleQuery.trim();
+	if (!next) return;
+	event.preventDefault();
+	chooseRole(next);
+}
+function chooseModel(value: string) {
+	selectedModel = value === "__default" ? "" : value;
+	modelQuery = "";
+	modelOpen = false;
+}
+function addTypedModel(event: KeyboardEvent) {
+	if (event.key !== "Enter") return;
+	const next = modelQuery.trim();
+	if (!next) return;
+	event.preventDefault();
+	chooseModel(next);
+}
+function chooseFallbackAgent(id: string) {
+	fallbackAgentId = id;
+	const agent = agents.find((item) => item.id === id);
+	fallbackEnabled = !!agent;
+	fallbackProvider = agent?.provider ?? "";
+	fallbackModelId = agent?.modelId ?? "";
+}
+async function saveAgent() {
+	if (
+		!label.trim() ||
+		label.trim().length < 2 ||
+		!selectedProvider ||
+		!skills.some((s) => s.enabled)
+	) {
+		error = "Isi label dan provider, lalu aktifkan minimal satu skill.";
+		return;
 	}
-	async function toggleAgent(agent: Agent) {
-		try {
-			await daemon.updateCustomAgent(agent.id, {
-				...agent,
-				status: agent.status === "active" ? "disabled" : "active",
-				skills: agent.skills.map((s) => ({ ...s })),
-			});
-			await reload();
-		} catch (e) {
-			toast.error(e instanceof Error ? e.message : "Unable to update agent");
-		}
+	if (
+		skills.length > 20 ||
+		skills.reduce((n, s) => n + s.instructions.length, instructions.length) >
+			24000
+	) {
+		error = "Maksimum 20 skill dan 24 KB instruksi per agent.";
+		return;
 	}
-	async function deleteAgent(agent: Agent) {
-		if (
-			!confirm(
-				`Delete ${agent.label}? Run history for this agent will also be removed.`,
-			)
+	if (
+		allowCanvas &&
+		skills.some((s) => s.enabled && s.allowCanvas && s.canWriteFiles)
+	) {
+		error = "Skill Canvas tidak boleh menulis file project.";
+		return;
+	}
+	saving = true;
+	error = "";
+	const input = {
+		projectId: projectId || null,
+		label: label.trim(),
+		role,
+		roleDescription: roleDescription.trim() || undefined,
+		provider: selectedProvider,
+		modelId: selectedModel || null,
+		effort: selectedSupportsEffort ? effort || null : null,
+		systemInstructions: instructions,
+		status: "active",
+		executionMode,
+		allowChat,
+		allowCanvas,
+		allowKanban,
+		approvalPolicy,
+		maxRunDurationMinutes: Number(maxRunDurationMinutes),
+		maxRetries: Number(maxRetries),
+		maxTaskHops: Number(maxTaskHops),
+		fallbackEnabled,
+		fallbackProvider: fallbackProvider || undefined,
+		fallbackModelId: fallbackModelId || undefined,
+		skills,
+	};
+	try {
+		if (editingId) await daemon.updateCustomAgent(editingId, input);
+		else await daemon.createCustomAgent(input);
+		await reload();
+		showForm = false;
+		toast.success(editingId ? "Agent updated" : "Agent created");
+	} catch (e) {
+		error = e instanceof Error ? e.message : "Unable to save agent";
+	} finally {
+		saving = false;
+	}
+}
+async function toggleAgent(agent: Agent) {
+	try {
+		await daemon.updateCustomAgent(agent.id, {
+			...agent,
+			status: agent.status === "active" ? "disabled" : "active",
+			skills: agent.skills.map((s) => ({ ...s })),
+		});
+		await reload();
+	} catch (e) {
+		toast.error(e instanceof Error ? e.message : "Unable to update agent");
+	}
+}
+async function deleteAgent(agent: Agent) {
+	if (
+		!confirm(
+			`Delete ${agent.label}? Run history for this agent will also be removed.`,
 		)
-			return;
-		try {
-			await daemon.deleteCustomAgent(agent.id);
-			await reload();
-			toast.success("Agent deleted");
-		} catch (e) {
-			toast.error(e instanceof Error ? e.message : "Unable to delete agent");
-		}
+	)
+		return;
+	try {
+		await daemon.deleteCustomAgent(agent.id);
+		await reload();
+		toast.success("Agent deleted");
+	} catch (e) {
+		toast.error(e instanceof Error ? e.message : "Unable to delete agent");
 	}
-	function duplicateAgent(agent: Agent) {
-		editAgent(agent);
-		editingId = "";
-		label = `${agent.label} copy`.slice(0, 60);
-	}
+}
+function duplicateAgent(agent: Agent) {
+	editAgent(agent);
+	editingId = "";
+	label = `${agent.label} copy`.slice(0, 60);
+}
 </script>
 
 <svelte:head><title>Agents · Loom</title></svelte:head>

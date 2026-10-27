@@ -1,8 +1,183 @@
 import { z } from "zod";
 
+/** Legacy two-value viewport; still derived from the frame for icons and previews. */
 export const designViewportSchema = z.enum(["desktop", "mobile"]);
 
 export type DesignViewport = z.infer<typeof designViewportSchema>;
+
+/**
+ * What a canvas frame is sized for. `width`/`height` are the design space the
+ * document is authored in, so a frame can be any ratio - not just a web page.
+ */
+export const designFrameKindSchema = z.enum([
+	"desktop",
+	"laptop",
+	"tablet",
+	"mobile",
+	"story",
+	"poster",
+	"square",
+	"card",
+	"email",
+	"slide",
+	"component",
+	"custom",
+]);
+
+export type DesignFrameKind = z.infer<typeof designFrameKindSchema>;
+
+export const DESIGN_FRAME_MIN = 120;
+export const DESIGN_FRAME_MAX = 8192;
+
+export const designFrameSchema = z.object({
+	kind: designFrameKindSchema,
+	width: z.number().int().min(DESIGN_FRAME_MIN).max(DESIGN_FRAME_MAX),
+	height: z.number().int().min(DESIGN_FRAME_MIN).max(DESIGN_FRAME_MAX),
+});
+
+export type DesignFrame = z.infer<typeof designFrameSchema>;
+
+/** Portrait frames read as a phone-shaped node on the canvas. */
+export function viewportOfFrame(
+	frame: Pick<DesignFrame, "kind" | "width" | "height">,
+): DesignViewport {
+	return frame.kind === "mobile" ||
+		frame.kind === "story" ||
+		frame.height > frame.width
+		? "mobile"
+		: "desktop";
+}
+
+/**
+ * Frame presets offered by the canvas picker. `width`/`height` are real design
+ * pixels; `hint` explains what the frame is normally used for.
+ */
+export const DESIGN_FRAME_PRESETS: ReadonlyArray<{
+	id: DesignFrameKind;
+	label: string;
+	width: number;
+	height: number;
+	hint: string;
+}> = [
+	{
+		id: "desktop",
+		label: "Desktop",
+		width: 1440,
+		height: 900,
+		hint: "Wide web page",
+	},
+	{
+		id: "laptop",
+		label: "Laptop",
+		width: 1280,
+		height: 800,
+		hint: "Common laptop",
+	},
+	{
+		id: "tablet",
+		label: "Tablet",
+		width: 834,
+		height: 1112,
+		hint: "Portrait tablet",
+	},
+	{
+		id: "mobile",
+		label: "Mobile",
+		width: 390,
+		height: 844,
+		hint: "Phone screen",
+	},
+	{
+		id: "story",
+		label: "Story",
+		width: 1080,
+		height: 1920,
+		hint: "9:16 social story",
+	},
+	{
+		id: "poster",
+		label: "Poster",
+		width: 1080,
+		height: 1350,
+		hint: "4:5 social post",
+	},
+	{
+		id: "square",
+		label: "Square",
+		width: 1080,
+		height: 1080,
+		hint: "1:1 feed tile",
+	},
+	{
+		id: "card",
+		label: "Card",
+		width: 480,
+		height: 640,
+		hint: "Link-in-bio / compact card",
+	},
+	{
+		id: "email",
+		label: "Email",
+		width: 600,
+		height: 900,
+		hint: "Email template column",
+	},
+	{
+		id: "slide",
+		label: "Slide",
+		width: 1280,
+		height: 720,
+		hint: "16:9 presentation",
+	},
+	{
+		id: "component",
+		label: "Component",
+		width: 720,
+		height: 480,
+		hint: "Isolated UI part",
+	},
+];
+
+const DEFAULT_FRAME = DESIGN_FRAME_PRESETS[0] ?? {
+	id: "desktop" as const,
+	label: "Desktop",
+	width: 1440,
+	height: 900,
+	hint: "",
+};
+
+export const DEFAULT_DESIGN_FRAME: DesignFrame = {
+	kind: DEFAULT_FRAME.id,
+	width: DEFAULT_FRAME.width,
+	height: DEFAULT_FRAME.height,
+};
+
+/** Closest preset for a measured ratio, used when a mention implies the size. */
+export function frameForRatio(width: number, height: number): DesignFrame {
+	if (
+		!Number.isFinite(width) ||
+		!Number.isFinite(height) ||
+		width <= 0 ||
+		height <= 0
+	)
+		return DEFAULT_DESIGN_FRAME;
+	const ratio = width / height;
+	const ranked = DESIGN_FRAME_PRESETS.slice()
+		.sort(
+			(a, b) =>
+				Math.abs(Math.log(a.width / a.height) - Math.log(ratio)) -
+				Math.abs(Math.log(b.width / b.height) - Math.log(ratio)),
+		)
+		.filter((preset) => preset.id !== "custom");
+	const best = ranked[0] ?? DEFAULT_FRAME;
+	// Keep the reference's own proportions, but at a sane design-space scale.
+	const scale = Math.min(1, 1440 / Math.max(width, height));
+	return {
+		kind: best.id,
+		width: Math.max(DESIGN_FRAME_MIN, Math.round(width * scale)),
+		height: Math.max(DESIGN_FRAME_MIN, Math.round(height * scale)),
+	};
+}
 
 export const designStatusSchema = z.enum([
 	"queued",
@@ -67,6 +242,9 @@ export const designNodeSchema = z.object({
 	brief: z.string(),
 	status: designStatusSchema,
 	viewport: designViewportSchema,
+	frameKind: designFrameKindSchema.default("desktop"),
+	frameWidth: z.number().int().default(1440),
+	frameHeight: z.number().int().default(900),
 	html: z.string(),
 	errorMessage: z.string().nullable(),
 	durationMs: z.number().int().nullable(),
@@ -117,6 +295,7 @@ export const createDesignSchema = z.object({
 	projectId: z.string().min(1),
 	brief: z.string().trim().min(1).max(8000),
 	viewport: designViewportSchema.default("desktop"),
+	frame: designFrameSchema.optional(),
 	model: agentModelRefSchema.optional(),
 	files: z.array(z.string().min(1).max(400)).max(50).default([]),
 	attachments: z.array(designAttachmentSchema).max(10).default([]),
@@ -126,6 +305,7 @@ export type CreateDesignInput = z.infer<typeof createDesignSchema>;
 
 export const refineDesignSchema = z.object({
 	message: z.string().trim().min(1).max(8000),
+	frame: designFrameSchema.optional(),
 	model: agentModelRefSchema.optional(),
 	files: z.array(z.string().min(1).max(400)).max(50).default([]),
 	attachments: z.array(designAttachmentSchema).max(10).default([]),
@@ -137,6 +317,7 @@ export type RefineDesignInput = z.infer<typeof refineDesignSchema>;
 export const chatDesignSchema = z.object({
 	message: z.string().trim().min(1).max(8000),
 	nodeId: z.string().optional(),
+	frame: designFrameSchema.optional(),
 	model: agentModelRefSchema.optional(),
 	files: z.array(z.string().min(1).max(400)).max(50).default([]),
 	attachments: z.array(designAttachmentSchema).max(10).default([]),
@@ -172,10 +353,34 @@ export const designActivitySchema = z.object({
 
 export type DesignActivity = z.infer<typeof designActivitySchema>;
 
+export const designTraceEventSchema = z.object({
+	type: z.enum(["text", "tool"]),
+	text: z.string().optional(),
+	tool: z.string().optional(),
+	status: z.enum(["running", "completed", "error"]).optional(),
+	output: z.string().optional(),
+	error: z.string().optional(),
+});
+
+export const designTraceRunSchema = z.object({
+	sessionId: z.string(),
+	createdAt: z.iso.datetime(),
+	events: z.array(designTraceEventSchema),
+});
+
+export const designTraceSchema = z.object({
+	projectId: z.string(),
+	nodeId: z.string(),
+	runs: z.array(designTraceRunSchema),
+});
+
+export type DesignTrace = z.infer<typeof designTraceSchema>;
+
 export const designPatchSchema = z
 	.object({
 		title: z.string().trim().min(1).max(200).optional(),
 		viewport: designViewportSchema.optional(),
+		frame: designFrameSchema.optional(),
 		x: z.number().int().min(-40000).max(40000).optional(),
 		y: z.number().int().min(-40000).max(40000).optional(),
 		width: z.number().int().min(160).max(4096).optional(),

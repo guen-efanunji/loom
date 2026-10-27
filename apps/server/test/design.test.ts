@@ -46,6 +46,7 @@ class FakeDesignRuntime implements AgentRuntime {
 	readonly images: Array<Array<{ mime: string; data: string }>> = [];
 	readonly models: Array<AgentModel | undefined> = [];
 	readonly permissions: Array<RuntimePermission | undefined> = [];
+	traceOutput?: RuntimeOutput;
 	designOutputs: string[] = [];
 	failNext = false;
 	/** Canned answers for the design-chat intent + assistant turns. */
@@ -82,6 +83,7 @@ class FakeDesignRuntime implements AgentRuntime {
 	}
 
 	async readOutput(sessionId: string): Promise<RuntimeOutput> {
+		if (this.traceOutput) return this.traceOutput;
 		const prompt = this.prompts[this.prompts.length - 1] ?? "";
 		if (/intent classifier/i.test(prompt)) return { output: this.intent };
 		if (/UI\/UX design agent/i.test(prompt)) return { output: this.chatReply };
@@ -92,7 +94,7 @@ class FakeDesignRuntime implements AgentRuntime {
 		};
 	}
 
-	async wait(): Promise<DesignRuntime> {
+	async wait(_sessionId?: string): Promise<DesignRuntime> {
 		if (this.holdWait)
 			await new Promise<void>((resolve) => {
 				this.releaseWait = resolve;
@@ -194,6 +196,32 @@ describe("design canvas API", () => {
 				{ providerID: "codex", modelID: "gpt-6-sol" },
 			]);
 			expect(defaultRuntime.prompts).toHaveLength(0);
+			expect(codexRuntime.permissions[0]?.mode).toBe("read-only");
+		});
+	});
+
+	test("custom provider canvas generation does not offer tools or approvals", async () => {
+		await withSetup(async (setup) => {
+			const customRuntime = new FakeDesignRuntime();
+			const service = new DesignService(
+				designRepository(setup.database),
+				setup.repos,
+				setup.runtime,
+				new Map([["loom_custom_test", customRuntime]]),
+				{
+					store: createAgyPermissionStore(),
+					url: "http://127.0.0.1:4317/api/agy/permission",
+				},
+			);
+			const result = await service.create({
+				projectId: setup.project.id,
+				brief: "A login screen",
+				model: { providerID: "loom_custom_test", modelID: "visual" },
+			});
+			await service.idle(result.nodeId);
+			expect((await service.detail(result.nodeId)).status).toBe("ready");
+			expect(customRuntime.permissions[0]?.mode).toBe("read-only");
+			expect(setup.runtime.prompts).toHaveLength(0);
 		});
 	});
 
@@ -242,6 +270,65 @@ describe("design canvas API", () => {
 						message.role === "assistant" && message.text.includes("ready"),
 				),
 			).toBe(true);
+		});
+	});
+
+	test("persists scoped tool trace without exposing secrets or HTML", async () => {
+		await withSetup(async (setup) => {
+			setup.runtime.traceOutput = {
+				output: "<!DOCTYPE html><html><body>OK</body></html>",
+				activities: [
+					{
+						id: "tool-1",
+						tool: "inspect",
+						status: "completed",
+						output: "checked layout token=super-secret-value",
+					},
+				],
+				parts: [
+					{ type: "activity", id: "tool-1" },
+					{
+						type: "text",
+						id: "answer",
+						text: "<!DOCTYPE html><html>OK</html>",
+					},
+				],
+			} as RuntimeOutput;
+			const response = await setup.daemon.app.request("/api/designs", {
+				method: "POST",
+				headers,
+				body: JSON.stringify({
+					projectId: setup.project.id,
+					brief: "Landing page",
+				}),
+			});
+			const { nodeId } = (await response.json()) as { nodeId: string };
+			await waitForNode(setup.daemon.app, nodeId);
+			const traceResponse = await setup.daemon.app.request(
+				`/api/designs/${nodeId}/trace`,
+				{ headers },
+			);
+			const trace = (await traceResponse.json()) as {
+				projectId: string;
+				nodeId: string;
+				runs: Array<{ sessionId: string; events: unknown[] }>;
+			};
+			expect(trace.projectId).toBe(setup.project.id);
+			expect(trace.nodeId).toBe(nodeId);
+			expect(trace.runs[0]?.sessionId).toStartWith("design-session-");
+			expect(trace.runs[0]?.events).toEqual([
+				{
+					type: "tool",
+					tool: "inspect",
+					status: "completed",
+					output: "checked layout token=[redacted]",
+				},
+			]);
+			expect(
+				(await readThread(setup.daemon.app, setup.project.id)).messages.some(
+					(m) => m.text.includes("loom-design-trace"),
+				),
+			).toBe(false);
 		});
 	});
 
@@ -365,10 +452,9 @@ describe("design canvas API", () => {
 		});
 	});
 
-	test("Agy canvas generation routes tool approvals through Loom", async () => {
+	test("Agy canvas generation runs tool-free instead of waiting for an approval", async () => {
 		await withSetup(async (setup) => {
 			const runtime = new FakeDesignRuntime();
-			runtime.holdWait = true;
 			const permissions = createAgyPermissionStore();
 			const service = new DesignService(
 				designRepository(setup.database),
@@ -382,45 +468,32 @@ describe("design canvas API", () => {
 				brief: "Roasting schedule dashboard",
 				model: { providerID: "agy", modelID: "gemini-3.8-flash-high" },
 			});
-			for (
-				let attempt = 0;
-				attempt < 100 && !runtime.permissions.length;
-				attempt++
-			)
-				await new Promise((resolve) => setTimeout(resolve, 5));
-
-			expect(runtime.permissions[0]?.mode).toBe("ask");
-			const permissionToken =
-				runtime.permissions[0]?.env?.LOOM_PERMISSION_TOKEN ?? "";
-			expect(runtime.permissions[0]?.env?.LOOM_PERMISSION_URL).toBe(
-				"http://127.0.0.1:4317/api/agy/permission",
-			);
-			expect(permissionToken).toBeTruthy();
-			permissions.submit(
-				{
-					token: permissionToken,
-					conversationId: "agy-conversation",
-					toolName: "RunCommand",
-					args: { CommandLine: "pwd" },
-					stepIdx: 1,
-				},
-				30_000,
-			);
-			const steps = await service.getSteps(created.nodeId);
-			const pending = steps?.permissions?.[0];
-			expect(pending).toMatchObject({
-				toolName: "RunCommand",
-				args: { CommandLine: "pwd" },
-			});
-			expect(
-				await service.decidePermission(
-					created.nodeId,
-					pending?.id ?? "",
-					"allow_once",
-				),
-			).toBe(true);
-			runtime.finishWait();
 			await service.idle(created.nodeId);
+			const node = await service.detail(created.nodeId);
+
+			expect(node.status).toBe("ready");
+			// A canvas design needs no tools, so none are offered. Leaving them
+			// available made headless Agy hold a RunCommand for an approval nobody
+			// was watching for and fail the run with a denied action.
+			expect(runtime.permissions[0]?.mode).toBe("read-only");
+			expect(runtime.permissions[0]?.env).toBeUndefined();
+			// The gate is configured but never engaged, and no run is registered.
+			expect(
+				permissions.submit(
+					{
+						token: "unused",
+						conversationId: "agy-conversation",
+						toolName: "RunCommand",
+						args: { CommandLine: "pwd" },
+						stepIdx: 1,
+					},
+					1_000,
+				).status,
+			).not.toBe("pending");
+			expect(runtime.prompts[0]).not.toContain("Coding Agent Instructions");
+			expect(runtime.prompts[0]).toContain(
+				"Do not call tools, run shell commands, read or write files",
+			);
 		});
 	});
 
@@ -768,8 +841,8 @@ describe("design agent chat", () => {
 					return super.readOutput(sessionId);
 				}
 
-				override async wait(sessionId: string): Promise<DesignRuntime> {
-					if (this.chatSessions.includes(sessionId)) {
+				override async wait(sessionId?: string): Promise<DesignRuntime> {
+					if (sessionId && this.chatSessions.includes(sessionId)) {
 						if (this.started) {
 							this.started();
 							this.started = undefined;
@@ -779,7 +852,7 @@ describe("design agent chat", () => {
 						}
 						this.active.delete(sessionId);
 					}
-					return super.wait();
+					return super.wait(sessionId);
 				}
 			}
 			const runtime = new BlockingRuntime();
@@ -842,13 +915,14 @@ describe("design agent chat", () => {
 						this.chatSessions.push(session.id);
 					return session;
 				}
-				override async wait(sessionId: string): Promise<DesignRuntime> {
+				override async wait(sessionId?: string): Promise<DesignRuntime> {
 					if (
+						sessionId &&
 						this.chatSessions.includes(sessionId) &&
 						this.chatSessions.length === 1
 					)
 						return "failed";
-					return super.wait();
+					return super.wait(sessionId);
 				}
 			}
 			const runtime = new FailingRuntime();

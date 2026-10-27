@@ -1,668 +1,664 @@
 <script lang="ts">
-	import { GripVertical, Pencil, Plus, Trash2 } from "@lucide/svelte";
-	import { onMount } from "svelte";
-	import { toast } from "svelte-sonner";
-	import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
-	import { Badge } from "$lib/components/ui/badge";
-	import { Button } from "$lib/components/ui/button";
-	import * as Checkbox from "$lib/components/ui/checkbox";
-	import { Input } from "$lib/components/ui/input";
-	import * as Select from "$lib/components/ui/select/index.js";
-	import { Textarea } from "$lib/components/ui/textarea";
-	import {
-		daemon,
-		type IntegrationBatch,
-		type ProjectReviewPolicy,
-		type Task,
-	} from "$lib/daemon";
+import { GripVertical, Pencil, Plus, Trash2 } from "@lucide/svelte";
+import { onMount } from "svelte";
+import { toast } from "svelte-sonner";
+import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
+import { Badge } from "$lib/components/ui/badge";
+import { Button } from "$lib/components/ui/button";
+import * as Checkbox from "$lib/components/ui/checkbox";
+import { Input } from "$lib/components/ui/input";
+import * as Select from "$lib/components/ui/select/index.js";
+import { Textarea } from "$lib/components/ui/textarea";
+import {
+	daemon,
+	type IntegrationBatch,
+	type ProjectReviewPolicy,
+	type Task,
+} from "$lib/daemon";
 
-	let {
-		projectId,
-		tasks = [],
-		onChanged,
-		onTaskStarted,
-	}: {
-		projectId: string;
-		tasks?: Task[];
-		onChanged?: () => unknown;
-		onTaskStarted?: (taskId: string) => unknown;
-	} = $props();
+let {
+	projectId,
+	tasks = [],
+	onChanged,
+	onTaskStarted,
+}: {
+	projectId: string;
+	tasks?: Task[];
+	onChanged?: () => unknown;
+	onTaskStarted?: (taskId: string) => unknown;
+} = $props();
 
-	const columns = [
-		{ key: "queued", label: "Backlog" },
-		{ key: "running", label: "In progress" },
-		{ key: "review", label: "Review" },
-		{ key: "done", label: "Done" },
-		{ key: "failed", label: "Failed / cancelled" },
-	];
+const columns = [
+	{ key: "queued", label: "Backlog" },
+	{ key: "running", label: "In progress" },
+	{ key: "review", label: "Review" },
+	{ key: "done", label: "Done" },
+	{ key: "failed", label: "Failed / cancelled" },
+];
 
-	function column(task: Task) {
-		if (["queued", "ready", "blocked"].includes(task.status)) return "queued";
-		if (["preparing", "running"].includes(task.status)) return "running";
-		if (["ready_to_merge", "merge_conflict"].includes(task.status))
-			return "review";
-		return task.status === "completed" ? "done" : "failed";
-	}
+function column(task: Task) {
+	if (["queued", "ready", "blocked"].includes(task.status)) return "queued";
+	if (["preparing", "running"].includes(task.status)) return "running";
+	if (["ready_to_merge", "merge_conflict"].includes(task.status))
+		return "review";
+	return task.status === "completed" ? "done" : "failed";
+}
 
-	function orderKey(task: Task) {
-		return task.position ?? Number.MAX_SAFE_INTEGER;
-	}
+function orderKey(task: Task) {
+	return task.position ?? Number.MAX_SAFE_INTEGER;
+}
 
-	function setExecutorKind(value: string) {
-		if (value === "agent" || value === "direct") executorKind = value;
-	}
+function setExecutorKind(value: string) {
+	if (value === "agent" || value === "direct") executorKind = value;
+}
 
-	const ordered = $derived(
-		[...tasks].sort(
-			(a, b) =>
-				orderKey(a) - orderKey(b) || a.createdAt.localeCompare(b.createdAt),
-		),
-	);
+const ordered = $derived(
+	[...tasks].sort(
+		(a, b) =>
+			orderKey(a) - orderKey(b) || a.createdAt.localeCompare(b.createdAt),
+	),
+);
 
-	let dragId = $state("");
-	let overId = $state("");
-	let busy = $state(false);
-	let addOpen = $state(false);
-	let addTitle = $state("");
-	let addPrompt = $state("");
-	let addAcceptanceCriteria = $state("");
-	let addAgentId = $state("");
-	let executorKind = $state<"agent" | "direct">("agent");
-	let directProviderId = $state("");
-	let directModelId = $state("");
-	let targetBranch = $state("");
-	let projectBranches = $state<string[]>([]);
-	let projectGitAvailable = $state(true);
-	let availableAgents = $state<
-		Array<{
-			id: string;
-			label: string;
-			provider: string;
-			modelId: string | null;
-		}>
-	>([]);
-	let reviewerAgents = $state<
-		Array<{
-			id: string;
-			label: string;
-			provider: string;
-			modelId: string | null;
-		}>
-	>([]);
-	let availableProviders = $state<
-		Awaited<ReturnType<typeof daemon.listProviders>>
-	>([]);
-	let availableModels = $state<
-		Awaited<ReturnType<typeof daemon.listProviderModels>>
-	>([]);
-	let agentsLoading = $state(false);
-	let modelsLoading = $state(false);
-	let editTask = $state<Task | null>(null);
-	let editTitle = $state("");
-	let editPrompt = $state("");
-	let editAgentId = $state("");
-	let deleteTask = $state<Task | null>(null);
-	let selectedIntegrationTaskIds = $state<string[]>([]);
-	let selectedRunTaskIds = $state<string[]>([]);
-	let integrationBatches = $state<IntegrationBatch[]>([]);
-	let integrationDiffs = $state<Record<string, string>>({});
-	let integrationChecksText = $state("");
-	let reviewPolicy = $state<ProjectReviewPolicy | null>(null);
-	let reviewerAgentId = $state("");
-	const selectedReviewerAgent = $derived(
-		reviewerAgents.find((agent) => agent.id === reviewerAgentId),
-	);
-	const reviewerAgentLabel = $derived(
-		selectedReviewerAgent
-			? `${selectedReviewerAgent.label} · ${selectedReviewerAgent.provider}${selectedReviewerAgent.modelId ? ` / ${selectedReviewerAgent.modelId}` : ""}`
-			: "Choose a registered agent",
-	);
-	let reviewPolicyBusy = $state(false);
+let dragId = $state("");
+let overId = $state("");
+let busy = $state(false);
+let addOpen = $state(false);
+let addTitle = $state("");
+let addPrompt = $state("");
+let addAcceptanceCriteria = $state("");
+let addAgentId = $state("");
+let executorKind = $state<"agent" | "direct">("agent");
+let directProviderId = $state("");
+let directModelId = $state("");
+let targetBranch = $state("");
+let projectBranches = $state<string[]>([]);
+let projectGitAvailable = $state(true);
+let availableAgents = $state<
+	Array<{
+		id: string;
+		label: string;
+		provider: string;
+		modelId: string | null;
+	}>
+>([]);
+let reviewerAgents = $state<
+	Array<{
+		id: string;
+		label: string;
+		provider: string;
+		modelId: string | null;
+	}>
+>([]);
+let availableProviders = $state<
+	Awaited<ReturnType<typeof daemon.listProviders>>
+>([]);
+let availableModels = $state<
+	Awaited<ReturnType<typeof daemon.listProviderModels>>
+>([]);
+let agentsLoading = $state(false);
+let modelsLoading = $state(false);
+let editTask = $state<Task | null>(null);
+let editTitle = $state("");
+let editPrompt = $state("");
+let editAgentId = $state("");
+let deleteTask = $state<Task | null>(null);
+let selectedIntegrationTaskIds = $state<string[]>([]);
+let selectedRunTaskIds = $state<string[]>([]);
+let integrationBatches = $state<IntegrationBatch[]>([]);
+let integrationDiffs = $state<Record<string, string>>({});
+let integrationChecksText = $state("");
+let reviewPolicy = $state<ProjectReviewPolicy | null>(null);
+let reviewerAgentId = $state("");
+const selectedReviewerAgent = $derived(
+	reviewerAgents.find((agent) => agent.id === reviewerAgentId),
+);
+const reviewerAgentLabel = $derived(
+	selectedReviewerAgent
+		? `${selectedReviewerAgent.label} · ${selectedReviewerAgent.provider}${selectedReviewerAgent.modelId ? ` / ${selectedReviewerAgent.modelId}` : ""}`
+		: "Choose a registered agent",
+);
+let reviewPolicyBusy = $state(false);
 
-	onMount(() => {
-		void loadIntegrationBatches();
-		void loadReviewPolicy();
-		void loadReviewAgents();
-	});
+onMount(() => {
+	void loadIntegrationBatches();
+	void loadReviewPolicy();
+	void loadReviewAgents();
+});
 
-	async function loadReviewPolicy() {
+async function loadReviewPolicy() {
+	try {
+		const result = await daemon.getProjectReviewPolicy(projectId);
+		reviewPolicy = result.policy;
 		try {
-			const result = await daemon.getProjectReviewPolicy(projectId);
-			reviewPolicy = result.policy;
-			try {
-				const executor = result.policy.reviewerExecutorJson
-					? (JSON.parse(result.policy.reviewerExecutorJson) as {
-							kind?: string;
-							agentId?: string;
-						})
-					: null;
-				reviewerAgentId =
-					executor?.kind === "agent" ? (executor.agentId ?? "") : "";
-			} catch {
-				reviewerAgentId = "";
-			}
+			const executor = result.policy.reviewerExecutorJson
+				? (JSON.parse(result.policy.reviewerExecutorJson) as {
+						kind?: string;
+						agentId?: string;
+					})
+				: null;
+			reviewerAgentId =
+				executor?.kind === "agent" ? (executor.agentId ?? "") : "";
 		} catch {
-			reviewPolicy = null;
+			reviewerAgentId = "";
 		}
+	} catch {
+		reviewPolicy = null;
 	}
+}
 
-	async function loadReviewAgents() {
+async function loadReviewAgents() {
+	try {
+		const agents = await daemon.listCustomAgents(projectId);
+		reviewerAgents = agents.filter((agent) => agent.status === "active");
+	} catch {
+		reviewerAgents = [];
+	}
+}
+
+async function saveReviewPolicy() {
+	if (!reviewPolicy || reviewPolicyBusy) return;
+	if (reviewPolicy.mode === "automatic" && !reviewerAgentId) {
+		toast.error("Choose an active reviewer agent first");
+		return;
+	}
+	reviewPolicyBusy = true;
+	try {
+		const { policy } = await daemon.setProjectReviewPolicy(projectId, {
+			mode: reviewPolicy.mode === "hybrid" ? "manual" : reviewPolicy.mode,
+			reviewerExecutorJson:
+				reviewPolicy.mode === "automatic"
+					? JSON.stringify({ kind: "agent", agentId: reviewerAgentId })
+					: null,
+			autoMerge: false,
+			requiredChecksJson: reviewPolicy.requiredChecksJson,
+			maxRevisionRounds: reviewPolicy.maxRevisionRounds,
+		});
+		reviewPolicy = policy;
+		toast.success(
+			policy.mode === "automatic"
+				? "Automatic review enabled"
+				: "Manual review enabled",
+		);
+	} catch (reason) {
+		toast.error(
+			reason instanceof Error ? reason.message : "Unable to save review policy",
+		);
+	} finally {
+		reviewPolicyBusy = false;
+	}
+}
+
+async function loadIntegrationBatches() {
+	try {
+		integrationBatches = (await daemon.listIntegrationBatches(projectId))
+			.batches;
+	} catch {
+		integrationBatches = [];
+	}
+}
+
+async function refresh() {
+	await onChanged?.();
+	await loadIntegrationBatches();
+}
+
+function toggleIntegrationTask(taskId: string, checked: boolean) {
+	selectedIntegrationTaskIds = checked
+		? [...new Set([...selectedIntegrationTaskIds, taskId])]
+		: selectedIntegrationTaskIds.filter((id) => id !== taskId);
+}
+
+function toggleRunTask(taskId: string, checked: boolean) {
+	selectedRunTaskIds = checked
+		? [...new Set([...selectedRunTaskIds, taskId])]
+		: selectedRunTaskIds.filter((id) => id !== taskId);
+}
+
+async function runSelectedTasks() {
+	if (!selectedRunTaskIds.length || busy) return;
+	const ids = [...selectedRunTaskIds];
+	busy = true;
+	try {
+		const results = await Promise.allSettled(
+			ids.map((id) => daemon.startTask(id)),
+		);
+		const started = results.filter(
+			(result) => result.status === "fulfilled",
+		).length;
+		const startedIds = results.flatMap((result, index) =>
+			result.status === "fulfilled" ? [ids[index]!] : [],
+		);
+		const failed = results.length - started;
+		selectedRunTaskIds = [];
+		if (failed)
+			toast.warning(`${started} tasks queued · ${failed} could not start`);
+		else
+			toast.success(
+				`${started} tasks queued · Loom will run eligible tasks in parallel`,
+			);
+		await refresh();
+		for (const id of startedIds) onTaskStarted?.(id);
+	} catch (reason) {
+		toast.error(
+			reason instanceof Error ? reason.message : "Unable to queue tasks",
+		);
+	} finally {
+		busy = false;
+	}
+}
+
+async function createIntegrationBatch() {
+	if (selectedIntegrationTaskIds.length < 2 || busy) return;
+	busy = true;
+	try {
+		const requiredChecks = integrationChecksText
+			.split(/\r?\n/)
+			.map((line) => line.trim())
+			.filter(Boolean)
+			.map((line, index) => {
+				const [command, ...args] = line.split(/\s+/);
+				return { name: `Check ${index + 1}`, command: command!, args };
+			});
+		const result = await daemon.createIntegrationBatch(
+			selectedIntegrationTaskIds,
+			requiredChecks,
+		);
+		selectedIntegrationTaskIds = [];
+		integrationChecksText = "";
+		if (result.batch?.status === "checks_failed")
+			toast.error(
+				result.batch.errorMessage ?? "Required integration check failed",
+			);
+		else
+			toast.success(
+				`Integration candidate ready · ${result.candidateSha.slice(0, 12)}`,
+			);
+		await refresh();
+	} catch (reason) {
+		toast.error(
+			reason instanceof Error
+				? reason.message
+				: "Unable to assemble integration candidate",
+		);
+		await refresh();
+	} finally {
+		busy = false;
+	}
+}
+
+async function viewIntegrationDiff(batch: IntegrationBatch) {
+	busy = true;
+	try {
+		const result = await daemon.getIntegrationBatchDiff(batch.id);
+		integrationDiffs = { ...integrationDiffs, [batch.id]: result.diff };
+	} catch (reason) {
+		toast.error(
+			reason instanceof Error ? reason.message : "Unable to inspect candidate",
+		);
+	} finally {
+		busy = false;
+	}
+}
+
+async function approveIntegration(batch: IntegrationBatch) {
+	if (!(batch.id in integrationDiffs) || busy) return;
+	busy = true;
+	try {
+		await daemon.approveIntegrationBatch(batch.id);
+		toast.success("Exact integration candidate approved");
+		await refresh();
+	} catch (reason) {
+		toast.error(
+			reason instanceof Error
+				? reason.message
+				: "Unable to approve integration",
+		);
+	} finally {
+		busy = false;
+	}
+}
+
+async function promoteIntegration(batch: IntegrationBatch) {
+	busy = true;
+	try {
+		const result = await daemon.promoteIntegrationBatch(batch.id);
+		toast.success(
+			`Promoted ${result.promotedSha.slice(0, 12)} to ${batch.targetBranch}`,
+		);
+		await refresh();
+	} catch (reason) {
+		toast.error(
+			reason instanceof Error
+				? reason.message
+				: "Unable to promote integration",
+		);
+	} finally {
+		busy = false;
+	}
+}
+
+async function openAddTask() {
+	addTitle = "";
+	addPrompt = "";
+	addAcceptanceCriteria = "";
+	addAgentId = "";
+	directProviderId = "";
+	directModelId = "";
+	targetBranch = "";
+	projectBranches = [];
+	projectGitAvailable = true;
+	addOpen = true;
+	agentsLoading = true;
+	try {
+		const [agents, providers] = await Promise.all([
+			daemon.listCustomAgents(projectId),
+			daemon.listProviders(),
+		]);
 		try {
-			const agents = await daemon.listCustomAgents(projectId);
-			reviewerAgents = agents.filter((agent) => agent.status === "active");
+			const git = await daemon.getProjectGit(projectId);
+			projectBranches = git.branches;
+			targetBranch = git.branches.includes(git.defaultBranch)
+				? git.defaultBranch
+				: git.branches.includes(git.branch)
+					? git.branch
+					: "";
+			projectGitAvailable = git.gitAvailable !== false;
 		} catch {
-			reviewerAgents = [];
+			// Kanban planning is useful before a project has been initialized as Git.
+			projectBranches = [];
+			targetBranch = "";
+			projectGitAvailable = false;
 		}
+		availableAgents = agents
+			.filter(
+				(agent) =>
+					agent.status === "active" &&
+					agent.allowKanban &&
+					agent.approvalPolicy !== "read_only",
+			)
+			.map((agent) => ({
+				id: String(agent.id),
+				label: String(agent.label),
+				provider: String(agent.provider),
+				modelId: typeof agent.modelId === "string" ? agent.modelId : null,
+			}));
+		availableProviders = providers.filter(
+			(provider) => provider.status === "connected",
+		);
+		executorKind = availableAgents.length ? "agent" : "direct";
+		directProviderId = availableProviders[0]?.providerId ?? "";
+		if (directProviderId) await loadProviderModels(directProviderId);
+	} catch (reason) {
+		availableAgents = [];
+		availableProviders = [];
+		availableModels = [];
+		toast.error(
+			reason instanceof Error ? reason.message : "Unable to load agents",
+		);
+	} finally {
+		agentsLoading = false;
 	}
+}
 
-	async function saveReviewPolicy() {
-		if (!reviewPolicy || reviewPolicyBusy) return;
-		if (reviewPolicy.mode === "automatic" && !reviewerAgentId) {
-			toast.error("Choose an active reviewer agent first");
+async function loadProviderModels(providerId: string) {
+	directModelId = "";
+	if (!providerId) {
+		availableModels = [];
+		return;
+	}
+	modelsLoading = true;
+	try {
+		availableModels = (await daemon.listProviderModels(providerId)).filter(
+			(model) => model.isAvailable,
+		);
+	} catch {
+		availableModels = [];
+	} finally {
+		modelsLoading = false;
+	}
+}
+
+async function persist(order: Task[]) {
+	busy = true;
+	try {
+		await daemon.reorderTasks(
+			projectId,
+			order.map((task) => task.id),
+		);
+		await refresh();
+	} catch (reason) {
+		toast.error(reason instanceof Error ? reason.message : "Reorder failed");
+		await refresh();
+	} finally {
+		busy = false;
+	}
+}
+
+function move(draggedId: string, targetId: string | null) {
+	const dragged = ordered.find((task) => task.id === draggedId);
+	if (!dragged) return;
+	if (targetId) {
+		const target = ordered.find((task) => task.id === targetId);
+		if (!target || target.id === draggedId) return;
+		if (column(target) !== column(dragged)) {
+			toast.info(
+				"Drag to reorder within a column. Use Run or Retry to change status.",
+			);
 			return;
 		}
-		reviewPolicyBusy = true;
-		try {
-			const { policy } = await daemon.setProjectReviewPolicy(projectId, {
-				mode: reviewPolicy.mode === "hybrid" ? "manual" : reviewPolicy.mode,
-				reviewerExecutorJson:
-					reviewPolicy.mode === "automatic"
-						? JSON.stringify({ kind: "agent", agentId: reviewerAgentId })
-						: null,
-				autoMerge: false,
-				requiredChecksJson: reviewPolicy.requiredChecksJson,
-				maxRevisionRounds: reviewPolicy.maxRevisionRounds,
-			});
-			reviewPolicy = policy;
-			toast.success(
-				policy.mode === "automatic"
-					? "Automatic review enabled"
-					: "Manual review enabled",
-			);
-		} catch (reason) {
-			toast.error(
-				reason instanceof Error
-					? reason.message
-					: "Unable to save review policy",
-			);
-		} finally {
-			reviewPolicyBusy = false;
-		}
+		const next = ordered.filter((task) => task.id !== draggedId);
+		next.splice(next.indexOf(target), 0, dragged);
+		void persist(next);
+		return;
 	}
+	const next = [...ordered.filter((task) => task.id !== draggedId), dragged];
+	void persist(next);
+}
 
-	async function loadIntegrationBatches() {
-		try {
-			integrationBatches = (await daemon.listIntegrationBatches(projectId))
-				.batches;
-		} catch {
-			integrationBatches = [];
-		}
-	}
+function onDragStart(event: DragEvent, id: string) {
+	dragId = id;
+	overId = "";
+	event.dataTransfer?.setData("text/plain", id);
+	if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+}
 
-	async function refresh() {
-		await onChanged?.();
-		await loadIntegrationBatches();
-	}
+function onDragEnd() {
+	dragId = "";
+	overId = "";
+}
 
-	function toggleIntegrationTask(taskId: string, checked: boolean) {
-		selectedIntegrationTaskIds = checked
-			? [...new Set([...selectedIntegrationTaskIds, taskId])]
-			: selectedIntegrationTaskIds.filter((id) => id !== taskId);
-	}
-
-	function toggleRunTask(taskId: string, checked: boolean) {
-		selectedRunTaskIds = checked
-			? [...new Set([...selectedRunTaskIds, taskId])]
-			: selectedRunTaskIds.filter((id) => id !== taskId);
-	}
-
-	async function runSelectedTasks() {
-		if (!selectedRunTaskIds.length || busy) return;
-		const ids = [...selectedRunTaskIds];
-		busy = true;
-		try {
-			const results = await Promise.allSettled(
-				ids.map((id) => daemon.startTask(id)),
-			);
-			const started = results.filter(
-				(result) => result.status === "fulfilled",
-			).length;
-			const startedIds = results.flatMap((result, index) =>
-				result.status === "fulfilled" ? [ids[index]!] : [],
-			);
-			const failed = results.length - started;
-			selectedRunTaskIds = [];
-			if (failed)
-				toast.warning(`${started} tasks queued · ${failed} could not start`);
-			else
-				toast.success(
-					`${started} tasks queued · Loom will run eligible tasks in parallel`,
-				);
-			await refresh();
-			for (const id of startedIds) onTaskStarted?.(id);
-		} catch (reason) {
-			toast.error(
-				reason instanceof Error ? reason.message : "Unable to queue tasks",
-			);
-		} finally {
-			busy = false;
-		}
-	}
-
-	async function createIntegrationBatch() {
-		if (selectedIntegrationTaskIds.length < 2 || busy) return;
-		busy = true;
-		try {
-			const requiredChecks = integrationChecksText
-				.split(/\r?\n/)
-				.map((line) => line.trim())
-				.filter(Boolean)
-				.map((line, index) => {
-					const [command, ...args] = line.split(/\s+/);
-					return { name: `Check ${index + 1}`, command: command!, args };
-				});
-			const result = await daemon.createIntegrationBatch(
-				selectedIntegrationTaskIds,
-				requiredChecks,
-			);
-			selectedIntegrationTaskIds = [];
-			integrationChecksText = "";
-			if (result.batch?.status === "checks_failed")
-				toast.error(
-					result.batch.errorMessage ?? "Required integration check failed",
-				);
-			else
-				toast.success(
-					`Integration candidate ready · ${result.candidateSha.slice(0, 12)}`,
-				);
-			await refresh();
-		} catch (reason) {
-			toast.error(
-				reason instanceof Error
-					? reason.message
-					: "Unable to assemble integration candidate",
-			);
-			await refresh();
-		} finally {
-			busy = false;
-		}
-	}
-
-	async function viewIntegrationDiff(batch: IntegrationBatch) {
-		busy = true;
-		try {
-			const result = await daemon.getIntegrationBatchDiff(batch.id);
-			integrationDiffs = { ...integrationDiffs, [batch.id]: result.diff };
-		} catch (reason) {
-			toast.error(
-				reason instanceof Error
-					? reason.message
-					: "Unable to inspect candidate",
-			);
-		} finally {
-			busy = false;
-		}
-	}
-
-	async function approveIntegration(batch: IntegrationBatch) {
-		if (!(batch.id in integrationDiffs) || busy) return;
-		busy = true;
-		try {
-			await daemon.approveIntegrationBatch(batch.id);
-			toast.success("Exact integration candidate approved");
-			await refresh();
-		} catch (reason) {
-			toast.error(
-				reason instanceof Error
-					? reason.message
-					: "Unable to approve integration",
-			);
-		} finally {
-			busy = false;
-		}
-	}
-
-	async function promoteIntegration(batch: IntegrationBatch) {
-		busy = true;
-		try {
-			const result = await daemon.promoteIntegrationBatch(batch.id);
-			toast.success(
-				`Promoted ${result.promotedSha.slice(0, 12)} to ${batch.targetBranch}`,
-			);
-			await refresh();
-		} catch (reason) {
-			toast.error(
-				reason instanceof Error
-					? reason.message
-					: "Unable to promote integration",
-			);
-		} finally {
-			busy = false;
-		}
-	}
-
-	async function openAddTask() {
+async function doAdd() {
+	if (
+		!addTitle.trim() ||
+		!addPrompt.trim() ||
+		!addAcceptanceCriteria.trim() ||
+		busy
+	)
+		return;
+	if (
+		(executorKind === "agent" && !addAgentId) ||
+		(executorKind === "direct" && !directProviderId)
+	)
+		return;
+	busy = true;
+	try {
+		await daemon.createTask({
+			projectId,
+			title: addTitle.trim(),
+			prompt: addPrompt.trim(),
+			acceptanceCriteria: addAcceptanceCriteria
+				.split("\n")
+				.map((item) => item.trim())
+				.filter(Boolean),
+			targetBranch: projectBranches.includes(targetBranch)
+				? targetBranch
+				: null,
+			executor:
+				executorKind === "agent"
+					? { kind: "agent", agentId: addAgentId }
+					: {
+							kind: "direct",
+							providerId: directProviderId,
+							modelId: directModelId || null,
+						},
+		});
 		addTitle = "";
 		addPrompt = "";
 		addAcceptanceCriteria = "";
 		addAgentId = "";
-		directProviderId = "";
-		directModelId = "";
-		targetBranch = "";
-		projectBranches = [];
-		projectGitAvailable = true;
-		addOpen = true;
-		agentsLoading = true;
-		try {
-			const [agents, providers] = await Promise.all([
-				daemon.listCustomAgents(projectId),
-				daemon.listProviders(),
-			]);
-			try {
-				const git = await daemon.getProjectGit(projectId);
-				projectBranches = git.branches;
-				targetBranch = git.branches.includes(git.defaultBranch)
-					? git.defaultBranch
-					: git.branches.includes(git.branch)
-						? git.branch
-						: "";
-				projectGitAvailable = git.gitAvailable !== false;
-			} catch {
-				// Kanban planning is useful before a project has been initialized as Git.
-				projectBranches = [];
-				targetBranch = "";
-				projectGitAvailable = false;
-			}
-			availableAgents = agents
-				.filter(
-					(agent) =>
-						agent.status === "active" &&
-						agent.allowKanban &&
-						agent.approvalPolicy !== "read_only",
-				)
-				.map((agent) => ({
-					id: String(agent.id),
-					label: String(agent.label),
-					provider: String(agent.provider),
-					modelId: typeof agent.modelId === "string" ? agent.modelId : null,
-				}));
-			availableProviders = providers.filter(
-				(provider) => provider.status === "connected",
-			);
-			executorKind = availableAgents.length ? "agent" : "direct";
-			directProviderId = availableProviders[0]?.providerId ?? "";
-			if (directProviderId) await loadProviderModels(directProviderId);
-		} catch (reason) {
-			availableAgents = [];
-			availableProviders = [];
-			availableModels = [];
-			toast.error(
-				reason instanceof Error ? reason.message : "Unable to load agents",
-			);
-		} finally {
-			agentsLoading = false;
-		}
+		addOpen = false;
+		toast.success("Task added with executor settings");
+		await refresh();
+	} catch (reason) {
+		toast.error(
+			reason instanceof Error ? reason.message : "Unable to add task",
+		);
+	} finally {
+		busy = false;
 	}
+}
 
-	async function loadProviderModels(providerId: string) {
-		directModelId = "";
-		if (!providerId) {
-			availableModels = [];
-			return;
-		}
-		modelsLoading = true;
-		try {
-			availableModels = (await daemon.listProviderModels(providerId)).filter(
-				(model) => model.isAvailable,
-			);
-		} catch {
-			availableModels = [];
-		} finally {
-			modelsLoading = false;
-		}
+async function loadKanbanAgents() {
+	agentsLoading = true;
+	try {
+		const agents = await daemon.listCustomAgents(projectId);
+		availableAgents = agents
+			.filter(
+				(agent) =>
+					agent.status === "active" &&
+					agent.allowKanban &&
+					agent.approvalPolicy !== "read_only",
+			)
+			.map((agent) => ({
+				id: String(agent.id),
+				label: String(agent.label),
+				provider: String(agent.provider),
+				modelId: typeof agent.modelId === "string" ? agent.modelId : null,
+			}));
+	} catch {
+		availableAgents = [];
+	} finally {
+		agentsLoading = false;
 	}
+}
 
-	async function persist(order: Task[]) {
-		busy = true;
-		try {
-			await daemon.reorderTasks(
-				projectId,
-				order.map((task) => task.id),
-			);
-			await refresh();
-		} catch (reason) {
-			toast.error(reason instanceof Error ? reason.message : "Reorder failed");
-			await refresh();
-		} finally {
-			busy = false;
-		}
-	}
+function openEdit(task: Task) {
+	editTask = task;
+	editTitle = task.title;
+	editPrompt = task.prompt;
+	editAgentId = task.executor?.kind === "agent" ? task.executor.agentId : "";
+	if (!availableAgents.length && !agentsLoading) void loadKanbanAgents();
+}
 
-	function move(draggedId: string, targetId: string | null) {
-		const dragged = ordered.find((task) => task.id === draggedId);
-		if (!dragged) return;
-		if (targetId) {
-			const target = ordered.find((task) => task.id === targetId);
-			if (!target || target.id === draggedId) return;
-			if (column(target) !== column(dragged)) {
-				toast.info(
-					"Drag to reorder within a column. Use Run or Retry to change status.",
-				);
-				return;
-			}
-			const next = ordered.filter((task) => task.id !== draggedId);
-			next.splice(next.indexOf(target), 0, dragged);
-			void persist(next);
-			return;
-		}
-		const next = [...ordered.filter((task) => task.id !== draggedId), dragged];
-		void persist(next);
+async function doEdit() {
+	if (!editTask || !editTitle.trim() || busy) return;
+	const currentAgentId =
+		editTask.executor?.kind === "agent" ? editTask.executor.agentId : "";
+	busy = true;
+	try {
+		await daemon.renameTask(editTask.id, {
+			title: editTitle.trim(),
+			prompt: editPrompt.trim() || undefined,
+			executor:
+				editAgentId && editAgentId !== currentAgentId
+					? { kind: "agent", agentId: editAgentId }
+					: undefined,
+		});
+		editTask = null;
+		toast.success("Task updated");
+		await refresh();
+	} catch (reason) {
+		toast.error(
+			reason instanceof Error ? reason.message : "Unable to update task",
+		);
+	} finally {
+		busy = false;
 	}
+}
 
-	function onDragStart(event: DragEvent, id: string) {
-		dragId = id;
-		overId = "";
-		event.dataTransfer?.setData("text/plain", id);
-		if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+async function doDelete() {
+	if (!deleteTask || busy) return;
+	busy = true;
+	try {
+		await daemon.deleteTask(deleteTask.id);
+		deleteTask = null;
+		toast.success("Task deleted");
+		await refresh();
+	} catch (reason) {
+		toast.error(
+			reason instanceof Error ? reason.message : "Unable to delete task",
+		);
+	} finally {
+		busy = false;
 	}
+}
 
-	function onDragEnd() {
-		dragId = "";
-		overId = "";
+async function doRun(task: Task) {
+	busy = true;
+	try {
+		await daemon.startTask(task.id);
+		toast.success("Task started");
+		await refresh();
+		onTaskStarted?.(task.id);
+	} catch (reason) {
+		toast.error(
+			reason instanceof Error ? reason.message : "Unable to start task",
+		);
+	} finally {
+		busy = false;
 	}
+}
 
-	async function doAdd() {
-		if (
-			!addTitle.trim() ||
-			!addPrompt.trim() ||
-			!addAcceptanceCriteria.trim() ||
-			busy
-		)
-			return;
-		if (
-			(executorKind === "agent" && !addAgentId) ||
-			(executorKind === "direct" && !directProviderId)
-		)
-			return;
-		busy = true;
-		try {
-			await daemon.createTask({
-				projectId,
-				title: addTitle.trim(),
-				prompt: addPrompt.trim(),
-				acceptanceCriteria: addAcceptanceCriteria
-					.split("\n")
-					.map((item) => item.trim())
-					.filter(Boolean),
-				targetBranch: projectBranches.includes(targetBranch)
-					? targetBranch
-					: null,
-				executor:
-					executorKind === "agent"
-						? { kind: "agent", agentId: addAgentId }
-						: {
-								kind: "direct",
-								providerId: directProviderId,
-								modelId: directModelId || null,
-							},
-			});
-			addTitle = "";
-			addPrompt = "";
-			addAcceptanceCriteria = "";
-			addAgentId = "";
-			addOpen = false;
-			toast.success("Task added with executor settings");
-			await refresh();
-		} catch (reason) {
-			toast.error(
-				reason instanceof Error ? reason.message : "Unable to add task",
-			);
-		} finally {
-			busy = false;
-		}
+async function doRetry(task: Task) {
+	busy = true;
+	try {
+		await daemon.retryTask(task.id);
+		toast.success("Task queued for retry");
+		await refresh();
+		onTaskStarted?.(task.id);
+	} catch (reason) {
+		toast.error(
+			reason instanceof Error ? reason.message : "Unable to retry task",
+		);
+	} finally {
+		busy = false;
 	}
+}
 
-	async function loadKanbanAgents() {
-		agentsLoading = true;
-		try {
-			const agents = await daemon.listCustomAgents(projectId);
-			availableAgents = agents
-				.filter(
-					(agent) =>
-						agent.status === "active" &&
-						agent.allowKanban &&
-						agent.approvalPolicy !== "read_only",
-				)
-				.map((agent) => ({
-					id: String(agent.id),
-					label: String(agent.label),
-					provider: String(agent.provider),
-					modelId: typeof agent.modelId === "string" ? agent.modelId : null,
-				}));
-		} catch {
-			availableAgents = [];
-		} finally {
-			agentsLoading = false;
-		}
+async function doReviewAndRepair(task: Task) {
+	busy = true;
+	try {
+		const { review } = await daemon.runTaskReview(task.id);
+		if (review.status === "approved")
+			toast.success("Review passed · task is ready for integration");
+		else if (review.status === "changes_requested")
+			toast.warning("Repair limit reached · review findings need attention");
+		else toast.warning("Review is blocked · inspect the reviewer findings");
+		await refresh();
+	} catch (reason) {
+		toast.error(
+			reason instanceof Error ? reason.message : "Review and repair failed",
+		);
+		await refresh();
+	} finally {
+		busy = false;
 	}
+}
 
-	function openEdit(task: Task) {
-		editTask = task;
-		editTitle = task.title;
-		editPrompt = task.prompt;
-		editAgentId = task.executor?.kind === "agent" ? task.executor.agentId : "";
-		if (!availableAgents.length && !agentsLoading) void loadKanbanAgents();
+async function doCancel(task: Task) {
+	busy = true;
+	try {
+		await daemon.cancelTask(task.id);
+		toast.success("Task cancelled");
+		await refresh();
+	} catch (reason) {
+		toast.error(
+			reason instanceof Error ? reason.message : "Unable to cancel task",
+		);
+	} finally {
+		busy = false;
 	}
-
-	async function doEdit() {
-		if (!editTask || !editTitle.trim() || busy) return;
-		const currentAgentId =
-			editTask.executor?.kind === "agent" ? editTask.executor.agentId : "";
-		busy = true;
-		try {
-			await daemon.renameTask(editTask.id, {
-				title: editTitle.trim(),
-				prompt: editPrompt.trim() || undefined,
-				executor:
-					editAgentId && editAgentId !== currentAgentId
-						? { kind: "agent", agentId: editAgentId }
-						: undefined,
-			});
-			editTask = null;
-			toast.success("Task updated");
-			await refresh();
-		} catch (reason) {
-			toast.error(
-				reason instanceof Error ? reason.message : "Unable to update task",
-			);
-		} finally {
-			busy = false;
-		}
-	}
-
-	async function doDelete() {
-		if (!deleteTask || busy) return;
-		busy = true;
-		try {
-			await daemon.deleteTask(deleteTask.id);
-			deleteTask = null;
-			toast.success("Task deleted");
-			await refresh();
-		} catch (reason) {
-			toast.error(
-				reason instanceof Error ? reason.message : "Unable to delete task",
-			);
-		} finally {
-			busy = false;
-		}
-	}
-
-	async function doRun(task: Task) {
-		busy = true;
-		try {
-			await daemon.startTask(task.id);
-			toast.success("Task started");
-			await refresh();
-			onTaskStarted?.(task.id);
-		} catch (reason) {
-			toast.error(
-				reason instanceof Error ? reason.message : "Unable to start task",
-			);
-		} finally {
-			busy = false;
-		}
-	}
-
-	async function doRetry(task: Task) {
-		busy = true;
-		try {
-			await daemon.retryTask(task.id);
-			toast.success("Task queued for retry");
-			await refresh();
-			onTaskStarted?.(task.id);
-		} catch (reason) {
-			toast.error(
-				reason instanceof Error ? reason.message : "Unable to retry task",
-			);
-		} finally {
-			busy = false;
-		}
-	}
-
-	async function doReviewAndRepair(task: Task) {
-		busy = true;
-		try {
-			const { review } = await daemon.runTaskReview(task.id);
-			if (review.status === "approved")
-				toast.success("Review passed · task is ready for integration");
-			else if (review.status === "changes_requested")
-				toast.warning("Repair limit reached · review findings need attention");
-			else toast.warning("Review is blocked · inspect the reviewer findings");
-			await refresh();
-		} catch (reason) {
-			toast.error(
-				reason instanceof Error ? reason.message : "Review and repair failed",
-			);
-			await refresh();
-		} finally {
-			busy = false;
-		}
-	}
-
-	async function doCancel(task: Task) {
-		busy = true;
-		try {
-			await daemon.cancelTask(task.id);
-			toast.success("Task cancelled");
-			await refresh();
-		} catch (reason) {
-			toast.error(
-				reason instanceof Error ? reason.message : "Unable to cancel task",
-			);
-		} finally {
-			busy = false;
-		}
-	}
+}
 </script>
 
 <div class="flex h-full flex-col gap-4">

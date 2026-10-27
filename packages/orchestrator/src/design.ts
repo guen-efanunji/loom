@@ -11,17 +11,25 @@ import type {
 	ProjectRecord,
 	repositories,
 } from "@loom/db";
-import type {
-	DesignActivity,
-	DesignAttachment,
-	DesignChatResult,
-	DesignPatch,
-	DesignPermissionRequest,
-	DesignViewport,
+import {
+	type DesignActivity,
+	type DesignAttachment,
+	type DesignChatResult,
+	DEFAULT_DESIGN_FRAME,
+	DESIGN_FRAME_MIN,
+	type DesignFrame,
+	type DesignPatch,
+	type DesignPermissionRequest,
+	type DesignTrace,
+	designFrameKindSchema,
+	type DesignViewport,
+	viewportOfFrame,
 } from "@loom/protocol";
 import type {
 	AgentRuntime,
 	RuntimeModel,
+	RuntimePermission,
+	RuntimeOutput,
 	RuntimeToolAuthorization,
 } from "@loom/providers/core";
 
@@ -80,6 +88,18 @@ import {
 	parseDesignQuestions,
 	wantsAllNodes,
 } from "./design-prompt";
+import {
+	designNodeSizeForFrame,
+	designSpaceWidth,
+	frameFromMention,
+	frameFromReferences,
+	frameHintBlock,
+	frameOfKind,
+	frameReferenceHints,
+	imageDimensions,
+	mentionsCanvasSize,
+	usesDesignSpaceUnit,
+} from "./design-frame";
 
 type Repos = ReturnType<typeof repositories>;
 
@@ -92,14 +112,42 @@ const ORIGIN_X = 48;
 const ORIGIN_Y = 48;
 
 const DESKTOP_NODE = { width: 420, height: 263 };
-const MOBILE_NODE = { width: 220, height: 476 };
 
-export function designNodeSize(viewport: DesignViewport) {
-	return viewport === "mobile" ? MOBILE_NODE : DESKTOP_NODE;
+/** Frames implied by the old two-value viewport column on legacy rows. */
+const LEGACY_FRAME: Record<DesignViewport, { width: number; height: number }> =
+	{
+		desktop: { width: 1440, height: 900 },
+		mobile: { width: 390, height: 844 },
+	};
+
+/**
+ * The design space a node was drawn for. Records created before flexible
+ * frames only carry `viewport`, so their size falls back to those two presets.
+ */
+export function frameOfRecord(node: {
+	viewport: string;
+	frameKind?: string | null;
+	frameWidth?: number | null;
+	frameHeight?: number | null;
+}): DesignFrame {
+	const parsed = designFrameKindSchema.safeParse(node.frameKind);
+	const kind = parsed.success
+		? parsed.data
+		: node.viewport === "mobile"
+			? "mobile"
+			: "desktop";
+	const width = node.frameWidth ?? 0;
+	const height = node.frameHeight ?? 0;
+	if (width >= DESIGN_FRAME_MIN && height >= DESIGN_FRAME_MIN)
+		return { kind, width, height };
+	return {
+		kind,
+		...LEGACY_FRAME[node.viewport === "mobile" ? "mobile" : "desktop"],
+	};
 }
 
-function viewportOf(value: string): DesignViewport {
-	return value === "mobile" ? "mobile" : "desktop";
+export function designNodeSize(frame: DesignFrame) {
+	return designNodeSizeForFrame(frame);
 }
 
 function modelLabel(model?: RuntimeModel): string | null {
@@ -201,11 +249,16 @@ async function referenceFilesBlock(
 	block: string;
 	images: Array<{ mime: string; data: string; filename: string }>;
 	files: string[];
+	imageSizes: Array<{ filename: string; width: number; height: number }>;
+	styles: Array<{ filename: string; text: string }>;
 }> {
 	const root = resolve(projectPath);
 	const chunks: string[] = [];
 	const images: Array<{ mime: string; data: string; filename: string }> = [];
 	const files: string[] = [];
+	const imageSizes: Array<{ filename: string; width: number; height: number }> =
+		[];
+	const styles: Array<{ filename: string; text: string }> = [];
 	let budget = REFERENCE_TOTAL_BUDGET;
 	const pending = [...paths];
 	const visited = new Set<string>();
@@ -253,12 +306,16 @@ async function referenceFilesBlock(
 		if (imageMimeType) {
 			if (info.size <= REFERENCE_IMAGE_LIMIT) {
 				try {
+					const raw = await readFile(target);
+					const filename = local.split(sep).join("/");
 					images.push({
 						mime: imageMimeType,
-						data: (await readFile(target)).toString("base64"),
-						filename: local.split(sep).join("/"),
+						data: raw.toString("base64"),
+						filename,
 					});
-					files.push(local.split(sep).join("/"));
+					const dimensions = imageDimensions(raw);
+					if (dimensions) imageSizes.push({ filename, ...dimensions });
+					files.push(filename);
 				} catch {}
 			}
 			continue;
@@ -271,8 +328,12 @@ async function referenceFilesBlock(
 		}
 		if (!text.trim()) continue;
 		budget -= text.length;
-		files.push(local.split(sep).join("/"));
-		chunks.push(`--- ${local.split(sep).join("/")} ---\n${text}`);
+		const textName = local.split(sep).join("/");
+		files.push(textName);
+		// Stylesheets and component files carry the canvas the design was built for.
+		if (/\.(css|scss|sass|less|svelte|vue|tsx|jsx|html)$/i.test(extension))
+			styles.push({ filename: textName, text });
+		chunks.push(`--- ${textName} ---\n${text}`);
 		const links = [
 			...text.matchAll(/(?:src|href)=["']([^"']+)["']/gi),
 			...text.matchAll(
@@ -308,7 +369,64 @@ async function referenceFilesBlock(
 		block: parts.length ? `\n\n${parts.join("\n\n")}` : "",
 		images,
 		files,
+		imageSizes,
+		styles,
 	};
+}
+
+/** Paths the user typed or picked, normalised for prefix matching. */
+function mentionPaths(text: string, selected: string[] = []): string[] {
+	const typed = text.match(/[\w@.-]+(?:\/[\w@.-]+)+\/?/g) ?? [];
+	return [
+		...new Set(
+			[...typed, ...selected]
+				.map((path) => path.replace(/^@/, "").replace(/\/$/, ""))
+				.filter(Boolean),
+		),
+	];
+}
+
+const TRACE_PREFIX = "\u0000loom-design-trace:";
+const TRACE_LIMIT = 12_000;
+
+function traceText(value: string, limit = 1_200): string {
+	if (/<(?:!doctype|html|script|style)\b/i.test(value)) return "[document omitted]";
+	return value
+		.replace(/data:image\/[^\s"']+/gi, "[image omitted]")
+		.replace(/[A-Za-z0-9+/]{160,}={0,2}/g, "[encoded data omitted]")
+		.replace(/(?:sk-[\w-]{12,}|gh[pousr]_[\w-]{12,}|Bearer\s+\S+)/gi, "[credential omitted]")
+		.replace(/(["']?(?:api[_-]?key|token|password|secret|authorization)["']?\s*[:=]\s*["']?)[^\s,;"'}]+/gi, "$1[redacted]")
+		.slice(0, limit);
+}
+
+function traceEvents(output: RuntimeOutput | null) {
+	const activities = new Map(output?.activities?.map((item) => [item.id, item]) ?? []);
+	const parts = output?.parts?.length
+		? output.parts
+		: [
+				...(output?.activities?.map((item) => ({ type: "activity" as const, id: item.id })) ?? []),
+				...(output?.output ? [{ type: "text" as const, id: "output", text: output.output }] : []),
+			];
+	const events: DesignTrace["runs"][number]["events"] = [];
+	for (const part of parts) {
+		if (events.length >= 40) break;
+		if (part.type === "text") {
+			if (/<(?:!doctype|html|script|style)\b/i.test(part.text)) continue;
+			const text = traceText(part.text.trim());
+			if (text) events.push({ type: "text", text });
+		} else {
+			const activity = activities.get(part.id);
+			if (!activity) continue;
+			events.push({
+				type: "tool",
+				tool: traceText(activity.tool, 100),
+				status: activity.status,
+				...(activity.output ? { output: traceText(activity.output) } : {}),
+				...(activity.error ? { error: traceText(activity.error) } : {}),
+			});
+		}
+	}
+	return events;
 }
 
 export type DesignThreadRecord = {
@@ -466,6 +584,7 @@ export class DesignService {
 			projectId: string;
 			brief: string;
 			viewport?: DesignViewport;
+			frame?: DesignFrame;
 			model?: RuntimeModel;
 			files?: string[];
 			attachments?: DesignAttachment[];
@@ -475,8 +594,12 @@ export class DesignService {
 		const project = await this.requireProject(input.projectId);
 		const brief = input.brief.trim();
 		if (!brief) throw new Error("A design brief is required");
-		const viewport = input.viewport ?? "desktop";
-		const size = designNodeSize(viewport);
+		// A size written into the brief is a request, not a suggestion.
+		const frame =
+			input.frame ??
+			frameFromMention(brief) ??
+			(input.viewport ? frameOfKind(input.viewport) : DEFAULT_DESIGN_FRAME);
+		const size = designNodeSize(frame);
 		const slot = await this.nextSlot(project.id);
 		const id = randomUUID();
 		this.generationContext.set(id, {
@@ -488,7 +611,10 @@ export class DesignService {
 			projectId: project.id,
 			title: deriveDesignTitle(brief),
 			brief,
-			viewport,
+			viewport: viewportOfFrame(frame),
+			frameKind: frame.kind,
+			frameWidth: frame.width,
+			frameHeight: frame.height,
 			status: "queued",
 			x: slot.x,
 			y: slot.y,
@@ -546,10 +672,13 @@ export class DesignService {
 		prompt: string;
 		images: Array<{ mime: string; data: string; filename: string }>;
 	}> {
-		const viewport = viewportOf(node.viewport);
+		const storedFrame = frameOfRecord(node);
+		// Mentioned paths steer the token scrape, so a @mentioned theme folder wins.
+		const focus = mentionPaths([node.brief, message ?? ""].join("\n"), files);
 		const context: ProjectContext | undefined = await buildDesignFileContext(
 			project.path,
 			project.name,
+			focus,
 		).catch(() => undefined);
 		const read = new Set(context?.readFiles ?? []);
 		const referencePaths = designReferencePaths(
@@ -559,9 +688,63 @@ export class DesignService {
 		);
 		const references = referencePaths.length
 			? await referenceFilesBlock(project.path, referencePaths)
-			: { block: "", images: [], files: [] };
+			: {
+					block: "",
+					images: [],
+					files: [],
+					imageSizes: [],
+					styles: [],
+				};
 		for (const file of references.files) read.add(file);
 		const attachmentReferences = attachmentReferencesBlock(attachments);
+		// The user's own references decide the canvas: a screenshot's pixel size,
+		// or the design space a mentioned stylesheet is authored in.
+		const attachmentImages = (attachments ?? [])
+			.filter((attachment) => attachment.mime.startsWith("image/"))
+			.map((attachment) => {
+				try {
+					return {
+						filename: attachment.filename,
+						dimensions: imageDimensions(Buffer.from(attachment.data, "base64")),
+					};
+				} catch {
+					return { filename: attachment.filename, dimensions: null };
+				}
+			})
+			.filter(
+				(
+					item,
+				): item is {
+					filename: string;
+					dimensions: { width: number; height: number };
+				} => Boolean(item.dimensions),
+			)
+			.map((item) => ({ filename: item.filename, ...item.dimensions }));
+		const cssWidths = references.styles
+			.map((style) => ({
+				file: style.filename,
+				width: designSpaceWidth(style.text),
+			}))
+			.filter((entry): entry is { file: string; width: number } =>
+				Boolean(entry.width),
+			);
+		const designSpaceFiles = references.styles
+			.filter((style) => usesDesignSpaceUnit(style.text))
+			.map((style) => style.filename);
+		const frameHints = frameReferenceHints({
+			images: [...attachmentImages, ...references.imageSizes],
+			cssWidths,
+			designSpaceFiles,
+		});
+		// What the user said wins, then what their references show, then the
+		// frame the node already has.
+		const frame =
+			frameFromMention([message, node.brief].filter(Boolean).join("\n")) ??
+			frameFromReferences({
+				imageSizes: [...attachmentImages, ...references.imageSizes],
+				cssWidths: cssWidths.map((entry) => entry.width),
+			}) ??
+			storedFrame;
 		this.setActivity(node.id, {
 			phase: "reading",
 			files: [...read].slice(0, 80),
@@ -572,11 +755,14 @@ export class DesignService {
 					buildRefinePrompt({
 						brief: node.brief,
 						message,
-						viewport,
+						frame,
+						resizeRequested:
+							frame !== storedFrame || mentionsCanvasSize(message),
 						previousHtml: node.html,
 						projectName: project.name,
 						projectPath: project.path,
 					}) +
+					frameHintBlock(frameHints) +
 					references.block +
 					attachmentReferences,
 				images: references.images,
@@ -585,10 +771,11 @@ export class DesignService {
 			prompt:
 				buildDesignPrompt({
 					brief: node.brief,
-					viewport,
+					frame,
 					context,
 					projectName: project.name,
 					projectPath: project.path,
+					frameHints,
 				}) +
 				references.block +
 				attachmentReferences,
@@ -658,9 +845,6 @@ export class DesignService {
 		const selectedModel = model ?? (await this.storedModel(node));
 		const isCustomProvider =
 			selectedModel?.providerID.startsWith("loom_custom_") === true;
-		// CLI providers draft in an isolated directory. Custom providers can inspect
-		// the real project and write there only after Loom permission approval.
-		// Publishing the generated mockup remains an explicit user action.
 		const workdir = isCustomProvider
 			? project.path
 			: join(tmpdir(), "loom-design", project.id, nodeId);
@@ -668,59 +852,12 @@ export class DesignService {
 		const session = await runtime.createSession({
 			cwd: workdir,
 			title: `Loom design · ${node.title}`,
-			readOnly: !isCustomProvider || !this.permissionGate,
+			readOnly: true,
 		});
 		await this.store.updateNode(nodeId, { sessionId: session.id });
-		if (selectedModel?.providerID === "agy" && !this.permissionGate?.url)
-			throw new Error(
-				"Agy permission approval is unavailable. Restart Loom and check that its Agy permission hook is configured, then retry.",
-			);
-		const permissionToken =
-			(selectedModel?.providerID === "agy" && this.permissionGate?.url) ||
-			(isCustomProvider && this.permissionGate)
-				? randomUUID()
-				: undefined;
-		if (permissionToken && this.permissionGate)
-			this.permissionGate.store.registerRun({
-				token: permissionToken,
-				sessionId: session.id,
-				autoAccept: false,
-			});
-		let toolStep = 0;
-		const authorizeTool: RuntimeToolAuthorization | undefined =
-			permissionToken && this.permissionGate
-				? async (request) => {
-						const submitted = this.permissionGate?.store.submit(
-							{
-								token: permissionToken,
-								conversationId: nodeId,
-								toolName: request.toolName,
-								args: { ...request.args, reason: request.reason },
-								stepIdx: ++toolStep,
-							},
-							120_000,
-						);
-						if (submitted?.status !== "pending")
-							return submitted?.status === "auto";
-						return (await submitted.decision) === "allow";
-					}
-				: undefined;
 		const startedAt = Date.now();
+		let lastOutput: RuntimeOutput | null = null;
 		try {
-			const permission =
-				permissionToken && this.permissionGate
-					? {
-							mode: "ask" as const,
-							...(selectedModel?.providerID === "agy" && this.permissionGate.url
-								? {
-										env: {
-											LOOM_PERMISSION_URL: this.permissionGate.url,
-											LOOM_PERMISSION_TOKEN: permissionToken,
-										},
-									}
-								: {}),
-						}
-					: undefined;
 			const run = (request: string) =>
 				this.runSession(
 					runtime,
@@ -728,8 +865,9 @@ export class DesignService {
 					request,
 					selectedModel,
 					images,
-					permission,
-					authorizeTool,
+					{ mode: "read-only" },
+					undefined,
+					(output) => { lastOutput = output; },
 				);
 			let reply = await run(prompt);
 			try {
@@ -750,9 +888,19 @@ export class DesignService {
 				Date.now() - startedAt,
 			);
 		} finally {
+			const events = traceEvents(lastOutput);
+			const saved: typeof events = [];
+			for (const event of events) {
+				if (JSON.stringify({ sessionId: session.id, events: [...saved, event] }).length > TRACE_LIMIT) break;
+				saved.push(event);
+			}
+			await this.store.addMessage({
+					projectId: project.id,
+					nodeId,
+					role: "assistant",
+					text: `${TRACE_PREFIX}${JSON.stringify({ sessionId: session.id, events: saved })}`,
+				}).catch(() => undefined);
 			this.permissionGate?.store.denySession(session.id);
-			if (permissionToken)
-				this.permissionGate?.store.unregisterRun(permissionToken);
 		}
 	}
 
@@ -762,8 +910,9 @@ export class DesignService {
 		prompt: string,
 		model?: RuntimeModel,
 		images?: Array<{ mime: string; data: string }>,
-		permission?: { mode: "auto" | "ask"; env?: Record<string, string> },
+		permission?: RuntimePermission,
 		authorizeTool?: RuntimeToolAuthorization,
+		onOutput?: (output: RuntimeOutput | null) => void,
 	): Promise<string> {
 		await runtime.prompt({
 			sessionId,
@@ -793,7 +942,8 @@ export class DesignService {
 					: "";
 			throw new Error(`Design agent ended with status: ${status}.${hint}`);
 		}
-		const output = await runtime.readOutput?.(sessionId);
+		const output = (await runtime.readOutput?.(sessionId)) ?? null;
+		onOutput?.(output);
 		return output?.output ?? "";
 	}
 
@@ -814,10 +964,22 @@ export class DesignService {
 		const primary = screens[0];
 		if (!primary) throw new Error("Design agent returned no usable document");
 		const model = await this.storedModel(node);
+		const storedFrame = frameOfRecord(node);
+		const primaryFrame = primary.frame ?? storedFrame;
+		// Re-fit the card only when the canvas itself changed, so a card the user
+		// resized by hand keeps its size across refinements.
+		const resized =
+			primaryFrame.width !== storedFrame.width ||
+			primaryFrame.height !== storedFrame.height;
 		await this.store.updateNode(nodeId, {
 			status: "ready",
 			html: primary.html,
 			title: primary.title || node.title,
+			viewport: viewportOfFrame(primaryFrame),
+			frameKind: primaryFrame.kind,
+			frameWidth: primaryFrame.width,
+			frameHeight: primaryFrame.height,
+			...(resized ? designNodeSize(primaryFrame) : {}),
 			errorMessage: null,
 			durationMs,
 		});
@@ -826,17 +988,22 @@ export class DesignService {
 				const screen = screens[index];
 				if (!screen) continue;
 				const id = randomUUID();
+				const screenFrame = screen.frame ?? primaryFrame;
+				const screenSize = designNodeSize(screenFrame);
 				await this.store.createNode({
 					projectId: project.id,
 					id,
 					title: screen.title || `${node.title} ${index + 1}`,
 					brief: node.brief,
-					viewport: node.viewport,
+					viewport: viewportOfFrame(screenFrame),
+					frameKind: screenFrame.kind,
+					frameWidth: screenFrame.width,
+					frameHeight: screenFrame.height,
 					status: "ready",
-					x: node.x + index * (node.width + GAP_X),
+					x: node.x + index * (screenSize.width + GAP_X),
 					y: node.y,
-					width: node.width,
-					height: node.height,
+					width: screenSize.width,
+					height: screenSize.height,
 				});
 				await this.store.updateNode(id, {
 					html: screen.html,
@@ -1052,6 +1219,7 @@ export class DesignService {
 			const context = await buildDesignFileContext(
 				project.path,
 				project.name,
+				mentionPaths(message, input.files),
 			).catch(() => undefined);
 			const referencePaths = designReferencePaths(
 				message,
@@ -1060,7 +1228,13 @@ export class DesignService {
 			);
 			const references = referencePaths.length
 				? await referenceFilesBlock(project.path, referencePaths)
-				: { block: "", images: [], files: [] };
+				: {
+						block: "",
+						images: [],
+						files: [],
+						imageSizes: [],
+						styles: [],
+					};
 			images.push(
 				...references.images.map(({ mime, data }) => ({ mime, data })),
 			);
@@ -1309,7 +1483,9 @@ export class DesignService {
 		const screens = extractDesignScreens(reply);
 		const primary = screens[0];
 		if (!primary) throw new Error("Design agent returned no usable document");
-		const size = designNodeSize("desktop");
+		const primaryFrame =
+			primary.frame ?? frameFromMention(brief) ?? DEFAULT_DESIGN_FRAME;
+		const size = designNodeSize(primaryFrame);
 		const slot = await this.nextSlot(project.id);
 		const id = randomUUID();
 		await this.store.createNode({
@@ -1317,7 +1493,10 @@ export class DesignService {
 			projectId: project.id,
 			title: primary.title || deriveDesignTitle(brief),
 			brief,
-			viewport: "desktop",
+			viewport: viewportOfFrame(primaryFrame),
+			frameKind: primaryFrame.kind,
+			frameWidth: primaryFrame.width,
+			frameHeight: primaryFrame.height,
 			status: "ready",
 			x: slot.x,
 			y: slot.y,
@@ -1329,17 +1508,22 @@ export class DesignService {
 			const screen = screens[index];
 			if (!screen) continue;
 			const extra = randomUUID();
+			const screenFrame = screen.frame ?? primaryFrame;
+			const screenSize = designNodeSize(screenFrame);
 			await this.store.createNode({
 				id: extra,
 				projectId: project.id,
 				title: screen.title || `${primary.title} ${index + 1}`,
 				brief,
-				viewport: "desktop",
+				viewport: viewportOfFrame(screenFrame),
+				frameKind: screenFrame.kind,
+				frameWidth: screenFrame.width,
+				frameHeight: screenFrame.height,
 				status: "ready",
-				x: slot.x + index * (size.width + GAP_X),
+				x: slot.x + index * (screenSize.width + GAP_X),
 				y: slot.y,
-				width: size.width,
-				height: size.height,
+				width: screenSize.width,
+				height: screenSize.height,
 			});
 			await this.store.updateNode(extra, { html: screen.html });
 		}
@@ -1353,11 +1537,29 @@ export class DesignService {
 		return id;
 	}
 
+	async trace(nodeId: string): Promise<DesignTrace> {
+		const node = await this.requireNode(nodeId);
+		const messages = await this.store.listMessages(node.projectId);
+		return {
+			projectId: node.projectId,
+			nodeId,
+			runs: messages.filter((message) => message.nodeId === nodeId && message.text.startsWith(TRACE_PREFIX)).flatMap((message) => {
+				try {
+					const value = JSON.parse(message.text.slice(TRACE_PREFIX.length));
+					if (typeof value.sessionId !== "string" || !Array.isArray(value.events)) return [];
+					return [{ sessionId: value.sessionId, createdAt: message.createdAt.toISOString(), events: value.events }];
+				} catch {
+					return [];
+				}
+			}),
+		};
+	}
+
 	async list(projectId: string): Promise<DesignThreadRecord> {
 		await this.requireProject(projectId);
 		return {
 			nodes: await this.store.listNodes(projectId),
-			messages: await this.store.listMessages(projectId),
+			messages: (await this.store.listMessages(projectId)).filter((message) => !message.text.startsWith(TRACE_PREFIX)),
 		};
 	}
 
@@ -1371,7 +1573,21 @@ export class DesignService {
 		if (patch.title !== undefined) input.title = patch.title;
 		if (patch.viewport !== undefined) {
 			input.viewport = patch.viewport;
-			const size = designNodeSize(patch.viewport);
+			const frame = frameOfKind(patch.viewport);
+			input.frameKind = frame.kind;
+			input.frameWidth = frame.width;
+			input.frameHeight = frame.height;
+			const size = designNodeSize(frame);
+			input.width = size.width;
+			input.height = size.height;
+		}
+		if (patch.frame !== undefined) {
+			const frame = patch.frame;
+			input.frameKind = frame.kind;
+			input.frameWidth = frame.width;
+			input.frameHeight = frame.height;
+			input.viewport = viewportOfFrame(frame);
+			const size = designNodeSize(frame);
 			input.width = size.width;
 			input.height = size.height;
 		}

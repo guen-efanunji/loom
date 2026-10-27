@@ -1,6 +1,10 @@
-import { lstat, readFile, realpath } from "node:fs/promises";
-import { lookup } from "node:dns/promises";
 import { randomUUID } from "node:crypto";
+import { lookup } from "node:dns/promises";
+import { lstat, readFile, realpath } from "node:fs/promises";
+import { isIP } from "node:net";
+import { homedir } from "node:os";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import type { Database } from "@loom/db";
 import {
 	Client,
 	StreamableHTTPClientTransport,
@@ -9,10 +13,6 @@ import {
 	getDefaultEnvironment,
 	StdioClientTransport,
 } from "@modelcontextprotocol/client/stdio";
-import type { Database } from "@loom/db";
-import { homedir } from "node:os";
-import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { isIP } from "node:net";
 import { Hono } from "hono";
 
 type Project = { id: string; name: string; path: string };

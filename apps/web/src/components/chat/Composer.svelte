@@ -1,692 +1,738 @@
 <script lang="ts">
-	import {
-		ArrowUp,
-		AtSign,
-		Bot,
-		Check,
-		ChevronDown,
-		File as FileIcon,
-		Folder,
-		Image as ImageIcon,
-		LoaderCircle,
-		PanelsTopLeft,
-		Plus,
-		Sparkles,
-		Square,
-		Star,
-		X,
-	} from "@lucide/svelte";
-	import { onMount, tick } from "svelte";
-	import {
-		type Catalog,
-		type ChatAttachment,
-		chat,
-		type Model,
-		providerDisplayName,
-	} from "$lib/chat";
-	import * as AlertDialog from "$lib/components/ui/alert-dialog";
-	import * as Attachment from "$lib/components/ui/attachment";
-	import { Badge } from "$lib/components/ui/badge";
-	import { Button } from "$lib/components/ui/button";
-	import * as Command from "$lib/components/ui/command";
-	import * as Popover from "$lib/components/ui/popover";
-	import * as Select from "$lib/components/ui/select";
-	import { Switch } from "$lib/components/ui/switch";
-	import { Textarea } from "$lib/components/ui/textarea";
-	import { type DesignNode, daemon } from "$lib/daemon";
+import {
+	ArrowUp,
+	AtSign,
+	Bot,
+	Check,
+	ChevronDown,
+	File as FileIcon,
+	Folder,
+	Image as ImageIcon,
+	LoaderCircle,
+	PanelsTopLeft,
+	Plus,
+	Sparkles,
+	Square,
+	Star,
+	X,
+} from "@lucide/svelte";
+import { onMount, tick } from "svelte";
+import {
+	type Catalog,
+	type ChatAttachment,
+	canonicalProviderID,
+	chat,
+	type Model,
+	providerDisplayName,
+} from "$lib/chat";
+import * as AlertDialog from "$lib/components/ui/alert-dialog";
+import * as Attachment from "$lib/components/ui/attachment";
+import { Badge } from "$lib/components/ui/badge";
+import { Button } from "$lib/components/ui/button";
+import * as Command from "$lib/components/ui/command";
+import * as Popover from "$lib/components/ui/popover";
+import * as Select from "$lib/components/ui/select";
+import { Switch } from "$lib/components/ui/switch";
+import { Textarea } from "$lib/components/ui/textarea";
+import { type DesignNode, daemon } from "$lib/daemon";
 
-	let {
-		projectId,
-		catalog,
-		busy,
-		disabled,
-		onsend,
-		onstop,
-		draft = $bindable(""),
-		model = $bindable(""),
-		agent = $bindable("build"),
-		customAgentId = $bindable(""),
-		customAgents = [],
-		showAgents = true,
-		showDesigns = true,
-		inputId,
-		autoAccept = false,
-		onAutoAcceptChange,
-	}: {
-		projectId: string;
-		catalog: Catalog;
-		busy: boolean;
-		disabled: boolean;
-		onsend: (input: {
-			text: string;
-			files: string[];
-			attachments?: ChatAttachment[];
-			designNodeIds: string[];
-			agents: string[];
-			agent?: string;
-			customAgentId?: string;
-			model?: { providerID: string; modelID: string };
-			thinkingMode?: string;
-		}) => Promise<boolean>;
-		onstop: () => void;
-		draft?: string;
-		model?: string;
+let {
+	projectId,
+	catalog,
+	busy,
+	disabled,
+	onsend,
+	onstop,
+	draft = $bindable(""),
+	model = $bindable(""),
+	agent = $bindable("build"),
+	customAgentId = $bindable(""),
+	customAgents = [],
+	showAgents = true,
+	showDesigns = true,
+	inputId,
+	autoAccept = false,
+	onAutoAcceptChange,
+}: {
+	projectId: string;
+	catalog: Catalog;
+	busy: boolean;
+	disabled: boolean;
+	onsend: (input: {
+		text: string;
+		files: string[];
+		attachments?: ChatAttachment[];
+		designNodeIds: string[];
+		agents: string[];
 		agent?: string;
 		customAgentId?: string;
-		customAgents?: Array<{
-			id: string;
-			label: string;
-			allowChat?: boolean;
-			provider: string;
-			modelId: string | null;
-		}>;
-		showAgents?: boolean;
-		showDesigns?: boolean;
-		inputId?: string;
-		/** Per-project auto-accept toggle. Rendered only when `onAutoAcceptChange` is provided. */
-		autoAccept?: boolean;
-		onAutoAcceptChange?: (value: boolean) => void;
-	} = $props();
-	let textarea = $state<HTMLTextAreaElement | null>(null);
-	let files = $state<string[]>([]);
-	let attachments = $state<globalThis.File[]>([]);
-	let previews = $state<{ file: globalThis.File; url: string }[]>([]);
-	let previewCache: { file: globalThis.File; url: string }[] = [];
-	let previewFile = $state<globalThis.File | null>(null);
-	let previewOpen = $state(false);
-	let projectPreviewOpen = $state(false);
-	let projectPreviewPath = $state("");
-	let projectPreviewText = $state("");
-	let projectPreviewImage = $state("");
-	let projectPreviewLoading = $state(false);
-	let projectPreviewError = $state("");
-	let projectPreviewRequest = 0;
-	const previewUrl = $derived(
-		previews.find((item) => item.file === previewFile)?.url,
-	);
-	let designNodes = $state<DesignNode[]>([]);
-	let selectedDesignIds = $state<string[]>([]);
-	let designOpen = $state(false);
-	let loadingDesigns = $state(false);
-	let designError = $state("");
-	let designNotice = $state("");
-	let attachmentInput = $state<HTMLInputElement | null>(null);
-	let agents = $state<string[]>([]);
-	let attachmentOpen = $state(false);
-	let modelOpen = $state(false);
-	let modelSearch = $state("");
-	let query = $state<string | null>(null);
-	let mentionStyle = $state("");
-	let results = $state<string[]>([]);
-	let searching = $state(false);
-	let searchError = $state("");
-	let active = $state(0);
-	let mentionStart = 0;
-	let cursor = 0;
-	let previousProject = "";
-	let sending = $state(false);
-	let thinkingMode = $state("default");
-	const favoriteStorageKey = "loom.chat.favoriteModels";
-	const recentStorageKey = "loom.chat.recentModels";
-	function readModelKeys(key: string): string[] {
-		if (typeof localStorage === "undefined") return [];
+		model?: { providerID: string; modelID: string };
+		thinkingMode?: string;
+	}) => Promise<boolean>;
+	onstop: () => void;
+	draft?: string;
+	model?: string;
+	agent?: string;
+	customAgentId?: string;
+	customAgents?: Array<{
+		id: string;
+		label: string;
+		allowChat?: boolean;
+		provider: string;
+		modelId: string | null;
+	}>;
+	showAgents?: boolean;
+	showDesigns?: boolean;
+	inputId?: string;
+	/** Per-project auto-accept toggle. Rendered only when `onAutoAcceptChange` is provided. */
+	autoAccept?: boolean;
+	onAutoAcceptChange?: (value: boolean) => void;
+} = $props();
+let textarea = $state<HTMLTextAreaElement | null>(null);
+let files = $state<string[]>([]);
+let attachments = $state<globalThis.File[]>([]);
+let previews = $state<{ file: globalThis.File; url: string }[]>([]);
+let previewCache: { file: globalThis.File; url: string }[] = [];
+let previewFile = $state<globalThis.File | null>(null);
+let previewOpen = $state(false);
+let projectPreviewOpen = $state(false);
+let projectPreviewPath = $state("");
+let projectPreviewText = $state("");
+let projectPreviewImage = $state("");
+let projectPreviewLoading = $state(false);
+let projectPreviewError = $state("");
+let projectPreviewRequest = 0;
+const previewUrl = $derived(
+	previews.find((item) => item.file === previewFile)?.url,
+);
+let designNodes = $state<DesignNode[]>([]);
+let selectedDesignIds = $state<string[]>([]);
+let designOpen = $state(false);
+let loadingDesigns = $state(false);
+let designError = $state("");
+let designNotice = $state("");
+let attachmentInput = $state<HTMLInputElement | null>(null);
+let agents = $state<string[]>([]);
+let attachmentOpen = $state(false);
+let modelOpen = $state(false);
+let modelSearch = $state("");
+// Provider groups start collapsed so opening the picker renders only
+// Favorites/Recent + a handful of headers instead of every model at once.
+let expandedGroups = $state<Record<string, boolean>>({});
+let query = $state<string | null>(null);
+let mentionStyle = $state("");
+let results = $state<string[]>([]);
+let searching = $state(false);
+let searchError = $state("");
+let active = $state(0);
+let mentionStart = 0;
+let cursor = 0;
+let previousProject = "";
+let sending = $state(false);
+let thinkingMode = $state("default");
+const favoriteStorageKey = "loom.chat.favoriteModels";
+const recentStorageKey = "loom.chat.recentModels";
+function readModelKeys(key: string): string[] {
+	if (typeof localStorage === "undefined") return [];
+	try {
+		const value: unknown = JSON.parse(localStorage.getItem(key) ?? "[]");
+		return Array.isArray(value)
+			? [
+					...new Set(
+						value.filter((item): item is string => typeof item === "string"),
+					),
+				].slice(0, 12)
+			: [];
+	} catch {
+		return [];
+	}
+}
+let favoriteModelIds = $state(readModelKeys(favoriteStorageKey));
+let recentModelIds = $state(readModelKeys(recentStorageKey));
+let favoriteSave = Promise.resolve();
+let favoriteRevision = 0;
+onMount(() => {
+	const repositionMention = () => updateMentionPosition();
+	window.addEventListener("resize", repositionMention);
+	document.addEventListener("scroll", repositionMention, true);
+	void (async () => {
 		try {
-			const value: unknown = JSON.parse(localStorage.getItem(key) ?? "[]");
-			return Array.isArray(value)
-				? [
-						...new Set(
-							value.filter((item): item is string => typeof item === "string"),
-						),
-					].slice(0, 12)
-				: [];
-		} catch {
-			return [];
-		}
-	}
-	let favoriteModelIds = $state(readModelKeys(favoriteStorageKey));
-	let recentModelIds = $state(readModelKeys(recentStorageKey));
-	let favoriteSave = Promise.resolve();
-	let favoriteRevision = 0;
-	onMount(() => {
-		const repositionMention = () => updateMentionPosition();
-		window.addEventListener("resize", repositionMention);
-		document.addEventListener("scroll", repositionMention, true);
-		void (async () => {
-			try {
-				const revision = favoriteRevision;
-				const saved = await chat.preferences();
-				if (revision !== favoriteRevision) return;
-				if (saved.favoriteModels.length)
-					favoriteModelIds = saved.favoriteModels;
-				else if (favoriteModelIds.length) {
-					await chat.savePreferences(favoriteModelIds);
-				}
-				localStorage.setItem(
-					favoriteStorageKey,
-					JSON.stringify(favoriteModelIds),
-				);
-			} catch {
-				// Keep this browser's saved favorites available if the daemon is offline.
+			const revision = favoriteRevision;
+			const saved = await chat.preferences();
+			if (revision !== favoriteRevision) return;
+			if (saved.favoriteModels.length) favoriteModelIds = saved.favoriteModels;
+			else if (favoriteModelIds.length) {
+				await chat.savePreferences(favoriteModelIds);
 			}
-		})();
-		return () => {
-			for (const preview of previewCache) URL.revokeObjectURL(preview.url);
-			window.removeEventListener("resize", repositionMention);
-			document.removeEventListener("scroll", repositionMention, true);
-		};
-	});
-	function thumbnailStyle(
-		node: DesignNode,
-		boxWidth: number,
-		boxHeight: number,
-	) {
-		const frame =
-			node.viewport === "mobile"
-				? { width: 390, height: 844 }
-				: { width: 1440, height: 900 };
-		const scale = Math.min(boxWidth / frame.width, boxHeight / frame.height);
-		const left = (boxWidth - frame.width * scale) / 2;
-		const top = (boxHeight - frame.height * scale) / 2;
-		return `width:${frame.width}px;height:${frame.height}px;left:${left}px;top:${top}px;transform:scale(${scale})`;
-	}
-	const choices = $derived([
-		...catalog.agents
-			.filter(
-				(a) =>
-					a.mode !== "primary" &&
-					a.name.toLowerCase().includes((query ?? "").toLowerCase()),
-			)
-			.map((a) => ({ value: a.name, type: "agent" })),
-		...customAgents
-			.filter(
-				(item) =>
-					item.allowChat !== false &&
-					item.label.toLowerCase().includes((query ?? "").toLowerCase()),
-			)
-			.map((item) => ({
-				value: item.label,
-				type: "custom-agent",
-				id: item.id,
-			})),
-		...results.map((value) => ({ value, type: "file" })),
-	]);
-	const selectedModel = $derived(
-		catalog.models.find((m) => `${m.providerID}/${m.modelID}` === model),
-	);
-	function modelKey(item: Model) {
-		return `${item.providerID}/${item.modelID}`;
-	}
-	function modelsForKeys(keys: string[]) {
-		return keys
-			.map((key) => catalog.models.find((item) => modelKey(item) === key))
-			.filter((item): item is Model => !!item);
-	}
-	const favoriteModels = $derived(modelsForKeys(favoriteModelIds));
-	const recentModels = $derived(modelsForKeys(recentModelIds));
-	const providerGroups = $derived.by(() => {
-		const groups = new Map<
-			string,
-			{ id: string; label: string; models: Model[] }
-		>();
-		for (const item of catalog.models) {
-			const id = item.providerID;
-			let group = groups.get(id);
-			if (!group) {
-				const displayName = providerDisplayName(catalog, id, item.modelID);
-				group = {
-					id,
-					label: id.startsWith("loom_custom_") ? displayName : displayName,
-					models: [],
-				};
-				groups.set(id, group);
-			}
-			if (!group.models.some((model) => modelKey(model) === modelKey(item)))
-				group.models.push(item);
-		}
-		return [...groups.values()].sort((a, b) => a.label.localeCompare(b.label));
-	});
-	function providerTone(providerID: string) {
-		const id = providerID.toLowerCase();
-		if (["agy", "antigravity", "gemini"].includes(id)) return "agy";
-		if (["claude", "anthropic"].includes(id)) return "claude";
-		if (["codex", "openai"].includes(id)) return "codex";
-		if (id === "opencode") return "opencode";
-		return "default";
-	}
-	function toggleFavorite(item: Model) {
-		favoriteRevision += 1;
-		const key = modelKey(item);
-		favoriteModelIds = favoriteModelIds.includes(key)
-			? favoriteModelIds.filter((id) => id !== key)
-			: [key, ...favoriteModelIds].slice(0, 12);
-		try {
 			localStorage.setItem(
 				favoriteStorageKey,
 				JSON.stringify(favoriteModelIds),
 			);
-		} catch {}
-		favoriteSave = favoriteSave
-			.then(() => chat.savePreferences([...favoriteModelIds]))
-			.then(
-				() => {},
-				() => {},
-			);
+		} catch {
+			// Keep this browser's saved favorites available if the daemon is offline.
+		}
+	})();
+	return () => {
+		for (const preview of previewCache) URL.revokeObjectURL(preview.url);
+		window.removeEventListener("resize", repositionMention);
+		document.removeEventListener("scroll", repositionMention, true);
+	};
+});
+function thumbnailStyle(node: DesignNode, boxWidth: number, boxHeight: number) {
+	const frame =
+		node.viewport === "mobile"
+			? { width: 390, height: 844 }
+			: { width: 1440, height: 900 };
+	const scale = Math.min(boxWidth / frame.width, boxHeight / frame.height);
+	const left = (boxWidth - frame.width * scale) / 2;
+	const top = (boxHeight - frame.height * scale) / 2;
+	return `width:${frame.width}px;height:${frame.height}px;left:${left}px;top:${top}px;transform:scale(${scale})`;
+}
+const selectedModel = $derived(
+	catalog.models.find((m) => `${m.providerID}/${m.modelID}` === model),
+);
+// P2-8: provider runtimes other than the OpenCode gateway accept image
+// attachments and @file mentions, but not agent mentions or non-image files.
+// Reflect that here so the composer never produces a confusing rejected send.
+const supportsFullMentions = $derived(
+	!selectedModel ||
+		canonicalProviderID(
+			catalog,
+			selectedModel.providerID,
+			selectedModel.modelID,
+		) === "opencode",
+);
+const attachmentAccept = $derived(
+	supportsFullMentions
+		? "image/*,.txt,.md,.json,.ts,.tsx,.js,.jsx,.css,.html,.pdf"
+		: "image/*",
+);
+const choices = $derived([
+	...(supportsFullMentions
+		? catalog.agents
+				.filter(
+					(a) =>
+						a.mode !== "primary" &&
+						a.name.toLowerCase().includes((query ?? "").toLowerCase()),
+				)
+				.map((a) => ({ value: a.name, type: "agent" }))
+		: []),
+	...customAgents
+		.filter(
+			(item) =>
+				supportsFullMentions &&
+				item.allowChat !== false &&
+				item.label.toLowerCase().includes((query ?? "").toLowerCase()),
+		)
+		.map((item) => ({
+			value: item.label,
+			type: "custom-agent",
+			id: item.id,
+		})),
+	...results.map((value) => ({ value, type: "file" })),
+]);
+function modelKey(item: Model) {
+	return `${item.providerID}/${item.modelID}`;
+}
+function modelsForKeys(keys: string[]) {
+	return keys
+		.map((key) => catalog.models.find((item) => modelKey(item) === key))
+		.filter((item): item is Model => !!item);
+}
+const favoriteModels = $derived(modelsForKeys(favoriteModelIds));
+const recentModels = $derived(modelsForKeys(recentModelIds));
+const providerGroups = $derived.by(() => {
+	const groups = new Map<
+		string,
+		{ id: string; label: string; models: Model[] }
+	>();
+	for (const item of catalog.models) {
+		const id = item.providerID;
+		let group = groups.get(id);
+		if (!group) {
+			const displayName = providerDisplayName(catalog, id, item.modelID);
+			group = {
+				id,
+				label: id.startsWith("loom_custom_") ? displayName : displayName,
+				models: [],
+			};
+			groups.set(id, group);
+		}
+		if (!group.models.some((model) => modelKey(model) === modelKey(item)))
+			group.models.push(item);
 	}
-	function chooseModel(item: Model) {
-		const key = modelKey(item);
-		model = key;
-		recentModelIds = [key, ...recentModelIds.filter((id) => id !== key)].slice(
-			0,
-			8,
+	return [...groups.values()].sort((a, b) => a.label.localeCompare(b.label));
+});
+// Perf: providerDisplayName()/canonicalProviderID() each scan the whole model
+// catalog, so calling them per rendered row made opening the picker O(n^2) and
+// visibly laggy. Precompute each model's label and search text once per catalog
+// change so the list renders with O(1) lookups.
+const modelLabelById = $derived.by(() => {
+	const map = new Map<string, string>();
+	for (const item of catalog.models)
+		map.set(
+			modelKey(item),
+			providerDisplayName(catalog, item.providerID, item.modelID),
 		);
-		try {
-			localStorage.setItem(recentStorageKey, JSON.stringify(recentModelIds));
-		} catch {}
-		modelSearch = "";
-		modelOpen = false;
-	}
-	function chooseDefaultModel() {
-		model = "";
-		modelSearch = "";
-		modelOpen = false;
-	}
-	function modelOptionValue(item: Model, section: string) {
-		return `${section} ${item.name} ${item.provider} ${item.providerID} ${item.modelID}`;
-	}
-	function matchesModelSearch(item: Model, section: string) {
-		const search = modelSearch.trim().toLowerCase();
+	return map;
+});
+function modelLabel(item: Model) {
+	return modelLabelById.get(modelKey(item)) ?? item.provider ?? item.providerID;
+}
+const modelSearchById = $derived.by(() => {
+	const map = new Map<string, string>();
+	for (const item of catalog.models)
+		map.set(
+			modelKey(item),
+			`${item.name} ${item.provider} ${item.providerID} ${item.modelID} ${modelKey(item)}`.toLowerCase(),
+		);
+	return map;
+});
+function providerTone(providerID: string) {
+	const id = providerID.toLowerCase();
+	if (["agy", "antigravity", "gemini"].includes(id)) return "agy";
+	if (["claude", "anthropic"].includes(id)) return "claude";
+	if (["codex", "openai"].includes(id)) return "codex";
+	if (id === "opencode") return "opencode";
+	return "default";
+}
+function toggleFavorite(item: Model) {
+	favoriteRevision += 1;
+	const key = modelKey(item);
+	favoriteModelIds = favoriteModelIds.includes(key)
+		? favoriteModelIds.filter((id) => id !== key)
+		: [key, ...favoriteModelIds].slice(0, 12);
+	try {
+		localStorage.setItem(favoriteStorageKey, JSON.stringify(favoriteModelIds));
+	} catch {}
+	favoriteSave = favoriteSave
+		.then(() => chat.savePreferences([...favoriteModelIds]))
+		.then(
+			() => {},
+			() => {},
+		);
+}
+function chooseModel(item: Model) {
+	const key = modelKey(item);
+	model = key;
+	recentModelIds = [key, ...recentModelIds.filter((id) => id !== key)].slice(
+		0,
+		8,
+	);
+	try {
+		localStorage.setItem(recentStorageKey, JSON.stringify(recentModelIds));
+	} catch {}
+	modelSearch = "";
+	modelOpen = false;
+}
+function chooseDefaultModel() {
+	model = "";
+	modelSearch = "";
+	modelOpen = false;
+}
+function modelOptionValue(item: Model, section: string) {
+	return `${section} ${item.name} ${item.provider} ${item.providerID} ${item.modelID}`;
+}
+function matchesModelSearch(item: Model, _section: string) {
+	const search = modelSearch.trim().toLowerCase();
+	return (
+		!search || (modelSearchById.get(modelKey(item)) ?? "").includes(search)
+	);
+}
+const visibleFavoriteModels = $derived(
+	favoriteModels.filter((item) => matchesModelSearch(item, "favorite")),
+);
+const visibleRecentModels = $derived(
+	recentModels.filter((item) => matchesModelSearch(item, "recent")),
+);
+const visibleProviderGroups = $derived(
+	providerGroups.flatMap((group) => {
+		const models = group.models.filter((item) =>
+			matchesModelSearch(item, group.id),
+		);
+		return models.length ? [{ ...group, models }] : [];
+	}),
+);
+const isModelSearching = $derived(!!modelSearch.trim());
+// A group is open while searching (so matches are visible) or when the user
+// explicitly toggled it. The selected model's group is NOT auto-expanded — the
+// trigger already shows the current model, and force-opening it (e.g. 119
+// OpenCode models) would defeat the collapsed-by-default performance win.
+function providerGroupExpanded(id: string) {
+	return isModelSearching || expandedGroups[id] === true;
+}
+function toggleProviderGroup(id: string) {
+	expandedGroups[id] = !expandedGroups[id];
+}
+const selectedCustomAgent = $derived(
+	customAgents.find((item) => item.id === customAgentId),
+);
+const supportsThinkingMode = $derived(true);
+const thinkingModes = $derived(
+	selectedModel?.providerID === "opencode" && selectedModel.variants?.length
+		? selectedModel.variants
+		: supportsThinkingMode
+			? ["low", "medium", "high"]
+			: [],
+);
+$effect(() => {
+	if (thinkingMode !== "default" && !thinkingModes.includes(thinkingMode))
+		thinkingMode = "default";
+});
+function customAgentModelLabel(item: NonNullable<typeof selectedCustomAgent>) {
+	if (!item.modelId) return `${item.provider} / default`;
+	const shortId = item.modelId.startsWith(`${item.provider}/`)
+		? item.modelId.slice(item.provider.length + 1)
+		: item.modelId;
+	const model = catalog.models.find((candidate) => {
+		if (candidate.providerID !== item.provider) return false;
 		return (
-			!search ||
-			modelOptionValue(item, `${section} ${modelKey(item)}`)
-				.toLowerCase()
-				.includes(search)
+			candidate.modelID === item.modelId ||
+			candidate.modelID === shortId ||
+			`${candidate.providerID}/${candidate.modelID}` === item.modelId
 		);
-	}
-	const visibleFavoriteModels = $derived(
-		favoriteModels.filter((item) => matchesModelSearch(item, "favorite")),
-	);
-	const visibleRecentModels = $derived(
-		recentModels.filter((item) => matchesModelSearch(item, "recent")),
-	);
-	const visibleProviderGroups = $derived(
-		providerGroups.flatMap((group) => {
-			const models = group.models.filter((item) =>
-				matchesModelSearch(item, group.id),
-			);
-			return models.length ? [{ ...group, models }] : [];
-		}),
-	);
-	const selectedCustomAgent = $derived(
-		customAgents.find((item) => item.id === customAgentId),
-	);
-	const supportsThinkingMode = $derived(true);
-	const thinkingModes = $derived(
-		selectedModel?.providerID === "opencode" && selectedModel.variants?.length
-			? selectedModel.variants
-			: supportsThinkingMode
-				? ["low", "medium", "high"]
-				: [],
-	);
-	$effect(() => {
-		if (thinkingMode !== "default" && !thinkingModes.includes(thinkingMode))
-			thinkingMode = "default";
 	});
-	function customAgentModelLabel(
-		item: NonNullable<typeof selectedCustomAgent>,
-	) {
-		if (!item.modelId) return `${item.provider} / default`;
-		const shortId = item.modelId.startsWith(`${item.provider}/`)
-			? item.modelId.slice(item.provider.length + 1)
-			: item.modelId;
-		const model = catalog.models.find((candidate) => {
-			if (candidate.providerID !== item.provider) return false;
-			return (
-				candidate.modelID === item.modelId ||
-				candidate.modelID === shortId ||
-				`${candidate.providerID}/${candidate.modelID}` === item.modelId
-			);
-		});
-		const providerName = model?.provider?.trim();
-		const providerLabel =
-			providerName && providerName.toLowerCase() !== item.provider.toLowerCase()
-				? providerName
-				: item.provider;
-		return `${providerLabel} / ${model?.name ?? shortId}`;
-	}
-	$effect(() => {
-		if (projectId !== previousProject) {
-			previousProject = projectId;
-			for (const preview of previewCache) URL.revokeObjectURL(preview.url);
-			previews = [];
-			previewCache = [];
-			previewFile = null;
-			previewOpen = false;
-			projectPreviewRequest++;
-			projectPreviewOpen = false;
-			projectPreviewPath = "";
-			projectPreviewText = "";
-			projectPreviewImage = "";
-			files = [];
-			attachments = [];
-			selectedDesignIds = [];
-			designNodes = [];
-			agents = [];
-			query = null;
-		}
-	});
-	$effect(() => {
-		const value = query;
-		const project = projectId;
-		if (value === null || !project) return;
-		let cancelled = false;
-		searching = true;
-		active = 0;
-		searchError = "";
-		const timer = setTimeout(async () => {
-			try {
-				const found = await chat.files(project, value);
-				if (!cancelled) results = found;
-			} catch (error) {
-				if (!cancelled) {
-					results = [];
-					searchError =
-						error instanceof Error ? error.message : "File search failed";
-				}
-			} finally {
-				if (!cancelled) searching = false;
-			}
-		}, 150);
-		return () => {
-			cancelled = true;
-			clearTimeout(timer);
-		};
-	});
-	function input(event?: Event) {
-		const element =
-			event?.currentTarget instanceof HTMLTextAreaElement
-				? event.currentTarget
-				: textarea;
-		if (!element) return;
-		cursor = element.selectionStart;
-		const match = element.value.slice(0, cursor).match(/@([^\s@]*)$/);
-		query = match ? match[1] : null;
-		if (match) {
-			mentionStart = cursor - match[1].length - 1;
-			updateMentionPosition();
-		} else {
-			mentionStyle = "";
-		}
-	}
-	async function openProjectPreview(path: string) {
-		const request = ++projectPreviewRequest;
-		const project = projectId;
-		projectPreviewPath = path;
+	const providerName = model?.provider?.trim();
+	const providerLabel =
+		providerName && providerName.toLowerCase() !== item.provider.toLowerCase()
+			? providerName
+			: item.provider;
+	return `${providerLabel} / ${model?.name ?? shortId}`;
+}
+$effect(() => {
+	if (projectId !== previousProject) {
+		previousProject = projectId;
+		for (const preview of previewCache) URL.revokeObjectURL(preview.url);
+		previews = [];
+		previewCache = [];
+		previewFile = null;
+		previewOpen = false;
+		projectPreviewRequest++;
+		projectPreviewOpen = false;
+		projectPreviewPath = "";
 		projectPreviewText = "";
 		projectPreviewImage = "";
-		projectPreviewError = "";
-		projectPreviewLoading = true;
-		projectPreviewOpen = true;
-		try {
-			if (!project || path.endsWith("/"))
-				throw new Error("File preview is unavailable.");
-			const result = await chat.file(project, path);
-			if (
-				request !== projectPreviewRequest ||
-				!projectPreviewOpen ||
-				project !== projectId
-			)
-				return;
-			const type = result.type.toLowerCase().split(";")[0]?.trim();
-			const imageType =
-				/^(image\/png|image\/jpeg|image\/gif|image\/webp)$/.test(type ?? "")
-					? type
-					: type === "image" || type === "binary"
-						? (
-								{
-									png: "image/png",
-									jpg: "image/jpeg",
-									jpeg: "image/jpeg",
-									gif: "image/gif",
-									webp: "image/webp",
-								} as Record<string, string>
-							)[path.split(".").pop()?.toLowerCase() ?? ""]
-						: undefined;
-			if (result.encoding === "base64" && imageType) {
-				if (result.content.length > 1_400_000)
-					throw new Error("Image is too large to preview.");
-				if (
-					!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
-						result.content,
-					) ||
-					!result.content
-				)
-					throw new Error("Invalid image data.");
-				projectPreviewImage = `data:${imageType};base64,${result.content}`;
-			} else if (
-				!result.encoding &&
-				(type === "text" ||
-					type?.startsWith("text/") ||
-					type === "application/json" ||
-					type === "application/javascript" ||
-					type === "application/xml")
-			) {
-				projectPreviewText = result.content.slice(0, 100_000);
-				if (result.content.length > 100_000)
-					projectPreviewText += "\n… Preview truncated.";
-			} else {
-				throw new Error("Preview is unavailable for this file type.");
-			}
-		} catch (error) {
-			if (
-				request === projectPreviewRequest &&
-				projectPreviewOpen &&
-				project === projectId
-			)
-				projectPreviewError =
-					error instanceof Error ? error.message : "Unable to preview file.";
-		} finally {
-			if (request === projectPreviewRequest) projectPreviewLoading = false;
-		}
-	}
-	function clickInput(event: MouseEvent) {
-		input(event);
-		const position = textarea?.selectionStart ?? 0;
-		for (const path of files) {
-			const mention = `@${path}`;
-			let start = draft.indexOf(mention);
-			while (start !== -1) {
-				const end = start + mention.length;
-				if (
-					position >= start &&
-					position <= end &&
-					(end === draft.length || /[\s),.!?;:]/.test(draft[end] ?? ""))
-				) {
-					void openProjectPreview(path);
-					return;
-				}
-				start = draft.indexOf(mention, end);
-			}
-		}
-		for (const { file } of previews) {
-			const mention = `@${file.name}`;
-			let start = draft.indexOf(mention);
-			while (start !== -1) {
-				const end = start + mention.length;
-				if (
-					position >= start &&
-					position <= end &&
-					(end === draft.length || /[\s),.!?;:]/.test(draft[end] ?? ""))
-				) {
-					previewFile = file;
-					previewOpen = true;
-					return;
-				}
-				start = draft.indexOf(mention, end);
-			}
-		}
-	}
-	function updateMentionPosition() {
-		if (query === null || !textarea) return;
-		const rect = textarea.getBoundingClientRect();
-		const showAbove = rect.top > 260;
-		const top = showAbove ? rect.top - 8 : rect.bottom + 8;
-		mentionStyle = `position:fixed;z-index:1000;left:${Math.max(8, rect.left)}px;top:${top}px;width:min(${rect.width}px,calc(100vw - 16px));transform:${showAbove ? "translateY(-100%)" : "none"}`;
-	}
-	async function loadDesigns() {
-		if (!projectId || loadingDesigns) return;
-		loadingDesigns = true;
-		designError = "";
-		try {
-			const thread = await daemon.listDesigns(projectId);
-			designNodes = thread.nodes.filter(
-				(node) => node.status === "ready" && node.html.trim(),
-			);
-		} catch (error) {
-			designError =
-				error instanceof Error
-					? error.message
-					: "Could not load Canvas designs";
-		} finally {
-			loadingDesigns = false;
-		}
-	}
-	function toggleDesign(node: DesignNode) {
-		if (selectedDesignIds.includes(node.id)) {
-			selectedDesignIds = selectedDesignIds.filter((id) => id !== node.id);
-			designNotice = "";
-			return;
-		}
-		if (selectedDesignIds.length >= 5) {
-			designNotice = "You can attach up to 5 Canvas designs per message.";
-			return;
-		}
-		designNotice = "";
-		selectedDesignIds = [...selectedDesignIds, node.id];
-	}
-	async function insertMention(label: string, start: number, end = start) {
-		const prefix = draft.slice(0, start);
-		const suffix = draft.slice(end);
-		const insertion = `@${label}${suffix && !/\s/.test(suffix[0] ?? "") ? " " : ""}`;
-		draft = `${prefix}${insertion}${suffix}`;
+		files = [];
+		attachments = [];
+		selectedDesignIds = [];
+		designNodes = [];
+		agents = [];
 		query = null;
-		await tick();
-		textarea?.focus();
-		textarea?.setSelectionRange(
-			start + insertion.length,
-			start + insertion.length,
-		);
 	}
-	function removeMention(label: string) {
-		const token = `@${label}`;
-		const index = draft.indexOf(token);
-		if (index < 0) return;
-		const end = index + token.length;
-		if (end < draft.length && !/[\s),.!?;:]/.test(draft[end] ?? "")) return;
-		draft = `${draft.slice(0, index)}${draft.slice(end < draft.length && draft[end] === " " ? end + 1 : end)}`;
-	}
-	async function choose(item: { value: string; type: string; id?: string }) {
-		if (item.type === "file") {
-			files = [...new Set([...files, item.value])];
-			await insertMention(item.value, mentionStart, cursor);
-			return;
-		}
-		if (item.type === "custom-agent") customAgentId = item.id ?? "";
-		else agents = [...new Set([...agents, item.value])];
-		draft = `${draft.slice(0, mentionStart)}${draft.slice(cursor)}`;
-		query = null;
-		await tick();
-		textarea?.focus();
-		textarea?.setSelectionRange(mentionStart, mentionStart);
-	}
-	async function addFiles(incoming: globalThis.File[], position: number) {
-		const added = incoming.slice(0, Math.max(0, 10 - attachments.length));
-		if (!added.length) return;
-		attachments = [...attachments, ...added];
-		const newPreviews = added
-			.filter((file) => file.type.startsWith("image/"))
-			.map((file) => ({ file, url: URL.createObjectURL(file) }));
-		previewCache = [...previewCache, ...newPreviews];
-		previews = [...previews, ...newPreviews];
-		let caret = position;
-		for (const file of added) {
-			await insertMention(file.name, caret);
-			caret = textarea?.selectionStart ?? caret;
-		}
-	}
-	function addAttachments(event: Event) {
-		const input = event.currentTarget as HTMLInputElement;
-		void addFiles(Array.from(input.files ?? []), attachmentCursor);
-		input.value = "";
-	}
-	let attachmentCursor = 0;
-	function openAttachments() {
-		attachmentCursor = textarea?.selectionStart ?? draft.length;
-		attachmentInput?.click();
-	}
-	function removeAttachment(file: globalThis.File) {
-		attachments = attachments.filter((item) => item !== file);
-		const preview = previews.find((item) => item.file === file);
-		if (preview) URL.revokeObjectURL(preview.url);
-		previews = previews.filter((item) => item.file !== file);
-		previewCache = previewCache.filter((item) => item.file !== file);
-		if (previewFile === file) previewOpen = false;
-		removeMention(file.name);
-	}
-
-	/** Ctrl/Cmd+V a screenshot or photo straight into the attachment tray. */
-	function onpaste(event: ClipboardEvent) {
-		const items = event.clipboardData?.items;
-		if (!items) return;
-		const images: globalThis.File[] = [];
-		for (const item of Array.from(items)) {
-			if (item.kind === "file" && item.type.startsWith("image/")) {
-				const file = item.getAsFile();
-				if (file) images.push(file);
+});
+$effect(() => {
+	const value = query;
+	const project = projectId;
+	if (value === null || !project) return;
+	let cancelled = false;
+	searching = true;
+	active = 0;
+	searchError = "";
+	const timer = setTimeout(async () => {
+		try {
+			const found = await chat.files(project, value);
+			if (!cancelled) results = found;
+		} catch (error) {
+			if (!cancelled) {
+				results = [];
+				searchError =
+					error instanceof Error ? error.message : "File search failed";
 			}
+		} finally {
+			if (!cancelled) searching = false;
 		}
-		if (!images.length) return;
-		event.preventDefault();
-		const stamp = Date.now();
-		const named = images.map((file, index) =>
-			file.name && file.name !== "image.png"
-				? file
-				: new File([file], `pasted-${stamp}-${index}.png`, { type: file.type }),
-		);
-		void addFiles(named, textarea?.selectionStart ?? draft.length);
+	}, 150);
+	return () => {
+		cancelled = true;
+		clearTimeout(timer);
+	};
+});
+function input(event?: Event) {
+	const element =
+		event?.currentTarget instanceof HTMLTextAreaElement
+			? event.currentTarget
+			: textarea;
+	if (!element) return;
+	cursor = element.selectionStart;
+	const match = element.value.slice(0, cursor).match(/@([^\s@]*)$/);
+	query = match ? match[1] : null;
+	if (match) {
+		mentionStart = cursor - match[1].length - 1;
+		updateMentionPosition();
+	} else {
+		mentionStyle = "";
 	}
-
-	async function attach() {
-		if (!textarea) return;
-		textarea.focus();
-		const pos = textarea.selectionStart ?? draft.length;
-		const prefix = draft.slice(0, pos);
-		const insertion = "@";
-		draft = `${prefix}${insertion}${draft.slice(pos)}`;
-		await tick();
-		textarea.setSelectionRange(pos + insertion.length, pos + insertion.length);
-		input();
-	}
-	async function send() {
+}
+async function openProjectPreview(path: string) {
+	const request = ++projectPreviewRequest;
+	const project = projectId;
+	projectPreviewPath = path;
+	projectPreviewText = "";
+	projectPreviewImage = "";
+	projectPreviewError = "";
+	projectPreviewLoading = true;
+	projectPreviewOpen = true;
+	try {
+		if (!project || path.endsWith("/"))
+			throw new Error("File preview is unavailable.");
+		const result = await chat.file(project, path);
 		if (
-			sending ||
-			busy ||
-			disabled ||
-			(!draft.trim() &&
-				!files.length &&
-				!attachments.length &&
-				!selectedDesignIds.length)
+			request !== projectPreviewRequest ||
+			!projectPreviewOpen ||
+			project !== projectId
 		)
 			return;
-		sending = true;
-		query = null;
-		const pendingDraft = draft;
-		const pendingFiles = [...files];
-		const pendingAttachments = [...attachments];
-		const pendingDesignIds = [...selectedDesignIds];
-		const pendingAgents = [...agents];
-		try {
-			const attachmentsPayload = await Promise.all(
-				pendingAttachments.map(async (file): Promise<ChatAttachment> => ({
+		const type = result.type.toLowerCase().split(";")[0]?.trim();
+		const imageType = /^(image\/png|image\/jpeg|image\/gif|image\/webp)$/.test(
+			type ?? "",
+		)
+			? type
+			: type === "image" || type === "binary"
+				? (
+						{
+							png: "image/png",
+							jpg: "image/jpeg",
+							jpeg: "image/jpeg",
+							gif: "image/gif",
+							webp: "image/webp",
+						} as Record<string, string>
+					)[path.split(".").pop()?.toLowerCase() ?? ""]
+				: undefined;
+		if (result.encoding === "base64" && imageType) {
+			if (result.content.length > 1_400_000)
+				throw new Error("Image is too large to preview.");
+			if (
+				!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+					result.content,
+				) ||
+				!result.content
+			)
+				throw new Error("Invalid image data.");
+			projectPreviewImage = `data:${imageType};base64,${result.content}`;
+		} else if (
+			!result.encoding &&
+			(type === "text" ||
+				type?.startsWith("text/") ||
+				type === "application/json" ||
+				type === "application/javascript" ||
+				type === "application/xml")
+		) {
+			projectPreviewText = result.content.slice(0, 100_000);
+			if (result.content.length > 100_000)
+				projectPreviewText += "\n… Preview truncated.";
+		} else {
+			throw new Error("Preview is unavailable for this file type.");
+		}
+	} catch (error) {
+		if (
+			request === projectPreviewRequest &&
+			projectPreviewOpen &&
+			project === projectId
+		)
+			projectPreviewError =
+				error instanceof Error ? error.message : "Unable to preview file.";
+	} finally {
+		if (request === projectPreviewRequest) projectPreviewLoading = false;
+	}
+}
+function clickInput(event: MouseEvent) {
+	input(event);
+	const position = textarea?.selectionStart ?? 0;
+	for (const path of files) {
+		const mention = `@${path}`;
+		let start = draft.indexOf(mention);
+		while (start !== -1) {
+			const end = start + mention.length;
+			if (
+				position >= start &&
+				position <= end &&
+				(end === draft.length || /[\s),.!?;:]/.test(draft[end] ?? ""))
+			) {
+				void openProjectPreview(path);
+				return;
+			}
+			start = draft.indexOf(mention, end);
+		}
+	}
+	for (const { file } of previews) {
+		const mention = `@${file.name}`;
+		let start = draft.indexOf(mention);
+		while (start !== -1) {
+			const end = start + mention.length;
+			if (
+				position >= start &&
+				position <= end &&
+				(end === draft.length || /[\s),.!?;:]/.test(draft[end] ?? ""))
+			) {
+				previewFile = file;
+				previewOpen = true;
+				return;
+			}
+			start = draft.indexOf(mention, end);
+		}
+	}
+}
+function updateMentionPosition() {
+	if (query === null || !textarea) return;
+	const rect = textarea.getBoundingClientRect();
+	const showAbove = rect.top > 260;
+	const top = showAbove ? rect.top - 8 : rect.bottom + 8;
+	mentionStyle = `position:fixed;z-index:1000;left:${Math.max(8, rect.left)}px;top:${top}px;width:min(${rect.width}px,calc(100vw - 16px));transform:${showAbove ? "translateY(-100%)" : "none"}`;
+}
+async function loadDesigns() {
+	if (!projectId || loadingDesigns) return;
+	loadingDesigns = true;
+	designError = "";
+	try {
+		const thread = await daemon.listDesigns(projectId);
+		designNodes = thread.nodes.filter(
+			(node) => node.status === "ready" && node.html.trim(),
+		);
+	} catch (error) {
+		designError =
+			error instanceof Error ? error.message : "Could not load Canvas designs";
+	} finally {
+		loadingDesigns = false;
+	}
+}
+function toggleDesign(node: DesignNode) {
+	if (selectedDesignIds.includes(node.id)) {
+		selectedDesignIds = selectedDesignIds.filter((id) => id !== node.id);
+		designNotice = "";
+		return;
+	}
+	if (selectedDesignIds.length >= 5) {
+		designNotice = "You can attach up to 5 Canvas designs per message.";
+		return;
+	}
+	designNotice = "";
+	selectedDesignIds = [...selectedDesignIds, node.id];
+}
+async function insertMention(label: string, start: number, end = start) {
+	const prefix = draft.slice(0, start);
+	const suffix = draft.slice(end);
+	const insertion = `@${label}${suffix && !/\s/.test(suffix[0] ?? "") ? " " : ""}`;
+	draft = `${prefix}${insertion}${suffix}`;
+	query = null;
+	await tick();
+	textarea?.focus();
+	textarea?.setSelectionRange(
+		start + insertion.length,
+		start + insertion.length,
+	);
+}
+function removeMention(label: string) {
+	const token = `@${label}`;
+	const index = draft.indexOf(token);
+	if (index < 0) return;
+	const end = index + token.length;
+	if (end < draft.length && !/[\s),.!?;:]/.test(draft[end] ?? "")) return;
+	draft = `${draft.slice(0, index)}${draft.slice(end < draft.length && draft[end] === " " ? end + 1 : end)}`;
+}
+async function choose(item: { value: string; type: string; id?: string }) {
+	if (item.type === "file") {
+		files = [...new Set([...files, item.value])];
+		await insertMention(item.value, mentionStart, cursor);
+		return;
+	}
+	if (item.type === "custom-agent") customAgentId = item.id ?? "";
+	else agents = [...new Set([...agents, item.value])];
+	draft = `${draft.slice(0, mentionStart)}${draft.slice(cursor)}`;
+	query = null;
+	await tick();
+	textarea?.focus();
+	textarea?.setSelectionRange(mentionStart, mentionStart);
+}
+async function addFiles(incoming: globalThis.File[], position: number) {
+	const added = incoming.slice(0, Math.max(0, 10 - attachments.length));
+	if (!added.length) return;
+	attachments = [...attachments, ...added];
+	const newPreviews = added
+		.filter((file) => file.type.startsWith("image/"))
+		.map((file) => ({ file, url: URL.createObjectURL(file) }));
+	previewCache = [...previewCache, ...newPreviews];
+	previews = [...previews, ...newPreviews];
+	let caret = position;
+	for (const file of added) {
+		await insertMention(file.name, caret);
+		caret = textarea?.selectionStart ?? caret;
+	}
+}
+function addAttachments(event: Event) {
+	const input = event.currentTarget as HTMLInputElement;
+	void addFiles(Array.from(input.files ?? []), attachmentCursor);
+	input.value = "";
+}
+let attachmentCursor = 0;
+function openAttachments() {
+	attachmentCursor = textarea?.selectionStart ?? draft.length;
+	attachmentInput?.click();
+}
+function removeAttachment(file: globalThis.File) {
+	attachments = attachments.filter((item) => item !== file);
+	const preview = previews.find((item) => item.file === file);
+	if (preview) URL.revokeObjectURL(preview.url);
+	previews = previews.filter((item) => item.file !== file);
+	previewCache = previewCache.filter((item) => item.file !== file);
+	if (previewFile === file) previewOpen = false;
+	removeMention(file.name);
+}
+
+/** Ctrl/Cmd+V a screenshot or photo straight into the attachment tray. */
+function onpaste(event: ClipboardEvent) {
+	const items = event.clipboardData?.items;
+	if (!items) return;
+	const images: globalThis.File[] = [];
+	for (const item of Array.from(items)) {
+		if (item.kind === "file" && item.type.startsWith("image/")) {
+			const file = item.getAsFile();
+			if (file) images.push(file);
+		}
+	}
+	if (!images.length) return;
+	event.preventDefault();
+	const stamp = Date.now();
+	const named = images.map((file, index) =>
+		file.name && file.name !== "image.png"
+			? file
+			: new File([file], `pasted-${stamp}-${index}.png`, { type: file.type }),
+	);
+	void addFiles(named, textarea?.selectionStart ?? draft.length);
+}
+
+async function attach() {
+	if (!textarea) return;
+	textarea.focus();
+	const pos = textarea.selectionStart ?? draft.length;
+	const prefix = draft.slice(0, pos);
+	const insertion = "@";
+	draft = `${prefix}${insertion}${draft.slice(pos)}`;
+	await tick();
+	textarea.setSelectionRange(pos + insertion.length, pos + insertion.length);
+	input();
+}
+async function send() {
+	if (
+		sending ||
+		busy ||
+		disabled ||
+		(!draft.trim() &&
+			!files.length &&
+			!attachments.length &&
+			!selectedDesignIds.length)
+	)
+		return;
+	sending = true;
+	query = null;
+	const pendingDraft = draft;
+	const pendingFiles = [...files];
+	const pendingAttachments = [...attachments];
+	const pendingDesignIds = [...selectedDesignIds];
+	const pendingAgents = [...agents];
+	try {
+		const attachmentsPayload = await Promise.all(
+			pendingAttachments.map(
+				async (file): Promise<ChatAttachment> => ({
 					filename: file.name,
 					mime: file.type || "application/octet-stream",
 					data: await new Promise<string>((resolve, reject) => {
@@ -696,92 +742,93 @@
 						reader.onerror = () => reject(reader.error);
 						reader.readAsDataURL(file);
 					}),
-				})),
-			);
-			const request = onsend({
-				text: pendingDraft.trim(),
-				files: pendingFiles,
-				attachments: attachmentsPayload,
-				designNodeIds: pendingDesignIds,
-				agents: pendingAgents,
-				agent,
-				customAgentId: customAgentId || undefined,
-				model: selectedModel
-					? {
-							providerID: selectedModel.providerID,
-							modelID: selectedModel.modelID,
-						}
-					: undefined,
-				thinkingMode: supportsThinkingMode ? thinkingMode : undefined,
-			});
-			draft = "";
-			files = [];
-			attachments = [];
-			selectedDesignIds = [];
-			agents = [];
-			const ok = await request;
-			if (ok) {
-				for (const preview of previewCache) URL.revokeObjectURL(preview.url);
-				previewCache = [];
-				previews = [];
-				previewFile = null;
-				previewOpen = false;
-			}
-			if (!ok) {
-				draft = pendingDraft;
-				files = pendingFiles;
-				attachments = pendingAttachments;
-				selectedDesignIds = pendingDesignIds;
-				agents = pendingAgents;
-			}
-		} catch (error) {
+				}),
+			),
+		);
+		const request = onsend({
+			text: pendingDraft.trim(),
+			files: pendingFiles,
+			attachments: attachmentsPayload,
+			designNodeIds: pendingDesignIds,
+			agents: pendingAgents,
+			agent,
+			customAgentId: customAgentId || undefined,
+			model: selectedModel
+				? {
+						providerID: selectedModel.providerID,
+						modelID: selectedModel.modelID,
+					}
+				: undefined,
+			thinkingMode: supportsThinkingMode ? thinkingMode : undefined,
+		});
+		draft = "";
+		files = [];
+		attachments = [];
+		selectedDesignIds = [];
+		agents = [];
+		const ok = await request;
+		if (ok) {
+			for (const preview of previewCache) URL.revokeObjectURL(preview.url);
+			previewCache = [];
+			previews = [];
+			previewFile = null;
+			previewOpen = false;
+		}
+		if (!ok) {
 			draft = pendingDraft;
 			files = pendingFiles;
 			attachments = pendingAttachments;
 			selectedDesignIds = pendingDesignIds;
 			agents = pendingAgents;
-			throw error;
-		} finally {
-			sending = false;
 		}
+	} catch (error) {
+		draft = pendingDraft;
+		files = pendingFiles;
+		attachments = pendingAttachments;
+		selectedDesignIds = pendingDesignIds;
+		agents = pendingAgents;
+		throw error;
+	} finally {
+		sending = false;
 	}
-	function keydown(event: KeyboardEvent) {
-		if (event.isComposing) return;
-		if (event.repeat && event.key === "Enter") {
+}
+function keydown(event: KeyboardEvent) {
+	if (event.isComposing) return;
+	if (event.repeat && event.key === "Enter") {
+		event.preventDefault();
+		return;
+	}
+	if (query !== null) {
+		if (event.key === "Escape") {
 			event.preventDefault();
+			query = null;
 			return;
 		}
-		if (query !== null) {
-			if (event.key === "Escape") {
-				event.preventDefault();
-				query = null;
-				return;
-			}
-			if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-				event.preventDefault();
-				active = Math.max(
-					0,
-					Math.min(
-						choices.length - 1,
-						active + (event.key === "ArrowDown" ? 1 : -1),
-					),
-				);
-				document
-					.getElementById(`mention-${active}`)
-					?.scrollIntoView({ block: "nearest" });
-				return;
-			}
-			if (event.key === "Enter" || event.key === "Tab") {
-				event.preventDefault();
-				if (choices[active]) void choose(choices[active]);
-				return;
-			}
-		}
-		if (event.key === "Enter" && !event.shiftKey) {
+		if (event.key === "ArrowDown" || event.key === "ArrowUp") {
 			event.preventDefault();
-			textarea?.form?.requestSubmit();
+			active = Math.max(
+				0,
+				Math.min(
+					choices.length - 1,
+					active + (event.key === "ArrowDown" ? 1 : -1),
+				),
+			);
+			document
+				.getElementById(`mention-${active}`)
+				?.scrollIntoView({ block: "nearest" });
+			return;
+		}
+		if (event.key === "Enter" || event.key === "Tab") {
+			event.preventDefault();
+			if (choices[active]) void choose(choices[active]);
+			return;
 		}
 	}
+	if (event.key === "Enter" && !event.shiftKey) {
+		event.preventDefault();
+		textarea?.form?.requestSubmit();
+	}
+}
 </script>
 
 {#snippet modelOption(item: Model, section: string)}
@@ -801,12 +848,8 @@
 					<Badge
 						variant="outline"
 						class={`model-badge model-badge--${providerTone(item.providerID)} max-w-36 shrink-0 truncate px-1.5 text-[10px] uppercase tracking-wide`}
-						title={providerDisplayName(catalog, item.providerID, item.modelID)}
-						>{providerDisplayName(
-							catalog,
-							item.providerID,
-							item.modelID,
-						)}</Badge
+						title={modelLabel(item)}
+						>{modelLabel(item)}</Badge
 					>
 				</span>
 				<span class="block truncate text-xs text-muted-foreground">
@@ -981,7 +1024,7 @@
 	<input
 		bind:this={attachmentInput}
 		type="file"
-		accept="image/*,.txt,.md,.json,.ts,.tsx,.js,.jsx,.css,.html,.pdf"
+		accept={attachmentAccept}
 		multiple
 		onchange={addAttachments}
 		class="sr-only"
@@ -1132,12 +1175,12 @@
 					aria-label={selectedCustomAgent
 						? `Custom agent model: ${customAgentModelLabel(selectedCustomAgent)}`
 						: selectedModel
-							? `Selected model: ${selectedModel.name} from ${providerDisplayName(catalog, selectedModel.providerID, selectedModel.modelID)}`
+							? `Selected model: ${selectedModel.name} from ${modelLabel(selectedModel)}`
 							: "Select model"}
 					title={selectedCustomAgent
 						? customAgentModelLabel(selectedCustomAgent)
 						: selectedModel
-							? `${selectedModel.name} · ${providerDisplayName(catalog, selectedModel.providerID, selectedModel.modelID)} · ${selectedModel.modelID}`
+							? `${selectedModel.name} · ${modelLabel(selectedModel)} · ${selectedModel.modelID}`
 							: "Default model"}
 					disabled={!!selectedCustomAgent}
 					><span class="truncate"
@@ -1147,11 +1190,7 @@
 					>{#if selectedModel && !selectedCustomAgent}<Badge
 							variant="outline"
 							class={`model-badge model-badge--${providerTone(selectedModel.providerID)} max-w-20 shrink-0 truncate px-1 text-[9px] uppercase tracking-wide`}
-							>{providerDisplayName(
-								catalog,
-								selectedModel.providerID,
-								selectedModel.modelID,
-							)}</Badge
+							>{modelLabel(selectedModel)}</Badge
 						>{/if}<ChevronDown size={12} /></Popover.Trigger
 				>
 				<Popover.Content class="w-96 max-w-[calc(100vw-2rem)] p-0" align="end"
@@ -1180,13 +1219,32 @@
 									>Default model</Command.Item
 								></Command.Group
 							>
-							{#each visibleProviderGroups as group (group.id)}<Command.Separator
-								/><Command.Group heading={group.label}
-									>{#each group.models as item (modelKey(item))}{@render modelOption(
-											item,
-											group.id,
-										)}{/each}</Command.Group
-								>{/each}
+							{#each visibleProviderGroups as group (group.id)}
+								<Command.Separator />
+								<button
+									type="button"
+									aria-expanded={providerGroupExpanded(group.id)}
+									onclick={() => toggleProviderGroup(group.id)}
+									class="flex w-full items-center justify-between gap-2 px-4 py-1.5 text-xs font-medium text-foreground/50 transition-colors hover:text-foreground"
+								>
+									<span class="truncate">{group.label}</span>
+									<span class="flex shrink-0 items-center gap-1 text-muted-foreground">
+										{group.id.toLowerCase() !== group.label.toLowerCase()
+											? group.id
+											: ""}
+										{group.models.length}
+										<ChevronDown
+											size={12}
+											class={providerGroupExpanded(group.id) ? "" : "-rotate-90"}
+										/>
+									</span>
+								</button>
+								{#if providerGroupExpanded(group.id)}
+									{#each group.models as item (modelKey(item))}
+										{@render modelOption(item, group.id)}
+									{/each}
+								{/if}
+							{/each}
 						</Command.List></Command.Root
 					></Popover.Content
 				>

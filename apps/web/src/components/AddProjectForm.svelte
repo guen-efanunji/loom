@@ -1,55 +1,54 @@
 <script lang="ts">
-	import { ArrowUp, Folder, FolderPlus, LoaderCircle } from "@lucide/svelte";
-	import { onMount } from "svelte";
-	import { toast } from "svelte-sonner";
-	import { Button } from "$lib/components/ui/button";
-	import * as Checkbox from "$lib/components/ui/checkbox";
-	import { Input } from "$lib/components/ui/input";
-	import * as ScrollArea from "$lib/components/ui/scroll-area";
-	import { daemon, type DirectoryListing } from "$lib/daemon";
+import { ArrowUp, Folder, FolderPlus, LoaderCircle } from "@lucide/svelte";
+import { onMount } from "svelte";
+import { toast } from "svelte-sonner";
+import { Button } from "$lib/components/ui/button";
+import * as Checkbox from "$lib/components/ui/checkbox";
+import { Input } from "$lib/components/ui/input";
+import * as ScrollArea from "$lib/components/ui/scroll-area";
+import { type DirectoryListing, daemon } from "$lib/daemon";
 
-	let { oncreated }: { oncreated: () => void } = $props();
-	let listing = $state<DirectoryListing | null>(null);
-	let pathInput = $state("");
-	let showHidden = $state(false);
-	let loading = $state(false);
-	let submitting = $state(false);
-	let error = $state("");
+let { oncreated }: { oncreated: () => void } = $props();
+let listing = $state<DirectoryListing | null>(null);
+let pathInput = $state("");
+let showHidden = $state(false);
+let loading = $state(false);
+let submitting = $state(false);
+let error = $state("");
 
-	onMount(() => {
-		void navigate();
-	});
+onMount(() => {
+	void navigate();
+});
 
-	async function navigate(path?: string) {
-		loading = true;
-		error = "";
-		try {
-			listing = await daemon.listDirectories(path, showHidden);
-			pathInput = listing.path;
-		} catch (reason) {
-			error =
-				reason instanceof Error ? reason.message : "Unable to read this folder";
-		} finally {
-			loading = false;
-		}
+async function navigate(path?: string) {
+	loading = true;
+	error = "";
+	try {
+		listing = await daemon.listDirectories(path, showHidden);
+		pathInput = listing.path;
+	} catch (reason) {
+		error =
+			reason instanceof Error ? reason.message : "Unable to read this folder";
+	} finally {
+		loading = false;
 	}
+}
 
-	async function submit() {
-		const path = pathInput.trim();
-		if (!path || submitting) return;
-		error = "";
-		submitting = true;
-		try {
-			await daemon.createProject(path);
-			toast.success("Project added");
-			oncreated();
-		} catch (reason) {
-			error =
-				reason instanceof Error ? reason.message : "Unable to add project";
-		} finally {
-			submitting = false;
-		}
+async function submit() {
+	const path = pathInput.trim();
+	if (!path || submitting) return;
+	error = "";
+	submitting = true;
+	try {
+		await daemon.createProject(path);
+		toast.success("Project added");
+		oncreated();
+	} catch (reason) {
+		error = reason instanceof Error ? reason.message : "Unable to add project";
+	} finally {
+		submitting = false;
 	}
+}
 </script>
 
 <div class="space-y-3">

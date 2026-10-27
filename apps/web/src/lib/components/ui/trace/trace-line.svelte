@@ -1,5 +1,5 @@
 <script lang="ts" module>
-	export type TraceLineStatus = "running" | "error" | "pending";
+export type TraceLineStatus = "running" | "error" | "pending";
 </script>
 
 <script lang="ts">

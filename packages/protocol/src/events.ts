@@ -130,6 +130,11 @@ export const daemonEventSchema = z.discriminatedUnion("type", [
 		request: permissionRequestSchema,
 	}),
 	z.object({
+		type: z.literal("chat.updated"),
+		sessionId: z.string().min(1),
+		status: z.string().min(1),
+	}),
+	z.object({
 		type: z.literal("agent.run.created"),
 		run: agentRunSchema,
 	}),

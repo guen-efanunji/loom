@@ -1,22 +1,22 @@
 <script lang="ts" module>
-	import { type VariantProps, tv } from "tailwind-variants";
+import { tv, type VariantProps } from "tailwind-variants";
 
-	export const markerVariants = tv({
-		base: "cn-marker text-muted-foreground gap-2 text-sm [a]:hover:text-foreground [a]:underline-offset-3 [a]:underline [&_svg:not([class*='size-'])]:size-4 min-h-4 text-left",
-		variants: {
-			variant: {
-				default: "",
-				border: "border-border border-b pb-2",
-				separator:
-					"before:bg-border after:bg-border before:mr-1 after:ml-1 before:h-px after:h-px before:min-w-0 after:min-w-0 before:flex-1 after:flex-1",
-			},
+export const markerVariants = tv({
+	base: "cn-marker text-muted-foreground gap-2 text-sm [a]:hover:text-foreground [a]:underline-offset-3 [a]:underline [&_svg:not([class*='size-'])]:size-4 min-h-4 text-left",
+	variants: {
+		variant: {
+			default: "",
+			border: "border-border border-b pb-2",
+			separator:
+				"before:bg-border after:bg-border before:mr-1 after:ml-1 before:h-px after:h-px before:min-w-0 after:min-w-0 before:flex-1 after:flex-1",
 		},
-		defaultVariants: {
-			variant: "default",
-		},
-	});
+	},
+	defaultVariants: {
+		variant: "default",
+	},
+});
 
-	export type MarkerVariant = VariantProps<typeof markerVariants>["variant"];
+export type MarkerVariant = VariantProps<typeof markerVariants>["variant"];
 </script>
 
 <script lang="ts">

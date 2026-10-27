@@ -1,95 +1,97 @@
 <script lang="ts">
-	import {
-		ArrowLeft,
-		Bot,
-		CircleHelp,
-		Globe,
-		Keyboard,
-		MessageSquareText,
-		Palette,
-		PanelLeft,
-		Search,
-		Settings2,
-		Terminal,
-		WalletCards,
-	} from "@lucide/svelte";
-	import { Button } from "$lib/components/ui/button";
-	import { Input } from "$lib/components/ui/input";
-	import { page } from "$app/state";
-	import {
-		safeWorkspaceReturnTo,
-		settingsHref,
-	} from "$lib/settings-navigation";
+import {
+	ArrowLeft,
+	Bot,
+	CircleHelp,
+	Globe,
+	Keyboard,
+	MessageSquareText,
+	Palette,
+	PanelLeft,
+	Search,
+	Settings2,
+	Terminal,
+	WalletCards,
+} from "@lucide/svelte";
+import { page } from "$app/state";
+import { Button } from "$lib/components/ui/button";
+import { Input } from "$lib/components/ui/input";
+import { safeWorkspaceReturnTo, settingsHref } from "$lib/settings-navigation";
 
-	type ActiveSection =
-		"general" | "context" | "providers" | "agents" | "mcp" | "token-usage";
-	type Props = {
-		active: ActiveSection;
-		search?: string;
-	};
+type ActiveSection =
+	| "general"
+	| "context"
+	| "providers"
+	| "agents"
+	| "mcp"
+	| "token-usage";
+type Props = {
+	active: ActiveSection;
+	search?: string;
+};
 
-	let { active, search = $bindable("") }: Props = $props();
+let { active, search = $bindable("") }: Props = $props();
 
-	const returnTo = $derived(
-		safeWorkspaceReturnTo(page.url.searchParams.get("returnTo")),
-	);
+const returnTo = $derived(
+	safeWorkspaceReturnTo(page.url.searchParams.get("returnTo")),
+);
 
-	function sectionHref(item: { href: string; key?: string }) {
-		return item.key === "mcp" ? item.href : settingsHref(item.href, returnTo);
-	}
+function sectionHref(item: { href: string; key?: string }) {
+	return item.key === "mcp" ? item.href : settingsHref(item.href, returnTo);
+}
 
-	const sections = [
-		{
-			label: "Workspace",
-			items: [
-				{
-					label: "General",
-					href: "/settings",
-					icon: Settings2,
-					key: "general",
-				},
-				{
-					label: "Context",
-					href: "/settings/context",
-					icon: CircleHelp,
-					key: "context",
-				},
-			],
-		},
-		{
-			label: "Agents",
-			items: [
-				{ label: "Agents", href: "/settings/agents", icon: Bot, key: "agents" },
-				{
-					label: "Providers",
-					href: "/settings/providers",
-					icon: Terminal,
-					key: "providers",
-				},
-				{
-					label: "MCP",
-					href: "/settings/mcp",
-					icon: MessageSquareText,
-					key: "mcp",
-				},
-				{
-					label: "Token Usage",
-					href: "/settings/token-usage",
-					icon: WalletCards,
-					key: "token-usage",
-				},
-			],
-		},
-		{
-			label: "Application",
-			items: [
-				{ label: "Appearance", href: "/settings#appearance", icon: Palette },
-				{ label: "Keyboard", href: "/settings#keyboard", icon: Keyboard },
-				{ label: "Browser", href: "/settings#browser", icon: Globe },
-				{ label: "Sites", href: "/settings#sites", icon: PanelLeft },
-			],
-		},
-	];
+const sections = [
+	{
+		label: "Workspace",
+		items: [
+			{
+				label: "General",
+				href: "/settings",
+				icon: Settings2,
+				key: "general",
+			},
+			{
+				label: "Context",
+				href: "/settings/context",
+				icon: CircleHelp,
+				key: "context",
+			},
+		],
+	},
+	{
+		label: "Agents",
+		items: [
+			{ label: "Agents", href: "/settings/agents", icon: Bot, key: "agents" },
+			{
+				label: "Providers",
+				href: "/settings/providers",
+				icon: Terminal,
+				key: "providers",
+			},
+			{
+				label: "MCP",
+				href: "/settings/mcp",
+				icon: MessageSquareText,
+				key: "mcp",
+			},
+			{
+				label: "Token Usage",
+				href: "/settings/token-usage",
+				icon: WalletCards,
+				key: "token-usage",
+			},
+		],
+	},
+	{
+		label: "Application",
+		items: [
+			{ label: "Appearance", href: "/settings#appearance", icon: Palette },
+			{ label: "Keyboard", href: "/settings#keyboard", icon: Keyboard },
+			{ label: "Browser", href: "/settings#browser", icon: Globe },
+			{ label: "Sites", href: "/settings#sites", icon: PanelLeft },
+		],
+	},
+];
 </script>
 
 <div

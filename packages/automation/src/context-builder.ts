@@ -48,7 +48,7 @@ async function walk(
 	out: string[],
 	limit: number,
 ): Promise<void> {
-	if (depth > 4 || out.length >= limit) return;
+	if (depth > 8 || out.length >= limit) return;
 	let entries: import("node:fs").Dirent<string>[] = [];
 	try {
 		entries = await readdir(join(root, dir), { withFileTypes: true });
@@ -137,17 +137,31 @@ function cssTokens(css: string): string {
  * Scrapes the project's real theme so design mockups match the product instead
  * of inventing a palette. Reads CSS files (shadcn-style `--token` variables),
  * the tailwind config, and components.json, bounded to a small budget.
+ *
+ * `focus` narrows the scrape to the paths the user referenced: pass `undefined`
+ * to allow the whole project (the automation context does this), or a list -
+ * possibly empty - to stay inside what was actually mentioned. An unreferenced
+ * design must not have project files read for it.
  */
 async function collectTheme(
 	root: string,
 	files: string[],
 	read: Set<string>,
+	focus?: string[],
 ): Promise<string | undefined> {
+	const focused = (file: string) =>
+		(focus ?? []).some(
+			(entry) => file === entry || file.startsWith(`${entry}/`),
+		);
 	const candidates = files.filter(
-		(file) => THEME_FILE.test(file) && !/\.min\.css$/i.test(file),
+		(file) =>
+			THEME_FILE.test(file) &&
+			!/\.min\.css$/i.test(file) &&
+			(focus === undefined || focused(file)),
 	);
+	if (!candidates.length) return undefined;
 	const parts: string[] = [];
-	let budget = 6000;
+	let budget = focus?.length ? 14000 : 6000;
 	for (const rel of candidates) {
 		if (budget <= 0) break;
 		const raw = await readBounded(
@@ -165,22 +179,33 @@ async function collectTheme(
 		budget -= slice.length;
 	}
 	if (!parts.length) return undefined;
-	return parts.join("\n\n").slice(0, 6000);
+	return parts.join("\n\n").slice(0, 14000);
 }
 
+/**
+ * The lighter context the design canvas needs: the file tree so @mentions
+ * resolve, plus design tokens from the paths the user actually referenced.
+ * Nothing is read for an unreferenced design.
+ */
 export async function buildDesignFileContext(
 	projectPath: string,
 	projectName: string,
+	focus: string[] = [],
 ): Promise<ProjectContext> {
 	const files: string[] = [];
-	await walk(projectPath, "", 0, files, 200);
+	const readFiles = new Set<string>();
+	await walk(projectPath, "", 0, files, 3000);
+	const theme = await collectTheme(projectPath, files, readFiles, focus).catch(
+		() => undefined,
+	);
 	return {
 		projectName,
 		projectPath,
 		stack: [],
 		files,
-		readFiles: [],
+		readFiles: [...readFiles],
 		scripts: {},
+		...(theme ? { theme } : {}),
 	};
 }
 

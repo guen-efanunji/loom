@@ -1,13 +1,13 @@
 <script lang="ts">
-	import { Questionnaire as QuestionnairePrimitive } from "@shadcn-svelte/primitives/questionnaire";
-	import { cn } from "$lib/utils.js";
+import { Questionnaire as QuestionnairePrimitive } from "@shadcn-svelte/primitives/questionnaire";
+import { cn } from "$lib/utils.js";
 
-	let {
-		class: className,
-		item = $bindable(undefined),
-		ref = $bindable(null),
-		...restProps
-	}: QuestionnairePrimitive.RootProps = $props();
+let {
+	class: className,
+	item = $bindable(undefined),
+	ref = $bindable(null),
+	...restProps
+}: QuestionnairePrimitive.RootProps = $props();
 </script>
 
 <QuestionnairePrimitive.Root

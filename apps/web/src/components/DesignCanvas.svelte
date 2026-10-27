@@ -1,522 +1,651 @@
 <script lang="ts">
-	import {
-		ChevronRight,
-		Layers,
-		LoaderCircle,
-		Monitor,
-		Moon,
-		RefreshCw,
-		Scan,
-		Smartphone,
-		Sparkles,
-		Sun,
-		Trash2,
-		Upload,
-		ZoomIn,
-		ZoomOut,
-	} from "@lucide/svelte";
-	import { onDestroy, onMount, tick } from "svelte";
-	import { toast } from "svelte-sonner";
-	import type { Catalog, ChatAttachment, Question } from "$lib/chat";
-	import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
-	import { Badge } from "$lib/components/ui/badge";
-	import { Button } from "$lib/components/ui/button";
-	import {
-		type DesignActivity,
-		type DesignMessage,
-		type DesignNode,
-		type DesignViewport,
-		daemon,
-	} from "$lib/daemon";
-	import Composer from "./chat/Composer.svelte";
-	import Markdown from "./chat/Markdown.svelte";
-	import QuestionCard from "./chat/QuestionCard.svelte";
+import { DESIGN_FRAME_PRESETS, type DesignFrame } from "@loom/protocol";
+import {
+	ChevronRight,
+	Frame,
+	Layers,
+	LoaderCircle,
+	Monitor,
+	Moon,
+	RefreshCw,
+	Scan,
+	Smartphone,
+	Sparkles,
+	Sun,
+	Trash2,
+	Upload,
+	ZoomIn,
+	ZoomOut,
+} from "@lucide/svelte";
+import { onDestroy, onMount, tick } from "svelte";
+import { toast } from "svelte-sonner";
+import type { Catalog, ChatAttachment, Question } from "$lib/chat";
+import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
+import { Badge } from "$lib/components/ui/badge";
+import { Button } from "$lib/components/ui/button";
+import { Input } from "$lib/components/ui/input";
+import * as Popover from "$lib/components/ui/popover/index.js";
+import {
+	type DesignActivity,
+	type DesignMessage,
+	type DesignNode,
+	daemon,
+} from "$lib/daemon";
+import Composer from "./chat/Composer.svelte";
+import Markdown from "./chat/Markdown.svelte";
+import QuestionCard from "./chat/QuestionCard.svelte";
 
-	let {
-		projectId,
-		projectName = "",
-		catalog,
-	}: {
-		projectId: string;
-		projectName?: string;
-		catalog: Catalog;
-	} = $props();
+let {
+	projectId,
+	projectName = "",
+	catalog,
+}: {
+	projectId: string;
+	projectName?: string;
+	catalog: Catalog;
+} = $props();
 
-	let nodes = $state<DesignNode[]>([]);
-	let messages = $state<DesignMessage[]>([]);
-	// Optimistic messages shown while a turn is in flight. The background poll
-	// replaces `messages` with the (lagging) server list, so keeping these apart
-	// stops the user's own bubble from vanishing mid-turn.
-	let pending = $state<DesignMessage[]>([]);
-	let loading = $state(true);
-	let error = $state("");
-	let selectedId = $state("");
-	let selectedByUser = $state(false);
-	let refiningNodeId = $state("");
-	let draft = $state("");
-	let model = $state("");
-	let zoom = $state(1);
-	let panX = $state(48);
-	let panY = $state(48);
-	let theme = $state<"light" | "dark">("light");
-	let deleteTarget = $state<DesignNode | null>(null);
-	let deleteOpen = $state(false);
-	let publishing = $state(false);
-	let sending = $state(false);
-	let thinking = $state(false);
-	let pendingQuestion = $state<Question | null>(null);
-	/** Live "what is the agent reading/doing" per generating node, keyed by id. */
-	let activity = $state<Record<string, DesignActivity>>({});
-	let decidingPermission = $state("");
-	let loadRequest = 0;
-	let surface = $state<HTMLDivElement>();
-	let scroller = $state<HTMLDivElement>();
-	let disposed = false;
-	let timer: ReturnType<typeof setTimeout>;
-	const frames: Record<DesignViewport, { width: number; height: number }> = {
-		desktop: { width: 1440, height: 900 },
-		mobile: { width: 390, height: 844 },
+let nodes = $state<DesignNode[]>([]);
+let messages = $state<DesignMessage[]>([]);
+// Optimistic messages shown while a turn is in flight. The background poll
+// replaces `messages` with the (lagging) server list, so keeping these apart
+// stops the user's own bubble from vanishing mid-turn.
+let pending = $state<DesignMessage[]>([]);
+let loading = $state(true);
+let error = $state("");
+let selectedId = $state("");
+let selectedByUser = $state(false);
+let refiningNodeId = $state("");
+let draft = $state("");
+let model = $state("");
+let zoom = $state(1);
+let panX = $state(48);
+let panY = $state(48);
+let theme = $state<"light" | "dark">("light");
+let deleteTarget = $state<DesignNode | null>(null);
+let deleteOpen = $state(false);
+let publishing = $state(false);
+let sending = $state(false);
+let thinking = $state(false);
+let pendingQuestion = $state<Question | null>(null);
+/** Live "what is the agent reading/doing" per generating node, keyed by id. */
+let activity = $state<Record<string, DesignActivity>>({});
+let decidingPermission = $state("");
+let loadRequest = 0;
+let surface = $state<HTMLDivElement>();
+let scroller = $state<HTMLDivElement>();
+let disposed = false;
+let timer: ReturnType<typeof setTimeout>;
+/** Design space a node was drawn for; legacy rows fall back to web/mobile. */
+function frameOf(node: DesignNode) {
+	return {
+		width: node.frameWidth || (node.viewport === "mobile" ? 390 : 1440),
+		height: node.frameHeight || (node.viewport === "mobile" ? 844 : 900),
 	};
+}
 
-	const selected = $derived(
-		nodes.find((node) => node.id === selectedId) ?? null,
-	);
-	const busyNodes = $derived(
-		nodes.filter(
-			(node) => node.status === "queued" || node.status === "generating",
+const selected = $derived(nodes.find((node) => node.id === selectedId) ?? null);
+const busyNodes = $derived(
+	nodes.filter(
+		(node) => node.status === "queued" || node.status === "generating",
+	),
+);
+const threadMessages = $derived(
+	[
+		...messages,
+		...pending.filter(
+			(item) =>
+				!messages.some(
+					(saved) =>
+						saved.role === "user" &&
+						saved.text === item.text &&
+						Math.abs(Date.parse(saved.createdAt) - Date.parse(item.createdAt)) <
+							10_000,
+				),
 		),
-	);
-	const threadMessages = $derived(
-		[
-			...messages,
-			...pending.filter(
-				(item) =>
-					!messages.some(
-						(saved) =>
-							saved.role === "user" &&
-							saved.text === item.text &&
-							Math.abs(
-								Date.parse(saved.createdAt) - Date.parse(item.createdAt),
-							) < 10_000,
-					),
-			),
-		].sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
-	);
-	const selectedModel = $derived(
-		catalog.models.find(
-			(item) => `${item.providerID}/${item.modelID}` === model,
-		),
-	);
-	const unavailableModel = $derived(Boolean(model && !selectedModel));
-	const designAgentLabel = $derived(
-		selectedModel?.provider ?? selectedModel?.providerID ?? "Design assistant",
-	);
-	function modelRef() {
-		if (unavailableModel) return undefined;
-		if (selectedModel?.openCodeProviderID && selectedModel.openCodeModelID)
-			return {
-				providerID: selectedModel.openCodeProviderID,
-				modelID: selectedModel.openCodeModelID,
-			};
-		const slash = model.indexOf("/");
-		if (slash <= 0) return undefined;
+	].sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+);
+const selectedModel = $derived(
+	catalog.models.find((item) => `${item.providerID}/${item.modelID}` === model),
+);
+const unavailableModel = $derived(Boolean(model && !selectedModel));
+const designAgentLabel = $derived(
+	selectedModel?.provider ?? selectedModel?.providerID ?? "Design assistant",
+);
+function modelRef() {
+	if (unavailableModel) return undefined;
+	if (selectedModel?.openCodeProviderID && selectedModel.openCodeModelID)
 		return {
-			providerID: model.slice(0, slash),
-			modelID: model.slice(slash + 1),
+			providerID: selectedModel.openCodeProviderID,
+			modelID: selectedModel.openCodeModelID,
 		};
-	}
-
-	function durationLabel(ms: number | null) {
-		if (!ms) return "";
-		const seconds = Math.round(ms / 1000);
-		return seconds < 60
-			? `Worked for ${seconds}s`
-			: `Worked for ${Math.round(seconds / 60)}m`;
-	}
-
-	function permissionCommand(args: Record<string, unknown>) {
-		for (const key of ["CommandLine", "command", "cmd", "script"]) {
-			const value = args[key];
-			if (typeof value === "string" && value.trim()) return value;
-		}
-		return JSON.stringify(args, null, 2);
-	}
-
-	async function decideDesignPermission(
-		nodeId: string,
-		permissionId: string,
-		decision: "allow_once" | "allow" | "deny",
-	) {
-		if (decidingPermission) return;
-		decidingPermission = permissionId;
-		try {
-			await daemon.decideDesignPermission(nodeId, permissionId, decision);
-			const updated = await daemon.designSteps(nodeId);
-			if (updated) activity = { ...activity, [nodeId]: updated };
-			toast.success(
-				decision === "deny"
-					? "Permission denied"
-					: decision === "allow"
-						? "Permission allowed for this design run"
-						: "Permission allowed once",
-			);
-		} catch (cause) {
-			toast.error(
-				cause instanceof Error ? cause.message : "Unable to update permission",
-			);
-		} finally {
-			decidingPermission = "";
-		}
-	}
-
-	function statusLabel(status: string) {
-		if (status === "queued") return "Queued";
-		if (status === "generating") return "Generating";
-		if (status === "failed") return "Failed";
-		return "Ready";
-	}
-
-	function scaleOf(node: DesignNode) {
-		const frame = frames[node.viewport === "mobile" ? "mobile" : "desktop"];
-		return Math.min(node.width / frame.width, node.height / frame.height);
-	}
-
-	function frameStyle(node: DesignNode) {
-		const frame = frames[node.viewport === "mobile" ? "mobile" : "desktop"];
-		const scale = scaleOf(node);
-		return `width:${frame.width}px;height:${frame.height}px;left:${(node.width - frame.width * scale) / 2}px;top:${(node.height - frame.height * scale) / 2}px;transform:scale(${scale})`;
-	}
-
-	const PREVIEW_GUARD =
-		"<style>html,body{overflow-x:hidden}html{scrollbar-width:none}::-webkit-scrollbar{width:0;height:0;display:none}</style>";
-	const DARK_STYLE =
-		"<style>html{filter:invert(1) hue-rotate(180deg);background:#0b0b0d}img,video,canvas{filter:invert(1) hue-rotate(180deg)}</style>";
-
-	function injectHead(html: string, style: string) {
-		if (!html) return html;
-		return /<\/head>/i.test(html)
-			? html.replace(/<\/head>/i, `${style}</head>`)
-			: `${style}${html}`;
-	}
-
-	function previewSrcdoc(html: string) {
-		let doc = injectHead(html, PREVIEW_GUARD);
-		if (theme === "dark") doc = injectHead(doc, DARK_STYLE);
-		return doc;
-	}
-
-	async function load() {
-		const request = ++loadRequest;
-		const currentProject = projectId;
-		if (!currentProject) {
-			nodes = [];
-			messages = [];
-			pending = [];
-			loading = false;
-			return;
-		}
-		try {
-			const thread = await daemon.listDesigns(currentProject);
-			if (disposed || request !== loadRequest || currentProject !== projectId)
-				return;
-			nodes = thread.nodes;
-			messages = thread.messages;
-			if (!nodes.some((node) => node.id === selectedId)) {
-				selectedId = nodes.at(-1)?.id ?? "";
-				selectedByUser = false;
-				refiningNodeId = "";
-			}
-			error = "";
-		} catch (reason) {
-			if (!disposed && request === loadRequest && currentProject === projectId)
-				error =
-					reason instanceof Error ? reason.message : "Unable to load designs";
-		} finally {
-			if (!disposed && request === loadRequest && currentProject === projectId)
-				loading = false;
-		}
-	}
-
-	function schedule() {
-		if (disposed) return;
-		timer = setTimeout(
-			async () => {
-				await load();
-				schedule();
-			},
-			busyNodes.length ? 1500 : 5000,
-		);
-	}
-
-	onMount(() => {
-		if (typeof localStorage !== "undefined")
-			model = localStorage.getItem("loom.design.model") ?? "";
-		schedule();
-	});
-
-	onDestroy(() => {
-		disposed = true;
-		clearTimeout(timer);
-	});
-
-	$effect(() => {
-		if (typeof localStorage === "undefined" || !model) return;
-		localStorage.setItem("loom.design.model", model);
-	});
-
-	$effect(() => {
-		void projectId;
-		void load();
-	});
-
-	$effect(() => {
-		void threadMessages.length;
-		void (async () => {
-			await tick();
-			scroller?.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
-		})();
-	});
-
-	// Poll each generating node's activity so the chat can say what it is reading.
-	$effect(() => {
-		const ids = busyNodes.map((node) => node.id).join(",");
-		if (!ids) {
-			activity = {};
-			return;
-		}
-		let stop = false;
-		let polling = false;
-		const poll = async () => {
-			if (polling) return;
-			polling = true;
-			const next: Record<string, DesignActivity> = {};
-			try {
-				await Promise.all(
-					busyNodes.map(async (node) => {
-						try {
-							const found = await daemon.designSteps(node.id);
-							if (found) next[node.id] = found;
-						} catch {
-							/* ignore transient poll errors */
-						}
-					}),
-				);
-				if (!stop) activity = { ...activity, ...next };
-			} finally {
-				polling = false;
-			}
-		};
-		void poll();
-		const interval = setInterval(() => void poll(), 1200);
-		return () => {
-			stop = true;
-			clearInterval(interval);
-		};
-	});
-
-	type DesignSend = {
-		text: string;
-		files: string[];
-		attachments?: ChatAttachment[];
+	const slash = model.indexOf("/");
+	if (slash <= 0) return undefined;
+	return {
+		providerID: model.slice(0, slash),
+		modelID: model.slice(slash + 1),
 	};
+}
 
-	function toAttachments(items?: ChatAttachment[]) {
-		return (items ?? []).map((item) => ({
-			filename: item.filename,
-			mime: item.mime,
-			data: item.data,
-		}));
+function durationLabel(ms: number | null) {
+	if (!ms) return "";
+	const seconds = Math.round(ms / 1000);
+	return seconds < 60
+		? `Worked for ${seconds}s`
+		: `Worked for ${Math.round(seconds / 60)}m`;
+}
+
+function permissionCommand(args: Record<string, unknown>) {
+	for (const key of ["CommandLine", "command", "cmd", "script"]) {
+		const value = args[key];
+		if (typeof value === "string" && value.trim()) return value;
 	}
+	return JSON.stringify(args, null, 2);
+}
 
-	/**
-	 * The composer is now a real chat: every message goes through the design agent,
-	 * which decides whether to answer, ask a clarifying question, or draw a node.
-	 */
-	async function handleSend(input: DesignSend): Promise<boolean> {
-		if (!projectId) {
-			toast.error("Add a project before using the design agent.");
-			return false;
-		}
-		const text = input.text.trim();
-		if (!text) return false;
-		if (unavailableModel) {
-			toast.error(
-				"Selected model is no longer available. Choose another model.",
-			);
-			return false;
-		}
-		const target =
-			nodes.find(
-				(node) =>
-					node.id === refiningNodeId && node.html && node.status === "ready",
-			) ?? null;
-		const optimistic: DesignMessage = {
-			id: `pending-${Date.now()}`,
-			projectId,
-			nodeId: target?.id ?? null,
-			role: "user",
-			text,
-			model: model || null,
-			errorMessage: null,
-			durationMs: null,
-			createdAt: new Date().toISOString(),
-		};
-		pending = [...pending, optimistic];
-		sending = true;
-		thinking = true;
-		pendingQuestion = null;
-		try {
-			const result = await daemon.designChat(projectId, {
-				message: text,
-				...(target ? { nodeId: target.id } : {}),
-				files: input.files,
-				attachments: toAttachments(input.attachments),
-				...(modelRef() ? { model: modelRef() } : {}),
-			});
-			if (result.kind === "design") {
-				selectedId = result.nodeId;
-				selectedByUser = Boolean(target);
-				refiningNodeId = "";
-			} else if (result.kind === "question") pendingQuestion = result.question;
-			thinking = false;
-			pending = [];
-			void load();
-			return true;
-		} catch (reason) {
-			toast.error(
-				reason instanceof Error
-					? reason.message
-					: "The design agent could not respond",
-			);
-			thinking = false;
-			pending = [];
-			void load();
-			return false;
-		} finally {
-			sending = false;
-			thinking = false;
-		}
-	}
-
-	/** A questionnaire answer is sent back as the user's next message. */
-	async function answerQuestion(answers: string[][]): Promise<void> {
-		const question = pendingQuestion;
-		pendingQuestion = null;
-		if (!question) return;
-		const text = question.questions
-			.map(
-				(item, index) =>
-					`${item.question} ${(answers[index] ?? []).join(", ")}`,
-			)
-			.filter((line) => line.trim())
-			.join("\n");
-		if (text) await handleSend({ text, files: [], attachments: [] });
-	}
-
-	async function retry(node: DesignNode) {
-		try {
-			await daemon.retryDesign(node.id);
-			selectedId = node.id;
-			await load();
-		} catch (reason) {
-			toast.error(reason instanceof Error ? reason.message : "Retry failed");
-		}
-	}
-
-	function askRemove(node: DesignNode) {
-		deleteTarget = node;
-		deleteOpen = true;
-	}
-
-	async function remove(node: DesignNode | null = deleteTarget) {
-		if (!node) return;
-		deleteOpen = false;
-		deleteTarget = null;
-		try {
-			await daemon.deleteDesign(node.id);
-			if (selectedId === node.id) selectedId = "";
-			await load();
-			toast.success("Design removed");
-		} catch (reason) {
-			toast.error(reason instanceof Error ? reason.message : "Delete failed");
-		}
-	}
-
-	async function publish(node: DesignNode | null) {
-		if (node?.status !== "ready") {
-			toast.error("Generate a design before publishing it.");
-			return;
-		}
-		publishing = true;
-		try {
-			const result = await daemon.publishDesign(node.id);
-			toast.success(`Published to ${result.path}`);
-		} catch (reason) {
-			toast.error(reason instanceof Error ? reason.message : "Publish failed");
-		} finally {
-			publishing = false;
-		}
-	}
-
-	async function clearAll() {
-		try {
-			await daemon.clearDesigns(projectId);
-			selectedId = "";
-			await load();
-			toast.success("Canvas cleared");
-		} catch (reason) {
-			toast.error(reason instanceof Error ? reason.message : "Clear failed");
-		}
-	}
-
-	/* ---------- canvas interaction: pan, zoom, node drag ---------- */
-
-	let panning: { x: number; y: number; panX: number; panY: number } | null =
-		null;
-	let dragging: {
-		id: string;
-		x: number;
-		y: number;
-		left: number;
-		top: number;
-	} | null = null;
-
-	function surfaceDown(event: PointerEvent) {
-		if (event.button !== 0) return;
-		panning = { x: event.clientX, y: event.clientY, panX, panY };
-	}
-
-	function nodeDown(event: PointerEvent, node: DesignNode) {
-		event.stopPropagation();
-		if (event.button !== 0) return;
-		selectedId = node.id;
-		selectedByUser = true;
-		refiningNodeId = "";
-		dragging = {
-			id: node.id,
-			x: event.clientX,
-			y: event.clientY,
-			left: node.x,
-			top: node.y,
-		};
-	}
-
-	/**
-	 * Builds a self-contained HTML page that previews a generated design in a real
-	 * browser tab, with Desktop/Mobile and Light/Dark toggles so the result can be
-	 * checked responsively. The design document is injected into a sandboxed iframe
-	 * at runtime (via srcdoc) so its own markup never collides with this shell.
-	 */
-	function previewShellHtml(node: DesignNode): string {
-		const title = node.title.replace(/[&<>]/g, (ch) =>
-			ch === "&" ? "&amp;" : ch === "<" ? "&lt;" : "&gt;",
+async function decideDesignPermission(
+	nodeId: string,
+	permissionId: string,
+	decision: "allow_once" | "allow" | "deny",
+) {
+	if (decidingPermission) return;
+	decidingPermission = permissionId;
+	try {
+		await daemon.decideDesignPermission(nodeId, permissionId, decision);
+		const updated = await daemon.designSteps(nodeId);
+		if (updated) activity = { ...activity, [nodeId]: updated };
+		toast.success(
+			decision === "deny"
+				? "Permission denied"
+				: decision === "allow"
+					? "Permission allowed for this design run"
+					: "Permission allowed once",
 		);
-		// JSON.stringify leaves `<` untouched, so a closing script tag inside the
-		// design would end this shell's own inline script early and leak the JS as
-		// visible text. Escaping `<` to \u003c keeps it inert for the HTML parser
-		// while the JS string still evaluates back to the real markup.
-		const doc = JSON.stringify(node.html).replace(/</g, "\\u003c");
-		return `<!DOCTYPE html>
+	} catch (cause) {
+		toast.error(
+			cause instanceof Error ? cause.message : "Unable to update permission",
+		);
+	} finally {
+		decidingPermission = "";
+	}
+}
+
+function statusLabel(status: string) {
+	if (status === "queued") return "Queued";
+	if (status === "generating") return "Generating";
+	if (status === "failed") return "Failed";
+	return "Ready";
+}
+
+function scaleOf(node: DesignNode) {
+	const frame = frameOf(node);
+	return Math.min(node.width / frame.width, node.height / frame.height);
+}
+
+function frameStyle(node: DesignNode) {
+	const frame = frameOf(node);
+	const scale = scaleOf(node);
+	return `width:${frame.width}px;height:${frame.height}px;left:${(node.width - frame.width * scale) / 2}px;top:${(node.height - frame.height * scale) / 2}px;transform:scale(${scale})`;
+}
+
+/** Nearest canvas preset for the node's current ratio, for the picker label. */
+function frameTitle(node: DesignNode) {
+	const frame = frameOf(node);
+	const preset = DESIGN_FRAME_PRESETS.find(
+		(item) => item.width === frame.width && item.height === frame.height,
+	);
+	return `${preset?.label ?? "Custom"} · ${frame.width}×${frame.height}`;
+}
+
+async function applyFrame(node: DesignNode, frame: DesignFrame) {
+	const size = cardSizeFor(frame);
+	nodes = nodes.map((item) =>
+		item.id === node.id
+			? {
+					...item,
+					frameKind: frame.kind,
+					frameWidth: frame.width,
+					frameHeight: frame.height,
+					viewport: frame.height > frame.width ? "mobile" : "desktop",
+					width: size.width,
+					height: size.height,
+				}
+			: item,
+	);
+	try {
+		await daemon.patchDesign(node.id, { frame });
+	} catch (reason) {
+		toast.error(
+			reason instanceof Error ? reason.message : "Unable to change the canvas",
+		);
+		await load();
+	}
+}
+
+/** Card footprint matching a frame's ratio, mirroring the server's sizing. */
+function cardSizeFor(frame: DesignFrame) {
+	const ratio = frame.width / frame.height;
+	if (ratio >= 1)
+		return {
+			width: 420,
+			height: Math.min(620, Math.max(160, Math.round(420 / ratio))),
+		};
+	return {
+		width: Math.min(620, Math.max(160, Math.round(476 * ratio))),
+		height: 476,
+	};
+}
+
+let customWidth = $state("");
+let customHeight = $state("");
+
+function applyCustomFrame(node: DesignNode) {
+	const width = Number.parseInt(customWidth, 10);
+	const height = Number.parseInt(customHeight, 10);
+	if (!Number.isFinite(width) || !Number.isFinite(height)) {
+		toast.error("Enter both a width and a height in pixels.");
+		return;
+	}
+	void applyFrame(node, { kind: "custom", width, height });
+	customWidth = "";
+	customHeight = "";
+}
+
+/** Grow the card to the document's real height so nothing is cut off. */
+function fitNodeToContent(node: DesignNode, contentHeight: number) {
+	if (handSized.has(node.id)) return;
+	const frame = frameOf(node);
+	const wanted = Math.max(
+		frame.height,
+		Math.min(8192, Math.round(contentHeight)),
+	);
+	const scale = node.width / frame.width;
+	const next = Math.min(4096, Math.max(120, Math.round(wanted * scale)));
+	if (Math.abs(next - node.height) <= 6) return;
+	nodes = nodes.map((item) =>
+		item.id === node.id ? { ...item, height: next } : item,
+	);
+	void daemon.patchDesign(node.id, { height: next }).catch(() => undefined);
+}
+
+const PREVIEW_GUARD =
+	"<style>html,body{overflow-x:hidden}html{scrollbar-width:none}::-webkit-scrollbar{width:0;height:0;display:none}</style>";
+const DARK_STYLE =
+	"<style>html{filter:invert(1) hue-rotate(180deg);background:#0b0b0d}img,video,canvas{filter:invert(1) hue-rotate(180deg)}</style>";
+
+function injectHead(html: string, style: string) {
+	if (!html) return html;
+	return /<\/head>/i.test(html)
+		? html.replace(/<\/head>/i, `${style}</head>`)
+		: `${style}${html}`;
+}
+
+function previewSrcdoc(html: string) {
+	let doc = injectHead(html, PREVIEW_GUARD);
+	if (theme === "dark") doc = injectHead(doc, DARK_STYLE);
+	return doc;
+}
+
+/**
+ * Reports the document's real height back to the canvas so a long page grows
+ * its card instead of being cut off at the frame height.
+ */
+function measureSrcdoc(id: string, html: string) {
+	const safe = id.replace(/[^\w-]/g, "");
+	const script =
+		`<script>(function(){var last=0;function send(){var h=Math.ceil(document.documentElement.scrollHeight)||0;if(h===last)return;last=h;parent.postMessage({loom:"design-height",id:"${safe}",height:h},"*")}` +
+		`addEventListener("load",send);if(window.ResizeObserver){try{new ResizeObserver(send).observe(document.documentElement)}catch(e){}}` +
+		"setTimeout(send,200);setTimeout(send,1500)})()<\/script>";
+	return injectHead(previewSrcdoc(html), script);
+}
+
+function onDesignMessage(event: MessageEvent) {
+	const data = event.data as
+		| { loom?: string; id?: string; height?: number }
+		| undefined;
+	if (data?.loom !== "design-height" || typeof data.height !== "number") return;
+	const node = nodes.find((item) => item.id === data.id);
+	if (node?.status !== "ready") return;
+	fitNodeToContent(node, data.height);
+}
+
+async function load() {
+	const request = ++loadRequest;
+	const currentProject = projectId;
+	if (!currentProject) {
+		nodes = [];
+		messages = [];
+		pending = [];
+		loading = false;
+		return;
+	}
+	try {
+		const thread = await daemon.listDesigns(currentProject);
+		if (disposed || request !== loadRequest || currentProject !== projectId)
+			return;
+		nodes = thread.nodes;
+		messages = thread.messages;
+		if (!nodes.some((node) => node.id === selectedId)) {
+			selectedId = nodes.at(-1)?.id ?? "";
+			selectedByUser = false;
+			refiningNodeId = "";
+		}
+		error = "";
+	} catch (reason) {
+		if (!disposed && request === loadRequest && currentProject === projectId)
+			error =
+				reason instanceof Error ? reason.message : "Unable to load designs";
+	} finally {
+		if (!disposed && request === loadRequest && currentProject === projectId)
+			loading = false;
+	}
+}
+
+function schedule() {
+	if (disposed) return;
+	timer = setTimeout(
+		async () => {
+			await load();
+			schedule();
+		},
+		busyNodes.length ? 1500 : 5000,
+	);
+}
+
+onMount(() => {
+	if (typeof localStorage !== "undefined")
+		model = localStorage.getItem("loom.design.model") ?? "";
+	window.addEventListener("message", onDesignMessage);
+	schedule();
+});
+
+onDestroy(() => {
+	disposed = true;
+	clearTimeout(timer);
+	window.removeEventListener("message", onDesignMessage);
+});
+
+$effect(() => {
+	if (typeof localStorage === "undefined" || !model) return;
+	localStorage.setItem("loom.design.model", model);
+});
+
+$effect(() => {
+	void projectId;
+	void load();
+});
+
+$effect(() => {
+	void threadMessages.length;
+	void (async () => {
+		await tick();
+		scroller?.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
+	})();
+});
+
+// Poll each generating node's activity so the chat can say what it is reading.
+$effect(() => {
+	const ids = busyNodes.map((node) => node.id).join(",");
+	if (!ids) {
+		activity = {};
+		return;
+	}
+	let stop = false;
+	let polling = false;
+	const poll = async () => {
+		if (polling) return;
+		polling = true;
+		const next: Record<string, DesignActivity> = {};
+		try {
+			await Promise.all(
+				busyNodes.map(async (node) => {
+					try {
+						const found = await daemon.designSteps(node.id);
+						if (found) next[node.id] = found;
+					} catch {
+						/* ignore transient poll errors */
+					}
+				}),
+			);
+			if (!stop) activity = { ...activity, ...next };
+		} finally {
+			polling = false;
+		}
+	};
+	void poll();
+	const interval = setInterval(() => void poll(), 1200);
+	return () => {
+		stop = true;
+		clearInterval(interval);
+	};
+});
+
+type DesignSend = {
+	text: string;
+	files: string[];
+	attachments?: ChatAttachment[];
+};
+
+function toAttachments(items?: ChatAttachment[]) {
+	return (items ?? []).map((item) => ({
+		filename: item.filename,
+		mime: item.mime,
+		data: item.data,
+	}));
+}
+
+/**
+ * The composer is now a real chat: every message goes through the design agent,
+ * which decides whether to answer, ask a clarifying question, or draw a node.
+ */
+async function handleSend(input: DesignSend): Promise<boolean> {
+	if (!projectId) {
+		toast.error("Add a project before using the design agent.");
+		return false;
+	}
+	const text = input.text.trim();
+	if (!text) return false;
+	if (unavailableModel) {
+		toast.error("Selected model is no longer available. Choose another model.");
+		return false;
+	}
+	const target =
+		nodes.find(
+			(node) =>
+				node.id === refiningNodeId && node.html && node.status === "ready",
+		) ?? null;
+	const optimistic: DesignMessage = {
+		id: `pending-${Date.now()}`,
+		projectId,
+		nodeId: target?.id ?? null,
+		role: "user",
+		text,
+		model: model || null,
+		errorMessage: null,
+		durationMs: null,
+		createdAt: new Date().toISOString(),
+	};
+	pending = [...pending, optimistic];
+	sending = true;
+	thinking = true;
+	pendingQuestion = null;
+	try {
+		const result = await daemon.designChat(projectId, {
+			message: text,
+			...(target ? { nodeId: target.id } : {}),
+			files: input.files,
+			attachments: toAttachments(input.attachments),
+			...(modelRef() ? { model: modelRef() } : {}),
+		});
+		if (result.kind === "design") {
+			selectedId = result.nodeId;
+			selectedByUser = Boolean(target);
+			refiningNodeId = "";
+		} else if (result.kind === "question") pendingQuestion = result.question;
+		thinking = false;
+		pending = [];
+		void load();
+		return true;
+	} catch (reason) {
+		toast.error(
+			reason instanceof Error
+				? reason.message
+				: "The design agent could not respond",
+		);
+		thinking = false;
+		pending = [];
+		void load();
+		return false;
+	} finally {
+		sending = false;
+		thinking = false;
+	}
+}
+
+/** A questionnaire answer is sent back as the user's next message. */
+async function answerQuestion(answers: string[][]): Promise<void> {
+	const question = pendingQuestion;
+	pendingQuestion = null;
+	if (!question) return;
+	const text = question.questions
+		.map(
+			(item, index) => `${item.question} ${(answers[index] ?? []).join(", ")}`,
+		)
+		.filter((line) => line.trim())
+		.join("\n");
+	if (text) await handleSend({ text, files: [], attachments: [] });
+}
+
+async function retry(node: DesignNode) {
+	try {
+		await daemon.retryDesign(node.id);
+		selectedId = node.id;
+		await load();
+	} catch (reason) {
+		toast.error(reason instanceof Error ? reason.message : "Retry failed");
+	}
+}
+
+function askRemove(node: DesignNode) {
+	deleteTarget = node;
+	deleteOpen = true;
+}
+
+async function remove(node: DesignNode | null = deleteTarget) {
+	if (!node) return;
+	deleteOpen = false;
+	deleteTarget = null;
+	try {
+		await daemon.deleteDesign(node.id);
+		if (selectedId === node.id) selectedId = "";
+		await load();
+		toast.success("Design removed");
+	} catch (reason) {
+		toast.error(reason instanceof Error ? reason.message : "Delete failed");
+	}
+}
+
+async function publish(node: DesignNode | null) {
+	if (node?.status !== "ready") {
+		toast.error("Generate a design before publishing it.");
+		return;
+	}
+	publishing = true;
+	try {
+		const result = await daemon.publishDesign(node.id);
+		toast.success(`Published to ${result.path}`);
+	} catch (reason) {
+		toast.error(reason instanceof Error ? reason.message : "Publish failed");
+	} finally {
+		publishing = false;
+	}
+}
+
+async function clearAll() {
+	try {
+		await daemon.clearDesigns(projectId);
+		selectedId = "";
+		await load();
+		toast.success("Canvas cleared");
+	} catch (reason) {
+		toast.error(reason instanceof Error ? reason.message : "Clear failed");
+	}
+}
+
+/* ---------- canvas interaction: pan, zoom, node drag ---------- */
+
+let panning: { x: number; y: number; panX: number; panY: number } | null = null;
+let dragging: {
+	id: string;
+	x: number;
+	y: number;
+	left: number;
+	top: number;
+} | null = null;
+let resizing: {
+	id: string;
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+	frameRatio: number;
+} | null = null;
+/** Cards the user sized by hand - auto-fit stops respecting them. */
+const handSized = new Set<string>();
+
+function surfaceDown(event: PointerEvent) {
+	if (event.button !== 0) return;
+	panning = { x: event.clientX, y: event.clientY, panX, panY };
+}
+
+function nodeDown(event: PointerEvent, node: DesignNode) {
+	event.stopPropagation();
+	if (event.button !== 0) return;
+	selectedId = node.id;
+	selectedByUser = true;
+	refiningNodeId = "";
+	dragging = {
+		id: node.id,
+		x: event.clientX,
+		y: event.clientY,
+		left: node.x,
+		top: node.y,
+	};
+}
+
+function nodeResizeDown(event: PointerEvent, node: DesignNode) {
+	event.stopPropagation();
+	if (event.button !== 0) return;
+	selectedId = node.id;
+	selectedByUser = true;
+	const frame = frameOf(node);
+	resizing = {
+		id: node.id,
+		x: event.clientX,
+		y: event.clientY,
+		width: node.width,
+		height: node.height,
+		frameRatio: frame.width / frame.height,
+	};
+}
+
+/**
+ * Builds a self-contained HTML page that previews a generated design in a real
+ * browser tab, with Desktop/Mobile and Light/Dark toggles so the result can be
+ * checked responsively. The design document is injected into a sandboxed iframe
+ * at runtime (via srcdoc) so its own markup never collides with this shell.
+ */
+function previewShellHtml(node: DesignNode): string {
+	const title = node.title.replace(/[&<>]/g, (ch) =>
+		ch === "&" ? "&amp;" : ch === "<" ? "&lt;" : "&gt;",
+	);
+	// JSON.stringify leaves `<` untouched, so a closing script tag inside the
+	// design would end this shell's own inline script early and leak the JS as
+	// visible text. Escaping `<` to \u003c keeps it inert for the HTML parser
+	// while the JS string still evaluates back to the real markup.
+	const doc = JSON.stringify(node.html).replace(/</g, "\\u003c");
+	const frame = frameOf(node);
+	return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>${title} · Loom preview</title>
@@ -532,12 +661,12 @@
 </style></head>
 <body>
 <div class="bar"><span class="t">${title}</span>
-<div class="grp" id="v"><button data-v="desktop" class="on">Desktop</button><button data-v="mobile">Mobile</button></div>
+<div class="grp" id="v"><button data-v="design" class="on">Canvas</button><button data-v="desktop">Desktop</button><button data-v="mobile">Mobile</button></div>
 <div class="grp" id="th"><button data-th="light" class="on">Light</button><button data-th="dark">Dark</button></div>
 </div>
 <div class="stage" id="s"><iframe class="frame" id="f" title="Design preview" sandbox="allow-scripts"></iframe></div>
 <script>
-var DOC=${doc},v="desktop",th="light",S={desktop:[1440,900],mobile:[390,844]};
+var DOC=${doc},v="design",th="light",S={design:[${frame.width},${frame.height}],desktop:[1440,900],mobile:[390,844]};
 var GUARD='<style>html,body{overflow-x:hidden}html{scrollbar-width:none}::-webkit-scrollbar{width:0;height:0;display:none}</style>';
 var DARK='<style>html{filter:invert(1) hue-rotate(180deg);background:#0b0b0d}img,video,canvas{filter:invert(1) hue-rotate(180deg)}</style>';
 function inject(doc,style){return /<\\/head>/i.test(doc)?doc.replace(/<\\/head>/i,style+'</head>'):style+doc;}
@@ -551,105 +680,146 @@ document.getElementById('th').addEventListener('click',function(e){var b=e.targe
 window.addEventListener('resize',apply);apply();
 <\/script>
 </body></html>`;
-	}
+}
 
-	function openPreview() {
-		const node = selected ?? nodes.at(-1) ?? null;
-		if (node?.status !== "ready" || !node.html) {
-			toast.error("Generate a design before opening the preview.");
-			return;
-		}
-		const url = URL.createObjectURL(
-			new Blob([previewShellHtml(node)], { type: "text/html" }),
-		);
-		const opened = window.open(url, "_blank", "noopener");
-		if (!opened)
-			toast.error("The preview tab was blocked. Allow pop-ups and try again.");
-		setTimeout(() => URL.revokeObjectURL(url), 60_000);
+function openPreview() {
+	const node = selected ?? nodes.at(-1) ?? null;
+	if (node?.status !== "ready" || !node.html) {
+		toast.error("Generate a design before opening the preview.");
+		return;
 	}
+	const url = URL.createObjectURL(
+		new Blob([previewShellHtml(node)], { type: "text/html" }),
+	);
+	const opened = window.open(url, "_blank", "noopener");
+	if (!opened)
+		toast.error("The preview tab was blocked. Allow pop-ups and try again.");
+	setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
 
-	function focusChat() {
-		if (selected?.status !== "ready" || !selected.html) return;
-		refiningNodeId = selected.id;
-		const el = document.getElementById("design-composer-input");
-		if (el) el.focus();
+function focusChat() {
+	if (selected?.status !== "ready" || !selected.html) return;
+	refiningNodeId = selected.id;
+	const el = document.getElementById("design-composer-input");
+	if (el) el.focus();
+}
+
+function selectNode(id: string) {
+	selectedId = id;
+	selectedByUser = true;
+	refiningNodeId = "";
+}
+
+function pointerMove(event: PointerEvent) {
+	if (panning) {
+		panX = panning.panX + (event.clientX - panning.x);
+		panY = panning.panY + (event.clientY - panning.y);
+		return;
 	}
-
-	function selectNode(id: string) {
-		selectedId = id;
-		selectedByUser = true;
-		refiningNodeId = "";
-	}
-
-	function pointerMove(event: PointerEvent) {
-		if (panning) {
-			panX = panning.panX + (event.clientX - panning.x);
-			panY = panning.panY + (event.clientY - panning.y);
-			return;
-		}
-		const drag = dragging;
-		if (!drag) return;
-		const node = nodes.find((item) => item.id === drag.id);
+	const resize = resizing;
+	if (resize) {
+		const node = nodes.find((item) => item.id === resize.id);
 		if (!node) return;
-		nodes = nodes.map((item) =>
-			item.id === drag.id
-				? {
-						...item,
-						x: Math.round(drag.left + (event.clientX - drag.x) / zoom),
-						y: Math.round(drag.top + (event.clientY - drag.y) / zoom),
-					}
-				: item,
+		const width = clampSize(
+			resize.width + (event.clientX - resize.x) / zoom,
+			160,
+			4096,
 		);
+		// Shift locks the card to the canvas ratio instead of going free-form.
+		const height = event.shiftKey
+			? clampSize(width / resize.frameRatio, 120, 4096)
+			: clampSize(resize.height + (event.clientY - resize.y) / zoom, 120, 4096);
+		if (width === node.width && height === node.height) return;
+		handSized.add(resize.id);
+		nodes = nodes.map((item) =>
+			item.id === resize.id ? { ...item, width, height } : item,
+		);
+		return;
 	}
+	const drag = dragging;
+	if (!drag) return;
+	const node = nodes.find((item) => item.id === drag.id);
+	if (!node) return;
+	nodes = nodes.map((item) =>
+		item.id === drag.id
+			? {
+					...item,
+					x: Math.round(drag.left + (event.clientX - drag.x) / zoom),
+					y: Math.round(drag.top + (event.clientY - drag.y) / zoom),
+				}
+			: item,
+	);
+}
 
-	async function pointerUp() {
-		const moved = dragging;
-		dragging = null;
-		panning = null;
-		if (!moved) return;
-		const node = nodes.find((item) => item.id === moved.id);
+function clampSize(value: number, min: number, max: number) {
+	return Math.round(Math.min(max, Math.max(min, value)));
+}
+
+async function pointerUp() {
+	const moved = dragging;
+	const sized = resizing;
+	dragging = null;
+	resizing = null;
+	panning = null;
+	if (sized && !moved) {
+		const node = nodes.find((item) => item.id === sized.id);
 		if (!node) return;
 		try {
-			await daemon.patchDesign(node.id, { x: node.x, y: node.y });
+			await daemon.patchDesign(node.id, {
+				width: node.width,
+				height: node.height,
+			});
 		} catch (reason) {
 			toast.error(
-				reason instanceof Error ? reason.message : "Unable to save position",
+				reason instanceof Error ? reason.message : "Unable to save size",
 			);
 		}
+		return;
 	}
-
-	function zoomBy(delta: number) {
-		zoom = Math.min(2, Math.max(0.25, Math.round((zoom + delta) * 100) / 100));
-	}
-
-	function fit() {
-		if (!nodes.length || !surface) {
-			zoom = 1;
-			panX = 48;
-			panY = 48;
-			return;
-		}
-		const minX = Math.min(...nodes.map((node) => node.x));
-		const minY = Math.min(...nodes.map((node) => node.y));
-		const maxX = Math.max(...nodes.map((node) => node.x + node.width));
-		const maxY = Math.max(...nodes.map((node) => node.y + node.height));
-		const boxWidth = maxX - minX;
-		const boxHeight = maxY - minY;
-		const next = Math.min(
-			1,
-			(surface.clientWidth - 96) / boxWidth,
-			(surface.clientHeight - 96) / boxHeight,
+	if (!moved) return;
+	const node = nodes.find((item) => item.id === moved.id);
+	if (!node) return;
+	try {
+		await daemon.patchDesign(node.id, { x: node.x, y: node.y });
+	} catch (reason) {
+		toast.error(
+			reason instanceof Error ? reason.message : "Unable to save position",
 		);
-		zoom = Math.round(Math.max(0.25, next) * 100) / 100;
-		panX = (surface.clientWidth - boxWidth * zoom) / 2 - minX * zoom;
-		panY = (surface.clientHeight - boxHeight * zoom) / 2 - minY * zoom;
 	}
+}
 
-	function wheel(event: WheelEvent) {
-		if (!event.ctrlKey && !event.metaKey) return;
-		event.preventDefault();
-		zoomBy(event.deltaY > 0 ? -0.1 : 0.1);
+function zoomBy(delta: number) {
+	zoom = Math.min(2, Math.max(0.25, Math.round((zoom + delta) * 100) / 100));
+}
+
+function fit() {
+	if (!nodes.length || !surface) {
+		zoom = 1;
+		panX = 48;
+		panY = 48;
+		return;
 	}
+	const minX = Math.min(...nodes.map((node) => node.x));
+	const minY = Math.min(...nodes.map((node) => node.y));
+	const maxX = Math.max(...nodes.map((node) => node.x + node.width));
+	const maxY = Math.max(...nodes.map((node) => node.y + node.height));
+	const boxWidth = maxX - minX;
+	const boxHeight = maxY - minY;
+	const next = Math.min(
+		1,
+		(surface.clientWidth - 96) / boxWidth,
+		(surface.clientHeight - 96) / boxHeight,
+	);
+	zoom = Math.round(Math.max(0.25, next) * 100) / 100;
+	panX = (surface.clientWidth - boxWidth * zoom) / 2 - minX * zoom;
+	panY = (surface.clientHeight - boxHeight * zoom) / 2 - minY * zoom;
+}
+
+function wheel(event: WheelEvent) {
+	if (!event.ctrlKey && !event.metaKey) return;
+	event.preventDefault();
+	zoomBy(event.deltaY > 0 ? -0.1 : 0.1);
+}
 </script>
 
 <div
@@ -853,13 +1023,22 @@ window.addEventListener('resize',apply);apply();
 									>
 										<iframe
 											title={`${node.title} preview`}
-											srcdoc={previewSrcdoc(node.html)}
+											srcdoc={measureSrcdoc(node.id, node.html)}
 											sandbox="allow-scripts"
 											class="size-full border-0"
 											loading="lazy"
 											tabindex="-1"
 										></iframe>
 									</div>
+									{#if node.id === selectedId}
+										<button
+											type="button"
+											class="absolute right-0 bottom-0 z-10 size-3.5 cursor-nwse-resize touch-none rounded-br-xl bg-primary/70 transition-colors hover:bg-primary"
+											aria-label="Resize {node.title}"
+											title="Drag to resize · hold Shift to lock the canvas ratio"
+											onpointerdown={(event) => nodeResizeDown(event, node)}
+										></button>
+									{/if}
 									{#if node.status === "queued" || node.status === "generating"}
 										<div
 											class="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-background/70 text-muted-foreground backdrop-blur-[1px]"
@@ -964,7 +1143,80 @@ window.addEventListener('resize',apply);apply();
 							/>{/if}
 						<span class="max-w-[150px] truncate">{selected.title}</span>
 					</span>
+					<Popover.Root>
+						<Popover.Trigger
+							class="inline-flex h-7 max-w-[180px] items-center gap-1.5 rounded-md px-2 text-[11px] transition-colors hover:bg-accent hover:text-accent-foreground"
+							title="Canvas size"
+						>
+							<Frame size={12} class="shrink-0" />
+							<span class="truncate">{frameTitle(selected)}</span>
+						</Popover.Trigger>
+						<Popover.Content
+							align="start"
+							class="z-50 w-64 rounded-xl border bg-popover p-2 text-popover-foreground shadow-lg"
+						>
+							<p
+								class="px-1 pb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground"
+							>
+								Canvas
+							</p>
+							<div class="grid max-h-52 grid-cols-2 gap-1 overflow-y-auto">
+								{#each DESIGN_FRAME_PRESETS as preset (preset.id)}
+									<button
+										type="button"
+										class="flex flex-col items-start rounded-md border px-2 py-1 text-left text-[11px] transition-colors hover:bg-accent"
+										onclick={() =>
+											void applyFrame(selected, {
+												kind: preset.id,
+												width: preset.width,
+												height: preset.height,
+											})}
+									>
+										<span class="font-medium">{preset.label}</span>
+										<span class="text-muted-foreground"
+											>{preset.width}×{preset.height}</span
+										>
+									</button>
+								{/each}
+							</div>
+							<div class="mt-2 flex items-center gap-1 border-t pt-2">
+								<Input
+									bind:value={customWidth}
+									type="number"
+									min="120"
+									placeholder="W"
+									aria-label="Custom width in pixels"
+									class="h-7 w-full min-w-0 text-[11px]"
+								/>
+								<span class="text-[11px] text-muted-foreground">×</span>
+								<Input
+									bind:value={customHeight}
+									type="number"
+									min="120"
+									placeholder="H"
+									aria-label="Custom height in pixels"
+									class="h-7 w-full min-w-0 text-[11px]"
+								/>
+								<Button
+									size="sm"
+									class="h-7 shrink-0 text-[11px]"
+									onclick={() => applyCustomFrame(selected)}>Set</Button
+								>
+							</div>
+							<p
+								class="px-1 pt-1.5 text-[10px] leading-4 text-muted-foreground"
+							>
+								The canvas follows a mentioned screenshot or theme on its own.
+								Pick one to override it.
+							</p>
+						</Popover.Content>
+					</Popover.Root>
 					<span class="mx-1 h-5 w-px bg-border"></span>
+					<a
+						href={`/?project=${encodeURIComponent(projectId)}&design=${encodeURIComponent(selected.id)}`}
+						class="inline-flex h-7 items-center rounded-md px-2 text-[11px] hover:bg-accent hover:text-accent-foreground"
+						>View full agent session</a
+					>
 					<Button
 						variant="secondary"
 						size="sm"

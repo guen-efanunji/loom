@@ -1,6 +1,6 @@
-import { runCli } from "@loom/providers";
 import { realpath } from "node:fs/promises";
 import { relative, sep } from "node:path";
+import { runCli } from "@loom/providers";
 
 export type ProviderUpdateCheck = {
 	providerId: string;

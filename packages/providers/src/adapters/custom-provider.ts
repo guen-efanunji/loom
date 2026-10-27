@@ -789,12 +789,16 @@ export class CustomProviderAdapter implements CliProviderAdapter {
 		);
 		void this.runPrompt(input, run, controller)
 			.catch((error) => {
-				run.error = controller.signal.aborted
-					? "Provider request timed out or was cancelled"
-					: error instanceof Error
-						? error.message
-						: String(error);
-				run.status = controller.signal.aborted ? "cancelled" : "failed";
+				const timedOut = controller.signal.aborted &&
+					controller.signal.reason === "Provider request timed out";
+				run.error = timedOut
+					? "Provider request timed out"
+					: controller.signal.aborted
+						? "Provider request was cancelled"
+						: error instanceof Error
+							? error.message
+							: String(error);
+				run.status = timedOut ? "failed" : controller.signal.aborted ? "cancelled" : "failed";
 			})
 			.finally(() => {
 				clearTimeout(timeout);
@@ -838,14 +842,17 @@ export class CustomProviderAdapter implements CliProviderAdapter {
 					})),
 				]
 			: input.prompt;
+		const noTools = input.permission?.mode === "read-only" || run.readOnly;
 		const system = [
 			input.system ?? "",
-			"You can inspect this project's files with list_files and read_file. Use these tools instead of asking the user to paste project files. Make requested edits with write_file or edit_file, and run checks or project commands with run_command. Loom confines file tools to this project and asks before changing files or running commands unless the user enabled auto-accept.",
+			...(!noTools
+				? ["You can inspect this project's files with list_files and read_file. Use these tools instead of asking the user to paste project files. Make requested edits with write_file or edit_file, and run checks or project commands with run_command. Loom confines file tools to this project and asks before changing files or running commands unless the user enabled auto-accept."]
+				: []),
 		]
 			.filter(Boolean)
 			.join("\n\n");
 		const messages: Array<Record<string, unknown>> = [
-			{ role: "system", content: system },
+			...(system ? [{ role: "system", content: system }] : []),
 			{ role: "user", content: userContent },
 		];
 		const totals = { total: 0, input: 0, output: 0 };
@@ -860,8 +867,7 @@ export class CustomProviderAdapter implements CliProviderAdapter {
 				body: JSON.stringify({
 					model: input.model?.modelID ?? this.config.models[0]?.id,
 					messages,
-					tools: customRuntimeTools,
-					tool_choice: "auto",
+					...(!noTools ? { tools: customRuntimeTools, tool_choice: "auto" } : {}),
 					stream: false,
 				}),
 			});
@@ -919,7 +925,7 @@ export class CustomProviderAdapter implements CliProviderAdapter {
 				run.output = `${run.output}${run.output ? "\n\n" : ""}${text}`;
 				run.parts.push({ type: "text", id: randomUUID(), text });
 			}
-			const calls = message.tool_calls ?? [];
+			const calls = noTools ? [] : (message.tool_calls ?? []);
 			if (!calls.length) {
 				if (!run.output.trim())
 					throw new Error("Provider returned no text response");

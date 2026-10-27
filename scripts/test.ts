@@ -34,6 +34,7 @@ try {
 			"packages/orchestrator/test",
 			"apps/cli/test",
 			"apps/server/test",
+			"apps/web/test",
 		],
 		{
 			stdio: ["inherit", "inherit", "inherit"],

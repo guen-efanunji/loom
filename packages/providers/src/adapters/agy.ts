@@ -11,14 +11,22 @@ export function agyPermissionArgs(permission?: RuntimePermission): string[] {
 	return ["--mode", "accept-edits"];
 }
 
+/**
+ * The canvas design contract forbids tool use. Headless Agy denies any tool it
+ * would have to ask about, so the coding prompt - which invites the model to
+ * read files and change project code - must never ride along with a design
+ * request. Matched loosely because the create and refine prompts word the ban
+ * slightly differently.
+ */
+const DESIGN_ONLY_PROMPT =
+	/do not call tools[^\n]*shell commands[^\n]*(?:read or write files|create or edit project files)/i;
+
 export function agyPromptText(
 	prompt: string,
 	codingPrompt: string,
 	customInstructions = false,
 ): string {
-	const designOnly = prompt.includes(
-		"Do not call tools, run shell commands, read or write files",
-	);
+	const designOnly = DESIGN_ONLY_PROMPT.test(prompt);
 	return designOnly || customInstructions
 		? prompt
 		: `${codingPrompt}\n\n${prompt}`;

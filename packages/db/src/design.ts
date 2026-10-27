@@ -13,6 +13,9 @@ export type DesignNodeRecord = {
 	brief: string;
 	status: string;
 	viewport: string;
+	frameKind: string;
+	frameWidth: number;
+	frameHeight: number;
 	html: string;
 	errorMessage: string | null;
 	durationMs: number | null;
@@ -42,6 +45,9 @@ export type CreateDesignNode = {
 	title: string;
 	brief: string;
 	viewport?: string;
+	frameKind?: string;
+	frameWidth?: number;
+	frameHeight?: number;
 	parentId?: string | null;
 	sessionId?: string | null;
 	status?: string;
@@ -53,29 +59,63 @@ export type CreateDesignNode = {
 
 const PENDING_DESIGN_STATUSES = ["queued", "generating"];
 
+/** Local databases created before frames were flexible lack these columns. */
+const DESIGN_FRAME_COLUMNS = [
+	"frame_kind text NOT NULL DEFAULT 'desktop'",
+	"frame_width integer NOT NULL DEFAULT 1440",
+	"frame_height integer NOT NULL DEFAULT 900",
+];
+
+async function addMissingDesignColumns(db: Database): Promise<void> {
+	for (const column of DESIGN_FRAME_COLUMNS) {
+		try {
+			await db.run(`ALTER TABLE design_nodes ADD COLUMN ${column}`);
+		} catch (error) {
+			if (
+				!(error instanceof Error) ||
+				!error.message.includes("duplicate column")
+			)
+				throw error;
+		}
+	}
+}
+
 export function designRepository(db: Database) {
 	return {
 		async createNode(input: CreateDesignNode): Promise<DesignNodeRecord> {
 			const now = new Date();
-			const [node] = await db
-				.insert(designNodes)
-				.values({
-					id: input.id ?? randomUUID(),
-					projectId: input.projectId,
-					title: input.title,
-					brief: input.brief,
-					viewport: input.viewport ?? "desktop",
-					parentId: input.parentId ?? null,
-					sessionId: input.sessionId ?? null,
-					status: input.status ?? "queued",
-					x: input.x ?? 0,
-					y: input.y ?? 0,
-					width: input.width ?? 420,
-					height: input.height ?? 280,
-					createdAt: now,
-					updatedAt: now,
-				})
-				.returning();
+			const values = {
+				id: input.id ?? randomUUID(),
+				projectId: input.projectId,
+				title: input.title,
+				brief: input.brief,
+				viewport: input.viewport ?? "desktop",
+				frameKind: input.frameKind ?? "desktop",
+				frameWidth: input.frameWidth ?? 1440,
+				frameHeight: input.frameHeight ?? 900,
+				parentId: input.parentId ?? null,
+				sessionId: input.sessionId ?? null,
+				status: input.status ?? "queued",
+				x: input.x ?? 0,
+				y: input.y ?? 0,
+				width: input.width ?? 420,
+				height: input.height ?? 280,
+				createdAt: now,
+				updatedAt: now,
+			};
+			let node: DesignNodeRecord | undefined;
+			try {
+				[node] = await db.insert(designNodes).values(values).returning();
+			} catch (error) {
+				// Migrate lazily so an older cached database stays usable.
+				if (
+					!(error instanceof Error) ||
+					!error.message.includes("no column named")
+				)
+					throw error;
+				await addMissingDesignColumns(db);
+				[node] = await db.insert(designNodes).values(values).returning();
+			}
 			if (!node) throw new Error("Design node insert returned no row");
 			return node;
 		},

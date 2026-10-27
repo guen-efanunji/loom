@@ -1,91 +1,91 @@
 <script lang="ts">
-	import DOMPurify from "dompurify";
-	import hljs from "highlight.js/lib/common";
-	import "highlight.js/styles/github-dark.css";
-	import { Check, Copy } from "@lucide/svelte";
-	import { toast } from "svelte-sonner";
-	import { Button } from "$lib/components/ui/button";
+import DOMPurify from "dompurify";
+import hljs from "highlight.js/lib/common";
+import "highlight.js/styles/github-dark.css";
+import { Check, Copy } from "@lucide/svelte";
+import { toast } from "svelte-sonner";
+import { Button } from "$lib/components/ui/button";
 
-	let {
-		code,
-		language,
-		maxHeight = "max-h-80",
-		scrollable = true,
-	}: {
-		code: string;
-		language?: string;
-		maxHeight?: string;
-		scrollable?: boolean;
-	} = $props();
+let {
+	code,
+	language,
+	maxHeight = "max-h-80",
+	scrollable = true,
+}: {
+	code: string;
+	language?: string;
+	maxHeight?: string;
+	scrollable?: boolean;
+} = $props();
 
-	let copied = $state(false);
+let copied = $state(false);
 
-	const highlighted = $derived.by(() => {
-		const text = code || "";
-		const candidates = [language, guessLanguage(language), undefined].filter(
-			Boolean,
-		) as string[];
-		for (const candidate of candidates) {
-			try {
-				if (candidate && hljs.getLanguage(candidate))
-					return hljs.highlight(text, { language: candidate }).value;
-			} catch {}
-		}
+const highlighted = $derived.by(() => {
+	const text = code || "";
+	const candidates = [language, guessLanguage(language), undefined].filter(
+		Boolean,
+	) as string[];
+	for (const candidate of candidates) {
 		try {
-			return hljs.highlightAuto(text).value;
-		} catch {
-			return hljs.highlight(text, { language: "plaintext" }).value;
-		}
-	});
-
-	function guessLanguage(hint?: string) {
-		if (!hint) return undefined;
-		const map: Record<string, string> = {
-			html: "xml",
-			vue: "xml",
-			svelte: "xml",
-			css: "css",
-			scss: "scss",
-			js: "javascript",
-			jsx: "javascript",
-			ts: "typescript",
-			tsx: "typescript",
-			json: "json",
-			go: "go",
-			py: "python",
-			rb: "ruby",
-			rs: "rust",
-			sh: "bash",
-			yml: "yaml",
-			yaml: "yaml",
-			md: "markdown",
-			sql: "sql",
-			java: "java",
-			kt: "kotlin",
-			c: "c",
-			cpp: "cpp",
-			cs: "csharp",
-			php: "php",
-		};
-		const ext = hint.split(".").pop()?.toLowerCase() ?? "";
-		if (map[ext]) return map[ext];
-		return hljs.getLanguage(hint) ? hint : undefined;
+			if (candidate && hljs.getLanguage(candidate))
+				return hljs.highlight(text, { language: candidate }).value;
+		} catch {}
 	}
-
-	async function copy() {
-		try {
-			await navigator.clipboard.writeText(code);
-			copied = true;
-			setTimeout(() => {
-				copied = false;
-			}, 2000);
-		} catch {
-			toast.error("Unable to copy code");
-		}
+	try {
+		return hljs.highlightAuto(text).value;
+	} catch {
+		return hljs.highlight(text, { language: "plaintext" }).value;
 	}
+});
 
-	const safe = $derived(DOMPurify.sanitize(highlighted));
-	const lines = $derived(safe.split("\n"));
+function guessLanguage(hint?: string) {
+	if (!hint) return undefined;
+	const map: Record<string, string> = {
+		html: "xml",
+		vue: "xml",
+		svelte: "xml",
+		css: "css",
+		scss: "scss",
+		js: "javascript",
+		jsx: "javascript",
+		ts: "typescript",
+		tsx: "typescript",
+		json: "json",
+		go: "go",
+		py: "python",
+		rb: "ruby",
+		rs: "rust",
+		sh: "bash",
+		yml: "yaml",
+		yaml: "yaml",
+		md: "markdown",
+		sql: "sql",
+		java: "java",
+		kt: "kotlin",
+		c: "c",
+		cpp: "cpp",
+		cs: "csharp",
+		php: "php",
+	};
+	const ext = hint.split(".").pop()?.toLowerCase() ?? "";
+	if (map[ext]) return map[ext];
+	return hljs.getLanguage(hint) ? hint : undefined;
+}
+
+async function copy() {
+	try {
+		await navigator.clipboard.writeText(code);
+		copied = true;
+		setTimeout(() => {
+			copied = false;
+		}, 2000);
+	} catch {
+		toast.error("Unable to copy code");
+	}
+}
+
+const safe = $derived(DOMPurify.sanitize(highlighted));
+const lines = $derived(safe.split("\n"));
 </script>
 
 <div class="overflow-hidden rounded-lg border bg-background">

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, readFile, realpath, readdir } from "node:fs/promises";
+import { lstat, readdir, readFile, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, sep } from "node:path";
 import type { Database } from "@loom/db";

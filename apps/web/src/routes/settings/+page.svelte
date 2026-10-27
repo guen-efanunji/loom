@@ -1,181 +1,209 @@
 <script lang="ts">
-	import {
-		Archive,
-		Check,
-		ChevronLeft,
-		Folder,
-		FolderOpen,
-		RefreshCw,
-		Trash2,
-		X,
-	} from "@lucide/svelte";
-	import { onMount } from "svelte";
-	import { page } from "$app/state";
-	import { toast } from "svelte-sonner";
-	import SettingsSidebar from "$lib/components/settings/SettingsSidebar.svelte";
-	import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
-	import { Button } from "$lib/components/ui/button";
-	import { Input } from "$lib/components/ui/input";
-	import UpdateNotice from "$lib/components/update-notice.svelte";
-	import { daemon, type Project } from "$lib/daemon";
-	import { safeWorkspaceReturnTo } from "$lib/settings-navigation";
-	import {
-		DEFAULT_UI_PASSWORD,
-		getUiPassword,
-		setTrustedDevice,
-		setUiPassword,
-	} from "$lib/ui-access";
+import {
+	Archive,
+	Check,
+	ChevronLeft,
+	Folder,
+	FolderOpen,
+	RefreshCw,
+	Trash2,
+	X,
+} from "@lucide/svelte";
+import { onMount } from "svelte";
+import { toast } from "svelte-sonner";
+import { goto } from "$app/navigation";
+import { page } from "$app/state";
+import SettingsSidebar from "$lib/components/settings/SettingsSidebar.svelte";
+import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
+import { Button } from "$lib/components/ui/button";
+import { Input } from "$lib/components/ui/input";
+import UpdateNotice from "$lib/components/update-notice.svelte";
+import { daemon, type Project } from "$lib/daemon";
+import { safeWorkspaceReturnTo } from "$lib/settings-navigation";
+import { type UiLockState, uiLock } from "$lib/ui-access";
 
-	let projects = $state<Project[]>([]);
-	let selectedProjectId = $state("");
-	let project = $state<Project | null>(null);
-	let workspaceName = $state("");
-	let workspacePath = $state("");
-	let notifications = $state(true);
-	let languageServers = $state(true);
-	let autoFix = $state(true);
-	let indexStatus = $state("ready");
-	let indexFiles = $state(0);
-	let indexedAt = $state("a few seconds ago");
-	let indexing = $state(false);
-	let automationMode = $state<"review" | "auto-create" | "auto-start">(
-		"review",
-	);
-	let automationError = $state("");
-	let loading = $state(true);
-	let saving = $state(false);
-	let error = $state("");
-	let message = $state("");
-	let currentPassword = $state("");
-	let newPassword = $state("");
-	let passwordMessage = $state("");
-	let passwordError = $state("");
-	let deleteOpen = $state(false);
-	let search = $state("");
+let projects = $state<Project[]>([]);
+let selectedProjectId = $state("");
+let project = $state<Project | null>(null);
+let workspaceName = $state("");
+let workspacePath = $state("");
+let notifications = $state(true);
+let languageServers = $state(true);
+let autoFix = $state(true);
+let indexStatus = $state("ready");
+let indexFiles = $state(0);
+let indexedAt = $state("a few seconds ago");
+let indexing = $state(false);
+let automationMode = $state<"review" | "auto-create" | "auto-start">("review");
+let automationError = $state("");
+let loading = $state(true);
+let saving = $state(false);
+let error = $state("");
+let message = $state("");
+let currentPassword = $state("");
+let newPassword = $state("");
+let passwordMessage = $state("");
+let passwordError = $state("");
+let lockState = $state<UiLockState | null>(null);
+let deleteOpen = $state(false);
+let search = $state("");
 
-	const filteredProjects = $derived(
-		projects.filter((item) =>
-			`${item.name} ${item.path}`.toLowerCase().includes(search.toLowerCase()),
-		),
-	);
+const filteredProjects = $derived(
+	projects.filter((item) =>
+		`${item.name} ${item.path}`.toLowerCase().includes(search.toLowerCase()),
+	),
+);
 
-	onMount(async () => {
-		try {
-			projects = await daemon.listProjects();
-			selectedProjectId = projects[0]?.id ?? "";
-			const automation = await daemon.getAutomationSettings();
-			automationMode = automation.automationMode;
-			await loadProject();
-		} catch (reason) {
-			error =
-				reason instanceof Error ? reason.message : "Unable to load workspace";
-		} finally {
-			loading = false;
-		}
-	});
+onMount(async () => {
+	try {
+		lockState = await uiLock.state();
+	} catch {}
+	try {
+		projects = await daemon.listProjects();
+		selectedProjectId = projects[0]?.id ?? "";
+		const automation = await daemon.getAutomationSettings();
+		automationMode = automation.automationMode;
+		await loadProject();
+	} catch (reason) {
+		error =
+			reason instanceof Error ? reason.message : "Unable to load workspace";
+	} finally {
+		loading = false;
+	}
+});
 
-	async function loadProject() {
-		if (!selectedProjectId) {
-			project = null;
-			return;
-		}
-		project = await daemon.getProject(selectedProjectId);
+async function loadProject() {
+	if (!selectedProjectId) {
+		project = null;
+		return;
+	}
+	project = await daemon.getProject(selectedProjectId);
+	workspaceName = project.name;
+	workspacePath = project.path;
+}
+
+async function selectProject(id: string) {
+	selectedProjectId = id;
+	error = "";
+	message = "";
+	try {
+		await loadProject();
+	} catch (reason) {
+		error =
+			reason instanceof Error ? reason.message : "Unable to load workspace";
+	}
+}
+
+async function saveWorkspace() {
+	if (!project || saving || !workspaceName.trim() || !workspacePath.trim())
+		return;
+	saving = true;
+	error = "";
+	message = "";
+	try {
+		project = await daemon.updateProject(project.id, {
+			name: workspaceName.trim(),
+			path: workspacePath.trim(),
+		});
+		await daemon.saveAutomationSettings(automationMode);
+		projects = projects.map((item) =>
+			item.id === project?.id ? project : item,
+		);
 		workspaceName = project.name;
 		workspacePath = project.path;
+		message = "Workspace settings saved";
+		toast.success(message);
+	} catch (reason) {
+		error =
+			reason instanceof Error ? reason.message : "Unable to save workspace";
+	} finally {
+		saving = false;
 	}
+}
 
-	async function selectProject(id: string) {
-		selectedProjectId = id;
-		error = "";
-		message = "";
-		try {
-			await loadProject();
-		} catch (reason) {
-			error =
-				reason instanceof Error ? reason.message : "Unable to load workspace";
-		}
+async function changePassword() {
+	passwordError = "";
+	passwordMessage = "";
+	if (newPassword.length < 6) {
+		passwordError = "Password must be at least 6 characters";
+		return;
 	}
-
-	async function saveWorkspace() {
-		if (!project || saving || !workspaceName.trim() || !workspacePath.trim())
-			return;
-		saving = true;
-		error = "";
-		message = "";
-		try {
-			project = await daemon.updateProject(project.id, {
-				name: workspaceName.trim(),
-				path: workspacePath.trim(),
-			});
-			await daemon.saveAutomationSettings(automationMode);
-			projects = projects.map((item) =>
-				item.id === project?.id ? project : item,
-			);
-			workspaceName = project.name;
-			workspacePath = project.path;
-			message = "Workspace settings saved";
-			toast.success(message);
-		} catch (reason) {
-			error =
-				reason instanceof Error ? reason.message : "Unable to save workspace";
-		} finally {
-			saving = false;
-		}
-	}
-
-	function changePassword() {
-		passwordError = "";
-		passwordMessage = "";
-		if (currentPassword !== getUiPassword()) {
-			passwordError = "Current password is incorrect";
-			return;
-		}
-		if (newPassword.length < 6) {
-			passwordError = "Password must be at least 6 characters";
-			return;
-		}
-		setUiPassword(newPassword);
-		setTrustedDevice(false);
+	try {
+		// The daemon verifies the old password and stores only a scrypt hash.
+		await uiLock.setPassword(newPassword, currentPassword || undefined);
 		currentPassword = "";
 		newPassword = "";
-		passwordMessage = "Password updated";
+		passwordMessage =
+			"Password updated. This browser must unlock again with the new password.";
+		void goto("/unlock?next=%2Fsettings", { replaceState: true });
+	} catch (reason) {
+		passwordError =
+			reason instanceof Error ? reason.message : "Unable to update password";
 	}
+}
 
-	async function rebuildIndex() {
-		if (!project || indexing) return;
-		indexing = true;
-		try {
-			indexStatus = "indexing";
-			const result = await daemon.rebuildProjectIndex(project.id);
-			indexStatus = result.status;
-			indexFiles = result.files;
-			indexedAt = "just now";
-			toast.success(`Index rebuilt · ${result.files} files`);
-		} catch (reason) {
-			indexStatus = "failed";
-			toast.error(
-				reason instanceof Error ? reason.message : "Unable to rebuild index",
-			);
-		} finally {
-			indexing = false;
-		}
+async function removePassword() {
+	passwordError = "";
+	passwordMessage = "";
+	try {
+		await uiLock.clearPassword(currentPassword || undefined);
+		currentPassword = "";
+		newPassword = "";
+		lockState = await uiLock.state();
+		passwordMessage = "UI lock removed. The interface opens directly again.";
+	} catch (reason) {
+		passwordError =
+			reason instanceof Error ? reason.message : "Unable to remove password";
 	}
+}
 
-	async function deleteWorkspace() {
-		if (!project) return;
-		try {
-			await daemon.deleteProject(project.id);
-			projects = projects.filter((item) => item.id !== project?.id);
-			selectedProjectId = projects[0]?.id ?? "";
-			project = null;
-			deleteOpen = false;
-			await loadProject();
-			toast.success("Workspace removed");
-		} catch (reason) {
-			error =
-				reason instanceof Error ? reason.message : "Unable to delete workspace";
-		}
+async function lockNow() {
+	passwordError = "";
+	passwordMessage = "";
+	try {
+		await uiLock.lock();
+		void goto("/unlock?next=%2Fsettings", { replaceState: true });
+	} catch (reason) {
+		passwordError =
+			reason instanceof Error ? reason.message : "Unable to lock the UI";
 	}
+}
+
+async function rebuildIndex() {
+	if (!project || indexing) return;
+	indexing = true;
+	try {
+		indexStatus = "indexing";
+		const result = await daemon.rebuildProjectIndex(project.id);
+		indexStatus = result.status;
+		indexFiles = result.files;
+		indexedAt = "just now";
+		toast.success(`Index rebuilt · ${result.files} files`);
+	} catch (reason) {
+		indexStatus = "failed";
+		toast.error(
+			reason instanceof Error ? reason.message : "Unable to rebuild index",
+		);
+	} finally {
+		indexing = false;
+	}
+}
+
+async function deleteWorkspace() {
+	if (!project) return;
+	try {
+		await daemon.deleteProject(project.id);
+		projects = projects.filter((item) => item.id !== project?.id);
+		selectedProjectId = projects[0]?.id ?? "";
+		project = null;
+		deleteOpen = false;
+		await loadProject();
+		toast.success("Workspace removed");
+	} catch (reason) {
+		error =
+			reason instanceof Error ? reason.message : "Unable to delete workspace";
+	}
+}
 </script>
 
 <svelte:head><title>Settings · Loom</title></svelte:head>
@@ -505,13 +533,19 @@
 						>
 							<h2 class="font-semibold">UI password</h2>
 							<p class="mt-1 text-sm text-neutral-500">
-								Protect this local Loom interface. Default password: {DEFAULT_UI_PASSWORD}
+								{#if lockState?.configured}
+									This interface is protected. The password is verified by the
+									daemon and stored only as a scrypt hash.
+								{:else}
+									No password is set, so the interface opens directly. Set one to
+									require unlock on this machine.
+								{/if}
 							</p>
 							<form
 								class="mt-5 space-y-4"
 								onsubmit={(event) => {
 									event.preventDefault();
-									changePassword();
+									void changePassword();
 								}}
 							>
 								<label class="block space-y-2 text-sm"
@@ -534,7 +568,21 @@
 										role="status"
 									>
 										{passwordMessage}
-									</p>{/if}<Button type="submit">Change password</Button>
+									</p>{/if}<div class="flex flex-wrap gap-2">
+									<Button type="submit"
+										>{lockState?.configured
+											? "Change password"
+											: "Set password"}</Button
+									>{#if lockState?.configured}<Button
+											type="button"
+											variant="outline"
+											onclick={() => void lockNow()}>Lock now</Button
+										><Button
+											type="button"
+											variant="ghost"
+											onclick={() => void removePassword()}>Remove
+											password</Button
+									>{/if}</div>
 							</form>
 						</section>
 						<section

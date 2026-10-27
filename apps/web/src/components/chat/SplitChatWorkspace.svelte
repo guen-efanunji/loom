@@ -1,82 +1,82 @@
 <script lang="ts">
-	import { Columns2, Columns3, X } from "@lucide/svelte";
-	import { untrack } from "svelte";
-	import { Button } from "$lib/components/ui/button";
-	import type { Catalog, ChatSession } from "$lib/chat";
-	import type { Project } from "$lib/daemon";
-	import SplitChatPane from "./SplitChatPane.svelte";
+import { Columns2, Columns3, X } from "@lucide/svelte";
+import { untrack } from "svelte";
+import type { Catalog, ChatSession } from "$lib/chat";
+import { Button } from "$lib/components/ui/button";
+import type { Project } from "$lib/daemon";
+import SplitChatPane from "./SplitChatPane.svelte";
 
-	let {
-		project,
-		catalog,
-		customAgents,
-		primarySessionId,
-		primaryModel,
-		primaryAgent,
-		primaryCustomAgentId,
-		primaryDraft,
-		onfile,
-		onopenfile,
-		onSession,
-		onclose,
-	}: {
-		project: Project | undefined;
-		catalog: Catalog;
-		customAgents: Array<{
-			id: string;
-			label: string;
-			allowChat: boolean;
-			status: string;
-			provider: string;
-			modelId: string | null;
-		}>;
-		primarySessionId: string;
-		primaryModel: string;
-		primaryAgent: string;
-		primaryCustomAgentId: string;
-		primaryDraft: string;
-		onfile: (path: string) => void;
-		onopenfile?: (path: string) => void;
-		onSession: (session: ChatSession, projectId: string) => void;
-		onclose: (state: {
-			sessionId: string;
-			projectId: string;
-			model: string;
-			agent: string;
-			customAgentId: string;
-			draft: string;
-			title: string;
-		}) => void;
-	} = $props();
+let {
+	project,
+	catalog,
+	customAgents,
+	primarySessionId,
+	primaryModel,
+	primaryAgent,
+	primaryCustomAgentId,
+	primaryDraft,
+	onfile,
+	onopenfile,
+	onSession,
+	onclose,
+}: {
+	project: Project | undefined;
+	catalog: Catalog;
+	customAgents: Array<{
+		id: string;
+		label: string;
+		allowChat: boolean;
+		status: string;
+		provider: string;
+		modelId: string | null;
+	}>;
+	primarySessionId: string;
+	primaryModel: string;
+	primaryAgent: string;
+	primaryCustomAgentId: string;
+	primaryDraft: string;
+	onfile: (path: string) => void;
+	onopenfile?: (path: string) => void;
+	onSession: (session: ChatSession, projectId: string) => void;
+	onclose: (state: {
+		sessionId: string;
+		projectId: string;
+		model: string;
+		agent: string;
+		customAgentId: string;
+		draft: string;
+		title: string;
+	}) => void;
+} = $props();
 
-	let layout = $state<"columns" | "rows">("columns");
-	let leftState = $state(
-		untrack(() => ({
-			sessionId: primarySessionId,
-			model: primaryModel,
-			agent: primaryAgent,
-			customAgentId: primaryCustomAgentId,
-			draft: primaryDraft,
-			title: "New chat",
-			projectId: project?.id ?? "",
-		})),
-	);
-	let rightState = $state(
-		untrack(() => ({
-			sessionId: "",
-			model: primaryModel,
-			agent: "build",
-			customAgentId: "",
-			draft: "",
-			title: "New chat",
-			projectId: project?.id ?? "",
-		})),
-	);
+let layout = $state<"columns" | "rows">("columns");
+let leftState = $state(
+	untrack(() => ({
+		sessionId: primarySessionId,
+		model: primaryModel,
+		agent: primaryAgent,
+		customAgentId: primaryCustomAgentId,
+		draft: primaryDraft,
+		title: "New chat",
+		projectId: project?.id ?? "",
+	})),
+);
+let rightState = $state(
+	untrack(() => ({
+		sessionId: "",
+		model: primaryModel,
+		agent: "build",
+		customAgentId: "",
+		draft: "",
+		title: "New chat",
+		projectId: project?.id ?? "",
+	})),
+);
 
-	function updatePane(side: "left" | "right", state: typeof leftState) {
-		if (side === "left") leftState = state;
-		else rightState = state;
-	}
+function updatePane(side: "left" | "right", state: typeof leftState) {
+	if (side === "left") leftState = state;
+	else rightState = state;
+}
 </script>
 
 <section

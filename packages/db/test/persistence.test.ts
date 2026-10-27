@@ -83,6 +83,7 @@ test("bootstraps an empty database and is idempotent", async () => {
 			"integration_batch_reviews",
 			"integration_batches",
 			"integration_leases",
+			"managed_mcp_connections",
 			"orchestration_events",
 			"permission_requests",
 			"plan_tasks",

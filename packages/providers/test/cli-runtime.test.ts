@@ -30,6 +30,82 @@ function runtimeWithOutput(output: string) {
 	}).getRuntime();
 }
 
+test("CLI image input is rejected before spawning instead of silently dropping images", async () => {
+	let built = false;
+	const runtime = new CliProviderAdapter({
+		definition: {
+			id: "agy",
+			name: "Agy",
+			executable: process.execPath,
+			capabilities: ["chat"],
+			install: { supported: false },
+			authStrategy: "none",
+		},
+		getAuthStatus: async () => ({ authenticated: true, strategy: "none" }),
+		buildPrompt: async () => {
+			built = true;
+			return { command: process.execPath, args: [] };
+		},
+	}).getRuntime();
+	const session = await runtime.createSession({ cwd: "/tmp", title: "Test" });
+	await expect(
+		runtime.prompt({
+			sessionId: session.id,
+			prompt: "Describe this image",
+			images: [{ mime: "image/png", data: "aGVsbG8=" }],
+		}),
+	).rejects.toThrow("does not support direct image input");
+	expect(built).toBe(false);
+	expect(await runtime.status(session.id)).toBe("queued");
+});
+
+test("CLI wait timeout aborts the running child process", async () => {
+	const runtime = new CliProviderAdapter({
+		definition: {
+			id: "agy",
+			name: "Agy",
+			executable: process.execPath,
+			capabilities: ["chat"],
+			install: { supported: false },
+			authStrategy: "none",
+		},
+		getAuthStatus: async () => ({ authenticated: true, strategy: "none" }),
+		buildPrompt: async () => ({
+			command: process.execPath,
+			args: ["-e", "process.stdout.write(String(process.pid)); setInterval(() => {}, 1000)"],
+		}),
+	}).getRuntime();
+	const session = await runtime.createSession({ cwd: "/tmp", title: "Test" });
+	await runtime.prompt({ sessionId: session.id, prompt: "Test" });
+	let pid = 0;
+	try {
+		const start = Date.now();
+		while (!pid && Date.now() - start < 5000) {
+			pid = Number((await runtime.readOutput?.(session.id))?.output) || 0;
+			if (!pid) await Bun.sleep(10);
+		}
+		expect(pid).toBeGreaterThan(0);
+		await expect(
+			runtime.wait(session.id, { timeoutMs: 20, pollIntervalMs: 10 }),
+		).rejects.toThrow("timed out");
+		expect(await runtime.status(session.id)).toBe("cancelled");
+		expect(await runtime.lastError?.(session.id)).toContain("timed out");
+		let alive = true;
+		const stoppedAt = Date.now() + 5000;
+		while (alive && Date.now() < stoppedAt) {
+			try {
+				process.kill(pid, 0);
+				await Bun.sleep(10);
+			} catch {
+				alive = false;
+			}
+		}
+		expect(alive).toBe(false);
+	} finally {
+		await runtime.abort(session.id);
+	}
+});
+
 test("Agy denied_actions is an error even with SUCCESS and exit code zero", async () => {
 	const runtime = runtimeWithOutput(deniedResult);
 	const session = await runtime.createSession({ cwd: "/tmp", title: "Test" });
@@ -273,6 +349,18 @@ test("design-only Agy prompt excludes coding instructions that invite tools", ()
 			"Use shell tools to inspect the project",
 		),
 	).not.toContain("Use shell tools");
+	// The canvas create prompt words the same ban differently - it must be caught
+	// too, or Agy gets invited to explore the project with the shell and the
+	// headless run dies on a denied RunCommand.
+	expect(
+		agyPromptText(
+			"Do not call tools, run shell commands, or create or edit project files. Produce the visual design directly.",
+			"Use shell tools to inspect the project",
+		),
+	).not.toContain("Use shell tools");
+	expect(
+		agyPromptText("Run shell commands when useful", "Use shell tools"),
+	).toContain("Use shell tools");
 });
 
 test("CliRuntime threads the permission env into the spawned process", async () => {

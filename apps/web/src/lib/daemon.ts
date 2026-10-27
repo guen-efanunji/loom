@@ -441,6 +441,22 @@ export type PermissionRequest = ProtocolPermissionRequest & {
 	decidedAt: string | null;
 };
 export type DaemonEvent = ProtocolDaemonEvent;
+export type DesignTrace = {
+	projectId: string;
+	nodeId: string;
+	runs: Array<{
+		sessionId: string;
+		createdAt: string;
+		events: Array<{
+			type: string;
+			text?: string;
+			tool?: string;
+			status?: string;
+			output?: string;
+			error?: string;
+		}>;
+	}>;
+};
 export type SchedulerTask = {
 	taskId: string;
 	projectId: string;
@@ -544,19 +560,34 @@ export async function latestDaemonEventCursor() {
 	return result.cursor;
 }
 
+/** Raised when the daemon's server-side UI lock rejects a mutating call. */
+export class UiLockedError extends Error {
+	constructor(message = "Loom is locked. Enter your UI password to continue.") {
+		super(message);
+		this.name = "UiLockedError";
+	}
+}
+
 export async function request<T>(path: string, init: RequestInit = {}) {
 	await provisionDaemonToken();
 	const headers = new Headers(init.headers);
 	const token = getDaemonToken();
 	if (token) headers.set("Authorization", `Bearer ${token}`);
 	if (init.body) headers.set("Content-Type", "application/json");
-	const response = await fetch(`${serverUrl()}${path}`, { ...init, headers });
+	const response = await fetch(`${serverUrl()}${path}`, {
+		...init,
+		headers,
+		// The server-side UI lock session is an HttpOnly cookie; cross-origin
+		// dev requests must send it explicitly.
+		credentials: "include",
+	});
 	if (!response.ok) {
 		let message = `${response.status} ${response.statusText}`;
 		try {
 			const body = (await response.json()) as { error?: { message?: string } };
 			message = body.error?.message ?? message;
 		} catch {}
+		if (response.status === 423) throw new UiLockedError(message);
 		throw new Error(message);
 	}
 	if (response.status === 204) return undefined as T;
@@ -1307,7 +1338,10 @@ export const daemon = {
 			method: "POST",
 			body: JSON.stringify(input),
 		}),
-	getDesign: (id: string) => request<DesignNode>(`/api/designs/${id}`),
+	getDesign: (id: string) =>
+		request<DesignNode>(`/api/designs/${encodeURIComponent(id)}`),
+	getDesignTrace: (id: string) =>
+		request<DesignTrace>(`/api/designs/${encodeURIComponent(id)}/trace`),
 	designSteps: (id: string) =>
 		request<DesignActivity | null>(`/api/designs/${id}/steps`),
 	decideDesignPermission: (

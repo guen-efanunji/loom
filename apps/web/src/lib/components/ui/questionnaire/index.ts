@@ -1,6 +1,7 @@
+import Root from "./questionnaire.svelte";
 import Actions from "./questionnaire-actions.svelte";
-import ChoiceDescription from "./questionnaire-choice-description.svelte";
 import Choice from "./questionnaire-choice.svelte";
+import ChoiceDescription from "./questionnaire-choice-description.svelte";
 import Choices from "./questionnaire-choices.svelte";
 import Description from "./questionnaire-description.svelte";
 import ErrorComponent from "./questionnaire-error.svelte";
@@ -12,38 +13,37 @@ import Progress from "./questionnaire-progress.svelte";
 import Skip from "./questionnaire-skip.svelte";
 import Submit from "./questionnaire-submit.svelte";
 import Title from "./questionnaire-title.svelte";
-import Root from "./questionnaire.svelte";
 
 export {
-	Root,
-	Progress,
-	Item,
-	Title,
-	Description,
-	Choices,
-	Choice,
-	ChoiceDescription,
-	Input,
-	ErrorComponent as Error,
 	Actions,
-	Previous,
-	Skip,
+	Actions as QuestionnaireActions,
+	Choice,
+	Choice as QuestionnaireChoice,
+	ChoiceDescription,
+	ChoiceDescription as QuestionnaireChoiceDescription,
+	Choices,
+	Choices as QuestionnaireChoices,
+	Description,
+	Description as QuestionnaireDescription,
+	ErrorComponent as Error,
+	ErrorComponent as QuestionnaireError,
+	Input,
+	Input as QuestionnaireInput,
+	Item,
+	Item as QuestionnaireItem,
 	Next,
-	Submit,
+	Next as QuestionnaireNext,
+	Previous,
+	Previous as QuestionnairePrevious,
+	Progress,
+	Progress as QuestionnaireProgress,
+	Root,
 	//
 	Root as Questionnaire,
-	Progress as QuestionnaireProgress,
-	Item as QuestionnaireItem,
-	Title as QuestionnaireTitle,
-	Description as QuestionnaireDescription,
-	Choices as QuestionnaireChoices,
-	Choice as QuestionnaireChoice,
-	ChoiceDescription as QuestionnaireChoiceDescription,
-	Input as QuestionnaireInput,
-	ErrorComponent as QuestionnaireError,
-	Actions as QuestionnaireActions,
-	Previous as QuestionnairePrevious,
+	Skip,
 	Skip as QuestionnaireSkip,
-	Next as QuestionnaireNext,
+	Submit,
 	Submit as QuestionnaireSubmit,
+	Title,
+	Title as QuestionnaireTitle,
 };

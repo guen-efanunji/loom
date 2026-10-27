@@ -101,11 +101,128 @@ test("runs a custom model directly against its OpenAI-compatible endpoint", asyn
 
 		expect(request?.url).toBe("http://localhost:20128/v1/chat/completions");
 		expect(request?.headers.get("authorization")).toBe("Bearer test-secret");
-		expect(await adapter.getRuntime().status(session.id)).toBe("completed");
-		expect(await adapter.getRuntime().readOutput?.(session.id)).toEqual({
+		expect(await adapter.wait(session.id)).toBe("completed");
+		expect(await adapter.getRuntime().readOutput?.(session.id)).toMatchObject({
 			output: "OK",
 			tokens: { total: 13, input: 12, output: 1 },
 		});
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test("read-only design requests omit tools and preserve system instructions and images", async () => {
+	const originalFetch = globalThis.fetch;
+	const requests: Array<Record<string, unknown>> = [];
+	globalThis.fetch = async (input, init) => {
+		const body = (await new Request(input, init).json()) as Record<string, unknown>;
+		requests.push(body);
+		return Response.json({
+			choices: [{ message: { content: "A visual design proposal" } }],
+		});
+	};
+	try {
+		const adapter = new CustomProviderAdapter({
+			id: "loom_custom_design_test",
+			name: "DESIGN",
+			baseUrl: "http://localhost:20128/v1",
+			apiKey: "",
+			models: [{ id: "DESIGN", name: "DESIGN" }],
+		});
+		const session = await adapter.createSession({ cwd: "/tmp", title: "design" });
+		let approvals = 0;
+		await adapter.prompt({
+			sessionId: session.id,
+			prompt: "Design this screen",
+			system: "Return a design proposal.",
+			permission: { mode: "read-only" },
+			images: [{ mime: "image/png", data: "aGVsbG8=" }],
+			authorizeTool: async () => {
+				approvals += 1;
+				return true;
+			},
+		});
+		expect(await adapter.wait(session.id)).toBe("completed");
+		expect(requests).toHaveLength(1);
+		expect(requests[0]).not.toHaveProperty("tools");
+		expect(requests[0]).not.toHaveProperty("tool_choice");
+		expect(requests[0]?.messages).toEqual([
+			{ role: "system", content: "Return a design proposal." },
+			{
+				role: "user",
+				content: [
+					{ type: "text", text: "Design this screen" },
+					{ type: "image_url", image_url: { url: "data:image/png;base64,aGVsbG8=" } },
+				],
+			},
+		]);
+		expect(approvals).toBe(0);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test("read-only requests do not execute unsolicited tool calls", async () => {
+	const originalFetch = globalThis.fetch;
+	let requests = 0;
+	let approvals = 0;
+	globalThis.fetch = async () => {
+		requests += 1;
+		return Response.json({
+			choices: [{ message: {
+				content: "Safe response",
+				tool_calls: [{ id: "call_1", type: "function", function: { name: "run_command", arguments: '{"command":"true"}' } }],
+			} }],
+		});
+	};
+	try {
+		const adapter = new CustomProviderAdapter({
+			id: "loom_custom_design_test",
+			name: "DESIGN",
+			baseUrl: "http://localhost:20128/v1",
+			apiKey: "",
+			models: [{ id: "DESIGN", name: "DESIGN" }],
+		});
+		const session = await adapter.createSession({ cwd: "/tmp", title: "design" });
+		await adapter.prompt({
+			sessionId: session.id,
+			prompt: "Design this screen",
+			permission: { mode: "read-only" },
+			authorizeTool: async () => {
+				approvals += 1;
+				return true;
+			},
+		});
+		expect(await adapter.wait(session.id)).toBe("completed");
+		expect(requests).toBe(1);
+		expect(approvals).toBe(0);
+		expect(await adapter.readOutput(session.id)).toMatchObject({ output: "Safe response", activities: [] });
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test("coding requests retain tool invitations and declarations", async () => {
+	const originalFetch = globalThis.fetch;
+	let body: Record<string, unknown> | undefined;
+	globalThis.fetch = async (input, init) => {
+		body = (await new Request(input, init).json()) as Record<string, unknown>;
+		return Response.json({ choices: [{ message: { content: "Done" } }] });
+	};
+	try {
+		const adapter = new CustomProviderAdapter({
+			id: "loom_custom_code_test",
+			name: "CODE",
+			baseUrl: "http://localhost:20128/v1",
+			apiKey: "",
+			models: [{ id: "CODE", name: "CODE" }],
+		});
+		const session = await adapter.createSession({ cwd: "/tmp", title: "code" });
+		await adapter.prompt({ sessionId: session.id, prompt: "Edit a file", permission: { mode: "ask" } });
+		expect(await adapter.wait(session.id)).toBe("completed");
+		expect(body?.tool_choice).toBe("auto");
+		expect(body?.tools).toBeArray();
+		expect((body?.messages as Array<{ content: string }> | undefined)?.[0]?.content).toContain("write_file");
 	} finally {
 		globalThis.fetch = originalFetch;
 	}
@@ -124,14 +241,12 @@ test("surfaces direct custom provider HTTP failures as failed runs", async () =>
 			models: [{ id: "BACKEND", name: "BACKEND" }],
 		});
 		const session = await adapter.createSession({ cwd: "/tmp", title: "test" });
-		await expect(
-			adapter.getRuntime().prompt({
-				sessionId: session.id,
-				prompt: "hello",
-				model: { providerID: adapter.definition.id, modelID: "BACKEND" },
-			}),
-		).rejects.toThrow("HTTP 503");
-		expect(await adapter.getRuntime().status(session.id)).toBe("failed");
+		await adapter.getRuntime().prompt({
+			sessionId: session.id,
+			prompt: "hello",
+			model: { providerID: adapter.definition.id, modelID: "BACKEND" },
+		});
+		expect(await adapter.wait(session.id)).toBe("failed");
 		expect(await adapter.getRuntime().lastError?.(session.id)).toContain(
 			"upstream unavailable",
 		);

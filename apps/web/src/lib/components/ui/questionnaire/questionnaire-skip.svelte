@@ -1,22 +1,22 @@
 <script lang="ts">
-	import { Questionnaire as QuestionnairePrimitive } from "@shadcn-svelte/primitives/questionnaire";
-	import {
-		buttonVariants,
-		type ButtonSize,
-		type ButtonVariant,
-	} from "$lib/components/ui/button/index.js";
-	import { cn } from "$lib/utils.js";
+import { Questionnaire as QuestionnairePrimitive } from "@shadcn-svelte/primitives/questionnaire";
+import {
+	type ButtonSize,
+	type ButtonVariant,
+	buttonVariants,
+} from "$lib/components/ui/button/index.js";
+import { cn } from "$lib/utils.js";
 
-	let {
-		ref = $bindable(null),
-		class: className,
-		size = "default",
-		variant = "outline",
-		...restProps
-	}: QuestionnairePrimitive.SkipProps & {
-		size?: ButtonSize;
-		variant?: ButtonVariant;
-	} = $props();
+let {
+	ref = $bindable(null),
+	class: className,
+	size = "default",
+	variant = "outline",
+	...restProps
+}: QuestionnairePrimitive.SkipProps & {
+	size?: ButtonSize;
+	variant?: ButtonVariant;
+} = $props();
 </script>
 
 <QuestionnairePrimitive.Skip

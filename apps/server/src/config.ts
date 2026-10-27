@@ -7,6 +7,8 @@ export type DaemonConfig = {
 	port: number;
 	corsOrigin: string;
 	token: string;
+	/** Server-side UI lock password hash (`scrypt$salt$hash`); absent = no lock. */
+	uiLockHash?: string | null;
 };
 
 export function getLoomDirectory(home = homedir()): string {
@@ -52,11 +54,39 @@ export async function loadDaemonConfig(
 			.filter(Boolean)
 			.join(","),
 		token,
+		uiLockHash: stored.uiLockHash ?? null,
 	};
-	if (stored.token !== token) {
+	if (stored.token !== token || stored.uiLockHash !== config.uiLockHash) {
 		await writeFile(path, `${JSON.stringify(config, null, 2)}\n`, {
 			mode: 0o600,
 		});
 	}
 	return config;
+}
+
+/** Merge a partial update into the persisted daemon config on disk. */
+export async function updateDaemonConfig(
+	patch: Partial<Pick<DaemonConfig, "uiLockHash">>,
+	options: { home?: string } = {},
+): Promise<void> {
+	const home = options.home ?? homedir();
+	const directory = getLoomDirectory(home);
+	const path = getLoomConfigPath(home);
+	await mkdir(directory, { recursive: true, mode: 0o700 });
+	let stored: Partial<DaemonConfig> = {};
+	try {
+		stored = JSON.parse(await readFile(path, "utf8")) as Partial<DaemonConfig>;
+	} catch (error) {
+		if (
+			!(error instanceof Error) ||
+			!("code" in error) ||
+			error.code !== "ENOENT"
+		)
+			throw error;
+	}
+	const merged: Partial<DaemonConfig> = { ...stored, ...patch };
+	if (patch.uiLockHash === null) delete merged.uiLockHash;
+	await writeFile(path, `${JSON.stringify(merged, null, 2)}\n`, {
+		mode: 0o600,
+	});
 }

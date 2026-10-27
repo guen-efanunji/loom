@@ -7,12 +7,12 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
-import type { AgyPermissionStore } from "./permissions";
 import {
 	buildContextPacket,
 	ContextBudgetError,
 	type ContextMessage,
 } from "./context-compaction";
+import type { AgyPermissionStore } from "./permissions";
 import {
 	createWorkspaceDirectory,
 	createWorkspaceFile,
@@ -68,6 +68,10 @@ type ProviderMessage = {
 		providerID?: string;
 		modelID?: string;
 		cost?: number;
+		/** True when this turn was superseded by a regenerate/edit and hidden. */
+		hidden?: boolean;
+		/** Bookkeeping meta: ids of provider-native turns to hide from the UI. */
+		hideIds?: string[];
 		tokens?: {
 			total?: number;
 			input?: number;
@@ -108,6 +112,8 @@ type ProviderTurn = {
 	assistant: ProviderMessage;
 	finished: boolean;
 	openCodeActive?: boolean;
+	/** Last status type broadcast to the UI, used to suppress duplicate events. */
+	emittedStatus?: string;
 	permissionToken?: string;
 	agentRunId?: string;
 	persistedMessages?: string;
@@ -267,6 +273,8 @@ export function createChatRoutes(options: {
 	sessionScope?: (
 		sessionId: string,
 	) => Promise<{ directory: string; projectId: string } | undefined>;
+	/** Emits lightweight chat lifecycle events so the UI can refresh on demand. */
+	onEvent?: (event: { sessionId: string; status: string }) => void;
 }) {
 	const app = new Hono();
 	const providerSessions = new Map<string, ProviderTurn>();
@@ -291,6 +299,55 @@ export function createChatRoutes(options: {
 	>();
 	const agyEnabled =
 		options.permissions !== undefined && !!options.agyPermissionUrl;
+	/** Pseudo-message role used to persist which provider turns were superseded. */
+	const META_ROLE = "loom/meta";
+	function collectHiddenIds(messages: ProviderMessage[]): Set<string> {
+		const hide = new Set<string>();
+		for (const message of messages) {
+			if (
+				message.info.role === META_ROLE &&
+				Array.isArray(message.info.hideIds)
+			)
+				for (const hidden of message.info.hideIds) hide.add(hidden);
+			if (message.info.hidden) hide.add(message.info.id);
+		}
+		return hide;
+	}
+	/** Strip meta bookkeeping and superseded turns before display or context. */
+	function visibleMessages(messages: ProviderMessage[]): ProviderMessage[] {
+		const hide = collectHiddenIds(messages);
+		return messages.filter(
+			(message) =>
+				message.info.role !== META_ROLE &&
+				!message.info.hidden &&
+				!hide.has(message.info.id),
+		);
+	}
+	async function supersedeTurn(sessionId: string, messageIds: string[]) {
+		if (!messageIds.length) return;
+		const turn = providerSessions.get(sessionId);
+		const stored =
+			(await options.providerHistory?.get<ProviderMessage[]>(sessionId)) ??
+			turn?.messages ??
+			[];
+		const wanted = new Set(messageIds);
+		if (turn)
+			for (const message of turn.messages)
+				if (wanted.has(message.info.id)) message.info.hidden = true;
+		const meta: ProviderMessage = {
+			info: {
+				id: `${META_ROLE}-${randomUUID()}`,
+				role: META_ROLE,
+				hidden: true,
+				hideIds: messageIds,
+				time: { created: Date.now() },
+			},
+			parts: [],
+		};
+		const next = [...stored, meta];
+		if (turn) turn.messages = mergeMessages(turn.messages, [meta]);
+		await options.providerHistory?.save(sessionId, next);
+	}
 	async function updateProviderTurn(turn: ProviderTurn) {
 		if (turn.finished) return;
 		const status = await turn.runtime.status(turn.id);
@@ -395,6 +452,13 @@ export function createChatRoutes(options: {
 			});
 		}
 		const serialized = JSON.stringify(turn.messages);
+		if (turn.emittedStatus !== turn.status.type) {
+			turn.emittedStatus = turn.status.type;
+			options.onEvent?.({
+				sessionId: turn.loomSessionId,
+				status: turn.status.type,
+			});
+		}
 		if (serialized !== turn.persistedMessages) {
 			await options.providerHistory?.save(turn.loomSessionId, turn.messages);
 			turn.persistedMessages = serialized;
@@ -996,7 +1060,7 @@ export function createChatRoutes(options: {
 				})) ?? [];
 			return c.json({
 				session: current,
-				messages: providerSession.messages,
+				messages: visibleMessages(providerSession.messages),
 				status: pending.length
 					? { type: "busy", message: "Waiting for permission" }
 					: providerSession.status,
@@ -1020,10 +1084,32 @@ export function createChatRoutes(options: {
 			providerSession?.messages ??
 			(await options.providerHistory?.get<ProviderMessage[]>(current.id)) ??
 			[];
+		// P2-11: after a daemon restart an in-flight provider turn is gone; drop a
+		// stale busy status when the newest turn is already completed and nothing
+		// is waiting, so the UI never sticks on "Loom is working".
+		const rawStatus = statuses[current.id] ?? { type: "idle" };
+		const visible = visibleMessages(mergeMessages(providerMessages, messages));
+		const newestCompleted = visible.findLast(
+			(message) => message.info.role === "assistant",
+		)?.info.time?.completed;
+		const pendingPermissions = permissions.filter(
+			(p) => p.sessionID === current.id,
+		).length;
+		const pendingQuestions = questions.filter(
+			(q) => q.sessionID === current.id,
+		).length;
+		const status =
+			rawStatus.type === "busy" &&
+			!providerSession &&
+			newestCompleted &&
+			!pendingPermissions &&
+			!pendingQuestions
+				? { type: "idle" }
+				: rawStatus;
 		return c.json({
 			session: current,
-			messages: mergeMessages(providerMessages, messages),
-			status: statuses[current.id] ?? { type: "idle" },
+			messages: visible,
+			status,
 			permissions: permissions.filter((p) => p.sessionID === current.id),
 			questions: questions.filter((q) => q.sessionID === current.id),
 		});
@@ -1251,23 +1337,23 @@ export function createChatRoutes(options: {
 				options.providerManager?.registry
 					.get(providerId)
 					?.definition.capabilities.includes("custom-model") === true;
-			const modelEntry = options.providerManager?.catalog
-				.listByProvider(providerId)
-				.find((candidate) => {
-					const wanted = (
-						runtimeModel?.modelID ??
-						requestedModel?.modelID ??
-						""
-					).toLowerCase();
-					return [
-						candidate.name,
-						candidate.displayName,
-						candidate.metadata?.modelId,
-					].some(
-						(value) =>
-							typeof value === "string" && value.toLowerCase() === wanted,
-					);
-				});
+			const modelEntry = (
+				options.providerManager?.catalog.listByProvider?.(providerId) ?? []
+			).find((candidate) => {
+				const wanted = (
+					runtimeModel?.modelID ??
+					requestedModel?.modelID ??
+					""
+				).toLowerCase();
+				return [
+					candidate.name,
+					candidate.displayName,
+					candidate.metadata?.modelId,
+				].some(
+					(value) =>
+						typeof value === "string" && value.toLowerCase() === wanted,
+				);
+			});
 			const catalogWindow = cachedCatalog?.models.find(
 				(model) =>
 					model.providerID === providerId &&
@@ -1297,7 +1383,7 @@ export function createChatRoutes(options: {
 					providerId,
 					modelId: runtimeModel?.modelID ?? requestedModel?.modelID,
 					mode: isCustomProvider ? "loom_owned" : "handoff_only",
-					history: history as ContextMessage[],
+					history: visibleMessages(history) as ContextMessage[],
 					currentPrompt: [
 						thinkingContext,
 						promptText,
@@ -1603,6 +1689,83 @@ export function createChatRoutes(options: {
 				current.directory,
 				input,
 				"PATCH",
+			),
+		);
+	});
+	// Regenerate/edit: hide the superseded turns from the conversation and model
+	// context without depending on provider-native message deletion. The client
+	// then re-sends the (possibly edited) prompt as a fresh turn.
+	app.post("/sessions/:id/supersede", async (c) => {
+		const current = await session(c.req.param("id"));
+		const input = z
+			.object({ messageIds: z.array(z.string().min(1).max(500)).max(500) })
+			.parse(await c.req.json());
+		await supersedeTurn(current.id, input.messageIds);
+		options.onEvent?.({ sessionId: current.id, status: "superseded" });
+		return c.json({ ok: true });
+	});
+	// P1-7: a cheap poll target so long conversations don't re-ship every message
+	// body each refresh. The client fetches full state only when this signature
+	// (count/last id/last completion/status) changes.
+	app.get("/sessions/:id/status", async (c) => {
+		const current = await session(c.req.param("id"));
+		const providerSession = providerSessions.get(current.id);
+		const summarize = (
+			messages: ProviderMessage[],
+			status: { type: string; message?: string },
+			pendingPermissions: number,
+			pendingQuestions: number,
+		) => {
+			const visible = visibleMessages(messages);
+			const lastAssistant = visible.findLast(
+				(message) => message.info.role === "assistant",
+			);
+			return {
+				status,
+				count: visible.length,
+				lastMessageId: visible.at(-1)?.info.id ?? "",
+				lastCompleted: lastAssistant?.info.time?.completed ?? null,
+				busy: status.type === "busy" || status.type === "retry",
+				pendingPermissions,
+				pendingQuestions,
+			};
+		};
+		if (providerSession && !providerSession.openCodeActive) {
+			await updateProviderTurn(providerSession);
+			const pending = options.permissions?.pendingFor(current.id).length ?? 0;
+			return c.json(
+				summarize(
+					providerSession.messages,
+					pending
+						? { type: "busy", message: "Waiting for permission" }
+						: providerSession.status,
+					pending,
+					0,
+				),
+			);
+		}
+		const [messages, statuses, permissions, questions] = await Promise.all([
+			request<ProviderMessage[]>(
+				`/session/${current.id}/message`,
+				current.directory,
+			),
+			request<Record<string, { type: string; message?: string }>>(
+				"/session/status",
+				current.directory,
+			),
+			request<Array<{ sessionID: string }>>("/permission", current.directory),
+			request<Array<{ sessionID: string }>>("/question", current.directory),
+		]);
+		const providerMessages =
+			providerSession?.messages ??
+			(await options.providerHistory?.get<ProviderMessage[]>(current.id)) ??
+			[];
+		return c.json(
+			summarize(
+				mergeMessages(providerMessages, messages),
+				statuses[current.id] ?? { type: "idle" },
+				permissions.filter((p) => p.sessionID === current.id).length,
+				questions.filter((q) => q.sessionID === current.id).length,
 			),
 		);
 	});

@@ -1,28 +1,63 @@
-const passwordKey = "loom.ui.password";
-const trustedKey = "loom.ui.trusted";
+import { request } from "$lib/daemon";
 
-export const DEFAULT_UI_PASSWORD = "123456";
+export type UiLockState = {
+	/** A UI password is configured on the daemon. */
+	configured: boolean;
+	/** No password exists, so the interface runs unlocked. */
+	notInUse: boolean;
+	/** This browser surface already holds a server-issued unlock session. */
+	unlocked: boolean;
+};
 
-export function getUiPassword(): string {
-	if (typeof localStorage === "undefined") return DEFAULT_UI_PASSWORD;
-	return localStorage.getItem(passwordKey) ?? DEFAULT_UI_PASSWORD;
+export type UiLockMutation = {
+	ok: boolean;
+	configured: boolean;
+};
+
+/** Server-authoritative UI lock client. Passwords never live in the browser. */
+export const uiLock = {
+	state: () => request<UiLockState>("/api/ui-lock/state"),
+	unlock: (password: string) =>
+		request<{ ok: boolean; unlocked: boolean }>("/api/ui-lock/unlock", {
+			method: "POST",
+			body: JSON.stringify({ password }),
+		}),
+	setPassword: (password: string, currentPassword?: string) =>
+		request<UiLockMutation>("/api/ui-lock/password", {
+			method: "POST",
+			body: JSON.stringify({ password, currentPassword }),
+		}),
+	clearPassword: (currentPassword?: string) =>
+		request<UiLockMutation>("/api/ui-lock/clear", {
+			method: "POST",
+			body: JSON.stringify({ currentPassword }),
+		}),
+	lock: () =>
+		request<{ ok: boolean; locked: boolean }>("/api/ui-lock/lock", {
+			method: "POST",
+			body: "{}",
+		}),
+	/** One-time migration check for passwords that used to live in localStorage. */
+	verifyLegacy: (password: string) =>
+		request<{ matched: boolean; migratable: boolean }>(
+			"/api/ui-lock/verify-legacy",
+			{ method: "POST", body: JSON.stringify({ password }) },
+		),
+};
+
+const legacyPasswordKey = "loom.ui.password";
+
+/** Read the pre-server UI password without clearing it yet. */
+export function peekLegacyUiPassword(): string | null {
+	if (typeof localStorage === "undefined") return null;
+	return localStorage.getItem(legacyPasswordKey);
 }
 
-export function isTrustedDevice(): boolean {
-	return (
-		typeof localStorage !== "undefined" &&
-		(localStorage.getItem(trustedKey) === "true" ||
-			sessionStorage.getItem("loom.ui.unlocked") === "true")
-	);
-}
-
-export function setTrustedDevice(trusted: boolean): void {
+/** Drop client-side lock state after a successful server migration. */
+export function clearLegacyUiPassword(): void {
 	if (typeof localStorage === "undefined") return;
-	if (trusted) localStorage.setItem(trustedKey, "true");
-	else localStorage.removeItem(trustedKey);
-}
-
-export function setUiPassword(password: string): void {
-	if (typeof localStorage === "undefined") return;
-	localStorage.setItem(passwordKey, password);
+	localStorage.removeItem(legacyPasswordKey);
+	localStorage.removeItem("loom.ui.trusted");
+	if (typeof sessionStorage !== "undefined")
+		sessionStorage.removeItem("loom.ui.unlocked");
 }

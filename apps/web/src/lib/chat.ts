@@ -327,6 +327,20 @@ export const chat = {
 			agents: string[];
 		},
 	) => post<void>(`/sessions/${encodeURIComponent(id)}/messages`, input),
+	supersede: (id: string, messageIds: string[]) =>
+		post<{ ok: boolean }>(`/sessions/${encodeURIComponent(id)}/supersede`, {
+			messageIds,
+		}),
+	status: (id: string) =>
+		request<{
+			status: { type: string; message?: string };
+			count: number;
+			lastMessageId: string;
+			lastCompleted: number | null;
+			busy: boolean;
+			pendingPermissions: number;
+			pendingQuestions: number;
+		}>(`${root}/sessions/${encodeURIComponent(id)}/status`),
 	abort: (id: string) => post(`/sessions/${encodeURIComponent(id)}/abort`),
 	rename: (id: string, title: string) =>
 		post(`/sessions/${encodeURIComponent(id)}/rename`, { title }),
@@ -442,7 +456,25 @@ export const chat = {
 		id: string,
 		requestId: string,
 		reply: "once" | "always" | "reject",
-	) => post(`/sessions/${id}/permission/${requestId}`, { reply }),
+	) =>
+		post(
+			`/sessions/${encodeURIComponent(id)}/permission/${encodeURIComponent(requestId)}`,
+			{ reply },
+		),
 	question: (id: string, requestId: string, answers: string[][]) =>
-		post(`/sessions/${id}/question/${requestId}`, { answers }),
+		post(
+			`/sessions/${encodeURIComponent(id)}/question/${encodeURIComponent(requestId)}`,
+			{
+				answers,
+			},
+		),
 };
+
+// Pure, provider-agnostic helpers live in a daemon-free module so they can be
+// unit tested and shared by the split pane and the projects page.
+export {
+	groupTurns,
+	permissionActionLabel,
+	supersededIds,
+	userMessageText,
+} from "./chat-utils";

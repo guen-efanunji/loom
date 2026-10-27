@@ -1,581 +1,567 @@
 <script lang="ts">
-	import {
-		Activity,
-		BarChart3,
-		CalendarDays,
-		CircleAlert,
-		Clock3,
-		Coins,
-		MessageSquareText,
-		RefreshCw,
-		Server,
-		Sparkles,
-		WalletCards,
-	} from "@lucide/svelte";
-	import { onMount } from "svelte";
-	import SettingsSidebar from "$lib/components/settings/SettingsSidebar.svelte";
-	import { Badge } from "$lib/components/ui/badge";
-	import { Button } from "$lib/components/ui/button";
-	import * as Dialog from "$lib/components/ui/dialog";
-	import { Input } from "$lib/components/ui/input";
-	import * as Select from "$lib/components/ui/select";
-	import * as Tabs from "$lib/components/ui/tabs";
-	import { chat, type ChatMessage, type ChatSession } from "$lib/chat";
-	import { daemon, type Project } from "$lib/daemon";
-	import { page } from "$app/state";
-	import { settingsHref } from "$lib/settings-navigation";
+import {
+	Activity,
+	BarChart3,
+	CalendarDays,
+	CircleAlert,
+	Clock3,
+	Coins,
+	MessageSquareText,
+	RefreshCw,
+	Server,
+	Sparkles,
+	WalletCards,
+} from "@lucide/svelte";
+import { onMount } from "svelte";
+import { page } from "$app/state";
+import { type ChatMessage, type ChatSession, chat } from "$lib/chat";
+import SettingsSidebar from "$lib/components/settings/SettingsSidebar.svelte";
+import { Badge } from "$lib/components/ui/badge";
+import { Button } from "$lib/components/ui/button";
+import * as Dialog from "$lib/components/ui/dialog";
+import { Input } from "$lib/components/ui/input";
+import * as Select from "$lib/components/ui/select";
+import * as Tabs from "$lib/components/ui/tabs";
+import { daemon, type Project } from "$lib/daemon";
+import { settingsHref } from "$lib/settings-navigation";
 
-	type Period = "today" | "7d" | "30d" | "all" | "custom";
-	type UsageRecord = {
-		id: string;
-		projectId: string;
-		projectName: string;
-		sessionId: string;
-		sessionTitle: string;
-		messageId: string;
-		createdAt: number;
-		providerId: string | null;
-		modelId: string | null;
-		totalTokens: number | null;
-		inputTokens: number | null;
-		outputTokens: number | null;
-		reasoningTokens: number | null;
-		cacheReadTokens: number | null;
-		cacheWriteTokens: number | null;
-		costAmount: number | null;
-		result: "completed" | "failed";
-	};
-	type ModelUsage = {
-		key: string;
-		providerId: string;
-		modelId: string;
-		records: UsageRecord[];
-	};
-	type TimeBucket = {
-		key: string;
-		label: string;
-		knownTotal: number;
-		withTotal: number;
-		withoutTotal: number;
-	};
+type Period = "today" | "7d" | "30d" | "all" | "custom";
+type UsageRecord = {
+	id: string;
+	projectId: string;
+	projectName: string;
+	sessionId: string;
+	sessionTitle: string;
+	messageId: string;
+	createdAt: number;
+	providerId: string | null;
+	modelId: string | null;
+	totalTokens: number | null;
+	inputTokens: number | null;
+	outputTokens: number | null;
+	reasoningTokens: number | null;
+	cacheReadTokens: number | null;
+	cacheWriteTokens: number | null;
+	costAmount: number | null;
+	result: "completed" | "failed";
+};
+type ModelUsage = {
+	key: string;
+	providerId: string;
+	modelId: string;
+	records: UsageRecord[];
+};
+type TimeBucket = {
+	key: string;
+	label: string;
+	knownTotal: number;
+	withTotal: number;
+	withoutTotal: number;
+};
 
-	let projects = $state<Project[]>([]);
-	let records = $state<UsageRecord[]>([]);
-	let loading = $state(true);
-	let refreshing = $state(false);
-	let error = $state("");
-	let partialFailures = $state(0);
-	let cappedProjects = $state<string[]>([]);
-	let projectFilter = $state("all");
-	let providerFilter = $state("all");
-	let modelFilter = $state("all");
-	let activityFilter = $state("all");
-	let period = $state<Period>("30d");
-	let customFrom = $state("");
-	let customTo = $state("");
-	let activeView = $state("overview");
-	let chartMetric = $state<"tokens" | "cost">("tokens");
-	let lastUpdated = $state<number | null>(null);
-	let activityPage = $state(0);
-	let selectedActivity = $state<UsageRecord | null>(null);
-	let activityOpen = $state(false);
-	let settingsSearch = $state("");
+let projects = $state<Project[]>([]);
+let records = $state<UsageRecord[]>([]);
+let loading = $state(true);
+let refreshing = $state(false);
+let error = $state("");
+let partialFailures = $state(0);
+let cappedProjects = $state<string[]>([]);
+let projectFilter = $state("all");
+let providerFilter = $state("all");
+let modelFilter = $state("all");
+let activityFilter = $state("all");
+let period = $state<Period>("30d");
+let customFrom = $state("");
+let customTo = $state("");
+let activeView = $state("overview");
+let chartMetric = $state<"tokens" | "cost">("tokens");
+let lastUpdated = $state<number | null>(null);
+let activityPage = $state(0);
+let selectedActivity = $state<UsageRecord | null>(null);
+let activityOpen = $state(false);
+let settingsSearch = $state("");
 
-	const timezone =
-		Intl.DateTimeFormat().resolvedOptions().timeZone || "local time";
-	const activityPageSize = 20;
+const timezone =
+	Intl.DateTimeFormat().resolvedOptions().timeZone || "local time";
+const activityPageSize = 20;
 
-	function positiveNumber(value: unknown): number | null {
-		return typeof value === "number" && Number.isFinite(value) && value >= 0
-			? value
-			: null;
-	}
+function positiveNumber(value: unknown): number | null {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0
+		? value
+		: null;
+}
 
-	function toUsageRecords(
-		project: Project,
-		session: ChatSession,
-		messages: ChatMessage[],
-	): UsageRecord[] {
-		return messages.flatMap((message) => {
-			if (message.info.role !== "assistant") return [];
-			const tokens = message.info.tokens;
-			return [
-				{
-					id: `${session.id}:${message.info.id}`,
-					projectId: project.id,
-					projectName: project.name,
-					sessionId: session.id,
-					sessionTitle: session.title || "Untitled session",
-					messageId: message.info.id,
-					createdAt: message.info.time.completed ?? message.info.time.created,
-					providerId: message.info.providerID || null,
-					modelId: message.info.modelID || null,
-					totalTokens: positiveNumber(tokens?.total),
-					inputTokens: positiveNumber(tokens?.input),
-					outputTokens: positiveNumber(tokens?.output),
-					reasoningTokens: positiveNumber(tokens?.reasoning),
-					cacheReadTokens: positiveNumber(tokens?.cache?.read),
-					cacheWriteTokens: positiveNumber(tokens?.cache?.write),
-					costAmount: positiveNumber(message.info.cost),
-					result: message.info.error ? "failed" : "completed",
-				},
-			];
-		});
-	}
+function toUsageRecords(
+	project: Project,
+	session: ChatSession,
+	messages: ChatMessage[],
+): UsageRecord[] {
+	return messages.flatMap((message) => {
+		if (message.info.role !== "assistant") return [];
+		const tokens = message.info.tokens;
+		return [
+			{
+				id: `${session.id}:${message.info.id}`,
+				projectId: project.id,
+				projectName: project.name,
+				sessionId: session.id,
+				sessionTitle: session.title || "Untitled session",
+				messageId: message.info.id,
+				createdAt: message.info.time.completed ?? message.info.time.created,
+				providerId: message.info.providerID || null,
+				modelId: message.info.modelID || null,
+				totalTokens: positiveNumber(tokens?.total),
+				inputTokens: positiveNumber(tokens?.input),
+				outputTokens: positiveNumber(tokens?.output),
+				reasoningTokens: positiveNumber(tokens?.reasoning),
+				cacheReadTokens: positiveNumber(tokens?.cache?.read),
+				cacheWriteTokens: positiveNumber(tokens?.cache?.write),
+				costAmount: positiveNumber(message.info.cost),
+				result: message.info.error ? "failed" : "completed",
+			},
+		];
+	});
+}
 
-	async function mapConcurrent<T, U>(
-		items: T[],
-		limit: number,
-		map: (item: T) => Promise<U>,
-	): Promise<U[]> {
-		const results = new Array<U>(items.length);
-		let nextIndex = 0;
-		await Promise.all(
-			Array.from({ length: Math.min(limit, items.length) }, async () => {
-				while (nextIndex < items.length) {
-					const index = nextIndex++;
-					results[index] = await map(items[index]!);
-				}
-			}),
-		);
-		return results;
-	}
-
-	async function loadUsage() {
-		if (refreshing) return;
-		refreshing = true;
-		if (!records.length) loading = true;
-		error = "";
-		partialFailures = 0;
-		cappedProjects = [];
-		try {
-			const loadedProjects = await daemon.listProjects();
-			projects = loadedProjects;
-			if (
-				projectFilter !== "all" &&
-				!loadedProjects.some((item) => item.id === projectFilter)
-			) {
-				projectFilter = "all";
+async function mapConcurrent<T, U>(
+	items: T[],
+	limit: number,
+	map: (item: T) => Promise<U>,
+): Promise<U[]> {
+	const results = new Array<U>(items.length);
+	let nextIndex = 0;
+	await Promise.all(
+		Array.from({ length: Math.min(limit, items.length) }, async () => {
+			while (nextIndex < items.length) {
+				const index = nextIndex++;
+				results[index] = await map(items[index]!);
 			}
-			const allProjectRecords = await mapConcurrent(
-				loadedProjects,
-				3,
-				async (project) => {
-					let sessions: ChatSession[];
-					try {
-						sessions = await chat.sessions(project.id);
-					} catch {
-						partialFailures += 1;
-						return [] as UsageRecord[];
-					}
-					if (sessions.length >= 200)
-						cappedProjects = [...cappedProjects, project.name];
-					const sessionRecords = await mapConcurrent(
-						sessions,
-						5,
-						async (session) => {
-							try {
-								const state = await chat.state(session.id);
-								return toUsageRecords(project, session, state.messages);
-							} catch {
-								partialFailures += 1;
-								return [] as UsageRecord[];
-							}
-						},
-					);
-					return sessionRecords.flat();
-				},
-			);
-			const unique = new Map<string, UsageRecord>();
-			for (const item of allProjectRecords.flat()) unique.set(item.id, item);
-			records = [...unique.values()].sort((a, b) => b.createdAt - a.createdAt);
-			lastUpdated = Date.now();
-		} catch (reason) {
-			error =
-				reason instanceof Error
-					? reason.message
-					: "Unable to load usage history.";
-		} finally {
-			loading = false;
-			refreshing = false;
-		}
-	}
-
-	onMount(() => {
-		const projectId = page.url.searchParams.get("project");
-		if (projectId) projectFilter = projectId;
-		void loadUsage();
-	});
-
-	function localDateStart(value: Date) {
-		return new Date(
-			value.getFullYear(),
-			value.getMonth(),
-			value.getDate(),
-		).getTime();
-	}
-	function localNextDateStart(value: Date) {
-		return new Date(
-			value.getFullYear(),
-			value.getMonth(),
-			value.getDate() + 1,
-		).getTime();
-	}
-
-	function dateFromInput(value: string, end = false): number | null {
-		const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-		if (!match) return null;
-		const [year, month, day] = match.slice(1).map(Number);
-		const date = new Date(year!, month! - 1, day!);
-		if (
-			Number.isNaN(date.getTime()) ||
-			date.getFullYear() !== year ||
-			date.getMonth() !== month! - 1 ||
-			date.getDate() !== day
-		)
-			return null;
-		return end
-			? new Date(
-					date.getFullYear(),
-					date.getMonth(),
-					date.getDate() + 1,
-				).getTime()
-			: localDateStart(date);
-	}
-
-	const periodBounds = $derived.by(() => {
-		const now = new Date();
-		const today = localDateStart(now);
-		if (period === "today")
-			return { start: today, end: localNextDateStart(now) };
-		if (period === "7d")
-			return {
-				start: new Date(
-					now.getFullYear(),
-					now.getMonth(),
-					now.getDate() - 6,
-				).getTime(),
-				end: localNextDateStart(now),
-			};
-		if (period === "30d")
-			return {
-				start: new Date(
-					now.getFullYear(),
-					now.getMonth(),
-					now.getDate() - 29,
-				).getTime(),
-				end: localNextDateStart(now),
-			};
-		if (period === "custom") {
-			return {
-				start: dateFromInput(customFrom),
-				end: dateFromInput(customTo, true),
-			};
-		}
-		return { start: null, end: null };
-	});
-
-	const scopedRecords = $derived.by(() =>
-		records.filter((record) => {
-			if (
-				period === "custom" &&
-				(periodBounds.start === null ||
-					periodBounds.end === null ||
-					periodBounds.start >= periodBounds.end)
-			)
-				return false;
-			if (projectFilter !== "all" && record.projectId !== projectFilter)
-				return false;
-			if (periodBounds.start !== null && record.createdAt < periodBounds.start)
-				return false;
-			if (periodBounds.end !== null && record.createdAt >= periodBounds.end)
-				return false;
-			return true;
 		}),
 	);
-	const providerOptions = $derived(
-		[
-			...new Set(
-				scopedRecords
-					.map((record) => record.providerId)
-					.filter((id): id is string => !!id),
-			),
-		].sort(),
-	);
-	const modelOptions = $derived(
-		[
-			...new Set(
-				scopedRecords
-					.filter(
-						(record) =>
-							providerFilter === "all" || record.providerId === providerFilter,
-					)
-					.map((record) => record.modelId)
-					.filter((id): id is string => !!id),
-			),
-		].sort(),
-	);
-	const filteredRecords = $derived(
-		scopedRecords.filter(
-			(record) =>
-				(providerFilter === "all" || record.providerId === providerFilter) &&
-				(modelFilter === "all" || record.modelId === modelFilter) &&
-				(activityFilter === "all" || activityFilter === "chat"),
-		),
-	);
-	const recordsWithUsage = $derived(
-		filteredRecords.filter(
-			(record) =>
-				record.totalTokens !== null ||
-				record.inputTokens !== null ||
-				record.outputTokens !== null ||
-				record.costAmount !== null,
-		),
-	);
-	const totalTokens = $derived(
-		recordsWithUsage.reduce(
-			(sum, record) => sum + (record.totalTokens ?? 0),
-			0,
-		),
-	);
-	const knownTotalCount = $derived(
-		recordsWithUsage.filter((record) => record.totalTokens !== null).length,
-	);
-	const knownInput = $derived(
-		recordsWithUsage.reduce(
-			(sum, record) => sum + (record.inputTokens ?? 0),
-			0,
-		),
-	);
-	const knownOutput = $derived(
-		recordsWithUsage.reduce(
-			(sum, record) => sum + (record.outputTokens ?? 0),
-			0,
-		),
-	);
-	const missingInput = $derived(
-		recordsWithUsage.filter((record) => record.inputTokens === null).length,
-	);
-	const missingOutput = $derived(
-		recordsWithUsage.filter((record) => record.outputTokens === null).length,
-	);
-	const missingTotal = $derived(
-		recordsWithUsage.filter((record) => record.totalTokens === null).length,
-	);
-	const costMetadataCount = $derived(
-		recordsWithUsage.filter((record) => record.costAmount !== null).length,
-	);
-	const noUsageCount = $derived(
-		filteredRecords.length - recordsWithUsage.length,
-	);
-	const failedCount = $derived(
-		filteredRecords.filter((record) => record.result === "failed").length,
-	);
-	const contextModelGroups = $derived.by(() => {
-		const groups = new Map<string, ModelUsage>();
-		for (const record of filteredRecords) {
-			const providerId = record.providerId ?? "Provider not reported";
-			const modelId = record.modelId ?? "Model not reported";
-			const key = `${providerId}\u0000${modelId}`;
-			const group = groups.get(key) ?? {
-				key,
-				providerId,
-				modelId,
-				records: [],
-			};
-			group.records.push(record);
-			groups.set(key, group);
-		}
-		return [...groups.values()].sort(
-			(a, b) => b.records.length - a.records.length,
-		);
-	});
-	const providerGroups = $derived.by(() => {
-		const groups = new Map<string, UsageRecord[]>();
-		for (const record of filteredRecords) {
-			const key = record.providerId ?? "Provider not reported";
-			groups.set(key, [...(groups.get(key) ?? []), record]);
-		}
-		return [...groups.entries()]
-			.map(([providerId, items]) => ({
-				providerId,
-				records: items.length,
-				withUsage: items.filter(
-					(item) =>
-						item.totalTokens !== null ||
-						item.inputTokens !== null ||
-						item.outputTokens !== null ||
-						item.costAmount !== null,
-				).length,
-				tokens: items.reduce((sum, item) => sum + (item.totalTokens ?? 0), 0),
-				missingTotal: items.filter((item) => item.totalTokens === null).length,
-				costRecords: items.filter((item) => item.costAmount !== null).length,
-				lastUsed: Math.max(...items.map((item) => item.createdAt)),
-			}))
-			.sort((a, b) => b.records - a.records);
-	});
-	const sortedActivity = $derived(
-		[...filteredRecords].sort((a, b) => b.createdAt - a.createdAt),
-	);
-	const activityCount = $derived(
-		Math.max(1, Math.ceil(sortedActivity.length / activityPageSize)),
-	);
-	const pagedActivity = $derived(
-		sortedActivity.slice(
-			activityPage * activityPageSize,
-			(activityPage + 1) * activityPageSize,
-		),
-	);
-	const trendBuckets = $derived.by(() =>
-		buildTrendBuckets(
-			filteredRecords,
-			period,
-			periodBounds.start,
-			periodBounds.end,
-		),
-	);
-	const maxBucketTokens = $derived(
-		Math.max(0, ...trendBuckets.map((bucket) => bucket.knownTotal)),
-	);
+	return results;
+}
 
-	function buildTrendBuckets(
-		items: UsageRecord[],
-		selectedPeriod: Period,
-		start: number | null,
-		end: number | null,
-	): TimeBucket[] {
-		const now = new Date();
-		const earliest = items.length
-			? Math.min(
-					...items.map((item) => localDateStart(new Date(item.createdAt))),
-				)
-			: localDateStart(now);
-		const actualStart = start ?? earliest;
-		const actualEnd = end ?? localNextDateStart(now);
-		const monthly =
-			selectedPeriod === "all" ||
-			actualEnd - actualStart > 100 * 24 * 60 * 60 * 1000;
-		const labels = new Map<string, string>();
-		if (monthly) {
-			const date = new Date(actualStart);
-			const month = new Date(date.getFullYear(), date.getMonth(), 1);
-			const endDate = new Date(actualEnd);
-			while (month < endDate) {
-				const key = `${month.getFullYear()}-${String(month.getMonth() + 1).padStart(2, "0")}`;
-				labels.set(
-					key,
-					new Intl.DateTimeFormat(undefined, {
-						month: "short",
-						year: "2-digit",
-					}).format(month),
-				);
-				month.setMonth(month.getMonth() + 1);
-			}
-		} else {
-			const date = new Date(actualStart);
-			while (date.getTime() < actualEnd) {
-				const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "2")}`;
-				labels.set(
-					key,
-					new Intl.DateTimeFormat(undefined, {
-						month: "short",
-						day: "numeric",
-					}).format(date),
-				);
-				date.setDate(date.getDate() + 1);
-			}
-		}
-		const values = new Map<
-			string,
-			{ total: number; withTotal: number; withoutTotal: number }
-		>();
-		for (const item of items) {
-			const date = new Date(item.createdAt);
-			const key = monthly
-				? `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`
-				: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-			const value = values.get(key) ?? {
-				total: 0,
-				withTotal: 0,
-				withoutTotal: 0,
-			};
-			if (item.totalTokens === null) value.withoutTotal += 1;
-			else {
-				value.total += item.totalTokens;
-				value.withTotal += 1;
-			}
-			values.set(key, value);
-		}
-		return [...labels.entries()].map(([key, label]) => {
-			const value = values.get(key) ?? {
-				total: 0,
-				withTotal: 0,
-				withoutTotal: 0,
-			};
-			return {
-				key,
-				label,
-				knownTotal: value.total,
-				withTotal: value.withTotal,
-				withoutTotal: value.withoutTotal,
-			};
-		});
-	}
-
-	function formatNumber(value: number) {
-		return new Intl.NumberFormat(undefined, {
-			maximumFractionDigits: 0,
-		}).format(value);
-	}
-	function formatTimestamp(value: number) {
-		return new Intl.DateTimeFormat(undefined, {
-			month: "short",
-			day: "numeric",
-			year: "numeric",
-			hour: "numeric",
-			minute: "2-digit",
-		}).format(value);
-	}
-	function formatPartial(value: number, missing: number) {
-		if (!value && !missing) return "Unavailable";
-		return `${missing ? "≥ " : ""}${formatNumber(value)}${missing ? " recorded" : ""}`;
-	}
-	function chooseProvider(value: string) {
-		providerFilter = value;
+async function loadUsage() {
+	if (refreshing) return;
+	refreshing = true;
+	if (!records.length) loading = true;
+	error = "";
+	partialFailures = 0;
+	cappedProjects = [];
+	try {
+		const loadedProjects = await daemon.listProjects();
+		projects = loadedProjects;
 		if (
-			modelFilter !== "all" &&
-			!scopedRecords.some(
-				(record) =>
-					record.modelId === modelFilter &&
-					(value === "all" || record.providerId === value),
-			)
-		)
-			modelFilter = "all";
-		activityPage = 0;
+			projectFilter !== "all" &&
+			!loadedProjects.some((item) => item.id === projectFilter)
+		) {
+			projectFilter = "all";
+		}
+		const allProjectRecords = await mapConcurrent(
+			loadedProjects,
+			3,
+			async (project) => {
+				let sessions: ChatSession[];
+				try {
+					sessions = await chat.sessions(project.id);
+				} catch {
+					partialFailures += 1;
+					return [] as UsageRecord[];
+				}
+				if (sessions.length >= 200)
+					cappedProjects = [...cappedProjects, project.name];
+				const sessionRecords = await mapConcurrent(
+					sessions,
+					5,
+					async (session) => {
+						try {
+							const state = await chat.state(session.id);
+							return toUsageRecords(project, session, state.messages);
+						} catch {
+							partialFailures += 1;
+							return [] as UsageRecord[];
+						}
+					},
+				);
+				return sessionRecords.flat();
+			},
+		);
+		const unique = new Map<string, UsageRecord>();
+		for (const item of allProjectRecords.flat()) unique.set(item.id, item);
+		records = [...unique.values()].sort((a, b) => b.createdAt - a.createdAt);
+		lastUpdated = Date.now();
+	} catch (reason) {
+		error =
+			reason instanceof Error
+				? reason.message
+				: "Unable to load usage history.";
+	} finally {
+		loading = false;
+		refreshing = false;
 	}
-	function changePeriod(value: Period) {
-		period = value;
-		activityPage = 0;
-	}
-	function showActivity(record: UsageRecord) {
-		selectedActivity = record;
-		activityOpen = true;
-	}
-	function openChat(sessionId: string) {
-		window.location.assign(`/?session=${encodeURIComponent(sessionId)}`);
-	}
+}
 
-	const periodLabel = $derived(
-		period === "today"
-			? "Today"
-			: period === "7d"
-				? "7 days"
-				: period === "30d"
-					? "30 days"
-					: period === "custom"
-						? "Custom range"
-						: "All time",
+onMount(() => {
+	const projectId = page.url.searchParams.get("project");
+	if (projectId) projectFilter = projectId;
+	void loadUsage();
+});
+
+function localDateStart(value: Date) {
+	return new Date(
+		value.getFullYear(),
+		value.getMonth(),
+		value.getDate(),
+	).getTime();
+}
+function localNextDateStart(value: Date) {
+	return new Date(
+		value.getFullYear(),
+		value.getMonth(),
+		value.getDate() + 1,
+	).getTime();
+}
+
+function dateFromInput(value: string, end = false): number | null {
+	const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+	if (!match) return null;
+	const [year, month, day] = match.slice(1).map(Number);
+	const date = new Date(year!, month! - 1, day!);
+	if (
+		Number.isNaN(date.getTime()) ||
+		date.getFullYear() !== year ||
+		date.getMonth() !== month! - 1 ||
+		date.getDate() !== day
+	)
+		return null;
+	return end
+		? new Date(
+				date.getFullYear(),
+				date.getMonth(),
+				date.getDate() + 1,
+			).getTime()
+		: localDateStart(date);
+}
+
+const periodBounds = $derived.by(() => {
+	const now = new Date();
+	const today = localDateStart(now);
+	if (period === "today") return { start: today, end: localNextDateStart(now) };
+	if (period === "7d")
+		return {
+			start: new Date(
+				now.getFullYear(),
+				now.getMonth(),
+				now.getDate() - 6,
+			).getTime(),
+			end: localNextDateStart(now),
+		};
+	if (period === "30d")
+		return {
+			start: new Date(
+				now.getFullYear(),
+				now.getMonth(),
+				now.getDate() - 29,
+			).getTime(),
+			end: localNextDateStart(now),
+		};
+	if (period === "custom") {
+		return {
+			start: dateFromInput(customFrom),
+			end: dateFromInput(customTo, true),
+		};
+	}
+	return { start: null, end: null };
+});
+
+const scopedRecords = $derived.by(() =>
+	records.filter((record) => {
+		if (
+			period === "custom" &&
+			(periodBounds.start === null ||
+				periodBounds.end === null ||
+				periodBounds.start >= periodBounds.end)
+		)
+			return false;
+		if (projectFilter !== "all" && record.projectId !== projectFilter)
+			return false;
+		if (periodBounds.start !== null && record.createdAt < periodBounds.start)
+			return false;
+		if (periodBounds.end !== null && record.createdAt >= periodBounds.end)
+			return false;
+		return true;
+	}),
+);
+const providerOptions = $derived(
+	[
+		...new Set(
+			scopedRecords
+				.map((record) => record.providerId)
+				.filter((id): id is string => !!id),
+		),
+	].sort(),
+);
+const modelOptions = $derived(
+	[
+		...new Set(
+			scopedRecords
+				.filter(
+					(record) =>
+						providerFilter === "all" || record.providerId === providerFilter,
+				)
+				.map((record) => record.modelId)
+				.filter((id): id is string => !!id),
+		),
+	].sort(),
+);
+const filteredRecords = $derived(
+	scopedRecords.filter(
+		(record) =>
+			(providerFilter === "all" || record.providerId === providerFilter) &&
+			(modelFilter === "all" || record.modelId === modelFilter) &&
+			(activityFilter === "all" || activityFilter === "chat"),
+	),
+);
+const recordsWithUsage = $derived(
+	filteredRecords.filter(
+		(record) =>
+			record.totalTokens !== null ||
+			record.inputTokens !== null ||
+			record.outputTokens !== null ||
+			record.costAmount !== null,
+	),
+);
+const totalTokens = $derived(
+	recordsWithUsage.reduce((sum, record) => sum + (record.totalTokens ?? 0), 0),
+);
+const knownTotalCount = $derived(
+	recordsWithUsage.filter((record) => record.totalTokens !== null).length,
+);
+const knownInput = $derived(
+	recordsWithUsage.reduce((sum, record) => sum + (record.inputTokens ?? 0), 0),
+);
+const knownOutput = $derived(
+	recordsWithUsage.reduce((sum, record) => sum + (record.outputTokens ?? 0), 0),
+);
+const missingInput = $derived(
+	recordsWithUsage.filter((record) => record.inputTokens === null).length,
+);
+const missingOutput = $derived(
+	recordsWithUsage.filter((record) => record.outputTokens === null).length,
+);
+const missingTotal = $derived(
+	recordsWithUsage.filter((record) => record.totalTokens === null).length,
+);
+const costMetadataCount = $derived(
+	recordsWithUsage.filter((record) => record.costAmount !== null).length,
+);
+const noUsageCount = $derived(filteredRecords.length - recordsWithUsage.length);
+const failedCount = $derived(
+	filteredRecords.filter((record) => record.result === "failed").length,
+);
+const contextModelGroups = $derived.by(() => {
+	const groups = new Map<string, ModelUsage>();
+	for (const record of filteredRecords) {
+		const providerId = record.providerId ?? "Provider not reported";
+		const modelId = record.modelId ?? "Model not reported";
+		const key = `${providerId}\u0000${modelId}`;
+		const group = groups.get(key) ?? {
+			key,
+			providerId,
+			modelId,
+			records: [],
+		};
+		group.records.push(record);
+		groups.set(key, group);
+	}
+	return [...groups.values()].sort(
+		(a, b) => b.records.length - a.records.length,
 	);
+});
+const providerGroups = $derived.by(() => {
+	const groups = new Map<string, UsageRecord[]>();
+	for (const record of filteredRecords) {
+		const key = record.providerId ?? "Provider not reported";
+		groups.set(key, [...(groups.get(key) ?? []), record]);
+	}
+	return [...groups.entries()]
+		.map(([providerId, items]) => ({
+			providerId,
+			records: items.length,
+			withUsage: items.filter(
+				(item) =>
+					item.totalTokens !== null ||
+					item.inputTokens !== null ||
+					item.outputTokens !== null ||
+					item.costAmount !== null,
+			).length,
+			tokens: items.reduce((sum, item) => sum + (item.totalTokens ?? 0), 0),
+			missingTotal: items.filter((item) => item.totalTokens === null).length,
+			costRecords: items.filter((item) => item.costAmount !== null).length,
+			lastUsed: Math.max(...items.map((item) => item.createdAt)),
+		}))
+		.sort((a, b) => b.records - a.records);
+});
+const sortedActivity = $derived(
+	[...filteredRecords].sort((a, b) => b.createdAt - a.createdAt),
+);
+const activityCount = $derived(
+	Math.max(1, Math.ceil(sortedActivity.length / activityPageSize)),
+);
+const pagedActivity = $derived(
+	sortedActivity.slice(
+		activityPage * activityPageSize,
+		(activityPage + 1) * activityPageSize,
+	),
+);
+const trendBuckets = $derived.by(() =>
+	buildTrendBuckets(
+		filteredRecords,
+		period,
+		periodBounds.start,
+		periodBounds.end,
+	),
+);
+const maxBucketTokens = $derived(
+	Math.max(0, ...trendBuckets.map((bucket) => bucket.knownTotal)),
+);
+
+function buildTrendBuckets(
+	items: UsageRecord[],
+	selectedPeriod: Period,
+	start: number | null,
+	end: number | null,
+): TimeBucket[] {
+	const now = new Date();
+	const earliest = items.length
+		? Math.min(...items.map((item) => localDateStart(new Date(item.createdAt))))
+		: localDateStart(now);
+	const actualStart = start ?? earliest;
+	const actualEnd = end ?? localNextDateStart(now);
+	const monthly =
+		selectedPeriod === "all" ||
+		actualEnd - actualStart > 100 * 24 * 60 * 60 * 1000;
+	const labels = new Map<string, string>();
+	if (monthly) {
+		const date = new Date(actualStart);
+		const month = new Date(date.getFullYear(), date.getMonth(), 1);
+		const endDate = new Date(actualEnd);
+		while (month < endDate) {
+			const key = `${month.getFullYear()}-${String(month.getMonth() + 1).padStart(2, "0")}`;
+			labels.set(
+				key,
+				new Intl.DateTimeFormat(undefined, {
+					month: "short",
+					year: "2-digit",
+				}).format(month),
+			);
+			month.setMonth(month.getMonth() + 1);
+		}
+	} else {
+		const date = new Date(actualStart);
+		while (date.getTime() < actualEnd) {
+			const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "2")}`;
+			labels.set(
+				key,
+				new Intl.DateTimeFormat(undefined, {
+					month: "short",
+					day: "numeric",
+				}).format(date),
+			);
+			date.setDate(date.getDate() + 1);
+		}
+	}
+	const values = new Map<
+		string,
+		{ total: number; withTotal: number; withoutTotal: number }
+	>();
+	for (const item of items) {
+		const date = new Date(item.createdAt);
+		const key = monthly
+			? `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`
+			: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+		const value = values.get(key) ?? {
+			total: 0,
+			withTotal: 0,
+			withoutTotal: 0,
+		};
+		if (item.totalTokens === null) value.withoutTotal += 1;
+		else {
+			value.total += item.totalTokens;
+			value.withTotal += 1;
+		}
+		values.set(key, value);
+	}
+	return [...labels.entries()].map(([key, label]) => {
+		const value = values.get(key) ?? {
+			total: 0,
+			withTotal: 0,
+			withoutTotal: 0,
+		};
+		return {
+			key,
+			label,
+			knownTotal: value.total,
+			withTotal: value.withTotal,
+			withoutTotal: value.withoutTotal,
+		};
+	});
+}
+
+function formatNumber(value: number) {
+	return new Intl.NumberFormat(undefined, {
+		maximumFractionDigits: 0,
+	}).format(value);
+}
+function formatTimestamp(value: number) {
+	return new Intl.DateTimeFormat(undefined, {
+		month: "short",
+		day: "numeric",
+		year: "numeric",
+		hour: "numeric",
+		minute: "2-digit",
+	}).format(value);
+}
+function formatPartial(value: number, missing: number) {
+	if (!value && !missing) return "Unavailable";
+	return `${missing ? "≥ " : ""}${formatNumber(value)}${missing ? " recorded" : ""}`;
+}
+function chooseProvider(value: string) {
+	providerFilter = value;
+	if (
+		modelFilter !== "all" &&
+		!scopedRecords.some(
+			(record) =>
+				record.modelId === modelFilter &&
+				(value === "all" || record.providerId === value),
+		)
+	)
+		modelFilter = "all";
+	activityPage = 0;
+}
+function changePeriod(value: Period) {
+	period = value;
+	activityPage = 0;
+}
+function showActivity(record: UsageRecord) {
+	selectedActivity = record;
+	activityOpen = true;
+}
+function openChat(sessionId: string) {
+	window.location.assign(`/?session=${encodeURIComponent(sessionId)}`);
+}
+
+const periodLabel = $derived(
+	period === "today"
+		? "Today"
+		: period === "7d"
+			? "7 days"
+			: period === "30d"
+				? "30 days"
+				: period === "custom"
+					? "Custom range"
+					: "All time",
+);
 </script>
 
 <svelte:head><title>Token usage · Settings · Loom</title></svelte:head>

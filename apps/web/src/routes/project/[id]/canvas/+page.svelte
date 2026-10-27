@@ -1,43 +1,42 @@
 <script lang="ts">
-	import { Columns3, MessageSquare, Sparkles } from "@lucide/svelte";
-	import { onMount } from "svelte";
-	import { page } from "$app/state";
-	import DesignCanvas from "$lib/../components/DesignCanvas.svelte";
-	import type { Catalog } from "$lib/chat";
-	import { chat } from "$lib/chat";
-	import { Button } from "$lib/components/ui/button";
-	import { daemon, type Project } from "$lib/daemon";
+import { Columns3, MessageSquare, Sparkles } from "@lucide/svelte";
+import { onMount } from "svelte";
+import { page } from "$app/state";
+import DesignCanvas from "$lib/../components/DesignCanvas.svelte";
+import type { Catalog } from "$lib/chat";
+import { chat } from "$lib/chat";
+import { Button } from "$lib/components/ui/button";
+import { daemon, type Project } from "$lib/daemon";
 
-	let project = $state<Project | null>(null);
-	let catalog = $state<Catalog>({
-		models: [],
-		defaults: {},
-		agents: [],
-		commands: [],
-	});
-	let loading = $state(true);
-	let error = $state("");
-	const id = $derived(page.params.id ?? "");
+let project = $state<Project | null>(null);
+let catalog = $state<Catalog>({
+	models: [],
+	defaults: {},
+	agents: [],
+	commands: [],
+});
+let loading = $state(true);
+let error = $state("");
+const id = $derived(page.params.id ?? "");
 
-	onMount(() => {
-		void load();
-	});
+onMount(() => {
+	void load();
+});
 
-	async function load() {
-		loading = true;
-		try {
-			[project, catalog] = await Promise.all([
-				daemon.getProject(id),
-				chat.catalog(id),
-			]);
-			error = "";
-		} catch (reason) {
-			error =
-				reason instanceof Error ? reason.message : "Unable to load canvas";
-		} finally {
-			loading = false;
-		}
+async function load() {
+	loading = true;
+	try {
+		[project, catalog] = await Promise.all([
+			daemon.getProject(id),
+			chat.catalog(id),
+		]);
+		error = "";
+	} catch (reason) {
+		error = reason instanceof Error ? reason.message : "Unable to load canvas";
+	} finally {
+		loading = false;
 	}
+}
 </script>
 
 <svelte:head

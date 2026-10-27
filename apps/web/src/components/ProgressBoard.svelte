@@ -1,163 +1,158 @@
 <script lang="ts">
-	import {
-		CircleCheck,
-		LoaderCircle,
-		OctagonX,
-		TriangleAlert,
-	} from "@lucide/svelte";
-	import { onDestroy, onMount } from "svelte";
-	import { toast } from "svelte-sonner";
-	import { Badge } from "$lib/components/ui/badge";
-	import { Button } from "$lib/components/ui/button";
-	import {
-		type AgentRun,
-		daemon,
-		type PermissionRequest,
-		type Task,
-	} from "$lib/daemon";
+import {
+	CircleCheck,
+	LoaderCircle,
+	OctagonX,
+	TriangleAlert,
+} from "@lucide/svelte";
+import { onDestroy, onMount } from "svelte";
+import { toast } from "svelte-sonner";
+import { Badge } from "$lib/components/ui/badge";
+import { Button } from "$lib/components/ui/button";
+import {
+	type AgentRun,
+	daemon,
+	type PermissionRequest,
+	type Task,
+} from "$lib/daemon";
 
-	let {
-		tasks = [],
-		projectId = "",
-		onChanged,
-	}: {
-		tasks?: Task[];
-		projectId?: string;
-		onChanged?: () => unknown;
-	} = $props();
+let {
+	tasks = [],
+	projectId = "",
+	onChanged,
+}: {
+	tasks?: Task[];
+	projectId?: string;
+	onChanged?: () => unknown;
+} = $props();
 
-	type PlanProgress = {
-		id: string;
-		title: string;
-		status: string;
-		progress: {
-			total: number;
-			done: number;
-			running: number;
-			ready: number;
-			blocked: number;
-			failed: number;
-			percent: number;
-		};
+type PlanProgress = {
+	id: string;
+	title: string;
+	status: string;
+	progress: {
+		total: number;
+		done: number;
+		running: number;
+		ready: number;
+		blocked: number;
+		failed: number;
+		percent: number;
 	};
-	let plans = $state<PlanProgress[]>([]);
+};
+let plans = $state<PlanProgress[]>([]);
 
-	let runs = $state<Record<string, AgentRun[]>>({});
-	let outputs = $state<Record<string, string>>({});
-	let permissions = $state<PermissionRequest[]>([]);
-	let now = $state(Date.now());
-	let loading = $state(true);
-	let disposed = false;
-	let timer: ReturnType<typeof setTimeout>;
-	let clock: ReturnType<typeof setInterval>;
+let runs = $state<Record<string, AgentRun[]>>({});
+let outputs = $state<Record<string, string>>({});
+let permissions = $state<PermissionRequest[]>([]);
+let now = $state(Date.now());
+let loading = $state(true);
+let disposed = false;
+let timer: ReturnType<typeof setTimeout>;
+let clock: ReturnType<typeof setInterval>;
 
-	const active = $derived(
-		tasks.filter((task) =>
-			["queued", "preparing", "running"].includes(task.status),
-		),
+const active = $derived(
+	tasks.filter((task) =>
+		["queued", "preparing", "running"].includes(task.status),
+	),
+);
+const finished = $derived(
+	tasks
+		.filter((task) =>
+			["completed", "failed", "cancelled"].includes(task.status),
+		)
+		.sort((a, b) => (b.completedAt ?? "").localeCompare(a.completedAt ?? ""))
+		.slice(0, 10),
+);
+
+function elapsed(startedAt: string | null) {
+	if (!startedAt) return "—";
+	const seconds = Math.max(
+		0,
+		Math.floor((now - new Date(startedAt).getTime()) / 1000),
 	);
-	const finished = $derived(
-		tasks
-			.filter((task) =>
-				["completed", "failed", "cancelled"].includes(task.status),
-			)
-			.sort((a, b) => (b.completedAt ?? "").localeCompare(a.completedAt ?? ""))
-			.slice(0, 10),
-	);
+	if (seconds < 60) return `${seconds}s`;
+	if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+	return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+}
 
-	function elapsed(startedAt: string | null) {
-		if (!startedAt) return "—";
-		const seconds = Math.max(
-			0,
-			Math.floor((now - new Date(startedAt).getTime()) / 1000),
-		);
-		if (seconds < 60) return `${seconds}s`;
-		if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
-		return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
-	}
+function statusVariant(status: string) {
+	if (status === "running" || status === "preparing") return "default";
+	if (status === "completed") return "secondary";
+	if (status === "queued") return "outline";
+	return "destructive";
+}
 
-	function statusVariant(status: string) {
-		if (status === "running" || status === "preparing") return "default";
-		if (status === "completed") return "secondary";
-		if (status === "queued") return "outline";
-		return "destructive";
-	}
-
-	async function load() {
-		try {
-			const watched = [...active.slice(0, 8), ...finished.slice(0, 6)];
-			const [runEntries, outputEntries, pending, planList] = await Promise.all([
-				Promise.all(
-					watched.map(
-						async (task) => [task.id, await daemon.getRuns(task.id)] as const,
-					),
+async function load() {
+	try {
+		const watched = [...active.slice(0, 8), ...finished.slice(0, 6)];
+		const [runEntries, outputEntries, pending, planList] = await Promise.all([
+			Promise.all(
+				watched.map(
+					async (task) => [task.id, await daemon.getRuns(task.id)] as const,
 				),
-				Promise.all(
-					active.slice(0, 5).map(async (task) => {
-						try {
-							return [
-								task.id,
-								(await daemon.getOutput(task.id)).output,
-							] as const;
-						} catch {
-							return [task.id, ""] as const;
-						}
-					}),
-				),
-				daemon.getPermissions(),
-				projectId ? daemon.listPlans(projectId).catch(() => []) : [],
-			]);
-			if (disposed) return;
-			runs = Object.fromEntries(runEntries);
-			outputs = Object.fromEntries(outputEntries);
-			permissions = pending;
-			plans = planList;
-			await onChanged?.();
-		} catch (reason) {
-			if (!disposed)
-				toast.error(
-					reason instanceof Error ? reason.message : "Unable to load progress",
-				);
-		} finally {
-			if (!disposed) loading = false;
-		}
-	}
-
-	async function decide(id: string, decision: "allow_once" | "allow" | "deny") {
-		try {
-			await daemon.decidePermission(id, decision);
-			toast.success("Permission decided");
-			await load();
-		} catch (reason) {
-			toast.error(
-				reason instanceof Error
-					? reason.message
-					: "Unable to decide permission",
-			);
-		}
-	}
-
-	function schedule() {
+			),
+			Promise.all(
+				active.slice(0, 5).map(async (task) => {
+					try {
+						return [task.id, (await daemon.getOutput(task.id)).output] as const;
+					} catch {
+						return [task.id, ""] as const;
+					}
+				}),
+			),
+			daemon.getPermissions(),
+			projectId ? daemon.listPlans(projectId).catch(() => []) : [],
+		]);
 		if (disposed) return;
-		timer = setTimeout(async () => {
-			await load();
-			schedule();
-		}, 3000);
+		runs = Object.fromEntries(runEntries);
+		outputs = Object.fromEntries(outputEntries);
+		permissions = pending;
+		plans = planList;
+		await onChanged?.();
+	} catch (reason) {
+		if (!disposed)
+			toast.error(
+				reason instanceof Error ? reason.message : "Unable to load progress",
+			);
+	} finally {
+		if (!disposed) loading = false;
 	}
+}
 
-	onMount(() => {
-		void load();
+async function decide(id: string, decision: "allow_once" | "allow" | "deny") {
+	try {
+		await daemon.decidePermission(id, decision);
+		toast.success("Permission decided");
+		await load();
+	} catch (reason) {
+		toast.error(
+			reason instanceof Error ? reason.message : "Unable to decide permission",
+		);
+	}
+}
+
+function schedule() {
+	if (disposed) return;
+	timer = setTimeout(async () => {
+		await load();
 		schedule();
-		clock = setInterval(() => {
-			now = Date.now();
-		}, 1000);
-	});
+	}, 3000);
+}
 
-	onDestroy(() => {
-		disposed = true;
-		clearTimeout(timer);
-		clearInterval(clock);
-	});
+onMount(() => {
+	void load();
+	schedule();
+	clock = setInterval(() => {
+		now = Date.now();
+	}, 1000);
+});
+
+onDestroy(() => {
+	disposed = true;
+	clearTimeout(timer);
+	clearInterval(clock);
+});
 </script>
 
 <div class="mx-auto flex w-full max-w-4xl flex-col gap-6">

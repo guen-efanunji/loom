@@ -70,6 +70,7 @@ import {
 	createTaskBatchInputSchema,
 	createTaskInputSchema,
 	daemonEventSchema,
+	designFrameKindSchema,
 	designPatchSchema,
 	permissionDecisionInputSchema,
 	refineDesignSchema,
@@ -78,15 +79,15 @@ import {
 	taskExecutorSchema,
 	taskIdInputSchema,
 } from "@loom/protocol";
+import type { CustomProviderConfig } from "@loom/providers";
 import {
-	createDefaultProviderRegistry,
 	CustomProviderAdapter,
+	createDefaultProviderRegistry,
 	discoverCustomModels,
 	ProviderManager,
 	readPrompt,
 	testCustomModel,
 } from "@loom/providers";
-import type { CustomProviderConfig } from "@loom/providers";
 import type {
 	AgentModel,
 	AgentRuntime,
@@ -111,7 +112,11 @@ import { z } from "zod";
 import { createAgentSettingsRoutes } from "./agents";
 import { registerAgyPermissionHook } from "./agy-hooks";
 import { type ChatRequestGateway, createChatRoutes } from "./chat";
-import { type DaemonConfig, loadDaemonConfig } from "./config";
+import {
+	type DaemonConfig,
+	loadDaemonConfig,
+	updateDaemonConfig,
+} from "./config";
 import { createContext } from "./context";
 import { createContextHubRoutes } from "./context-hub";
 import { runtimeModelRef } from "./executor-model";
@@ -127,6 +132,11 @@ import {
 import { checkProviderUpdate, updateProviderCli } from "./provider-updates";
 import { auth, checkDbHealth, getDb } from "./services";
 import { TerminalManager } from "./terminal";
+import {
+	createUiLockRoutes,
+	createUiLockStore,
+	UI_LOCK_HEADER,
+} from "./ui-lock";
 import { collectWalkthroughSnapshot } from "./walkthrough";
 
 const { upgradeWebSocket, websocket: bunWebSocket } = createBunWebSocket();
@@ -368,11 +378,25 @@ function recordToAgentRun(record: {
 }
 
 function recordToDesignNode(record: DesignNodeRecord) {
+	const kind = designFrameKindSchema.safeParse(record.frameKind);
 	return {
 		...record,
 		status: record.status as "queued" | "generating" | "ready" | "failed",
 		viewport:
 			record.viewport === "mobile" ? ("mobile" as const) : ("desktop" as const),
+		frameKind: kind.success
+			? kind.data
+			: record.viewport === "mobile"
+				? ("mobile" as const)
+				: ("desktop" as const),
+		frameWidth:
+			typeof record.frameWidth === "number" && record.frameWidth >= 120
+				? record.frameWidth
+				: 1440,
+		frameHeight:
+			typeof record.frameHeight === "number" && record.frameHeight >= 120
+				? record.frameHeight
+				: 900,
 		createdAt: record.createdAt.toISOString(),
 		updatedAt: record.updatedAt.toISOString(),
 	};
@@ -568,6 +592,15 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	};
 	const openCodeManager =
 		options.openCodeManager ?? new OpenCodeServerManager();
+	// Server-authoritative UI lock: the password hash lives in the daemon
+	// config and unlock state is an HttpOnly cookie minted by the daemon.
+	const uiLock = createUiLockStore({
+		initialEncoded: config.uiLockHash ?? null,
+		persist: async (encoded) => {
+			await updateDaemonConfig({ uiLockHash: encoded });
+			config.uiLockHash = encoded ?? null;
+		},
+	});
 	const openCodeRuntime = new OpenCodeHttpRuntime();
 	const providerModelCachePath = join(
 		dataDirectory(),
@@ -1092,7 +1125,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			origin: (origin) =>
 				!origin || allowedOrigins.has(origin) ? origin : undefined,
 			allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-			allowHeaders: ["Content-Type", "Authorization"],
+			allowHeaders: ["Content-Type", "Authorization", "X-Loom-UI-Session"],
 			credentials: true,
 		}),
 	);
@@ -1129,6 +1162,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	app.use("/api/*", async (c, next) => {
 		if (
 			c.req.path.startsWith("/api/auth/") ||
+			c.req.path.startsWith("/api/ui-lock/") ||
 			c.req.path.startsWith("/api/agy/permission/") ||
 			c.req.path === "/api/events" ||
 			c.req.path === "/api/bootstrap" ||
@@ -1143,8 +1177,35 @@ export async function createApp(options: DaemonAppOptions = {}) {
 				401,
 			);
 		}
+		// Mutating calls require an unlocked UI surface. Read-only GETs stay
+		// available so background monitors and provider hook polls keep working.
+		if (
+			c.req.method !== "GET" &&
+			c.req.method !== "HEAD" &&
+			c.req.method !== "OPTIONS" &&
+			c.req.path !== "/api/daemon/stop" &&
+			!uiLock.unlocked({
+				cookieHeader: c.req.header("cookie") ?? null,
+				sessionHeader: c.req.header(UI_LOCK_HEADER) ?? null,
+			})
+		)
+			return c.json(
+				{
+					error: createApiError(
+						"FORBIDDEN",
+						"Unlock the Loom interface with your UI password before making changes",
+						null,
+						{ reason: "ui_locked" },
+					),
+				},
+				423,
+			);
 		return next();
 	});
+	app.route(
+		"/api/ui-lock",
+		createUiLockRoutes({ store: uiLock, allowedOrigins }),
+	);
 
 	app.use("/api/events", async (c, next) => {
 		const protocol = c.req.header("Sec-WebSocket-Protocol") ?? "";
@@ -1513,6 +1574,13 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			agyPermissionUrl: agyPermissionError ? undefined : agyPermissionBase,
 			agyPermissionError,
 			providerHistory: repos.providerChatHistory,
+			onEvent: (event) => {
+				eventPublisher.publish({
+					type: "chat.updated",
+					sessionId: event.sessionId,
+					status: event.status,
+				});
+			},
 			agents: {
 				async get(id) {
 					const agent = await db.query.customAgents.findFirst({
@@ -3262,6 +3330,13 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			return c.json(
 				recordToDesignNode(await designs.detail(c.req.param("id"))),
 			);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.get("/api/designs/:id/trace", async (c) => {
+		try {
+			return c.json(await designs.trace(c.req.param("id")));
 		} catch (error) {
 			return errorResponse(c, error);
 		}

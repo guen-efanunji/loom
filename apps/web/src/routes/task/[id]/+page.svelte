@@ -1,255 +1,248 @@
 <script lang="ts">
-	import { onMount } from "svelte";
-	import { page } from "$app/state";
-	import { Button } from "$lib/components/ui/button";
-	import {
-		type AgentRun,
-		type DaemonEvent,
-		daemon,
-		diffStats,
-		formatDuration,
-		formatStatus,
-		latestDaemonEventCursor,
-		type PermissionRequest,
-		type ProjectReviewPolicy,
-		parseDaemonEvent,
-		provisionDaemonToken,
-		replayDaemonEvents,
-		type Task,
-		type TaskReview,
-		websocketProtocols,
-		websocketUrl,
-	} from "$lib/daemon";
-	import TaskRunChat from "../../../components/chat/TaskRunChat.svelte";
+import { onMount } from "svelte";
+import { page } from "$app/state";
+import { Button } from "$lib/components/ui/button";
+import {
+	type AgentRun,
+	type DaemonEvent,
+	daemon,
+	diffStats,
+	formatDuration,
+	formatStatus,
+	latestDaemonEventCursor,
+	type PermissionRequest,
+	type ProjectReviewPolicy,
+	parseDaemonEvent,
+	provisionDaemonToken,
+	replayDaemonEvents,
+	type Task,
+	type TaskReview,
+	websocketProtocols,
+	websocketUrl,
+} from "$lib/daemon";
+import TaskRunChat from "../../../components/chat/TaskRunChat.svelte";
 
-	let task = $state<Task | null>(null);
-	let runs = $state<AgentRun[]>([]);
-	let reviews = $state<TaskReview[]>([]);
-	let reviewPolicy = $state<ProjectReviewPolicy | null>(null);
-	let permissions = $state<PermissionRequest[]>([]);
-	let diff = $state("");
-	let output = $state("");
-	let runActivities = $state<
-		Array<{
-			id: string;
-			tool: string;
-			status: "running" | "completed" | "error";
-			input?: Record<string, unknown>;
-			metadata?: Record<string, unknown>;
-		}>
-	>([]);
-	let loading = $state(true);
-	let stale = $state(false);
-	let unavailable = $state(false);
-	let diffLoading = $state(false);
-	let error = $state("");
-	let action = $state("");
-	let connected = $state(false);
-	let conflictFiles = $state<string[]>([]);
-	let socket: WebSocket | undefined;
-	let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
-	const id = $derived(page.params.id ?? "");
-	const stats = $derived(diffStats(diff));
+let task = $state<Task | null>(null);
+let runs = $state<AgentRun[]>([]);
+let reviews = $state<TaskReview[]>([]);
+let reviewPolicy = $state<ProjectReviewPolicy | null>(null);
+let permissions = $state<PermissionRequest[]>([]);
+let diff = $state("");
+let output = $state("");
+let runActivities = $state<
+	Array<{
+		id: string;
+		tool: string;
+		status: "running" | "completed" | "error";
+		input?: Record<string, unknown>;
+		metadata?: Record<string, unknown>;
+	}>
+>([]);
+let loading = $state(true);
+let stale = $state(false);
+let unavailable = $state(false);
+let diffLoading = $state(false);
+let error = $state("");
+let action = $state("");
+let connected = $state(false);
+let conflictFiles = $state<string[]>([]);
+let socket: WebSocket | undefined;
+let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+const id = $derived(page.params.id ?? "");
+const stats = $derived(diffStats(diff));
 
-	async function refresh() {
-		try {
-			const [data, taskRuns, pendingPermissions, taskReviews] =
-				await Promise.all([
-					daemon.getTask(id),
-					daemon.getRuns(id),
-					daemon.getPermissions(),
-					daemon.getTaskReviews(id),
-				]);
-			task = data;
-			void daemon
-				.getProjectReviewPolicy(data.projectId)
-				.then((result) => (reviewPolicy = result.policy))
-				.catch(() => (reviewPolicy = null));
-			runs = taskRuns;
-			reviews = taskReviews.reviews;
-			permissions = pendingPermissions.filter(
-				(request) => request.taskId === id,
-			);
-			stale = false;
-			unavailable = false;
-			error = "";
-		} catch (reason: unknown) {
-			if (!task) unavailable = true;
-			stale = Boolean(task);
-			error =
-				reason instanceof Error ? reason.message : "Unable to refresh task";
-		} finally {
-			loading = false;
-		}
-	}
-
-	async function reviewDiff() {
-		diffLoading = true;
-		try {
-			diff = (await daemon.getDiff(id)).diff;
-		} catch (reason: unknown) {
-			error = reason instanceof Error ? reason.message : "Unable to load diff";
-		} finally {
-			diffLoading = false;
-		}
-	}
-
-	function applyEvent(event: DaemonEvent) {
-		if (
-			(event.type === "task.updated" && event.task.id === id) ||
-			(event.type === "task.created" && event.task.id === id)
-		)
-			task = {
-				...task,
-				...event.task,
-				position: event.task.position ?? task?.position ?? null,
-			};
-		if (event.type === "agent.run.created" && event.run.taskId === id)
-			runs = [...runs, event.run];
-		if (event.type === "agent.run.updated" && event.run.taskId === id)
-			runs = runs.map((run) => (run.id === event.run.id ? event.run : run));
-		if (event.type === "run.started" && event.taskId === id) {
-			output = "";
-			runActivities = [];
-		}
-		if (event.type === "permission.requested" && event.request.taskId === id)
-			permissions = [
-				...permissions.filter((request) => request.id !== event.request.id),
-				event.request,
-			];
-		if (event.type === "permission.updated" && event.request.taskId === id)
-			permissions = permissions.map((request) =>
-				request.id === event.request.id ? event.request : request,
-			);
-		if (event.type === "run.output" && event.taskId === id) {
-			output = `${output}${event.output}`;
-			if (event.activities) runActivities = event.activities;
-		}
-		if (
-			event.type === "merge_conflict.detected" &&
-			event.conflict.taskId === id
-		) {
-			conflictFiles = event.conflict.files;
-			if (task) task = { ...task, status: "merge_conflict" };
-		}
-		if (
+async function refresh() {
+	try {
+		const [data, taskRuns, pendingPermissions, taskReviews] = await Promise.all(
 			[
-				"task.started",
-				"task.completed",
-				"task.failed",
-				"task.cancelled",
-				"task.merged",
-				"task.discarded",
-			].includes(event.type) &&
-			"taskId" in event &&
-			event.taskId === id
-		)
-			refresh();
+				daemon.getTask(id),
+				daemon.getRuns(id),
+				daemon.getPermissions(),
+				daemon.getTaskReviews(id),
+			],
+		);
+		task = data;
+		void daemon
+			.getProjectReviewPolicy(data.projectId)
+			.then((result) => (reviewPolicy = result.policy))
+			.catch(() => (reviewPolicy = null));
+		runs = taskRuns;
+		reviews = taskReviews.reviews;
+		permissions = pendingPermissions.filter((request) => request.taskId === id);
+		stale = false;
+		unavailable = false;
+		error = "";
+	} catch (reason: unknown) {
+		if (!task) unavailable = true;
+		stale = Boolean(task);
+		error = reason instanceof Error ? reason.message : "Unable to refresh task";
+	} finally {
+		loading = false;
 	}
+}
 
-	let disposed = false;
-	let replayCursor = 0;
-
-	async function recoverEvents() {
-		const baseline = replayCursor || (await latestDaemonEventCursor());
-		if (!replayCursor) replayCursor = baseline;
-		await refresh();
-		let after = baseline;
-		for (let pageCount = 0; pageCount < 20; pageCount++) {
-			const page = await replayDaemonEvents(after, 500);
-			for (const item of page.events) {
-				applyEvent(item.event);
-				replayCursor = Math.max(replayCursor, item.cursor);
-			}
-			after = page.cursor;
-			if (after >= page.highWaterCursor || page.events.length === 0) break;
-		}
+async function reviewDiff() {
+	diffLoading = true;
+	try {
+		diff = (await daemon.getDiff(id)).diff;
+	} catch (reason: unknown) {
+		error = reason instanceof Error ? reason.message : "Unable to load diff";
+	} finally {
+		diffLoading = false;
 	}
+}
 
-	function connect() {
-		if (disposed) return;
-		provisionDaemonToken()
-			.then(() => {
-				if (disposed) return;
-				socket = new WebSocket(websocketUrl(), websocketProtocols());
-				socket.onopen = () => {
-					connected = true;
-					void recoverEvents().catch(() => refresh());
-				};
-				socket.onmessage = (message) => {
-					try {
-						const envelope = JSON.parse(message.data) as {
-							replayCursor?: number;
-						};
-						applyEvent(parseDaemonEvent(envelope));
-						if (typeof envelope.replayCursor === "number")
-							replayCursor = Math.max(replayCursor, envelope.replayCursor);
-					} catch {}
-				};
-				socket.onclose = () => {
-					connected = false;
-					if (!disposed) reconnectTimer = setTimeout(connect, 2000);
-				};
-			})
-			.catch((reason: unknown) => {
-				connected = false;
-				error =
-					reason instanceof Error
-						? reason.message
-						: "Loom daemon is unavailable";
-				unavailable = !task;
-				if (!disposed) reconnectTimer = setTimeout(connect, 2000);
-			});
-	}
-
-	onMount(() => {
-		refresh();
-		reviewDiff();
-		connect();
-		return () => {
-			disposed = true;
-			if (reconnectTimer) clearTimeout(reconnectTimer);
-			socket?.close();
+function applyEvent(event: DaemonEvent) {
+	if (
+		(event.type === "task.updated" && event.task.id === id) ||
+		(event.type === "task.created" && event.task.id === id)
+	)
+		task = {
+			...task,
+			...event.task,
+			position: event.task.position ?? task?.position ?? null,
 		};
-	});
-
-	async function runAction(fn: () => Promise<unknown>) {
-		action = "Working...";
-		try {
-			await fn();
-			await refresh();
-		} catch (reason: unknown) {
-			error = reason instanceof Error ? reason.message : "Action failed";
-		} finally {
-			action = "";
-		}
+	if (event.type === "agent.run.created" && event.run.taskId === id)
+		runs = [...runs, event.run];
+	if (event.type === "agent.run.updated" && event.run.taskId === id)
+		runs = runs.map((run) => (run.id === event.run.id ? event.run : run));
+	if (event.type === "run.started" && event.taskId === id) {
+		output = "";
+		runActivities = [];
 	}
-	const cancel = () => runAction(() => daemon.cancelTask(id));
-	const retry = () => runAction(() => daemon.retryTask(id));
-	const checkpoint = () =>
-		runAction(async () => {
-			const result = await daemon.checkpointTask(id);
-			await reviewDiff();
-			return result;
+	if (event.type === "permission.requested" && event.request.taskId === id)
+		permissions = [
+			...permissions.filter((request) => request.id !== event.request.id),
+			event.request,
+		];
+	if (event.type === "permission.updated" && event.request.taskId === id)
+		permissions = permissions.map((request) =>
+			request.id === event.request.id ? event.request : request,
+		);
+	if (event.type === "run.output" && event.taskId === id) {
+		output = `${output}${event.output}`;
+		if (event.activities) runActivities = event.activities;
+	}
+	if (
+		event.type === "merge_conflict.detected" &&
+		event.conflict.taskId === id
+	) {
+		conflictFiles = event.conflict.files;
+		if (task) task = { ...task, status: "merge_conflict" };
+	}
+	if (
+		[
+			"task.started",
+			"task.completed",
+			"task.failed",
+			"task.cancelled",
+			"task.merged",
+			"task.discarded",
+		].includes(event.type) &&
+		"taskId" in event &&
+		event.taskId === id
+	)
+		refresh();
+}
+
+let disposed = false;
+let replayCursor = 0;
+
+async function recoverEvents() {
+	const baseline = replayCursor || (await latestDaemonEventCursor());
+	if (!replayCursor) replayCursor = baseline;
+	await refresh();
+	let after = baseline;
+	for (let pageCount = 0; pageCount < 20; pageCount++) {
+		const page = await replayDaemonEvents(after, 500);
+		for (const item of page.events) {
+			applyEvent(item.event);
+			replayCursor = Math.max(replayCursor, item.cursor);
+		}
+		after = page.cursor;
+		if (after >= page.highWaterCursor || page.events.length === 0) break;
+	}
+}
+
+function connect() {
+	if (disposed) return;
+	provisionDaemonToken()
+		.then(() => {
+			if (disposed) return;
+			socket = new WebSocket(websocketUrl(), websocketProtocols());
+			socket.onopen = () => {
+				connected = true;
+				void recoverEvents().catch(() => refresh());
+			};
+			socket.onmessage = (message) => {
+				try {
+					const envelope = JSON.parse(message.data) as {
+						replayCursor?: number;
+					};
+					applyEvent(parseDaemonEvent(envelope));
+					if (typeof envelope.replayCursor === "number")
+						replayCursor = Math.max(replayCursor, envelope.replayCursor);
+				} catch {}
+			};
+			socket.onclose = () => {
+				connected = false;
+				if (!disposed) reconnectTimer = setTimeout(connect, 2000);
+			};
+		})
+		.catch((reason: unknown) => {
+			connected = false;
+			error =
+				reason instanceof Error ? reason.message : "Loom daemon is unavailable";
+			unavailable = !task;
+			if (!disposed) reconnectTimer = setTimeout(connect, 2000);
 		});
-	const merge = () =>
-		runAction(async () => {
-			const result = await daemon.mergeTask(id);
-			if (result.conflict) conflictFiles = result.conflict.files;
-		});
-	const approveReview = () =>
-		runAction(async () => {
-			await daemon.approveTaskReview(id);
-			reviews = (await daemon.getTaskReviews(id)).reviews;
-		});
-	const discard = () => runAction(() => daemon.discardTask(id));
-	const decide = (
-		requestId: string,
-		decision: "allow_once" | "allow" | "deny",
-	) =>
-		runAction(async () => {
-			await daemon.decidePermission(requestId, decision);
-		});
+}
+
+onMount(() => {
+	refresh();
+	reviewDiff();
+	connect();
+	return () => {
+		disposed = true;
+		if (reconnectTimer) clearTimeout(reconnectTimer);
+		socket?.close();
+	};
+});
+
+async function runAction(fn: () => Promise<unknown>) {
+	action = "Working...";
+	try {
+		await fn();
+		await refresh();
+	} catch (reason: unknown) {
+		error = reason instanceof Error ? reason.message : "Action failed";
+	} finally {
+		action = "";
+	}
+}
+const cancel = () => runAction(() => daemon.cancelTask(id));
+const retry = () => runAction(() => daemon.retryTask(id));
+const checkpoint = () =>
+	runAction(async () => {
+		const result = await daemon.checkpointTask(id);
+		await reviewDiff();
+		return result;
+	});
+const merge = () =>
+	runAction(async () => {
+		const result = await daemon.mergeTask(id);
+		if (result.conflict) conflictFiles = result.conflict.files;
+	});
+const approveReview = () =>
+	runAction(async () => {
+		await daemon.approveTaskReview(id);
+		reviews = (await daemon.getTaskReviews(id)).reviews;
+	});
+const discard = () => runAction(() => daemon.discardTask(id));
+const decide = (requestId: string, decision: "allow_once" | "allow" | "deny") =>
+	runAction(async () => {
+		await daemon.decidePermission(requestId, decision);
+	});
 </script>
 
 <main

@@ -1,14 +1,14 @@
 <script lang="ts">
-	import * as Collapsible from "$lib/components/ui/collapsible/index.js";
-	import { cn, type WithoutChild } from "$lib/utils.js";
-	import type { Collapsible as CollapsiblePrimitive } from "bits-ui";
+import type { Collapsible as CollapsiblePrimitive } from "bits-ui";
+import * as Collapsible from "$lib/components/ui/collapsible/index.js";
+import { cn, type WithoutChild } from "$lib/utils.js";
 
-	let {
-		ref = $bindable(null),
-		class: className,
-		children,
-		...restProps
-	}: WithoutChild<CollapsiblePrimitive.ContentProps> = $props();
+let {
+	ref = $bindable(null),
+	class: className,
+	children,
+	...restProps
+}: WithoutChild<CollapsiblePrimitive.ContentProps> = $props();
 </script>
 
 <Collapsible.Content

@@ -189,11 +189,18 @@ class CliRuntime implements AgentRuntime {
 		system?: string;
 		model?: { providerID: string; modelID: string };
 		thinkingMode?: string;
+		images?: Array<{ mime: string; data: string }>;
 		permission?: RuntimePermission;
 	}): Promise<void> {
 		const session = this.requireSession(input.sessionId);
 		if (session.process)
 			throw new ProviderError("PROCESS_FAILED", "Session is already running");
+		if (input.images?.length)
+			throw new ProviderError(
+				"PROCESS_FAILED",
+				`${this.options.definition.name} CLI does not support direct image input; no images were sent`,
+				{ providerId: this.options.definition.id },
+			);
 		if (input.permission) session.permission = input.permission;
 		const command = await this.options.buildPrompt({
 			prompt: input.system
@@ -290,6 +297,11 @@ class CliRuntime implements AgentRuntime {
 				setTimeout(resolve, options.pollIntervalMs ?? 100),
 			);
 		}
+		const status = await this.status(sessionId);
+		if (status === "completed" || status === "failed" || status === "cancelled")
+			return status;
+		await this.abort(sessionId);
+		this.requireSession(sessionId).error = `${this.options.definition.name} timed out`;
 		throw new ProviderError(
 			"PROCESS_FAILED",
 			`${this.options.definition.name} timed out`,

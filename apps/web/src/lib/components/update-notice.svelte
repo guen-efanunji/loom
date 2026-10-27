@@ -1,143 +1,139 @@
 <script lang="ts">
-	import { onMount } from "svelte";
-	import {
-		ArrowUpCircle,
-		RefreshCw,
-		ArrowUpRight,
-		Check,
-	} from "@lucide/svelte";
-	import { Button } from "$lib/components/ui/button";
-	import * as Dialog from "$lib/components/ui/dialog";
-	import * as Tabs from "$lib/components/ui/tabs";
-	import { Checkbox } from "$lib/components/ui/checkbox";
-	import { request } from "$lib/daemon";
-	let { expanded = false }: { expanded?: boolean } = $props();
-	type Status = {
-		current: string;
-		channel: "stable" | "beta";
-		available: boolean;
-		supported: boolean;
-		enabled: boolean;
+import { ArrowUpCircle, ArrowUpRight, Check, RefreshCw } from "@lucide/svelte";
+import { onMount } from "svelte";
+import { Button } from "$lib/components/ui/button";
+import { Checkbox } from "$lib/components/ui/checkbox";
+import * as Dialog from "$lib/components/ui/dialog";
+import * as Tabs from "$lib/components/ui/tabs";
+import { request } from "$lib/daemon";
+
+let { expanded = false }: { expanded?: boolean } = $props();
+type Status = {
+	current: string;
+	channel: "stable" | "beta";
+	available: boolean;
+	supported: boolean;
+	enabled: boolean;
+	error?: string;
+	checkedAt: string | null;
+	latest: { version: string; protocolVersion: number } | null;
+	lastResult?: {
+		status: string;
 		error?: string;
-		checkedAt: string | null;
-		latest: { version: string; protocolVersion: number } | null;
-		lastResult?: {
-			status: string;
-			error?: string;
-			rolledBack?: boolean;
-		} | null;
+		rolledBack?: boolean;
+	} | null;
+};
+let status = $state<Status | null>(null);
+let open = $state(false);
+let dismissed = $state("");
+let busy = $state(false);
+let message = $state("");
+let error = $state("");
+let channel = $state("stable");
+let enabled = $state(true);
+let alive = true;
+async function refresh() {
+	try {
+		status = await request<Status>("/api/updates");
+		channel = status.channel;
+		enabled = status.enabled;
+	} catch (e) {
+		if (expanded)
+			error = e instanceof Error ? e.message : "Unable to read update status";
+	}
+}
+onMount(() => {
+	alive = true;
+	void refresh();
+	const timer = setInterval(refresh, 30 * 60_000);
+	return () => {
+		alive = false;
+		clearInterval(timer);
 	};
-	let status = $state<Status | null>(null);
-	let open = $state(false);
-	let dismissed = $state("");
-	let busy = $state(false);
-	let message = $state("");
-	let error = $state("");
-	let channel = $state("stable");
-	let enabled = $state(true);
-	let alive = true;
-	async function refresh() {
-		try {
-			status = await request<Status>("/api/updates");
-			channel = status.channel;
-			enabled = status.enabled;
-		} catch (e) {
-			if (expanded)
-				error = e instanceof Error ? e.message : "Unable to read update status";
-		}
+});
+async function check() {
+	busy = true;
+	error = "";
+	message = "";
+	try {
+		const next = await request<Partial<Status>>("/api/updates/check", {
+			method: "POST",
+		});
+		if (status) status = { ...status, ...next };
+		if (next.error) error = next.error;
+		else if (!next.available)
+			message = "You are using the latest available release.";
+	} catch (e) {
+		error = e instanceof Error ? e.message : "Release check failed";
+	} finally {
+		busy = false;
 	}
-	onMount(() => {
-		alive = true;
-		void refresh();
-		const timer = setInterval(refresh, 30 * 60_000);
-		return () => {
-			alive = false;
-			clearInterval(timer);
-		};
-	});
-	async function check() {
-		busy = true;
-		error = "";
-		message = "";
-		try {
-			const next = await request<Partial<Status>>("/api/updates/check", {
-				method: "POST",
-			});
-			if (status) status = { ...status, ...next };
-			if (next.error) error = next.error;
-			else if (!next.available)
-				message = "You are using the latest available release.";
-		} catch (e) {
-			error = e instanceof Error ? e.message : "Release check failed";
-		} finally {
-			busy = false;
-		}
+}
+async function save() {
+	busy = true;
+	error = "";
+	try {
+		await request("/api/updates/settings", {
+			method: "PUT",
+			body: JSON.stringify({
+				releaseChannel: channel,
+				updateChecks: enabled,
+			}),
+		});
+		await refresh();
+		message = "Update preferences saved.";
+	} catch (e) {
+		error = e instanceof Error ? e.message : "Could not save preferences";
+	} finally {
+		busy = false;
 	}
-	async function save() {
-		busy = true;
-		error = "";
-		try {
-			await request("/api/updates/settings", {
-				method: "PUT",
-				body: JSON.stringify({
-					releaseChannel: channel,
-					updateChecks: enabled,
-				}),
-			});
-			await refresh();
-			message = "Update preferences saved.";
-		} catch (e) {
-			error = e instanceof Error ? e.message : "Could not save preferences";
-		} finally {
-			busy = false;
+}
+async function install() {
+	busy = true;
+	error = "";
+	message = "Downloading and verifying the release…";
+	try {
+		const result = await request<{ updating: boolean; version: string }>(
+			"/api/updates/install",
+			{ method: "POST" },
+		);
+		if (!result.updating) {
+			message = "You are up to date.";
+			return;
 		}
-	}
-	async function install() {
-		busy = true;
-		error = "";
-		message = "Downloading and verifying the release…";
-		try {
-			const result = await request<{ updating: boolean; version: string }>(
-				"/api/updates/install",
-				{ method: "POST" },
-			);
-			if (!result.updating) {
-				message = "You are up to date.";
-				return;
-			}
-			message = "Restarting Loom. This page will reconnect automatically.";
-			for (let i = 0; i < 100 && alive; i++) {
-				await new Promise((resolve) => setTimeout(resolve, 1000));
-				try {
-					const meta = await request<{ version: string }>("/api/meta");
-					if (meta.version === result.version) {
-						window.location.reload();
-						return;
-					}
-					const next = await request<Status>("/api/updates");
-					if (next.lastResult?.status === "failed")
-						throw new Error(
-							next.lastResult.error ||
-								"Update failed; the previous version was restored.",
-						);
-				} catch (e) {
-					if (
-						e instanceof Error &&
-						!/fetch|network|connect|unavailable/i.test(e.message)
-					)
-						throw e;
+		message = "Restarting Loom. This page will reconnect automatically.";
+		for (let i = 0; i < 100 && alive; i++) {
+			await new Promise((resolve) => setTimeout(resolve, 1000));
+			try {
+				const meta = await request<{ version: string }>("/api/meta");
+				if (meta.version === result.version) {
+					window.location.reload();
+					return;
 				}
+				const next = await request<Status>("/api/updates");
+				if (next.lastResult?.status === "failed")
+					throw new Error(
+						next.lastResult.error ||
+							"Update failed; the previous version was restored.",
+					);
+			} catch (e) {
+				if (
+					e instanceof Error &&
+					!/fetch|network|connect|unavailable/i.test(e.message)
+				)
+					throw e;
 			}
-			throw new Error(
-				"Loom has not reconnected yet. Run loom doctor and loom logs to check the update.",
-			);
-		} catch (e) {
-			error = e instanceof Error ? e.message : "Update failed";
-			message = "";
-		} finally {
-			busy = false;
 		}
+		throw new Error(
+			"Loom has not reconnected yet. Run loom doctor and loom logs to check the update.",
+		);
+	} catch (e) {
+		error = e instanceof Error ? e.message : "Update failed";
+		message = "";
+	} finally {
+		busy = false;
 	}
+}
 </script>
 
 {#if expanded}<section class="rounded-xl border border-border bg-card p-5">

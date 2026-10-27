@@ -1,46 +1,46 @@
 <script lang="ts">
-	import { Input } from "$lib/components/ui/input";
-	import { Button } from "$lib/components/ui/button";
-	import { createForm } from "@tanstack/svelte-form";
-	import { z } from "zod";
-	import { goto } from "$app/navigation";
-	import { authClient } from "$lib/auth-client";
+import { createForm } from "@tanstack/svelte-form";
+import { z } from "zod";
+import { goto } from "$app/navigation";
+import { authClient } from "$lib/auth-client";
+import { Button } from "$lib/components/ui/button";
+import { Input } from "$lib/components/ui/input";
 
-	let { switchToSignIn } = $props<{ switchToSignIn: () => void }>();
+let { switchToSignIn } = $props<{ switchToSignIn: () => void }>();
 
-	const validationSchema = z.object({
-		name: z.string().min(2, "Name must be at least 2 characters"),
-		email: z.email("Invalid email address"),
-		password: z.string().min(8, "Password must be at least 8 characters"),
-	});
+const validationSchema = z.object({
+	name: z.string().min(2, "Name must be at least 2 characters"),
+	email: z.email("Invalid email address"),
+	password: z.string().min(8, "Password must be at least 8 characters"),
+});
 
-	const form = createForm(() => ({
-		defaultValues: { name: "", email: "", password: "" },
-		onSubmit: async ({ value }) => {
-			await authClient.signUp.email(
-				{
-					email: value.email,
-					password: value.password,
-					name: value.name,
+const form = createForm(() => ({
+	defaultValues: { name: "", email: "", password: "" },
+	onSubmit: async ({ value }) => {
+		await authClient.signUp.email(
+			{
+				email: value.email,
+				password: value.password,
+				name: value.name,
+			},
+			{
+				onSuccess: () => {
+					goto("/dashboard");
 				},
-				{
-					onSuccess: () => {
-						goto("/dashboard");
-					},
-					onError: (error) => {
-						console.log(
-							error.error.message || "Sign up failed. Please try again.",
-						);
-					},
+				onError: (error) => {
+					console.log(
+						error.error.message || "Sign up failed. Please try again.",
+					);
 				},
-			);
-		},
-		validators: {
-			onSubmit: validationSchema,
-		},
-	}));
+			},
+		);
+	},
+	validators: {
+		onSubmit: validationSchema,
+	},
+}));
 
-	type SubmitState = Pick<typeof form.state, "canSubmit" | "isSubmitting">;
+type SubmitState = Pick<typeof form.state, "canSubmit" | "isSubmitting">;
 </script>
 
 <div class="mx-auto mt-10 w-full max-w-md p-6">

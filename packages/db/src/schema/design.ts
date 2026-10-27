@@ -18,6 +18,11 @@ export const designNodes = sqliteTable("design_nodes", {
 	brief: text("brief").notNull().default(""),
 	status: text("status").notNull().default("queued"),
 	viewport: text("viewport").notNull().default("desktop"),
+	/** What the frame is sized for (desktop / mobile / story / poster / ...). */
+	frameKind: text("frame_kind").notNull().default("desktop"),
+	/** Design space the document is authored in, independent of card size. */
+	frameWidth: integer("frame_width").notNull().default(1440),
+	frameHeight: integer("frame_height").notNull().default(900),
 	html: text("html").notNull().default(""),
 	errorMessage: text("error_message"),
 	durationMs: integer("duration_ms"),

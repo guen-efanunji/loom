@@ -1,374 +1,372 @@
 <script lang="ts">
-	import {
-		BookOpen,
-		Brain,
-		Check,
-		CircleAlert,
-		FileText,
-		Globe2,
-		History,
-		Lightbulb,
-		Plus,
-		RefreshCw,
-		Search,
-		ShieldAlert,
-		Sparkles,
-		Trash2,
-	} from "@lucide/svelte";
-	import { onMount } from "svelte";
-	import SettingsSidebar from "$lib/components/settings/SettingsSidebar.svelte";
-	import { Badge } from "$lib/components/ui/badge";
-	import { Button } from "$lib/components/ui/button";
-	import * as Checkbox from "$lib/components/ui/checkbox";
-	import * as Dialog from "$lib/components/ui/dialog";
-	import { Input } from "$lib/components/ui/input";
-	import * as Select from "$lib/components/ui/select";
-	import * as Tabs from "$lib/components/ui/tabs";
-	import { Textarea } from "$lib/components/ui/textarea";
-	import { toast } from "svelte-sonner";
-	import {
-		daemon,
-		type ContextEntry,
-		type ContextMemoryHistory,
-		type ContextSkillDiscovery,
-		type Project,
-	} from "$lib/daemon";
+import {
+	BookOpen,
+	Brain,
+	Check,
+	CircleAlert,
+	FileText,
+	Globe2,
+	History,
+	Lightbulb,
+	Plus,
+	RefreshCw,
+	Search,
+	ShieldAlert,
+	Sparkles,
+	Trash2,
+} from "@lucide/svelte";
+import { onMount } from "svelte";
+import { toast } from "svelte-sonner";
+import SettingsSidebar from "$lib/components/settings/SettingsSidebar.svelte";
+import { Badge } from "$lib/components/ui/badge";
+import { Button } from "$lib/components/ui/button";
+import * as Checkbox from "$lib/components/ui/checkbox";
+import * as Dialog from "$lib/components/ui/dialog";
+import { Input } from "$lib/components/ui/input";
+import * as Select from "$lib/components/ui/select";
+import * as Tabs from "$lib/components/ui/tabs";
+import { Textarea } from "$lib/components/ui/textarea";
+import {
+	type ContextEntry,
+	type ContextMemoryHistory,
+	type ContextSkillDiscovery,
+	daemon,
+	type Project,
+} from "$lib/daemon";
 
-	type Kind = ContextEntry["kind"];
-	type Scope = "global" | "project";
-	const tabs: Array<{
-		id: Kind;
-		label: string;
-		icon: typeof BookOpen;
-		description: string;
-	}> = [
-		{
-			id: "knowledge",
-			label: "Knowledge Base",
-			icon: BookOpen,
-			description: "Reference material for your projects.",
-		},
-		{
-			id: "rule",
-			label: "Rules",
-			icon: ShieldAlert,
-			description: "Scoped instructions and path guidance.",
-		},
-		{
-			id: "skill",
-			label: "Skills",
-			icon: Sparkles,
-			description: "Reusable procedures and verified native discoveries.",
-		},
-		{
-			id: "memory",
-			label: "Memory",
-			icon: Brain,
-			description: "Sourced decisions that require approval before reuse.",
-		},
-	];
+type Kind = ContextEntry["kind"];
+type Scope = "global" | "project";
+const tabs: Array<{
+	id: Kind;
+	label: string;
+	icon: typeof BookOpen;
+	description: string;
+}> = [
+	{
+		id: "knowledge",
+		label: "Knowledge Base",
+		icon: BookOpen,
+		description: "Reference material for your projects.",
+	},
+	{
+		id: "rule",
+		label: "Rules",
+		icon: ShieldAlert,
+		description: "Scoped instructions and path guidance.",
+	},
+	{
+		id: "skill",
+		label: "Skills",
+		icon: Sparkles,
+		description: "Reusable procedures and verified native discoveries.",
+	},
+	{
+		id: "memory",
+		label: "Memory",
+		icon: Brain,
+		description: "Sourced decisions that require approval before reuse.",
+	},
+];
 
-	let projects = $state<Project[]>([]);
-	let projectId = $state("all");
-	let entries = $state<ContextEntry[]>([]);
-	let discovery = $state<ContextSkillDiscovery | null>(null);
-	let selectedNative = $state<ContextSkillDiscovery["skills"][number] | null>(
-		null,
-	);
-	let loading = $state(true);
-	let refreshing = $state(false);
-	let error = $state("");
-	let activeTab = $state<Kind>("knowledge");
-	let search = $state("");
-	let formOpen = $state(false);
-	let detailsOpen = $state(false);
-	let editing = $state<ContextEntry | null>(null);
-	let selectedEntry = $state<ContextEntry | null>(null);
-	let versions = $state<
-		Array<{
-			id: string;
-			version: number;
-			content: string;
-			contentHash: string;
-			metadata: string;
-			createdAt: string;
-		}>
-	>([]);
-	let memoryHistory = $state<ContextMemoryHistory | null>(null);
-	let saving = $state(false);
-	let sidebarSearch = $state("");
-	let draftScope = $state<Scope>("project");
-	let draftTitle = $state("");
-	let draftDescription = $state("");
-	let draftContent = $state("");
-	let draftSourceRef = $state("");
-	let draftTags = $state("");
-	let draftPaths = $state("");
-	let draftSurfaces = $state<string[]>(["chat", "kanban"]);
-	let draftStatus = $state("active");
+let projects = $state<Project[]>([]);
+let projectId = $state("all");
+let entries = $state<ContextEntry[]>([]);
+let discovery = $state<ContextSkillDiscovery | null>(null);
+let selectedNative = $state<ContextSkillDiscovery["skills"][number] | null>(
+	null,
+);
+let loading = $state(true);
+let refreshing = $state(false);
+let error = $state("");
+let activeTab = $state<Kind>("knowledge");
+let search = $state("");
+let formOpen = $state(false);
+let detailsOpen = $state(false);
+let editing = $state<ContextEntry | null>(null);
+let selectedEntry = $state<ContextEntry | null>(null);
+let versions = $state<
+	Array<{
+		id: string;
+		version: number;
+		content: string;
+		contentHash: string;
+		metadata: string;
+		createdAt: string;
+	}>
+>([]);
+let memoryHistory = $state<ContextMemoryHistory | null>(null);
+let saving = $state(false);
+let sidebarSearch = $state("");
+let draftScope = $state<Scope>("project");
+let draftTitle = $state("");
+let draftDescription = $state("");
+let draftContent = $state("");
+let draftSourceRef = $state("");
+let draftTags = $state("");
+let draftPaths = $state("");
+let draftSurfaces = $state<string[]>(["chat", "kanban"]);
+let draftStatus = $state("active");
 
-	const projectLabel = $derived(
-		projectId === "all"
-			? "All workspaces"
-			: (projects.find((item) => item.id === projectId)?.name ?? "Workspace"),
-	);
-	const visibleEntries = $derived(
-		entries.filter(
-			(entry) =>
-				entry.kind === activeTab &&
-				`${entry.title} ${entry.description} ${entry.tags.join(" ")}`
-					.toLowerCase()
-					.includes(search.trim().toLowerCase()),
-		),
-	);
-	const visibleNativeSkills = $derived(
-		(discovery?.skills ?? []).filter((skill) =>
-			`${skill.name} ${skill.description} ${skill.origins.map((origin) => origin.runtimeId).join(" ")}`
+const projectLabel = $derived(
+	projectId === "all"
+		? "All workspaces"
+		: (projects.find((item) => item.id === projectId)?.name ?? "Workspace"),
+);
+const visibleEntries = $derived(
+	entries.filter(
+		(entry) =>
+			entry.kind === activeTab &&
+			`${entry.title} ${entry.description} ${entry.tags.join(" ")}`
 				.toLowerCase()
 				.includes(search.trim().toLowerCase()),
-		),
-	);
+	),
+);
+const visibleNativeSkills = $derived(
+	(discovery?.skills ?? []).filter((skill) =>
+		`${skill.name} ${skill.description} ${skill.origins.map((origin) => origin.runtimeId).join(" ")}`
+			.toLowerCase()
+			.includes(search.trim().toLowerCase()),
+	),
+);
 
-	async function loadContext() {
-		const scopeProjectId = projectId === "all" ? undefined : projectId;
-		const [nextEntries, nextDiscovery] = await Promise.all([
-			daemon.listContextEntries(scopeProjectId),
-			daemon.discoverContextSkills(scopeProjectId),
-		]);
-		entries = nextEntries;
-		discovery = nextDiscovery;
+async function loadContext() {
+	const scopeProjectId = projectId === "all" ? undefined : projectId;
+	const [nextEntries, nextDiscovery] = await Promise.all([
+		daemon.listContextEntries(scopeProjectId),
+		daemon.discoverContextSkills(scopeProjectId),
+	]);
+	entries = nextEntries;
+	discovery = nextDiscovery;
+}
+
+async function refresh() {
+	refreshing = true;
+	error = "";
+	try {
+		await loadContext();
+	} catch (reason) {
+		error =
+			reason instanceof Error
+				? reason.message
+				: "Unable to refresh context sources";
+	} finally {
+		refreshing = false;
+		loading = false;
 	}
+}
 
-	async function refresh() {
-		refreshing = true;
-		error = "";
+onMount(() => {
+	void (async () => {
 		try {
+			projects = await daemon.listProjects();
+			const requestedProject = new URLSearchParams(window.location.search).get(
+				"projectId",
+			);
+			if (
+				requestedProject &&
+				projects.some((project) => project.id === requestedProject)
+			)
+				projectId = requestedProject;
 			await loadContext();
 		} catch (reason) {
 			error =
-				reason instanceof Error
-					? reason.message
-					: "Unable to refresh context sources";
+				reason instanceof Error ? reason.message : "Unable to load context";
 		} finally {
-			refreshing = false;
 			loading = false;
 		}
+	})();
+});
+
+function beginCreate() {
+	editing = null;
+	draftScope = projectId === "all" ? "global" : "project";
+	draftTitle = "";
+	draftDescription = "";
+	draftContent = "";
+	draftSourceRef = "";
+	draftTags = "";
+	draftPaths = "";
+	draftSurfaces = activeTab === "skill" ? ["chat", "kanban"] : ["chat"];
+	draftStatus = activeTab === "memory" ? "proposed" : "active";
+	formOpen = true;
+}
+
+function beginEdit(entry: ContextEntry) {
+	editing = entry;
+	draftScope = entry.scope;
+	draftTitle = entry.title;
+	draftDescription = entry.description;
+	draftContent = entry.content;
+	draftSourceRef = entry.sourceRef ?? "";
+	draftTags = entry.tags.join(", ");
+	draftPaths = entry.pathGlobs.join(", ");
+	draftSurfaces = [...entry.surfaces];
+	draftStatus = entry.status;
+	formOpen = true;
+}
+
+function payload(
+	status = draftStatus,
+	enabledInLoom = activeTab === "memory" ? status === "approved" : true,
+) {
+	return {
+		kind: editing?.kind ?? activeTab,
+		projectId:
+			draftScope === "project"
+				? projectId === "all"
+					? null
+					: projectId
+				: null,
+		scope: draftScope,
+		title: draftTitle.trim(),
+		description: draftDescription.trim(),
+		content: draftContent,
+		sourceRef: draftSourceRef.trim() || null,
+		tags: draftTags
+			.split(",")
+			.map((item) => item.trim())
+			.filter(Boolean),
+		surfaces: draftSurfaces,
+		pathGlobs: draftPaths
+			.split(",")
+			.map((item) => item.trim())
+			.filter(Boolean),
+		status,
+		enabledInLoom,
+	};
+}
+
+async function saveEntry() {
+	if (
+		!draftTitle.trim() ||
+		!draftContent.trim() ||
+		(draftScope === "project" && projectId === "all") ||
+		saving
+	)
+		return;
+	saving = true;
+	error = "";
+	try {
+		if (editing)
+			await daemon.updateContextEntry(editing.id, {
+				...payload(),
+				expectedVersion: editing.currentVersion,
+			});
+		else
+			await daemon.createContextEntry(
+				payload(
+					activeTab === "memory" ? "proposed" : "active",
+					activeTab !== "memory",
+				),
+			);
+		formOpen = false;
+		await loadContext();
+		toast.success(editing ? "Context entry saved" : "Context entry created");
+	} catch (reason) {
+		error =
+			reason instanceof Error ? reason.message : "Unable to save context entry";
+	} finally {
+		saving = false;
 	}
+}
 
-	onMount(() => {
-		void (async () => {
-			try {
-				projects = await daemon.listProjects();
-				const requestedProject = new URLSearchParams(
-					window.location.search,
-				).get("projectId");
-				if (
-					requestedProject &&
-					projects.some((project) => project.id === requestedProject)
-				)
-					projectId = requestedProject;
-				await loadContext();
-			} catch (reason) {
-				error =
-					reason instanceof Error ? reason.message : "Unable to load context";
-			} finally {
-				loading = false;
-			}
-		})();
-	});
-
-	function beginCreate() {
-		editing = null;
-		draftScope = projectId === "all" ? "global" : "project";
-		draftTitle = "";
-		draftDescription = "";
-		draftContent = "";
-		draftSourceRef = "";
-		draftTags = "";
-		draftPaths = "";
-		draftSurfaces = activeTab === "skill" ? ["chat", "kanban"] : ["chat"];
-		draftStatus = activeTab === "memory" ? "proposed" : "active";
-		formOpen = true;
-	}
-
-	function beginEdit(entry: ContextEntry) {
-		editing = entry;
-		draftScope = entry.scope;
-		draftTitle = entry.title;
-		draftDescription = entry.description;
-		draftContent = entry.content;
-		draftSourceRef = entry.sourceRef ?? "";
-		draftTags = entry.tags.join(", ");
-		draftPaths = entry.pathGlobs.join(", ");
-		draftSurfaces = [...entry.surfaces];
-		draftStatus = entry.status;
-		formOpen = true;
-	}
-
-	function payload(
-		status = draftStatus,
-		enabledInLoom = activeTab === "memory" ? status === "approved" : true,
-	) {
-		return {
-			kind: editing?.kind ?? activeTab,
-			projectId:
-				draftScope === "project"
-					? projectId === "all"
-						? null
-						: projectId
-					: null,
-			scope: draftScope,
-			title: draftTitle.trim(),
-			description: draftDescription.trim(),
-			content: draftContent,
-			sourceRef: draftSourceRef.trim() || null,
-			tags: draftTags
-				.split(",")
-				.map((item) => item.trim())
-				.filter(Boolean),
-			surfaces: draftSurfaces,
-			pathGlobs: draftPaths
-				.split(",")
-				.map((item) => item.trim())
-				.filter(Boolean),
+async function setMemoryStatus(
+	entry: ContextEntry,
+	status: "approved" | "rejected" | "archived",
+) {
+	try {
+		await daemon.updateContextEntry(entry.id, {
+			kind: entry.kind,
+			projectId: entry.projectId,
+			scope: entry.scope,
+			title: entry.title,
+			description: entry.description,
+			content: entry.content,
+			sourceRef: entry.sourceRef,
+			tags: entry.tags,
+			surfaces: entry.surfaces,
+			pathGlobs: entry.pathGlobs,
 			status,
-			enabledInLoom,
-		};
+			enabledInLoom: status === "approved",
+			expectedVersion: entry.currentVersion,
+		});
+		await loadContext();
+		toast.success(`Memory ${status}`);
+	} catch (reason) {
+		toast.error(
+			reason instanceof Error ? reason.message : "Unable to update memory",
+		);
 	}
+}
 
-	async function saveEntry() {
-		if (
-			!draftTitle.trim() ||
-			!draftContent.trim() ||
-			(draftScope === "project" && projectId === "all") ||
-			saving
-		)
-			return;
-		saving = true;
-		error = "";
-		try {
-			if (editing)
-				await daemon.updateContextEntry(editing.id, {
-					...payload(),
-					expectedVersion: editing.currentVersion,
-				});
-			else
-				await daemon.createContextEntry(
-					payload(
-						activeTab === "memory" ? "proposed" : "active",
-						activeTab !== "memory",
-					),
-				);
-			formOpen = false;
-			await loadContext();
-			toast.success(editing ? "Context entry saved" : "Context entry created");
-		} catch (reason) {
-			error =
-				reason instanceof Error
-					? reason.message
-					: "Unable to save context entry";
-		} finally {
-			saving = false;
-		}
+async function toggleEntry(entry: ContextEntry) {
+	try {
+		await daemon.updateContextEntry(entry.id, {
+			kind: entry.kind,
+			projectId: entry.projectId,
+			scope: entry.scope,
+			title: entry.title,
+			description: entry.description,
+			content: entry.content,
+			sourceRef: entry.sourceRef,
+			tags: entry.tags,
+			surfaces: entry.surfaces,
+			pathGlobs: entry.pathGlobs,
+			status: entry.status === "disabled" ? "active" : "disabled",
+			enabledInLoom: entry.status === "disabled",
+			expectedVersion: entry.currentVersion,
+		});
+		await loadContext();
+	} catch (reason) {
+		toast.error(
+			reason instanceof Error ? reason.message : "Unable to update entry",
+		);
 	}
+}
 
-	async function setMemoryStatus(
-		entry: ContextEntry,
-		status: "approved" | "rejected" | "archived",
-	) {
-		try {
-			await daemon.updateContextEntry(entry.id, {
-				kind: entry.kind,
-				projectId: entry.projectId,
-				scope: entry.scope,
-				title: entry.title,
-				description: entry.description,
-				content: entry.content,
-				sourceRef: entry.sourceRef,
-				tags: entry.tags,
-				surfaces: entry.surfaces,
-				pathGlobs: entry.pathGlobs,
-				status,
-				enabledInLoom: status === "approved",
-				expectedVersion: entry.currentVersion,
-			});
-			await loadContext();
-			toast.success(`Memory ${status}`);
-		} catch (reason) {
-			toast.error(
-				reason instanceof Error ? reason.message : "Unable to update memory",
-			);
-		}
+async function removeEntry(entry: ContextEntry) {
+	if (!confirm(`Delete “${entry.title}” and its saved versions?`)) return;
+	try {
+		await daemon.deleteContextEntry(entry.id);
+		await loadContext();
+		toast.success("Context entry deleted");
+	} catch (reason) {
+		toast.error(
+			reason instanceof Error
+				? reason.message
+				: "Unable to delete context entry",
+		);
 	}
+}
 
-	async function toggleEntry(entry: ContextEntry) {
-		try {
-			await daemon.updateContextEntry(entry.id, {
-				kind: entry.kind,
-				projectId: entry.projectId,
-				scope: entry.scope,
-				title: entry.title,
-				description: entry.description,
-				content: entry.content,
-				sourceRef: entry.sourceRef,
-				tags: entry.tags,
-				surfaces: entry.surfaces,
-				pathGlobs: entry.pathGlobs,
-				status: entry.status === "disabled" ? "active" : "disabled",
-				enabledInLoom: entry.status === "disabled",
-				expectedVersion: entry.currentVersion,
-			});
-			await loadContext();
-		} catch (reason) {
-			toast.error(
-				reason instanceof Error ? reason.message : "Unable to update entry",
-			);
-		}
-	}
+async function showDetails(entry: ContextEntry) {
+	selectedEntry = entry;
+	selectedNative = null;
+	memoryHistory = null;
+	detailsOpen = true;
+	const [nextVersions, nextMemoryHistory] = await Promise.all([
+		daemon.listContextVersions(entry.id).catch(() => []),
+		entry.kind === "memory"
+			? daemon.getContextMemoryHistory(entry.id).catch(() => null)
+			: Promise.resolve(null),
+	]);
+	versions = nextVersions;
+	memoryHistory = nextMemoryHistory;
+}
 
-	async function removeEntry(entry: ContextEntry) {
-		if (!confirm(`Delete “${entry.title}” and its saved versions?`)) return;
-		try {
-			await daemon.deleteContextEntry(entry.id);
-			await loadContext();
-			toast.success("Context entry deleted");
-		} catch (reason) {
-			toast.error(
-				reason instanceof Error
-					? reason.message
-					: "Unable to delete context entry",
-			);
-		}
-	}
+function showNativeSkill(skill: ContextSkillDiscovery["skills"][number]) {
+	selectedEntry = null;
+	versions = [];
+	memoryHistory = null;
+	selectedNative = skill;
+	detailsOpen = true;
+}
 
-	async function showDetails(entry: ContextEntry) {
-		selectedEntry = entry;
-		selectedNative = null;
-		memoryHistory = null;
-		detailsOpen = true;
-		const [nextVersions, nextMemoryHistory] = await Promise.all([
-			daemon.listContextVersions(entry.id).catch(() => []),
-			entry.kind === "memory"
-				? daemon.getContextMemoryHistory(entry.id).catch(() => null)
-				: Promise.resolve(null),
-		]);
-		versions = nextVersions;
-		memoryHistory = nextMemoryHistory;
-	}
-
-	function showNativeSkill(skill: ContextSkillDiscovery["skills"][number]) {
-		selectedEntry = null;
-		versions = [];
-		memoryHistory = null;
-		selectedNative = skill;
-		detailsOpen = true;
-	}
-
-	function toggleSurface(surface: string) {
-		draftSurfaces = draftSurfaces.includes(surface)
-			? draftSurfaces.filter((item) => item !== surface)
-			: [...draftSurfaces, surface];
-	}
+function toggleSurface(surface: string) {
+	draftSurfaces = draftSurfaces.includes(surface)
+		? draftSurfaces.filter((item) => item !== surface)
+		: [...draftSurfaces, surface];
+}
 </script>
 
 <svelte:head><title>Context Hub · Settings · Loom</title></svelte:head>

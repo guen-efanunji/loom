@@ -34,7 +34,7 @@ describe("design prompts", () => {
 	test("generation prompt stays lean and pins the HTML contract", () => {
 		const prompt = buildDesignPrompt({
 			brief: "Dashboard logistik",
-			viewport: "mobile",
+			frame: { kind: "mobile", width: 390, height: 844 },
 			context: {
 				projectName: "demo",
 				stack: ["Svelte"],
@@ -63,7 +63,7 @@ describe("design prompts", () => {
 	test("generation uses explicit project identity when context is unavailable", () => {
 		const prompt = buildDesignPrompt({
 			brief: "Login screen",
-			viewport: "desktop",
+			frame: { kind: "desktop", width: 1440, height: 900 },
 			projectName: "Warehouse",
 			projectPath: "/PROJECT/Warehouse",
 		});
@@ -78,7 +78,7 @@ describe("design prompts", () => {
 		const prompt = buildRefinePrompt({
 			brief: "Dashboard logistik",
 			message: "Tambahkan grafik pengiriman",
-			viewport: "desktop",
+			frame: { kind: "desktop", width: 1440, height: 900 },
 			previousHtml: DOCUMENT,
 			projectName: "Warehouse",
 			projectPath: "/PROJECT/Warehouse",
@@ -93,6 +93,28 @@ describe("design prompts", () => {
 		expect(prompt).toContain("Dashboard logistik");
 		expect(prompt).toContain("<!DOCTYPE html>");
 		expect(prompt).toContain("1440x900");
+	});
+
+	test("both design prompts forbid tools in the phrase the CLI adapters key on", () => {
+		// Agy strips its coding prompt only when it recognises this ban; if a
+		// design prompt loses it, the coding prompt invites shell exploration and
+		// the headless run fails on a denied RunCommand.
+		const ban =
+			/do not call tools[^\n]*shell commands[^\n]*read or write files/i;
+		expect(
+			buildDesignPrompt({
+				brief: "Landing page",
+				frame: { kind: "desktop", width: 1440, height: 900 },
+			}),
+		).toMatch(ban);
+		expect(
+			buildRefinePrompt({
+				brief: "Landing page",
+				message: "Tambahkan animasi hover",
+				frame: { kind: "desktop", width: 1440, height: 900 },
+				previousHtml: DOCUMENT,
+			}),
+		).toMatch(ban);
 	});
 });
 
