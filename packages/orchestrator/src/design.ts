@@ -12,24 +12,24 @@ import type {
 	repositories,
 } from "@loom/db";
 import {
+	DEFAULT_DESIGN_FRAME,
+	DESIGN_FRAME_MIN,
 	type DesignActivity,
 	type DesignAttachment,
 	type DesignChatResult,
-	DEFAULT_DESIGN_FRAME,
-	DESIGN_FRAME_MIN,
 	type DesignFrame,
 	type DesignPatch,
 	type DesignPermissionRequest,
 	type DesignTrace,
-	designFrameKindSchema,
 	type DesignViewport,
+	designFrameKindSchema,
 	viewportOfFrame,
 } from "@loom/protocol";
 import type {
 	AgentRuntime,
 	RuntimeModel,
-	RuntimePermission,
 	RuntimeOutput,
+	RuntimePermission,
 	RuntimeToolAuthorization,
 } from "@loom/providers/core";
 
@@ -72,6 +72,18 @@ type DesignPermissionGate = {
 };
 
 import {
+	designNodeSizeForFrame,
+	designSpaceWidth,
+	frameFromMention,
+	frameFromReferences,
+	frameHintBlock,
+	frameOfKind,
+	frameReferenceHints,
+	imageDimensions,
+	mentionsCanvasSize,
+	usesDesignSpaceUnit,
+} from "./design-frame";
+import {
 	buildDesignAssistantPrompt,
 	buildDesignPrompt,
 	buildIntentClassifierPrompt,
@@ -88,18 +100,7 @@ import {
 	parseDesignQuestions,
 	wantsAllNodes,
 } from "./design-prompt";
-import {
-	designNodeSizeForFrame,
-	designSpaceWidth,
-	frameFromMention,
-	frameFromReferences,
-	frameHintBlock,
-	frameOfKind,
-	frameReferenceHints,
-	imageDimensions,
-	mentionsCanvasSize,
-	usesDesignSpaceUnit,
-} from "./design-frame";
+import { referencedUrlBlock, snapshotsFor } from "./design-refs";
 
 type Repos = ReturnType<typeof repositories>;
 
@@ -151,7 +152,21 @@ export function designNodeSize(frame: DesignFrame) {
 }
 
 function modelLabel(model?: RuntimeModel): string | null {
-	return model ? `${model.providerID}/${model.modelID}` : null;
+	if (!model) return null;
+	// Catalog ids can arrive pre-prefixed (e.g. `opencode/glm-…` inside an
+	// `opencode` provider ref); showing a single provider label keeps stored
+	// messages re-splittable and the chat header readable.
+	const prefix = `${model.providerID}/`;
+	if (model.modelID.startsWith(prefix)) return model.modelID;
+	return `${model.providerID}/${model.modelID}`;
+}
+
+/** True when a read-only run died because the model reached for a denied tool. */
+export function deniedToolError(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : String(error);
+	return /tool permission was denied|RunCommand|permission was denied|cannot ask for approval/i.test(
+		message,
+	);
 }
 
 function friendlyRuntimeError(error: unknown): string {
@@ -390,22 +405,36 @@ const TRACE_PREFIX = "\u0000loom-design-trace:";
 const TRACE_LIMIT = 12_000;
 
 function traceText(value: string, limit = 1_200): string {
-	if (/<(?:!doctype|html|script|style)\b/i.test(value)) return "[document omitted]";
+	if (/<(?:!doctype|html|script|style)\b/i.test(value))
+		return "[document omitted]";
 	return value
 		.replace(/data:image\/[^\s"']+/gi, "[image omitted]")
 		.replace(/[A-Za-z0-9+/]{160,}={0,2}/g, "[encoded data omitted]")
-		.replace(/(?:sk-[\w-]{12,}|gh[pousr]_[\w-]{12,}|Bearer\s+\S+)/gi, "[credential omitted]")
-		.replace(/(["']?(?:api[_-]?key|token|password|secret|authorization)["']?\s*[:=]\s*["']?)[^\s,;"'}]+/gi, "$1[redacted]")
+		.replace(
+			/(?:sk-[\w-]{12,}|gh[pousr]_[\w-]{12,}|Bearer\s+\S+)/gi,
+			"[credential omitted]",
+		)
+		.replace(
+			/(["']?(?:api[_-]?key|token|password|secret|authorization)["']?\s*[:=]\s*["']?)[^\s,;"'}]+/gi,
+			"$1[redacted]",
+		)
 		.slice(0, limit);
 }
 
 function traceEvents(output: RuntimeOutput | null) {
-	const activities = new Map(output?.activities?.map((item) => [item.id, item]) ?? []);
+	const activities = new Map(
+		output?.activities?.map((item) => [item.id, item]) ?? [],
+	);
 	const parts = output?.parts?.length
 		? output.parts
 		: [
-				...(output?.activities?.map((item) => ({ type: "activity" as const, id: item.id })) ?? []),
-				...(output?.output ? [{ type: "text" as const, id: "output", text: output.output }] : []),
+				...(output?.activities?.map((item) => ({
+					type: "activity" as const,
+					id: item.id,
+				})) ?? []),
+				...(output?.output
+					? [{ type: "text" as const, id: "output", text: output.output }]
+					: []),
 			];
 	const events: DesignTrace["runs"][number]["events"] = [];
 	for (const part of parts) {
@@ -426,6 +455,13 @@ function traceEvents(output: RuntimeOutput | null) {
 			});
 		}
 	}
+	if (!events.length && output?.output?.trim())
+		// A design run may produce only the HTML document; keep the timeline
+		// informative instead of claiming nothing was recorded.
+		events.push({
+			type: "text",
+			text: `Returned the design reply (${output.output.length.toLocaleString("id-ID")} characters) without tool activity.`,
+		});
 	return events;
 }
 
@@ -449,6 +485,15 @@ export class DesignService {
 	private readonly chatTurns = new Map<string, Promise<void>>();
 	/** Transient "what is it doing" feed per generating node (never persisted). */
 	private readonly activity = new Map<string, DesignActivity>();
+	/**
+	 * Focus-less project contexts (file walk + theme scrape) cached per project;
+	 * the walk touches thousands of entries, so rebuilding it on every chat turn
+	 * and generation wastes several hundred milliseconds each time.
+	 */
+	private readonly contextCache = new Map<
+		string,
+		{ value: ProjectContext; cachedAt: number }
+	>();
 
 	constructor(
 		private readonly store: DesignRepository,
@@ -461,6 +506,29 @@ export class DesignService {
 	private runtimeFor(model?: RuntimeModel): AgentRuntime {
 		if (!model) return this.runtime;
 		return this.providerRuntimes.get(model.providerID) ?? this.runtime;
+	}
+
+	/** Fresh or recently cached focus-less project context for a project. */
+	private async fileContext(
+		project: ProjectRecord,
+		options: { focus?: string[]; ttlMs?: number } = {},
+	): Promise<ProjectContext | undefined> {
+		if (!options.focus?.length) {
+			const cached = this.contextCache.get(project.path);
+			if (cached && Date.now() - cached.cachedAt < (options.ttlMs ?? 30_000))
+				return cached.value;
+		}
+		const context = await buildDesignFileContext(
+			project.path,
+			project.name,
+			options.focus ?? [],
+		);
+		if (!options.focus?.length)
+			this.contextCache.set(project.path, {
+				value: context,
+				cachedAt: Date.now(),
+			});
+		return context;
 	}
 
 	private async requireProject(projectId: string): Promise<ProjectRecord> {
@@ -675,10 +743,9 @@ export class DesignService {
 		const storedFrame = frameOfRecord(node);
 		// Mentioned paths steer the token scrape, so a @mentioned theme folder wins.
 		const focus = mentionPaths([node.brief, message ?? ""].join("\n"), files);
-		const context: ProjectContext | undefined = await buildDesignFileContext(
-			project.path,
-			project.name,
-			focus,
+		const context: ProjectContext | undefined = await this.fileContext(
+			project,
+			{ focus },
 		).catch(() => undefined);
 		const read = new Set(context?.readFiles ?? []);
 		const referencePaths = designReferencePaths(
@@ -697,6 +764,11 @@ export class DesignService {
 				};
 		for (const file of references.files) read.add(file);
 		const attachmentReferences = attachmentReferencesBlock(attachments);
+		// Briefs may point at a live page; fetch it once here so the model never
+		// needs a shell (which read-only runtimes deny).
+		const referencedUrls = referencedUrlBlock(
+			await snapshotsFor([node.brief, message ?? ""].join("\n")),
+		);
 		// The user's own references decide the canvas: a screenshot's pixel size,
 		// or the design space a mentioned stylesheet is authored in.
 		const attachmentImages = (attachments ?? [])
@@ -764,7 +836,8 @@ export class DesignService {
 					}) +
 					frameHintBlock(frameHints) +
 					references.block +
-					attachmentReferences,
+					attachmentReferences +
+					referencedUrls,
 				images: references.images,
 			};
 		return {
@@ -778,7 +851,8 @@ export class DesignService {
 					frameHints,
 				}) +
 				references.block +
-				attachmentReferences,
+				attachmentReferences +
+				referencedUrls,
 			images: references.images,
 		};
 	}
@@ -857,6 +931,7 @@ export class DesignService {
 		await this.store.updateNode(nodeId, { sessionId: session.id });
 		const startedAt = Date.now();
 		let lastOutput: RuntimeOutput | null = null;
+		let runFailure: string | null = null;
 		try {
 			const run = (request: string) =>
 				this.runSession(
@@ -867,9 +942,23 @@ export class DesignService {
 					images,
 					{ mode: "read-only" },
 					undefined,
-					(output) => { lastOutput = output; },
+					(output) => {
+						lastOutput = output;
+					},
 				);
-			let reply = await run(prompt);
+			let reply: string;
+			try {
+				reply = await run(prompt);
+			} catch (error) {
+				runFailure = friendlyRuntimeError(error);
+				// A brief that mentions a URL can tempt the model into fetching it.
+				// Read-only runtimes deny that, and the denial currently kills the
+				// whole run - retry once with a stern redirect instead of failing.
+				if (!deniedToolError(error)) throw error;
+				reply = await run(
+					`${prompt}\n\nYour previous attempt tried to use a tool before answering (for example fetching a URL mentioned in the brief). Tool use is unavailable in this environment and will be denied again. Do not fetch, curl, open, or inspect anything: rely only on the brief, the supplied Project context, references, and attached files above, and produce the HTML document directly.`,
+				);
+			}
 			try {
 				extractDesignScreens(reply);
 			} catch (error) {
@@ -889,17 +978,25 @@ export class DesignService {
 			);
 		} finally {
 			const events = traceEvents(lastOutput);
+			if (runFailure && !events.length)
+				events.push({ type: "text", text: runFailure });
 			const saved: typeof events = [];
 			for (const event of events) {
-				if (JSON.stringify({ sessionId: session.id, events: [...saved, event] }).length > TRACE_LIMIT) break;
+				if (
+					JSON.stringify({ sessionId: session.id, events: [...saved, event] })
+						.length > TRACE_LIMIT
+				)
+					break;
 				saved.push(event);
 			}
-			await this.store.addMessage({
+			await this.store
+				.addMessage({
 					projectId: project.id,
 					nodeId,
 					role: "assistant",
 					text: `${TRACE_PREFIX}${JSON.stringify({ sessionId: session.id, events: saved })}`,
-				}).catch(() => undefined);
+				})
+				.catch(() => undefined);
 			this.permissionGate?.store.denySession(session.id);
 		}
 	}
@@ -922,9 +1019,20 @@ export class DesignService {
 			permission,
 			authorizeTool,
 		});
-		const status = await runtime.wait(sessionId, {
-			timeoutMs: DESIGN_TIMEOUT_MS,
-		});
+		let status: "completed" | "failed" | "cancelled" | "interrupted";
+		let output: RuntimeOutput | null = null;
+		try {
+			status = await runtime.wait(sessionId, {
+				timeoutMs: DESIGN_TIMEOUT_MS,
+			});
+			// A failed run still performed work (reads, fetches, denied tool
+			// calls) - surface it on the trace timeline instead of leaving the
+			// run silent.
+			output = ((await runtime.readOutput?.(sessionId)) ??
+				null) as RuntimeOutput | null;
+		} finally {
+			onOutput?.(output);
+		}
 		if (status === "cancelled")
 			throw new Error("Design generation was cancelled");
 		if (status !== "completed") {
@@ -942,8 +1050,6 @@ export class DesignService {
 					: "";
 			throw new Error(`Design agent ended with status: ${status}.${hint}`);
 		}
-		const output = (await runtime.readOutput?.(sessionId)) ?? null;
-		onOutput?.(output);
 		return output?.output ?? "";
 	}
 
@@ -1152,7 +1258,12 @@ export class DesignService {
 			const intent =
 				target?.html || isExplicitNewDesignRequest(message)
 					? "design"
-					: await this.classifyIntent(project, message, false, input.model);
+					: looksLikeDesignRequest(message)
+						? // Ambiguous ("bisa ganti warnanya?") - ask the model to arbitrate.
+							await this.classifyIntent(project, message, false, input.model)
+						: // Clearly conversational ("halo") - skip the extra model round-trip
+							// that otherwise delays every casual message.
+							"chat";
 
 			if (intent === "design") {
 				// A change request that names the whole set ("pada keduanya", "ubah warna
@@ -1216,11 +1327,9 @@ export class DesignService {
 					mime: attachment.mime,
 					data: attachment.data,
 				}));
-			const context = await buildDesignFileContext(
-				project.path,
-				project.name,
-				mentionPaths(message, input.files),
-			).catch(() => undefined);
+			const context = await this.fileContext(project, {
+				focus: mentionPaths(message, input.files),
+			}).catch(() => undefined);
 			const referencePaths = designReferencePaths(
 				message,
 				context?.files ?? [],
@@ -1241,6 +1350,7 @@ export class DesignService {
 			const reply = await this.runChatTurn(
 				project,
 				message +
+					referencedUrlBlock(await snapshotsFor(message)) +
 					references.block +
 					attachmentReferencesBlock(input.attachments),
 				input.model,
@@ -1395,10 +1505,7 @@ export class DesignService {
 			let prompt = userText;
 			const isStatelessProvider = Boolean(model && runtime !== this.runtime);
 			if (isStatelessProvider) {
-				const context = await buildDesignFileContext(
-					project.path,
-					project.name,
-				).catch(() => undefined);
+				const context = await this.fileContext(project).catch(() => undefined);
 				const messages = await this.store.listMessages(project.id);
 				const previous = messages
 					.slice(
@@ -1415,10 +1522,7 @@ export class DesignService {
 					projectPath: project.path,
 				})}\n\n${previous ? `Conversation so far:\n${previous}\n\n` : ""}User message:\n${userText}`;
 			} else if (seed) {
-				const context = await buildDesignFileContext(
-					project.path,
-					project.name,
-				).catch(() => undefined);
+				const context = await this.fileContext(project).catch(() => undefined);
 				prompt = `${buildDesignAssistantPrompt({
 					context,
 					projectName: project.name,
@@ -1543,15 +1647,30 @@ export class DesignService {
 		return {
 			projectId: node.projectId,
 			nodeId,
-			runs: messages.filter((message) => message.nodeId === nodeId && message.text.startsWith(TRACE_PREFIX)).flatMap((message) => {
-				try {
-					const value = JSON.parse(message.text.slice(TRACE_PREFIX.length));
-					if (typeof value.sessionId !== "string" || !Array.isArray(value.events)) return [];
-					return [{ sessionId: value.sessionId, createdAt: message.createdAt.toISOString(), events: value.events }];
-				} catch {
-					return [];
-				}
-			}),
+			runs: messages
+				.filter(
+					(message) =>
+						message.nodeId === nodeId && message.text.startsWith(TRACE_PREFIX),
+				)
+				.flatMap((message) => {
+					try {
+						const value = JSON.parse(message.text.slice(TRACE_PREFIX.length));
+						if (
+							typeof value.sessionId !== "string" ||
+							!Array.isArray(value.events)
+						)
+							return [];
+						return [
+							{
+								sessionId: value.sessionId,
+								createdAt: message.createdAt.toISOString(),
+								events: value.events,
+							},
+						];
+					} catch {
+						return [];
+					}
+				}),
 		};
 	}
 
@@ -1559,7 +1678,9 @@ export class DesignService {
 		await this.requireProject(projectId);
 		return {
 			nodes: await this.store.listNodes(projectId),
-			messages: (await this.store.listMessages(projectId)).filter((message) => !message.text.startsWith(TRACE_PREFIX)),
+			messages: (await this.store.listMessages(projectId)).filter(
+				(message) => !message.text.startsWith(TRACE_PREFIX),
+			),
 		};
 	}
 

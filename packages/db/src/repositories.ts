@@ -5,21 +5,23 @@ import { and, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import type { Database } from "./index";
 import {
 	agentRuns,
-	permissionRequests,
-	projects,
-	providerChatHistory,
-	tasks,
-	workspaces,
-	taskReviews,
-	taskArtifacts,
+	chatWorkspaces,
+	integrationBatchChecks,
 	integrationBatches,
 	integrationBatchMembers,
 	integrationBatchReviews,
-	integrationBatchChecks,
+	permissionRequests,
+	projects,
+	providerChatHistory,
 	reviewPolicies,
+	taskArtifacts,
+	taskReviews,
+	tasks,
+	workspaces,
 } from "./schema";
 
 export type ProjectRecord = InferSelectModel<typeof projects>;
+export type ChatWorkspaceRecord = InferSelectModel<typeof chatWorkspaces>;
 export type TaskRecord = InferSelectModel<typeof tasks>;
 export type WorkspaceRecord = InferSelectModel<typeof workspaces>;
 export type AgentRunRecord = InferSelectModel<typeof agentRuns>;
@@ -639,6 +641,78 @@ export function providerChatHistoryRepository(db: Database) {
 	};
 }
 
+export function chatWorkspaceRepository(db: Database) {
+	return {
+		getBySessionId(sessionId: string) {
+			return db.query.chatWorkspaces.findFirst({
+				where: eq(chatWorkspaces.sessionId, sessionId),
+			});
+		},
+		listByProject(projectId: string) {
+			return db
+				.select()
+				.from(chatWorkspaces)
+				.where(
+					and(
+						eq(chatWorkspaces.projectId, projectId),
+						eq(chatWorkspaces.status, "active"),
+					),
+				);
+		},
+		async create(input: {
+			sessionId: string;
+			projectId: string;
+			taskId: string;
+			path: string;
+			branch: string;
+			baseCommit: string;
+		}) {
+			const now = new Date();
+			const rows = await db
+				.insert(chatWorkspaces)
+				.values({ ...input, status: "active", createdAt: now, updatedAt: now })
+				.onConflictDoUpdate({
+					target: chatWorkspaces.sessionId,
+					set: {
+						projectId: input.projectId,
+						taskId: input.taskId,
+						path: input.path,
+						branch: input.branch,
+						baseCommit: input.baseCommit,
+						status: "active",
+						updatedAt: now,
+					},
+				})
+				.returning();
+			const record = rows[0];
+			if (!record) throw new Error("Chat workspace insert returned no row");
+			return record;
+		},
+		async getByTaskId(taskId: string) {
+			return db.query.chatWorkspaces.findFirst({
+				where: eq(chatWorkspaces.taskId, taskId),
+			});
+		},
+		update(
+			sessionId: string,
+			input: Partial<
+				Omit<InferInsertModel<typeof chatWorkspaces>, "sessionId" | "createdAt">
+			>,
+		) {
+			return db
+				.update(chatWorkspaces)
+				.set({ ...input, updatedAt: new Date() })
+				.where(eq(chatWorkspaces.sessionId, sessionId))
+				.returning();
+		},
+		delete(sessionId: string) {
+			return db
+				.delete(chatWorkspaces)
+				.where(eq(chatWorkspaces.sessionId, sessionId));
+		},
+	};
+}
+
 export function repositories(db: Database) {
 	return {
 		projects: projectRepository(db),
@@ -654,5 +728,6 @@ export function repositories(db: Database) {
 		integrationBatchReviews: integrationBatchReviewRepository(db),
 		reviewPolicies: reviewPolicyRepository(db),
 		providerChatHistory: providerChatHistoryRepository(db),
+		chatWorkspaces: chatWorkspaceRepository(db),
 	};
 }

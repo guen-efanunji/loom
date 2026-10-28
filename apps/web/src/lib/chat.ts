@@ -6,6 +6,31 @@ export type ChatSession = {
 	parentID?: string;
 	projectId?: string;
 	time: { updated: number };
+	/** Present when the conversation edits its own git worktree instead of the project folder. */
+	workspace?: ChatWorkspace;
+};
+
+/** Isolation state for one chat session, from `/api/chat/sessions/:id/workspace`. */
+export type ChatWorkspace = {
+	/** `isolated` = its own git worktree; `shared` = the project folder itself. */
+	mode: "shared" | "isolated";
+	sessionId?: string;
+	projectId?: string;
+	path?: string;
+	branch?: string;
+	baseCommit?: string;
+	status?: string;
+	state?: "ready" | "error" | "unavailable";
+	head?: string;
+	clean?: boolean;
+	pendingChanges?: boolean;
+	integrated?: boolean;
+	targetBranch?: string;
+	targetHead?: string;
+	error?: string;
+	/** Set when a merge/sync stopped on conflicts. */
+	conflictFiles?: string[];
+	isolationAvailable?: boolean;
 };
 export type ChatChildSession = {
 	id: string;
@@ -327,8 +352,39 @@ export const chat = {
 		request<ChatChildSession[]>(
 			`${root}/sessions/${encodeURIComponent(id)}/children`,
 		),
-	create: (projectId: string, title: string) =>
-		post<ChatSession>("/sessions", { projectId, title }),
+	create: (
+		projectId: string,
+		title: string,
+		mode: "shared" | "isolated" = "shared",
+	) => post<ChatSession>("/sessions", { projectId, title, mode }),
+	/** Where this session's agent actually edits files: shared checkout or own worktree. */
+	workspace: (id: string) =>
+		request<ChatWorkspace>(
+			`${root}/sessions/${encodeURIComponent(id)}/workspace`,
+		),
+	/** Commit the workspace output onto its branch so it can be reviewed and merged. */
+	checkpoint: (id: string, message?: string) =>
+		post<ChatWorkspace & { sha: string }>(
+			`/sessions/${encodeURIComponent(id)}/workspace/checkpoint`,
+			{ message },
+		),
+	/** Integrate the session branch into the project's target branch. */
+	mergeWorkspace: (id: string) =>
+		post<ChatWorkspace & { sha: string }>(
+			`/sessions/${encodeURIComponent(id)}/workspace/merge`,
+			{},
+		),
+	/** Pull the target branch into this workspace to pick up another tab's work. */
+	syncWorkspace: (id: string, sourceRef?: string) =>
+		post<ChatWorkspace & { head: string }>(
+			`/sessions/${encodeURIComponent(id)}/workspace/sync`,
+			{ sourceRef },
+		),
+	discardWorkspace: (id: string) =>
+		post<{ discarded: boolean }>(
+			`/sessions/${encodeURIComponent(id)}/workspace/discard`,
+			{},
+		),
 	state: (id: string) =>
 		request<ChatState>(`${root}/sessions/${encodeURIComponent(id)}`),
 	send: (

@@ -3,6 +3,7 @@ import type {
 	DesignActivity,
 	DesignAttachment,
 	DesignChatResult,
+	DesignFrame,
 	DesignMessage,
 	DesignNode,
 	DesignPatch,
@@ -583,12 +584,21 @@ export async function request<T>(path: string, init: RequestInit = {}) {
 	});
 	if (!response.ok) {
 		let message = `${response.status} ${response.statusText}`;
+		let code: string | undefined;
 		try {
-			const body = (await response.json()) as { error?: { message?: string } };
+			const body = (await response.json()) as {
+				error?: { message?: string; code?: string };
+			};
 			message = body.error?.message ?? message;
+			code = body.error?.code;
 		} catch {}
 		if (response.status === 423) throw new UiLockedError(message);
-		throw new Error(message);
+		// Structured codes let callers react (offer isolation, show conflicts) without
+		// matching on human-readable message text.
+		throw Object.assign(new Error(message), {
+			code,
+			status: response.status,
+		});
 	}
 	if (response.status === 204) return undefined as T;
 	return (await response.json()) as T;
@@ -1314,6 +1324,7 @@ export const daemon = {
 		projectId: string;
 		brief: string;
 		viewport?: DesignViewport;
+		frame?: DesignFrame;
 		model?: AgentModelRef;
 		files?: string[];
 		attachments?: DesignAttachment[];

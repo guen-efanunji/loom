@@ -43,6 +43,10 @@ let {
 	disabled,
 	onsend,
 	onstop,
+	// Hide the Stop button while busy: sends stay disabled but there is no
+	// working abort to wire Stop to (e.g. the design agent, which has no
+	// cancel endpoint). Used by callers where generation cannot be aborted.
+	hideStop = false,
 	draft = $bindable(""),
 	model = $bindable(""),
 	agent = $bindable("build"),
@@ -58,6 +62,7 @@ let {
 	catalog: Catalog;
 	busy: boolean;
 	disabled: boolean;
+	hideStop?: boolean;
 	onsend: (input: {
 		text: string;
 		files: string[];
@@ -1349,7 +1354,7 @@ function keydown(event: KeyboardEvent) {
 							>{/each}</Select.Content
 					></Select.Root
 				>{/if}
-			{#if busy}<Button
+			{#if busy && !hideStop}<Button
 					type="button"
 					size="icon"
 					variant="secondary"
@@ -1365,6 +1370,7 @@ function keydown(event: KeyboardEvent) {
 					title="Send message"
 					disabled={disabled ||
 						sending ||
+						(busy && hideStop) ||
 						(!draft.trim() &&
 							!files.length &&
 							!attachments.length &&

@@ -53,6 +53,7 @@ async function setup(
 	let outputParts: TestRuntimeOutput["parts"];
 	let outputActivities: TestRuntimeOutput["activities"];
 	let failure: string | null = null;
+	let runtimeError = "CLI authentication expired";
 	let count = 0;
 	const prompts: Parameters<AgentRuntime["prompt"]>[0][] = [];
 	const calls: string[] = [];
@@ -75,7 +76,7 @@ async function setup(
 		status: async () => status,
 		readOutput: async () =>
 			({ output, parts: outputParts, activities: outputActivities }) as never,
-		lastError: async () => "CLI authentication expired",
+		lastError: async () => runtimeError,
 		abort: async () => {
 			status = "cancelled";
 		},
@@ -146,9 +147,14 @@ async function setup(
 		setNativeSessions: (sessions: typeof nativeSessions) => {
 			nativeSessions = sessions;
 		},
-		finish: (next = "completed" as typeof status, text = "Hello") => {
+		finish: (
+			next = "completed" as typeof status,
+			text = "Hello",
+			error = "CLI authentication expired",
+		) => {
 			status = next;
 			output = text;
+			runtimeError = error;
 			outputParts = undefined;
 			outputActivities = undefined;
 		},
@@ -533,6 +539,49 @@ describe("provider chat", () => {
 			);
 		});
 	}
+	test("normalizes terminal quota and rate-limit failures for every runtime-backed provider", async () => {
+		for (const provider of ["agy", "claude", "codex", "loom_custom_agent"]) {
+			const fixture = await setup(provider);
+			expect((await fixture.send()).status).toBe(204);
+			fixture.finish(
+				"running",
+				"",
+				"Provider request failed with HTTP 429: quota exceeded; retry after 12 hours",
+			);
+			const state = await fixture.state();
+			expect(state.status.type).toBe("error");
+			expect(state.status.message).toContain("HTTP 429: quota exceeded");
+			expect(state.messages.at(-1)?.info.error?.data?.message).toBe(
+				state.status.message,
+			);
+			const summary = (await (
+				await fixture.app.request("/sessions/ses_test/status")
+			).json()) as { status: { type: string }; busy: boolean };
+			expect(summary.status.type).toBe("error");
+			expect(summary.busy).toBe(false);
+		}
+	});
+
+	test("retains partial output and adds a quota failure for all runtime providers", async () => {
+		for (const provider of ["agy", "claude", "codex", "loom_custom_agent"]) {
+			const fixture = await setup(provider);
+			expect((await fixture.send()).status).toBe(204);
+			fixture.finish(
+				"running",
+				"Partial answer before retry",
+				"Provider request failed with HTTP 429: quota exceeded; retry after 12 hours",
+			);
+			const state = await fixture.state();
+			expect(state.status.type).toBe("error");
+			expect(state.messages.at(-1)?.parts[0]?.text).toBe(
+				"Partial answer before retry",
+			);
+			expect(state.messages.at(-1)?.info.error?.data?.message).toBe(
+				state.status.message,
+			);
+		}
+	});
+
 	test("exposes CLI failures and releases the busy state", async () => {
 		const fixture = await setup();
 		await fixture.send();

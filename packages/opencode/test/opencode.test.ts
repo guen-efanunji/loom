@@ -71,6 +71,31 @@ describe("OpenCode HTTP runtime", () => {
 		expect(requests[1]?.url).toContain("/prompt_async");
 	});
 
+	test("splits a prefixed modelID for the opencode provider", async () => {
+		const requests: Request[] = [];
+		const runtime = new OpenCodeHttpRuntime({
+			fetcher: async (input, init) => {
+				requests.push(new Request(input, init));
+				return new Response(null, { status: 204 });
+			},
+		});
+		await runtime.prompt({
+			sessionId: "session-1",
+			prompt: "Design it",
+			model: {
+				providerID: "opencode",
+				modelID: "opencode/glm-5.3-flash-free",
+			},
+		});
+		const body = (await requests[0]?.json()) as {
+			model?: { providerID: string; modelID: string };
+		};
+		expect(body.model).toEqual({
+			providerID: "opencode",
+			modelID: "glm-5.3-flash-free",
+		});
+	});
+
 	test("rejects malformed session responses", async () => {
 		const runtime = new OpenCodeHttpRuntime({
 			fetcher: async () => new Response(JSON.stringify({}), { status: 200 }),
@@ -186,13 +211,32 @@ describe("documented session lifecycle", () => {
 						info: { role: "assistant", time: {}, error: { name: "APIError" } },
 						parts: [
 							{ type: "text", text: "answer" },
-							{ type: "tool", text: "hidden" },
+							{
+								type: "tool",
+								tool: "run_command",
+								state: { status: "error", input: { cmd: "ls" } },
+								text: "hidden",
+							},
 						],
 					},
 				]);
 			},
 		});
-		expect(await runtime.readOutput("ses_test")).toEqual({ output: "answer" });
+		expect(await runtime.readOutput("ses_test")).toEqual({
+			output: "answer",
+			parts: [
+				{ type: "text", id: "msg-0", text: "answer" },
+				{ type: "activity", id: "msg-1" },
+			],
+			activities: [
+				{
+					id: "msg-1",
+					tool: "run_command",
+					status: "error",
+					input: { cmd: "ls" },
+				},
+			],
+		});
 		expect(await runtime.status("ses_test")).toBe("failed");
 	});
 	test("fails an idle session that never produces an assistant response", async () => {
@@ -227,6 +271,35 @@ describe("documented session lifecycle", () => {
 		expect(statusPollCount.value).toBe(1);
 		await expect(runtime.lastError("ses_gone")).resolves.toContain(
 			"stopped reporting status",
+		);
+	});
+	test("fails long free-tier retries with the gateway's quota details", async () => {
+		const next = Date.now() + 12 * 60 * 60_000 + 25 * 60_000;
+		const runtime = new OpenCodeHttpRuntime({
+			fetcher: async (url) => {
+				if (String(url).endsWith("/session/status"))
+					return Response.json({
+						ses_quota: {
+							type: "retry",
+							attempt: 1,
+							next,
+							message: "Free usage exceeded, subscribe to Go",
+							action: {
+								reason: "free_tier_limit",
+								message: "Subscribe to OpenCode Go",
+							},
+						},
+					});
+				throw new Error("A quota retry should fail without reading messages");
+			},
+		});
+
+		expect(await runtime.status("ses_quota")).toBe("failed");
+		await expect(runtime.lastError("ses_quota")).resolves.toContain(
+			"Subscribe to OpenCode Go",
+		);
+		await expect(runtime.lastError("ses_quota")).resolves.toContain(
+			"Retry scheduled in 12h 25m (attempt 1)",
 		);
 	});
 	test("keeps reporting running while OpenCode retries a failing provider", async () => {

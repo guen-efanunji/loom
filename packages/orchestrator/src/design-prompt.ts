@@ -162,7 +162,7 @@ export function buildDesignPrompt(input: {
 		"",
 		"Return one complete, self-contained HTML document for that canvas. Put all CSS in one <style> block, use no external resources, and do not create or edit any files.",
 		"Use the project references and attached materials Loom supplied with this prompt. Image attachments arrive as visual inputs; inspect their layout, colors, typography, and flow. Do not ask the user to paste files that are already attached or referenced.",
-		"Do not call tools, run shell commands, read or write files, or create or edit project files. Produce the visual design directly from the supplied context and return the HTML document.",
+		"Do not call tools, run shell commands, read or write files, or create or edit project files. When the brief or references mention a URL, its page snapshot is included below under Referenced URLs - design from that snapshot and the description, never by fetching it yourself. Produce the visual design directly from the supplied context and return the HTML document.",
 		DESIGN_CRAFT_PROMPT,
 	];
 	if (input.context?.theme)
@@ -202,7 +202,7 @@ export function buildRefinePrompt(input: {
 		"Current design:",
 		input.previousHtml.trim(),
 		"",
-		"Do not call tools, run shell commands, read or write files, or inspect the project. Revise the supplied HTML directly and return the complete document.",
+		"Do not call tools, run shell commands, read or write files, or inspect the project. When the request mentions a URL, its page snapshot is included below under Referenced URLs - revise from that snapshot and the description, never by fetching it yourself. Revise the supplied HTML directly and return the complete document.",
 		DESIGN_CRAFT_PROMPT,
 	].join("\n");
 }
@@ -291,7 +291,7 @@ export function buildIntentClassifierPrompt(
 }
 
 const DESIGN_INTENT_PATTERN =
-	/\b(buatkan|buat|design|re-?design|build|make|create|generate|ubah|ganti|halaman|screen|landing|dashboard|mockup|wireframe|ui\/ux|uiux|\bui\b|\bux\b|component|komponen|form|login|signup|tampilan|layout)\b/i;
+	/\b(buatkan|buat|design|re-?design|build|make|create|generate|ubah|ganti|halaman|screen|landing|dashboard|mockup|wireframe|ui\/ux|uiux|\bui\b|\bux\b|component|komponen|form|login|signup|tampilan|layout|perbaiki|perbarui|rapikan|edit|refine|adjust|improve|warna|icon|ikon|button|tombol|navbar|footer|header)\b/i;
 
 /** Cheap fallback when the model's intent answer is unusable. */
 export function looksLikeDesignRequest(text: string): boolean {

@@ -1,8 +1,14 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdir, readFile, realpath } from "node:fs/promises";
+import { mkdir, readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { atomicJson, dataDirectory } from "@loom/distribution";
-import type { AgentRuntime, ProviderManager } from "@loom/providers";
+import type {
+	AgentRunStatus,
+	AgentRuntime,
+	ProviderManager,
+} from "@loom/providers";
+import type { MergePreflight, Workspace } from "@loom/worktree";
+import { MergeConflictError, WorktreeError } from "@loom/worktree";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -61,6 +67,17 @@ type Session = {
 	time: { updated: number; archived?: number };
 };
 
+/** Row describing the private worktree a chat session runs in. */
+export type ChatWorkspaceRecord = {
+	sessionId: string;
+	projectId: string;
+	taskId: string;
+	path: string;
+	branch: string;
+	baseCommit: string;
+	status: string;
+};
+
 type ProviderMessage = {
 	info: {
 		id: string;
@@ -107,6 +124,8 @@ type ProviderTurn = {
 	id: string;
 	loomSessionId: string;
 	projectId: string;
+	/** Working directory the run edits; two live turns must not share one. */
+	directory: string;
 	providerId: string;
 	messages: ProviderMessage[];
 	assistant: ProviderMessage;
@@ -119,6 +138,92 @@ type ProviderTurn = {
 	persistedMessages?: string;
 	status: { type: string; message?: string };
 };
+
+type RuntimeSessionStatus = {
+	type: string;
+	message?: string;
+	attempt?: number;
+	next?: number;
+	action?: { reason?: string; title?: string; message?: string };
+};
+
+function normalizeRetryStatus(
+	status: RuntimeSessionStatus,
+): RuntimeSessionStatus {
+	if (status.type !== "retry") return status;
+	const detail = [status.message, status.action?.title, status.action?.message]
+		.filter((value): value is string => Boolean(value?.trim()))
+		.filter((value, index, values) => values.indexOf(value) === index)
+		.join(". ");
+	const delay = typeof status.next === "number" ? status.next - Date.now() : 0;
+	const exhausted =
+		status.action?.reason === "free_tier_limit" ||
+		/quota|usage exceeded|billing|subscribe/i.test(detail ?? "");
+	if (!exhausted) return status;
+	const retryIn =
+		delay > 0 ? ` Retry scheduled in ${formatRetryDelay(delay)}.` : "";
+	return {
+		type: "error",
+		message: `${detail || "Provider retry is not expected soon."}${retryIn}`,
+	};
+}
+
+function formatRetryDelay(delay: number): string {
+	const minutes = Math.ceil(delay / 60_000);
+	if (minutes < 60) return `${minutes}m`;
+	const hours = Math.floor(minutes / 60);
+	const remaining = minutes % 60;
+	return remaining ? `${hours}h ${remaining}m` : `${hours}h`;
+}
+
+function terminalRetryFailure(message: string): string | null {
+	const normalized = message.trim();
+	if (
+		!/(?:\b429\b|rate[ -]?limit|quota|usage exceeded|resource exhausted|insufficient credits|billing|payment required|subscribe)/i.test(
+			normalized,
+		)
+	)
+		return null;
+	return normalized;
+}
+
+function messagesWithStatusError(
+	messages: ProviderMessage[],
+	status: RuntimeSessionStatus,
+): ProviderMessage[] {
+	if (status.type !== "error" || !status.message) return messages;
+	const index = messages.findLastIndex(
+		(message) => message.info.role === "assistant",
+	);
+	const error = {
+		name: "ProviderError",
+		data: { message: status.message },
+	};
+	if (index < 0)
+		return [
+			...messages,
+			{
+				info: {
+					id: `gateway-error-${encodeURIComponent(status.message).slice(0, 80)}`,
+					role: "assistant",
+					time: { created: Date.now(), completed: Date.now() },
+					error,
+				},
+				parts: [],
+			},
+		];
+	return messages.map((message, position) =>
+		position === index
+			? {
+					...message,
+					info: {
+						...message.info,
+						error: message.info.error ?? error,
+					},
+				}
+			: message,
+	);
+}
 
 function variantIds(
 	value: Array<string | { id?: string }> | Record<string, unknown> | undefined,
@@ -273,6 +378,54 @@ export function createChatRoutes(options: {
 	sessionScope?: (
 		sessionId: string,
 	) => Promise<{ directory: string; projectId: string } | undefined>;
+	/**
+	 * Worktree bound to a chat session. `isolated` sessions run their agent in a
+	 * private checkout so several tabs can work on one project concurrently.
+	 */
+	chatWorkspaces?: {
+		getBySessionId(sessionId: string): Promise<ChatWorkspaceRecord | undefined>;
+		listByProject(projectId: string): Promise<ChatWorkspaceRecord[]>;
+		create(
+			input: Omit<ChatWorkspaceRecord, "status">,
+		): Promise<ChatWorkspaceRecord | unknown>;
+		update(
+			sessionId: string,
+			input: Partial<Pick<ChatWorkspaceRecord, "status" | "baseCommit">>,
+		): Promise<unknown>;
+		delete(sessionId: string): Promise<unknown>;
+	};
+	/** Git worktree machinery reused from the Kanban integration pipeline. */
+	worktrees?: {
+		create(input: {
+			projectPath: string;
+			projectId: string;
+			taskId: string;
+		}): Promise<Workspace>;
+		preflightMerge(workspace: Workspace): Promise<MergePreflight>;
+		inspectHead(
+			workspace: Workspace,
+		): Promise<{ head: string; clean: boolean }>;
+		checkpoint(workspace: Workspace, message: string): Promise<string>;
+		merge(
+			workspace: Workspace,
+			expectedHead?: string,
+			options?: { keepWorkspace?: boolean },
+		): Promise<string>;
+		sync(
+			workspace: Workspace,
+			sourceRef?: string,
+		): Promise<{ head: string; conflicts: string[] }>;
+		remove(workspace: Workspace): Promise<void>;
+		discard(
+			workspace: Workspace,
+			options?: { deleteBranch?: boolean },
+		): Promise<void>;
+		isCommitIntegrated?(
+			workspace: Workspace,
+			commitSha: string,
+		): Promise<boolean>;
+		prepareDependencies?(workspace: Workspace): Promise<unknown>;
+	};
 	/** Emits lightweight chat lifecycle events so the UI can refresh on demand. */
 	onEvent?: (event: { sessionId: string; status: string }) => void;
 }) {
@@ -351,6 +504,11 @@ export function createChatRoutes(options: {
 	async function updateProviderTurn(turn: ProviderTurn) {
 		if (turn.finished) return;
 		const status = await turn.runtime.status(turn.id);
+		const reportedError = await turn.runtime.lastError?.(turn.id);
+		const retryFailure = reportedError
+			? terminalRetryFailure(reportedError)
+			: null;
+		const effectiveStatus: AgentRunStatus = retryFailure ? "failed" : status;
 		const output = await turn.runtime.readOutput?.(turn.id);
 		if (output?.tokens) turn.assistant.info.tokens = output.tokens;
 		if (output?.cost !== undefined) turn.assistant.info.cost = output.cost;
@@ -409,7 +567,7 @@ export function createChatRoutes(options: {
 			"failed",
 			"cancelled",
 			"interrupted",
-		].includes(status);
+		].includes(effectiveStatus);
 		turn.status = { type: turn.finished ? "idle" : "busy" };
 		if (turn.finished) {
 			turn.assistant.info.time.completed = Date.now();
@@ -422,15 +580,17 @@ export function createChatRoutes(options: {
 			}
 		}
 		if (
-			status === "failed" ||
-			status === "interrupted" ||
-			(status === "completed" && !output?.output.trim())
+			effectiveStatus === "failed" ||
+			effectiveStatus === "interrupted" ||
+			(effectiveStatus === "completed" && !output?.output.trim())
 		) {
 			const message =
-				(await turn.runtime.lastError?.(turn.id)) ||
-				(status === "completed"
+				retryFailure ??
+				reportedError ??
+				(await turn.runtime.lastError?.(turn.id)) ??
+				(effectiveStatus === "completed"
 					? `${turn.providerId} finished without a text response. Check provider permissions and retry.`
-					: `${turn.providerId} ${status}`);
+					: `${turn.providerId} ${effectiveStatus}`);
 			turn.status = { type: "error", message };
 			turn.assistant.info.error = { name: "ProviderError", data: { message } };
 		}
@@ -687,9 +847,166 @@ export function createChatRoutes(options: {
 			);
 		return previous?.result;
 	}
+	/**
+	 * Binding for a session that runs in a private worktree. A row whose folder
+	 * vanished is pruned so the session falls back to normal resolution instead
+	 * of pointing every request at a missing directory.
+	 */
+	async function boundWorkspace(sessionId: string) {
+		const record = await options.chatWorkspaces?.getBySessionId(sessionId);
+		if (!record) return undefined;
+		try {
+			if ((await stat(record.path)).isDirectory()) return record;
+		} catch {
+			await options.chatWorkspaces?.delete(record.sessionId).catch(() => {});
+		}
+		return undefined;
+	}
+	function toWorktreeWorkspace(
+		record: ChatWorkspaceRecord,
+		projectPath: string,
+	): Workspace {
+		return {
+			id: record.taskId,
+			taskId: record.taskId,
+			projectId: record.projectId,
+			projectPath,
+			path: record.path,
+			branch: record.branch,
+			baseCommit: record.baseCommit,
+			createdAt: new Date().toISOString(),
+			owner: "loom",
+		};
+	}
+	/**
+	 * Two agents must not edit one working tree at the same time, so a run on a
+	 * shared checkout waits for any other live run in the same directory. An
+	 * isolated session owns its directory and is never gated by this.
+	 */
+	function liveTurnInDirectory(directory: string, exceptSessionId: string) {
+		const target = resolve(directory);
+		for (const turn of providerSessions.values()) {
+			if (turn.finished) continue;
+			if (turn.loomSessionId === exceptSessionId) continue;
+			if (resolve(turn.directory) === target) return turn;
+		}
+		return undefined;
+	}
+	async function busySessionInDirectory(directory: string, exceptId: string) {
+		try {
+			const [sessions, statuses] = await Promise.all([
+				request<Session[]>("/session?limit=200", directory),
+				request<Record<string, { type?: string }>>(
+					"/session/status",
+					directory,
+				),
+			]);
+			return sessions.find(
+				(item) =>
+					item.id !== exceptId &&
+					resolve(item.directory) === resolve(directory) &&
+					statuses[item.id]?.type !== undefined &&
+					statuses[item.id]?.type !== "idle",
+			);
+		} catch {
+			return undefined;
+		}
+	}
+	/** Guards a shared checkout before another run starts editing it. */
+	async function sharedCheckoutBusy(
+		directory: string,
+		exceptSessionId: string,
+	): Promise<{ sessionId: string; title?: string } | undefined> {
+		const tracked = liveTurnInDirectory(directory, exceptSessionId);
+		if (tracked) return { sessionId: tracked.loomSessionId };
+		const native = await busySessionInDirectory(directory, exceptSessionId);
+		return native ? { sessionId: native.id, title: native.title } : undefined;
+	}
+	/** Shape exposed to the UI; the internal worktree key stays server-side. */
+	function publicWorkspace(record: ChatWorkspaceRecord) {
+		return {
+			// A binding row always means the session owns a worktree.
+			mode: "isolated" as const,
+			sessionId: record.sessionId,
+			projectId: record.projectId,
+			path: record.path,
+			branch: record.branch,
+			baseCommit: record.baseCommit,
+			status: record.status,
+		};
+	}
+	async function workspaceView(
+		record: ChatWorkspaceRecord,
+		projectPath: string,
+	) {
+		const worktrees = options.worktrees;
+		if (!worktrees)
+			return { ...publicWorkspace(record), state: "unavailable" as const };
+		const workspace = toWorktreeWorkspace(record, projectPath);
+		try {
+			const [head, preflight] = await Promise.all([
+				worktrees.inspectHead(workspace),
+				worktrees.preflightMerge(workspace).catch(() => undefined),
+			]);
+			const integrated =
+				worktrees.isCommitIntegrated && preflight
+					? await worktrees
+							.isCommitIntegrated(workspace, head.head)
+							.catch(() => false)
+					: false;
+			return {
+				...publicWorkspace(record),
+				state: "ready" as const,
+				head: head.head,
+				clean: head.clean,
+				targetBranch: preflight?.defaultBranch,
+				targetHead: preflight?.head,
+				integrated,
+				// Output still needs a checkpoint before it can be reviewed or merged.
+				pendingChanges: !head.clean,
+			};
+		} catch (error) {
+			return {
+				...publicWorkspace(record),
+				state: "error" as const,
+				error: error instanceof Error ? error.message : String(error),
+			};
+		}
+	}
+	function workspaceConflictResponse(c: Context, error: unknown) {
+		if (error instanceof MergeConflictError)
+			return c.json(
+				{
+					error: {
+						code: "MERGE_CONFLICT",
+						message: error.message,
+						files: error.files,
+					},
+				},
+				409,
+			);
+		if (error instanceof WorktreeError) {
+			const status =
+				error.code === "GIT_UNAVAILABLE"
+					? 503
+					: error.code === "NOT_FOUND"
+						? 404
+						: error.code === "SAFETY_ERROR"
+							? 409
+							: 400;
+			return c.json(
+				{ error: { code: error.code, message: error.message } },
+				status,
+			);
+		}
+		throw error;
+	}
 	async function session(sessionId: string) {
 		id.parse(sessionId);
-		const scope = await options.sessionScope?.(sessionId);
+		const workspace = await boundWorkspace(sessionId);
+		const scope = workspace
+			? { directory: workspace.path, projectId: workspace.projectId }
+			: await options.sessionScope?.(sessionId);
 		const projects = await options.projects.list();
 		const candidates = scope
 			? [{ directory: scope.directory, projectId: scope.projectId }]
@@ -725,6 +1042,9 @@ export function createChatRoutes(options: {
 			if (!isScopedWorkspace && !project) continue;
 			return {
 				...found,
+				// An isolated session runs in its own worktree; the binding is carried
+				// so routes and the write gate can skip shared-checkout protection.
+				workspace,
 				projectId: scope?.projectId ?? project?.id ?? candidate.projectId,
 			};
 		}
@@ -940,15 +1260,39 @@ export function createChatRoutes(options: {
 		}
 	});
 	app.get("/sessions", async (c) => {
-		const root = await directory(c.req.query("projectId"));
-		const sessions = await request<Session[]>("/session?limit=200", root);
+		const projectId = c.req.query("projectId") ?? "";
+		const root = await directory(projectId);
+		// Isolated sessions live in their own worktree, so their conversation list
+		// lives under a different directory than the project checkout.
+		const bindings = await (options.chatWorkspaces?.listByProject(projectId) ??
+			Promise.resolve([] as ChatWorkspaceRecord[]));
+		const bySession = new Map(bindings.map((item) => [item.sessionId, item]));
+		const directories = [root, ...bindings.map((item) => item.path)];
+		const lists = await Promise.all(
+			directories.map(async (directory) => {
+				const sessions = await request<Session[]>(
+					"/session?limit=200",
+					directory,
+				).catch(() => [] as Session[]);
+				return sessions.filter(
+					(s) =>
+						resolve(s.directory) === resolve(directory) &&
+						!s.parentID &&
+						!s.time.archived,
+				);
+			}),
+		);
+		const merged = new Map<string, Session>();
+		for (const session of lists.flat()) merged.set(session.id, session);
 		return c.json(
-			sessions.filter(
-				(s) =>
-					resolve(s.directory) === resolve(root) &&
-					!s.parentID &&
-					!s.time.archived,
-			),
+			[...merged.values()]
+				.sort((a, b) => b.time.updated - a.time.updated)
+				.map((session) => ({
+					...session,
+					workspace: bySession.get(session.id)
+						? publicWorkspace(bySession.get(session.id)!)
+						: undefined,
+				})),
 		);
 	});
 	app.get("/sessions/:id/children", async (c) => {
@@ -979,14 +1323,170 @@ export function createChatRoutes(options: {
 	});
 	app.post("/sessions", async (c) => {
 		const input = z
-			.object({ projectId: z.string(), title: z.string().min(1).max(200) })
+			.object({
+				projectId: z.string(),
+				title: z.string().min(1).max(200),
+				/** `isolated` gives this conversation a private git worktree. */
+				mode: z.enum(["shared", "isolated"]).default("shared"),
+			})
 			.parse(await c.req.json());
-		return c.json(
-			await request<Session>("/session", await directory(input.projectId), {
+		const root = await directory(input.projectId);
+		if (input.mode !== "isolated")
+			return c.json(
+				await request<Session>("/session", root, { title: input.title }),
+				201,
+			);
+		if (!options.worktrees || !options.chatWorkspaces)
+			throw new HTTPException(409, {
+				message:
+					"Isolated chat workspaces are unavailable on this daemon (Git worktree support is not configured)",
+			});
+		// Provision the worktree first: the provider session is bound to a directory
+		// at creation, so it must be created inside the workspace, never moved in.
+		const taskId = `chat-${randomUUID()}`;
+		let workspace: Workspace;
+		try {
+			workspace = await options.worktrees.create({
+				projectPath: root,
+				projectId: input.projectId,
+				taskId,
+			});
+		} catch (error) {
+			return workspaceConflictResponse(c, error);
+		}
+		try {
+			const created = await request<Session>("/session", workspace.path, {
 				title: input.title,
-			}),
-			201,
-		);
+			});
+			const record = {
+				sessionId: created.id,
+				projectId: input.projectId,
+				taskId: workspace.taskId,
+				path: workspace.path,
+				branch: workspace.branch,
+				baseCommit: workspace.baseCommit,
+				status: "active",
+			};
+			await options.chatWorkspaces.create(record);
+			// Best effort: an agent that cannot build or run tests in its own
+			// checkout is barely useful, but a failed link must not block the chat.
+			await options.worktrees.prepareDependencies?.(workspace).catch(() => {});
+			return c.json({ ...created, workspace: publicWorkspace(record) }, 201);
+		} catch (error) {
+			// Never leave an orphaned worktree behind when the session is not created.
+			await options.worktrees.discard(workspace).catch(() => {});
+			throw error;
+		}
+	});
+	app.get("/sessions/:id/workspace", async (c) => {
+		const current = await session(c.req.param("id"));
+		if (!current.workspace)
+			return c.json({
+				mode: "shared",
+				isolationAvailable: !!options.worktrees,
+			});
+		const projectPath = await directory(current.projectId);
+		return c.json(await workspaceView(current.workspace, projectPath));
+	});
+	app.post("/sessions/:id/workspace/checkpoint", async (c) => {
+		const current = await session(c.req.param("id"));
+		if (!current.workspace || !options.worktrees)
+			throw new HTTPException(409, {
+				message: "This chat is not running in an isolated workspace",
+			});
+		const input = z
+			.object({ message: z.string().max(500).optional() })
+			.parse(await c.req.json().catch(() => ({})));
+		const projectPath = await directory(current.projectId);
+		try {
+			const sha = await options.worktrees.checkpoint(
+				toWorktreeWorkspace(current.workspace, projectPath),
+				input.message?.trim() || `Loom chat \u00b7 ${current.title}`,
+			);
+			return c.json({
+				sha,
+				...(await workspaceView(current.workspace, projectPath)),
+			});
+		} catch (error) {
+			return workspaceConflictResponse(c, error);
+		}
+	});
+	app.post("/sessions/:id/workspace/merge", async (c) => {
+		const current = await session(c.req.param("id"));
+		if (!current.workspace || !options.worktrees)
+			throw new HTTPException(409, {
+				message: "This chat is not running in an isolated workspace",
+			});
+		const projectPath = await directory(current.projectId);
+		const workspace = toWorktreeWorkspace(current.workspace, projectPath);
+		try {
+			const head = await options.worktrees.inspectHead(workspace);
+			if (!head.clean)
+				throw new WorktreeError(
+					"SAFETY_ERROR",
+					"Checkpoint the workspace changes before merging",
+				);
+			// The main checkout must be free, or the merge would land mid-run.
+			const busy = await sharedCheckoutBusy(projectPath, current.id);
+			if (busy)
+				throw new HTTPException(409, {
+					message: `Another chat is editing the project folder (${busy.title ?? busy.sessionId}). Stop it before merging.`,
+				});
+			// keepWorkspace: the session keeps talking to this worktree after intake.
+			const sha = await options.worktrees.merge(workspace, undefined, {
+				keepWorkspace: true,
+			});
+			await options.chatWorkspaces?.update(current.id, { status: "active" });
+			return c.json({
+				sha,
+				...(await workspaceView(current.workspace, projectPath)),
+			});
+		} catch (error) {
+			return workspaceConflictResponse(c, error);
+		}
+	});
+	app.post("/sessions/:id/workspace/sync", async (c) => {
+		const current = await session(c.req.param("id"));
+		if (!current.workspace || !options.worktrees)
+			throw new HTTPException(409, {
+				message: "This chat is not running in an isolated workspace",
+			});
+		const input = z
+			.object({ sourceRef: z.string().max(200).optional() })
+			.parse(await c.req.json().catch(() => ({})));
+		const projectPath = await directory(current.projectId);
+		try {
+			const head = await options.worktrees.sync(
+				toWorktreeWorkspace(current.workspace, projectPath),
+				input.sourceRef,
+			);
+			return c.json({
+				...head,
+				...(await workspaceView(current.workspace, projectPath)),
+			});
+		} catch (error) {
+			return workspaceConflictResponse(c, error);
+		}
+	});
+	app.post("/sessions/:id/workspace/discard", async (c) => {
+		const current = await session(c.req.param("id"));
+		if (!current.workspace || !options.worktrees)
+			throw new HTTPException(409, {
+				message: "This chat is not running in an isolated workspace",
+			});
+		const projectPath = await directory(current.projectId);
+		try {
+			// The tab is being thrown away, so its branch goes with it; keeping it
+			// would leave commits no session points at any more.
+			await options.worktrees.discard(
+				toWorktreeWorkspace(current.workspace, projectPath),
+				{ deleteBranch: true },
+			);
+			await options.chatWorkspaces?.delete(current.id);
+			return c.json({ discarded: true });
+		} catch (error) {
+			return workspaceConflictResponse(c, error);
+		}
 	});
 	app.get("/catalog", async (c) => {
 		const projectId = c.req.query("projectId") ?? "";
@@ -1073,7 +1573,7 @@ export function createChatRoutes(options: {
 				`/session/${current.id}/message`,
 				current.directory,
 			),
-			request<Record<string, { type: string; message?: string }>>(
+			request<Record<string, RuntimeSessionStatus>>(
 				"/session/status",
 				current.directory,
 			),
@@ -1084,11 +1584,16 @@ export function createChatRoutes(options: {
 			providerSession?.messages ??
 			(await options.providerHistory?.get<ProviderMessage[]>(current.id)) ??
 			[];
-		// P2-11: after a daemon restart an in-flight provider turn is gone; drop a
-		// stale busy status when the newest turn is already completed and nothing
-		// is waiting, so the UI never sticks on "Loom is working".
-		const rawStatus = statuses[current.id] ?? { type: "idle" };
-		const visible = visibleMessages(mergeMessages(providerMessages, messages));
+		// Providers may return a terminal quota/rate-limit error while their
+		// transport still reports a retrying or running state. Normalize that
+		// failure before projecting state into chat.
+		const normalizedStatus = normalizeRetryStatus(
+			statuses[current.id] ?? { type: "idle" },
+		);
+		const visible = messagesWithStatusError(
+			visibleMessages(mergeMessages(providerMessages, messages)),
+			normalizedStatus,
+		);
 		const newestCompleted = visible.findLast(
 			(message) => message.info.role === "assistant",
 		)?.info.time?.completed;
@@ -1098,18 +1603,18 @@ export function createChatRoutes(options: {
 		const pendingQuestions = questions.filter(
 			(q) => q.sessionID === current.id,
 		).length;
-		const status =
-			rawStatus.type === "busy" &&
+		const sessionStatus =
+			normalizedStatus.type === "busy" &&
 			!providerSession &&
 			newestCompleted &&
 			!pendingPermissions &&
 			!pendingQuestions
 				? { type: "idle" }
-				: rawStatus;
+				: normalizedStatus;
 		return c.json({
 			session: current,
 			messages: visible,
-			status,
+			status: sessionStatus,
 			permissions: permissions.filter((p) => p.sessionID === current.id),
 			questions: questions.filter((q) => q.sessionID === current.id),
 		});
@@ -1289,6 +1794,16 @@ export function createChatRoutes(options: {
 			if (!existing.finished)
 				throw new HTTPException(409, { message: "Session is already running" });
 		}
+		// Two agents must not edit the same checkout at once. A shared session is
+		// gated against any other live run in its directory; an isolated session
+		// owns a private worktree and starts regardless.
+		if (!current.workspace) {
+			const busy = await sharedCheckoutBusy(current.directory, current.id);
+			if (busy)
+				throw new HTTPException(409, {
+					message: `Another chat is already editing this project (${busy.title ?? busy.sessionId}). Wait for it to finish, or start a new chat with isolation enabled to work in parallel.`,
+				});
+		}
 		if (
 			providerId &&
 			providerId !== "opencode" &&
@@ -1440,6 +1955,7 @@ export function createChatRoutes(options: {
 				id: created.id,
 				loomSessionId: current.id,
 				projectId: current.projectId ?? "",
+				directory: resolve(current.directory),
 				providerId,
 				messages: [...history, user, assistant],
 				assistant,
@@ -1670,12 +2186,67 @@ export function createChatRoutes(options: {
 	app.delete("/sessions/:id", async (c) => {
 		const current = await session(c.req.param("id"));
 		const providerSession = providerSessions.get(current.id);
+		if (providerSession && !providerSession.finished)
+			throw new HTTPException(409, {
+				message: "Stop the running response before deleting this chat",
+			});
+		// An isolated conversation owns a worktree. Check its state before anything
+		// is torn down, so uncheckpointed agent output is never destroyed silently.
+		const workspace =
+			current.workspace && options.worktrees
+				? toWorktreeWorkspace(
+						current.workspace,
+						await directory(current.projectId),
+					)
+				: undefined;
+		if (workspace) {
+			try {
+				const head = await options.worktrees!.inspectHead(workspace);
+				if (!head.clean)
+					return c.json(
+						{
+							error: {
+								code: "WORKSPACE_DIRTY",
+								message:
+									"This isolated chat has uncheckpointed changes. Checkpoint and merge them, or discard the workspace, before deleting the chat.",
+							},
+						},
+						409,
+					);
+				// Committing is not the same as integrating: deleting here would strand
+				// the branch, so unmerged output must go through merge or discard first.
+				const integrated = options.worktrees!.isCommitIntegrated
+					? await options.worktrees!.isCommitIntegrated(workspace, head.head)
+					: true;
+				if (!integrated)
+					return c.json(
+						{
+							error: {
+								code: "WORKSPACE_UNMERGED",
+								message:
+									"This isolated chat has output that is not in the project branch yet. Merge it into the project, or discard the workspace, before deleting the chat.",
+							},
+						},
+						409,
+					);
+			} catch (error) {
+				return workspaceConflictResponse(c, error);
+			}
+		}
 		options.permissions?.denySession(current.id);
 		if (providerSession?.permissionToken)
 			options.permissions?.unregisterRun(providerSession.permissionToken);
 		await request(`/session/${current.id}`, current.directory, {}, "DELETE");
 		providerSessions.delete(current.id);
 		await options.providerHistory?.delete(current.id);
+		if (workspace) {
+			try {
+				await options.worktrees!.remove(workspace);
+			} catch (error) {
+				return workspaceConflictResponse(c, error);
+			}
+			await options.chatWorkspaces?.delete(current.id);
+		}
 		return c.body(null, 204);
 	});
 	app.post("/sessions/:id/rename", async (c) => {
@@ -1749,7 +2320,7 @@ export function createChatRoutes(options: {
 				`/session/${current.id}/message`,
 				current.directory,
 			),
-			request<Record<string, { type: string; message?: string }>>(
+			request<Record<string, RuntimeSessionStatus>>(
 				"/session/status",
 				current.directory,
 			),
@@ -1760,10 +2331,17 @@ export function createChatRoutes(options: {
 			providerSession?.messages ??
 			(await options.providerHistory?.get<ProviderMessage[]>(current.id)) ??
 			[];
+		const normalizedStatus = normalizeRetryStatus(
+			statuses[current.id] ?? { type: "idle" },
+		);
+		const visible = messagesWithStatusError(
+			visibleMessages(mergeMessages(providerMessages, messages)),
+			normalizedStatus,
+		);
 		return c.json(
 			summarize(
-				mergeMessages(providerMessages, messages),
-				statuses[current.id] ?? { type: "idle" },
+				visible,
+				normalizedStatus,
 				permissions.filter((p) => p.sessionID === current.id).length,
 				questions.filter((q) => q.sessionID === current.id).length,
 			),

@@ -2,11 +2,14 @@
 import { DESIGN_FRAME_PRESETS, type DesignFrame } from "@loom/protocol";
 import {
 	ChevronRight,
+	Copy,
 	Frame,
 	Layers,
 	LoaderCircle,
 	Monitor,
 	Moon,
+	MousePointerClick,
+	Pencil,
 	RefreshCw,
 	Scan,
 	Smartphone,
@@ -14,6 +17,7 @@ import {
 	Sun,
 	Trash2,
 	Upload,
+	X,
 	ZoomIn,
 	ZoomOut,
 } from "@lucide/svelte";
@@ -55,6 +59,17 @@ let loading = $state(true);
 let error = $state("");
 let selectedId = $state("");
 let selectedByUser = $state(false);
+/** Multi-selection (shift-click / marquee); drives the bulk-refine toolbar. */
+let selectedIds = $state<string[]>([]);
+/** Id of the node whose iframe element picker is armed ("" = off). */
+let elementPick = $state("");
+let renaming = $state(false);
+let renameDraft = $state("");
+let deleteTarget = $state<DesignNode | null>(null);
+let deleteOpen = $state(false);
+let clearOpen = $state(false);
+let publishTarget = $state<DesignNode | null>(null);
+let publishOpen = $state(false);
 let refiningNodeId = $state("");
 let draft = $state("");
 let model = $state("");
@@ -62,8 +77,6 @@ let zoom = $state(1);
 let panX = $state(48);
 let panY = $state(48);
 let theme = $state<"light" | "dark">("light");
-let deleteTarget = $state<DesignNode | null>(null);
-let deleteOpen = $state(false);
 let publishing = $state(false);
 let sending = $state(false);
 let thinking = $state(false);
@@ -74,8 +87,33 @@ let decidingPermission = $state("");
 let loadRequest = 0;
 let surface = $state<HTMLDivElement>();
 let scroller = $state<HTMLDivElement>();
+/**
+ * Sticky scroll: only yank the chat to the bottom when the reader is already
+ * near it. Reading history disables it; sending a message re-enables it.
+ */
+let follow = $state(true);
+/** Design context rail visibility; collapsible, overlays the canvas below lg. */
+let railOpen = $state(true);
+/** Design chat visibility; collapsible, becomes a drawer below xl. */
+let chatOpen = $state(true);
 let disposed = false;
 let timer: ReturnType<typeof setTimeout>;
+/** Marquee drag box (surface coordinates) while rubber-band selecting. */
+let marquee: { x: number; y: number } | null = null;
+let marqueeBox = $state<{
+	left: number;
+	top: number;
+	width: number;
+	height: number;
+} | null>(null);
+/** Iframe window id: how the pick protocol addresses each node's document. */
+function safeFrameId(id: string) {
+	return id.replace(/[^\w-]/g, "");
+}
+/** Pick protocol reports sanitized ids back; resolve them to real nodes. */
+function nodeBySafe(safe: unknown) {
+	return nodes.find((node) => safeFrameId(node.id) === safe) ?? null;
+}
 /** Design space a node was drawn for; legacy rows fall back to web/mobile. */
 function frameOf(node: DesignNode) {
 	return {
@@ -290,23 +328,119 @@ function previewSrcdoc(html: string) {
  * Reports the document's real height back to the canvas so a long page grows
  * its card instead of being cut off at the frame height.
  */
+/**
+ * Element picker injected into every node document (like the height reporter).
+ * The parent arms/disarms it via a `design-pick` postMessage; while armed it
+ * outlines the hovered element and sends its descriptor back on click — that
+ * descriptor pre-fills the composer as an inline refine brief.
+ */
+function pickerScript(safe: string) {
+	return `<script>(function(){var ID="${safe}";var act=false,cur=null,box=null,tip=null;
+function ensure(){if(box)return;box=document.createElement("div");box.style.cssText="position:fixed;left:0;top:0;pointer-events:none;z-index:2147483647;display:none;border:2px solid #06b6d4;background:rgba(6,182,212,.10)";document.documentElement.appendChild(box);}
+function tipOn(){if(tip)return;tip=document.createElement("div");tip.style.cssText="position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:2147483647;background:#06b6d4;color:#04212e;font:600 12px/1.2 system-ui,sans-serif;padding:6px 14px;border-radius:999px;box-shadow:0 2px 12px rgba(0,0,0,.35)";tip.textContent="Click an element to refine it — Esc to cancel";document.documentElement.appendChild(tip);}
+function stop(){act=false;document.removeEventListener("mousemove",mv,true);document.removeEventListener("click",ck,true);document.removeEventListener("keydown",esc,true);window.removeEventListener("scroll",sc,true);if(box)box.style.display="none";if(tip){tip.remove();tip=null;}cur=null;}
+function mark(el){cur=el;var r=el.getBoundingClientRect();if(!r.height&&!r.width)return;ensure();box.style.display="block";box.style.left=r.left+"px";box.style.top=r.top+"px";box.style.width=r.width+"px";box.style.height=r.height+"px";}
+function mv(ev){var el=ev.target;if(el&&el!==document.documentElement)mark(el);}
+function sc(){if(cur)mark(cur);}
+function ck(ev){if(!act)return;ev.preventDefault();ev.stopPropagation();stop();var el=ev.target;var data=el&&el!==document.documentElement?{tag:String(el.tagName||"div").toLowerCase(),cls:typeof el.className==="string"?el.className:"",text:(el.textContent||"").replace(/\\s+/g," ").trim().slice(0,160),html:(el.outerHTML||"").slice(0,1500)}:null;parent.postMessage({loom:"design-element",id:ID,element:data},"*");}
+function esc(ev){if(ev.key==="Escape"){stop();parent.postMessage({loom:"design-element",id:ID,element:null},"*");}}
+window.addEventListener("message",function(ev){var d=ev.data&&typeof ev.data==="object"?ev.data:null;if(!d||d.loom!=="design-pick")return;if(d.enabled){act=true;tipOn();ensure();cur=null;document.addEventListener("mousemove",mv,true);document.addEventListener("click",ck,true);document.addEventListener("keydown",esc,true);window.addEventListener("scroll",sc,true);}else stop();});
+window.parent.postMessage({loom:"design-picker-ready",id:ID},"*");})();<\/script>`;
+}
+
 function measureSrcdoc(id: string, html: string) {
 	const safe = id.replace(/[^\w-]/g, "");
 	const script =
 		`<script>(function(){var last=0;function send(){var h=Math.ceil(document.documentElement.scrollHeight)||0;if(h===last)return;last=h;parent.postMessage({loom:"design-height",id:"${safe}",height:h},"*")}` +
 		`addEventListener("load",send);if(window.ResizeObserver){try{new ResizeObserver(send).observe(document.documentElement)}catch(e){}}` +
 		"setTimeout(send,200);setTimeout(send,1500)})()<\/script>";
-	return injectHead(previewSrcdoc(html), script);
+	return injectHead(previewSrcdoc(html), script + pickerScript(safe));
 }
 
 function onDesignMessage(event: MessageEvent) {
 	const data = event.data as
-		| { loom?: string; id?: string; height?: number }
+		| {
+				loom?: string;
+				id?: string;
+				height?: number;
+				element?: {
+					tag?: string;
+					cls?: string;
+					text?: string;
+					html?: string;
+				} | null;
+		  }
 		| undefined;
-	if (data?.loom !== "design-height" || typeof data.height !== "number") return;
-	const node = nodes.find((item) => item.id === data.id);
+	if (typeof data?.id !== "string") return;
+	const node = nodeBySafe(data.id);
+	if (data.loom === "design-height") {
+		if (typeof data.height !== "number") return;
+		if (node?.status !== "ready") return;
+		fitNodeToContent(node, data.height);
+		return;
+	}
 	if (node?.status !== "ready") return;
-	fitNodeToContent(node, data.height);
+	// A (re)loaded node document announces its picker; re-arm if the user was
+	// already in pick mode (e.g. the document reloaded on a theme flip).
+	if (data.loom === "design-picker-ready") {
+		if (elementPick === node.id) pushPick(node.id, true);
+		return;
+	}
+	if (data.loom === "design-element") {
+		const element = data.element ?? null;
+		elementPick = "";
+		if (!element?.tag) return;
+		promptElementRefine(node, element);
+	}
+}
+
+/** Sends the pick mode arm/disarm into a node's iframe document. */
+function pushPick(id: string, enabled: boolean) {
+	const frame = document.getElementById(`design-iframe-${safeFrameId(id)}`);
+	if (frame instanceof HTMLIFrameElement)
+		frame.contentWindow?.postMessage({ loom: "design-pick", enabled }, "*");
+}
+
+let pickPushed = "";
+$effect(() => {
+	const active = elementPick;
+	if (pickPushed && pickPushed !== active) pushPick(pickPushed, false);
+	if (active) pushPick(active, true);
+	pickPushed = active;
+});
+
+function toggleElementPick() {
+	const node = selected;
+	if (node?.status !== "ready" || !node.html) return;
+	elementPick = elementPick === node.id ? "" : node.id;
+}
+
+/**
+ * An element picked inside the iframe seeds the composer with a targeted
+ * refine brief. The user finishes the "Change: ..." sentence and sends — the
+ * turn goes to the design agent as an inline refine of that node.
+ */
+function promptElementRefine(
+	node: DesignNode,
+	element: { tag?: string; cls?: string; text?: string; html?: string },
+) {
+	selectedId = node.id;
+	selectedByUser = true;
+	selectedIds = [];
+	refiningNodeId = node.id;
+	follow = true;
+	const classes = (element.cls ?? "")
+		.trim()
+		.split(/\s+/)
+		.filter(Boolean)
+		.slice(0, 3)
+		.join(".");
+	const label = classes ? `${element.tag}.${classes}` : (element.tag ?? "part");
+	const snippet = (element.html ?? "").trim().slice(0, 1200);
+	draft = `Refine only the “${label}” part of this design — keep everything else exactly as it is. If the part carries text, reuse its wording as the baseline:\n\n${(element.text ?? "").slice(0, 160)}\n\nMarkup:\n${snippet}\n\nChanges: `;
+	void tick().then(() => {
+		document.getElementById("design-composer-input")?.focus();
+	});
 }
 
 async function load() {
@@ -330,6 +464,9 @@ async function load() {
 			selectedByUser = false;
 			refiningNodeId = "";
 		}
+		selectedIds = selectedIds.filter((id) =>
+			nodes.some((node) => node.id === id),
+		);
 		error = "";
 	} catch (reason) {
 		if (!disposed && request === loadRequest && currentProject === projectId)
@@ -357,6 +494,10 @@ onMount(() => {
 		model = localStorage.getItem("loom.design.model") ?? "";
 	window.addEventListener("message", onDesignMessage);
 	schedule();
+	if (typeof window !== "undefined") {
+		if (window.matchMedia("(max-width: 1279px)").matches) chatOpen = false;
+		if (window.matchMedia("(max-width: 1023px)").matches) railOpen = false;
+	}
 });
 
 onDestroy(() => {
@@ -372,16 +513,33 @@ $effect(() => {
 
 $effect(() => {
 	void projectId;
+	handSized.clear();
 	void load();
+});
+
+// Non-passive wheel listener: see `wheel` above.
+$effect(() => {
+	const el = surface;
+	if (!el) return;
+	el.addEventListener("wheel", wheel, { passive: false });
+	return () => el.removeEventListener("wheel", wheel);
 });
 
 $effect(() => {
 	void threadMessages.length;
+	if (!follow) return;
 	void (async () => {
 		await tick();
 		scroller?.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
 	})();
 });
+
+/** Keeps following the stream until the reader scrolls away from the bottom. */
+function onChatScroll() {
+	const el = scroller;
+	if (!el) return;
+	follow = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+}
 
 // Poll each generating node's activity so the chat can say what it is reading.
 $effect(() => {
@@ -468,6 +626,7 @@ async function handleSend(input: DesignSend): Promise<boolean> {
 	pending = [...pending, optimistic];
 	sending = true;
 	thinking = true;
+	follow = true;
 	pendingQuestion = null;
 	try {
 		const result = await daemon.designChat(projectId, {
@@ -538,6 +697,7 @@ async function remove(node: DesignNode | null = deleteTarget) {
 	try {
 		await daemon.deleteDesign(node.id);
 		if (selectedId === node.id) selectedId = "";
+		selectedIds = selectedIds.filter((id) => id !== node.id);
 		await load();
 		toast.success("Design removed");
 	} catch (reason) {
@@ -545,11 +705,18 @@ async function remove(node: DesignNode | null = deleteTarget) {
 	}
 }
 
+function askPublish(node: DesignNode) {
+	publishTarget = node;
+	publishOpen = true;
+}
+
 async function publish(node: DesignNode | null) {
 	if (node?.status !== "ready") {
 		toast.error("Generate a design before publishing it.");
 		return;
 	}
+	publishOpen = false;
+	publishTarget = null;
 	publishing = true;
 	try {
 		const result = await daemon.publishDesign(node.id);
@@ -570,6 +737,86 @@ async function clearAll() {
 	} catch (reason) {
 		toast.error(reason instanceof Error ? reason.message : "Clear failed");
 	}
+}
+
+function startRename() {
+	const node = selected;
+	if (!node) return;
+	renameDraft = node.title;
+	renaming = true;
+}
+
+async function commitRename() {
+	if (!renaming) return;
+	renaming = false;
+	const node = selected;
+	if (!node) return;
+	const title = renameDraft.trim();
+	if (!title || title === node.title) return;
+	// Optimistic rename; a failed patch is reverted by the next refresh.
+	nodes = nodes.map((item) =>
+		item.id === node.id ? { ...item, title } : item,
+	);
+	try {
+		await daemon.patchDesign(node.id, { title });
+		toast.success("Design renamed");
+	} catch (reason) {
+		toast.error(reason instanceof Error ? reason.message : "Rename failed");
+		await load();
+	}
+}
+
+/** Re-request the source node's design as a fresh generation. */
+async function duplicate(node: DesignNode) {
+	if (!node.html) {
+		toast.error("Only ready designs can be duplicated.");
+		return;
+	}
+	try {
+		const result = await daemon.createDesign({
+			projectId,
+			brief: `Duplicate the existing screen “${node.title}”. Recreate it faithfully from the reference HTML below — same sections, structure, copy and visual styling:\n\n${node.html.slice(0, 6000)}`,
+			viewport: node.viewport,
+			frame: {
+				kind: node.frameKind,
+				width: node.frameWidth || frameOf(node).width,
+				height: node.frameHeight || frameOf(node).height,
+			},
+			...(modelRef() ? { model: modelRef() } : {}),
+		});
+		selectedId = result.nodeId;
+		selectedByUser = true;
+		await load();
+		toast.success("Duplicated — generating a copy…");
+	} catch (reason) {
+		toast.error(reason instanceof Error ? reason.message : "Duplicate failed");
+	}
+}
+
+/**
+ * Bulk refine: one chat turn listing every selected node. The design agent
+ * supports refining several canvases from a single request, so the ids are
+ * embedded in the message and no single nodeId is targeted.
+ */
+function startBulkRefine() {
+	const chosen = nodes.filter(
+		(node) => selectedIds.includes(node.id) && node.status === "ready",
+	);
+	if (!chosen.length) {
+		toast.error("Select ready designs to refine them together.");
+		return;
+	}
+	selectedIds = [];
+	refiningNodeId = "";
+	selectedByUser = true;
+	follow = true;
+	draft =
+		`Refine these ${chosen.length} designs together. Keep their layouts, section structure and visual style consistent across all of them.\nNodes:\n` +
+		chosen.map((node) => `- nodeId ${node.id} · “${node.title}”`).join("\n") +
+		"\n\nInstruction: ";
+	void tick().then(() => {
+		document.getElementById("design-composer-input")?.focus();
+	});
 }
 
 /* ---------- canvas interaction: pan, zoom, node drag ---------- */
@@ -595,15 +842,45 @@ const handSized = new Set<string>();
 
 function surfaceDown(event: PointerEvent) {
 	if (event.button !== 0) return;
+	// Toolbars (zoom strip, selection actions) live on the canvas surface; a
+	// press on them must not start a pan or clear the selection.
+	if (
+		event.target instanceof Element &&
+		event.target.closest("[data-canvas-ui]")
+	)
+		return;
+	// Shift-drag over empty canvas draws a marquee instead of panning, so it
+	// can rubber-band a multi-selection without losing the pan gesture.
+	if (event.shiftKey) {
+		marquee = { x: event.clientX, y: event.clientY };
+		return;
+	}
+	// Clicking empty canvas clears the user's node selection.
+	selectedId = "";
+	selectedByUser = false;
+	selectedIds = [];
 	panning = { x: event.clientX, y: event.clientY, panX, panY };
 }
 
 function nodeDown(event: PointerEvent, node: DesignNode) {
 	event.stopPropagation();
 	if (event.button !== 0) return;
+	if (event.shiftKey) {
+		// Shift-click toggles the node in the bulk (multi) selection.
+		selectedIds = selectedIds.includes(node.id)
+			? selectedIds.filter((id) => id !== node.id)
+			: [...selectedIds, node.id];
+		selectedId = node.id;
+		selectedByUser = true;
+		refiningNodeId = "";
+		elementPick = "";
+		return;
+	}
+	if (selectedIds.length) selectedIds = [];
 	selectedId = node.id;
 	selectedByUser = true;
 	refiningNodeId = "";
+	elementPick = "";
 	dragging = {
 		id: node.id,
 		x: event.clientX,
@@ -691,9 +968,12 @@ function openPreview() {
 	const url = URL.createObjectURL(
 		new Blob([previewShellHtml(node)], { type: "text/html" }),
 	);
-	const opened = window.open(url, "_blank", "noopener");
-	if (!opened)
-		toast.error("The preview tab was blocked. Allow pop-ups and try again.");
+	// `window.open(..., "noopener")` always returns null by spec, which would
+	// trip the "blocked" toast on every click. Open normally and cut the opener
+	// link by hand so a null return reliably means a real popup block.
+	const opened = window.open(url, "_blank");
+	if (opened) opened.opener = null;
+	else toast.error("The preview tab was blocked. Allow pop-ups and try again.");
 	setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
@@ -708,9 +988,21 @@ function selectNode(id: string) {
 	selectedId = id;
 	selectedByUser = true;
 	refiningNodeId = "";
+	elementPick = "";
 }
 
 function pointerMove(event: PointerEvent) {
+	if (marquee) {
+		const base = surface?.getBoundingClientRect();
+		if (!base) return;
+		marqueeBox = {
+			left: Math.min(marquee.x, event.clientX) - base.left,
+			top: Math.min(marquee.y, event.clientY) - base.top,
+			width: Math.abs(event.clientX - marquee.x),
+			height: Math.abs(event.clientY - marquee.y),
+		};
+		return;
+	}
 	if (panning) {
 		panX = panning.panX + (event.clientX - panning.x);
 		panY = panning.panY + (event.clientY - panning.y);
@@ -758,6 +1050,33 @@ function clampSize(value: number, min: number, max: number) {
 async function pointerUp() {
 	const moved = dragging;
 	const sized = resizing;
+	const drawn = marquee;
+	// Marquee commit: convert the drawn box to a multi-selection before any
+	// click-interpretation runs.
+	if (drawn) {
+		const box = marqueeBox;
+		marquee = null;
+		marqueeBox = null;
+		const hits =
+			box && box.width * box.height >= 400
+				? nodes
+						.filter((node) => {
+							const left = panX + node.x * zoom;
+							const top = panY + node.y * zoom;
+							return (
+								left < box.left + box.width &&
+								left + node.width * zoom > box.left &&
+								top < box.top + box.height &&
+								top + node.height * zoom > box.top
+							);
+						})
+						.map((node) => node.id)
+				: [];
+		selectedIds = hits;
+		selectedByUser = true;
+		selectedId = hits.at(-1) ?? "";
+		return;
+	}
 	dragging = null;
 	resizing = null;
 	panning = null;
@@ -815,35 +1134,91 @@ function fit() {
 	panY = (surface.clientHeight - boxHeight * zoom) / 2 - minY * zoom;
 }
 
+/**
+ * Ctrl/Cmd + wheel zooms; a plain two-finger scroll pans the canvas, so the
+ * viewport behaves like a document (content follows the finger). The listener
+ * is attached non-passively by an effect below because Svelte binds `onwheel`
+ * passively, where `preventDefault` is ignored.
+ */
 function wheel(event: WheelEvent) {
-	if (!event.ctrlKey && !event.metaKey) return;
-	event.preventDefault();
-	zoomBy(event.deltaY > 0 ? -0.1 : 0.1);
+	if (event.ctrlKey || event.metaKey) {
+		event.preventDefault();
+		zoomBy(event.deltaY > 0 ? -0.1 : 0.1);
+		return;
+	}
+	if (event.deltaX || event.deltaY) {
+		event.preventDefault();
+		panX -= event.deltaX;
+		panY -= event.deltaY;
+	}
 }
 </script>
 
+<!-- Global shortcuts: Escape deselects; Delete/Backspace removes the selected
+node (only when focus is outside form fields and a confirm dialog keeps focus).
+Dialogs handle their own Escape, so skip while one is open. -->
+<svelte:window
+	onkeydown={(event) => {
+		if (deleteOpen || clearOpen || publishOpen) return;
+		if (event.key === "Escape") {
+			if (selectedId || selectedIds.length) {
+				selectedId = "";
+				selectedIds = [];
+				selectedByUser = false;
+				elementPick = "";
+			}
+			return;
+		}
+		if (event.key !== "Delete" && event.key !== "Backspace") return;
+		if (!selected || !selectedByUser || elementPick) return;
+		const target = event.target;
+		if (
+			target instanceof HTMLElement &&
+			(target.isContentEditable ||
+				target.tagName === "INPUT" ||
+				target.tagName === "TEXTAREA" ||
+				target.tagName === "SELECT")
+		)
+			return;
+		event.preventDefault();
+		askRemove(selected);
+	}}
+/>
+
 <div
-	class="flex min-h-0 flex-1 overflow-hidden"
+	class="relative flex min-h-0 flex-1 overflow-hidden"
 	role="group"
 	aria-label="Design workspace"
 	onpointermove={pointerMove}
 	onpointerup={pointerUp}
 	onpointercancel={pointerUp}
 >
-	<!-- Design context rail -->
-	<aside
-		class="hidden w-[260px] shrink-0 flex-col border-r bg-card/40 lg:flex"
-		aria-label="Design context"
-	>
-		<div class="border-b p-4">
-			<p class="flex items-center gap-2 text-sm font-medium">
-				<Layers size={15} class="text-teal-300" />Design Context
-			</p>
-			<p class="mt-2 text-xs leading-5 text-muted-foreground">
-				Every generation becomes a node on the canvas. Pick a node to preview
-				it, refine it, or publish the HTML into your project.
-			</p>
-		</div>
+	<!-- Design context rail: toggled by the header control; below lg it floats
+	over the canvas instead of stealing width. -->
+	{#if railOpen}
+		<aside
+			class="flex w-[260px] shrink-0 flex-col border-r bg-card/40 max-lg:absolute max-lg:inset-y-0 max-lg:left-0 max-lg:z-40 max-lg:w-[240px] max-lg:shadow-2xl max-lg:bg-card"
+			aria-label="Design context"
+		>
+			<div class="flex items-start justify-between gap-2 border-b p-4">
+				<div class="min-w-0">
+					<p class="flex items-center gap-2 text-sm font-medium">
+						<Layers size={15} class="text-teal-300" />Design Context
+					</p>
+					<p class="mt-2 text-xs leading-5 text-muted-foreground">
+						Every generation becomes a node on the canvas. Pick a node to
+						preview it, refine it, or publish the HTML into your project.
+					</p>
+				</div>
+				<Button
+					variant="ghost"
+					size="icon"
+					class="size-7 shrink-0 lg:hidden"
+					aria-label="Hide design context"
+					title="Hide design context"
+					onclick={() => (railOpen = false)}><X size={14} /></Button
+				>
+			</div>
 		<div class="flex items-center justify-between px-4 py-3">
 			<p
 				class="text-[11px] font-medium uppercase tracking-wider text-muted-foreground"
@@ -893,11 +1268,14 @@ function wheel(event: WheelEvent) {
 				variant="ghost"
 				size="sm"
 				class="w-full justify-start text-xs text-muted-foreground"
-				onclick={clearAll}
+				onclick={() => {
+					clearOpen = true;
+				}}
 				disabled={!nodes.length}><Trash2 size={13} />Clear canvas</Button
 			>
 		</div>
-	</aside>
+		</aside>
+	{/if}
 
 	<!-- Canvas -->
 	<div class="relative flex min-w-0 flex-1 flex-col bg-background">
@@ -905,6 +1283,15 @@ function wheel(event: WheelEvent) {
 			<p class="min-w-0 flex-1 truncate text-sm font-medium">
 				{projectName || "Design"} · Design canvas
 			</p>
+			<Button
+				variant="ghost"
+				size="icon"
+				class="size-7"
+				aria-label={railOpen ? "Hide design context" : "Show design context"}
+				aria-pressed={railOpen}
+				title={railOpen ? "Hide design context" : "Show design context"}
+				onclick={() => (railOpen = !railOpen)}><Layers size={14} /></Button
+			>
 			<div class="flex items-center rounded-md border p-0.5">
 				<Button
 					variant={theme === "light" ? "secondary" : "ghost"}
@@ -1012,17 +1399,20 @@ function wheel(event: WheelEvent) {
 							</div>
 							<div
 								class="relative size-full overflow-hidden rounded-xl border bg-card shadow-lg transition-colors {node.id ===
-								selectedId
+								selectedId || selectedIds.includes(node.id)
 									? 'border-primary ring-2 ring-primary/30'
 									: 'border-muted-foreground/25'}"
 							>
 								{#if node.html}
 									<div
-										class="pointer-events-none absolute origin-top-left"
+										class="absolute origin-top-left {elementPick === node.id
+											? 'pointer-events-auto'
+											: 'pointer-events-none'}"
 										style={frameStyle(node)}
 									>
 										<iframe
 											title={`${node.title} preview`}
+											id={`design-iframe-${safeFrameId(node.id)}`}
 											srcdoc={measureSrcdoc(node.id, node.html)}
 											sandbox="allow-scripts"
 											class="size-full border-0"
@@ -1044,7 +1434,11 @@ function wheel(event: WheelEvent) {
 											class="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-background/70 text-muted-foreground backdrop-blur-[1px]"
 										>
 											<LoaderCircle size={18} class="animate-spin" />
-											<p class="text-[11px]">Refining this design…</p>
+											<p class="text-[11px]">
+												{refiningNodeId === node.id
+													? "Refining this design…"
+													: "Regenerating this design…"}
+											</p>
 										</div>
 									{/if}
 								{:else if node.status === "failed"}
@@ -1095,7 +1489,15 @@ function wheel(event: WheelEvent) {
 					{/each}
 				</div>
 			{/if}
+			{#if marqueeBox}
+				<div
+					class="pointer-events-none absolute rounded border border-primary/70 bg-primary/10"
+					style="left:{marqueeBox.left}px;top:{marqueeBox.top}px;width:{marqueeBox.width}px;height:{marqueeBox.height}px"
+					role="presentation"
+				></div>
+			{/if}
 			<div
+				data-canvas-ui
 				class="absolute bottom-4 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-lg border bg-card/90 p-1 shadow-lg backdrop-blur"
 			>
 				<Button
@@ -1127,12 +1529,62 @@ function wheel(event: WheelEvent) {
 					onclick={fit}><Scan size={14} /></Button
 				>
 			</div>
-			{#if selected && selectedByUser}
+			{#if selectedByUser && selectedIds.length >= 2}
 				<div
+					data-canvas-ui
+					class="absolute top-3 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-xl border bg-card/95 px-3 py-1 shadow-lg backdrop-blur"
+				>
+					<span class="text-[11px] font-medium"
+						>{selectedIds.length} designs selected</span
+					>
+					<span class="mx-1 h-5 w-px bg-border"></span>
+					<Button
+						variant="secondary"
+						size="sm"
+						class="h-7 gap-1.5 text-[11px]"
+						onclick={startBulkRefine
+							}><Sparkles size={12} />Refine {selectedIds.length} together</Button
+					>
+					<Button
+						variant="ghost"
+						size="icon"
+						class="size-7"
+						aria-label="Clear selection"
+						title="Clear selection"
+						onclick={() => {
+							selectedIds = [];
+							selectedByUser = false;
+						}}><X size={13} /></Button
+					>
+				</div>
+			{:else if selected && selectedByUser}
+				<div
+					data-canvas-ui
 					class="absolute top-3 left-1/2 flex max-w-[94%] -translate-x-1/2 items-center gap-1 rounded-xl border bg-card/95 py-1 pr-1 pl-2 shadow-lg backdrop-blur"
 				>
-					<span
-						class="flex min-w-0 items-center gap-1.5 text-[11px] font-medium"
+				{#if renaming}
+					<Input
+						bind:value={renameDraft}
+						type="text"
+						maxlength={200}
+						aria-label="Design name"
+						class="h-7 w-40 min-w-0 text-[11px]"
+						onblur={() => void commitRename()}
+						onkeydown={(event) => {
+							if (event.key === "Enter") {
+								event.preventDefault();
+								void commitRename();
+							} else if (event.key === "Escape") {
+								renaming = false;
+							}
+						}}
+					/>
+				{:else}
+					<button
+						type="button"
+						class="flex min-w-0 items-center gap-1.5 text-[11px] font-medium hover:text-accent-foreground"
+						title="Rename"
+						onclick={startRename}
 					>
 						{#if selected.viewport === "mobile"}<Smartphone
 								size={13}
@@ -1142,7 +1594,8 @@ function wheel(event: WheelEvent) {
 								class="shrink-0 text-muted-foreground"
 							/>{/if}
 						<span class="max-w-[150px] truncate">{selected.title}</span>
-					</span>
+					</button>
+				{/if}
 					<Popover.Root>
 						<Popover.Trigger
 							class="inline-flex h-7 max-w-[180px] items-center gap-1.5 rounded-md px-2 text-[11px] transition-colors hover:bg-accent hover:text-accent-foreground"
@@ -1217,14 +1670,27 @@ function wheel(event: WheelEvent) {
 						class="inline-flex h-7 items-center rounded-md px-2 text-[11px] hover:bg-accent hover:text-accent-foreground"
 						>View full agent session</a
 					>
-					<Button
-						variant="secondary"
-						size="sm"
-						class="h-7 gap-1.5 text-[11px]"
-						onclick={focusChat}
-						disabled={!selected.html || selected.status !== "ready"}
-						><Sparkles size={12} />Refine</Button
-					>
+				<Button
+					variant="secondary"
+					size="sm"
+					class="h-7 gap-1.5 text-[11px]"
+					onclick={focusChat}
+					disabled={!selected.html || selected.status !== "ready"}
+					><Sparkles size={12} />Refine</Button
+				>
+				<Button
+					variant={elementPick === selected.id ? "secondary" : "ghost"}
+					size="sm"
+					class="h-7 gap-1.5 text-[11px]"
+					aria-pressed={elementPick === selected.id}
+					aria-label="Pick an element inside this design to refine"
+					title="Pick an element inside this design to refine it"
+					onclick={toggleElementPick}
+					disabled={!selected.html || selected.status !== "ready"}
+					><MousePointerClick size={12} /><span class="hidden sm:inline"
+						>{elementPick === selected.id ? "Picking…" : "Pick part"}</span
+					></Button
+				>
 					<Button
 						variant="ghost"
 						size="sm"
@@ -1237,12 +1703,28 @@ function wheel(event: WheelEvent) {
 						variant="ghost"
 						size="sm"
 						class="h-7 gap-1.5 text-[11px]"
-						onclick={() => publish(selected)}
+						onclick={() => askPublish(selected)}
 						disabled={publishing || selected.status !== "ready"}
 						><Upload size={12} /><span class="hidden sm:inline">Publish</span
 						></Button
 					>
 					<span class="mx-1 h-5 w-px bg-border"></span>
+					<Button
+						variant="ghost"
+						size="icon"
+						class="size-7"
+						aria-label="Rename design"
+						title="Rename"
+						onclick={startRename}><Pencil size={13} /></Button
+					>
+					<Button
+						variant="ghost"
+						size="icon"
+						class="size-7"
+						aria-label="Duplicate design"
+						title="Duplicate"
+						onclick={() => void duplicate(selected)}><Copy size={13} /></Button
+					>
 					<Button
 						variant="ghost"
 						size="icon"
@@ -1264,20 +1746,32 @@ function wheel(event: WheelEvent) {
 		</div>
 	</div>
 
-	<!-- Design agent chat -->
-	<aside
-		class="flex w-[320px] shrink-0 flex-col border-l bg-card/30 xl:w-[380px]"
-		aria-label="Design chat"
-	>
-		<div class="flex h-12 shrink-0 items-center gap-2 border-b px-4">
-			<p class="min-w-0 flex-1 truncate text-sm font-medium">Design agent</p>
-			{#if busyNodes.length}<Badge variant="outline" class="gap-1"
-					><LoaderCircle size={11} class="animate-spin" />{busyNodes.length} running</Badge
-				>{/if}
-		</div>
+	<!-- Design agent chat: docked at xl+, a toggleable drawer below that so the
+	canvas stays usable at ~768px. -->
+	{#if chatOpen}
+		<aside
+			class="relative z-30 flex w-[320px] shrink-0 flex-col border-l bg-card/30 xl:w-[380px] max-xl:absolute max-xl:inset-y-0 max-xl:right-0 max-xl:z-40 max-xl:shadow-2xl max-xl:bg-card"
+			aria-label="Design chat"
+		>
+			<div class="flex h-12 shrink-0 items-center gap-2 border-b px-4">
+				<p class="min-w-0 flex-1 truncate text-sm font-medium">Design agent</p>
+				{#if busyNodes.length}<Badge variant="outline" class="gap-1"
+					><LoaderCircle size={11} class="animate-spin" />{busyNodes.length}
+						running</Badge
+					>{/if}
+				<Button
+					variant="ghost"
+					size="icon"
+					class="size-7 shrink-0 xl:hidden"
+					aria-label="Hide design chat"
+					title="Hide design chat"
+					onclick={() => (chatOpen = false)}><X size={14} /></Button
+				>
+			</div>
 		<div
 			bind:this={scroller}
 			class="nice-scroll min-h-0 flex-1 space-y-3 overflow-y-auto p-4"
+			onscroll={onChatScroll}
 		>
 			{#if !threadMessages.length}
 				<p
@@ -1370,9 +1864,9 @@ function wheel(event: WheelEvent) {
 							<div
 								class="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/5 p-2.5 text-foreground"
 							>
-								<p class="text-xs font-medium">
-									Agy requests permission: {permission.toolName}
-								</p>
+							<p class="text-xs font-medium">
+								{designAgentLabel} requests permission: {permission.toolName}
+							</p>
 								<pre
 									class="mt-2 max-h-28 overflow-auto whitespace-pre-wrap break-all rounded bg-muted p-2 font-mono text-[10px]">{permissionCommand(
 										permission.args,
@@ -1472,7 +1966,8 @@ function wheel(event: WheelEvent) {
 			<Composer
 				{projectId}
 				{catalog}
-				busy={false}
+				busy={thinking || busyNodes.length > 0}
+				hideStop
 				disabled={sending || !projectId}
 				bind:draft
 				bind:model
@@ -1489,8 +1984,44 @@ function wheel(event: WheelEvent) {
 					Selected model is no longer available. Choose another model.
 				</p>{/if}
 		</div>
-	</aside>
+		</aside>
+	{/if}
+
+	<!-- Floating chat toggle when the drawer is closed (below xl) -->
+	{#if !chatOpen}
+		<div class="absolute right-4 bottom-4 z-40 xl:hidden">
+			<Button
+				size="icon"
+				class="size-10 rounded-full shadow-lg"
+				aria-label="Open design chat"
+				title="Open design chat"
+				onclick={() => (chatOpen = true)}><Sparkles size={16} /></Button
+			>
+		</div>
+	{/if}
 </div>
+
+<AlertDialog.Root bind:open={publishOpen}>
+	<AlertDialog.Content>
+		<AlertDialog.Header>
+			<AlertDialog.Title>Publish “{publishTarget?.title}”?</AlertDialog.Title>
+			<AlertDialog.Description
+				>This writes the design's HTML into your project so it can be served
+				like any other page. Publishing again with the same target will
+				replace (overwrite) the previously published file. The exact path is
+				shown in the confirmation toast once uploaded.</AlertDialog.Description
+			>
+		</AlertDialog.Header>
+		<AlertDialog.Footer>
+			<AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
+			<AlertDialog.Action
+				disabled={publishing}
+				onclick={() => void publish(publishTarget)}
+				>Publish</AlertDialog.Action
+			>
+		</AlertDialog.Footer>
+	</AlertDialog.Content>
+</AlertDialog.Root>
 
 <AlertDialog.Root bind:open={deleteOpen}>
 	<AlertDialog.Content>
@@ -1505,6 +2036,28 @@ function wheel(event: WheelEvent) {
 			<AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
 			<AlertDialog.Action variant="destructive" onclick={() => void remove()}
 				>Delete design</AlertDialog.Action
+			>
+		</AlertDialog.Footer>
+	</AlertDialog.Content>
+</AlertDialog.Root>
+
+<AlertDialog.Root bind:open={clearOpen}>
+	<AlertDialog.Content>
+		<AlertDialog.Header>
+			<AlertDialog.Title>Clear the canvas?</AlertDialog.Title>
+			<AlertDialog.Description
+				>This permanently removes {nodes.length === 1
+					? "the 1 design node on this canvas"
+					: `all ${nodes.length} design nodes on this canvas`}. This cannot be
+				undone.</AlertDialog.Description
+			>
+		</AlertDialog.Header>
+		<AlertDialog.Footer>
+			<AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
+			<AlertDialog.Action
+				variant="destructive"
+				onclick={() => void clearAll()}
+				>Clear canvas</AlertDialog.Action
 			>
 		</AlertDialog.Footer>
 	</AlertDialog.Content>

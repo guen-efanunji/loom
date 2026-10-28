@@ -5,7 +5,16 @@ import { join } from "node:path";
 import { OpenCodeHttpRuntime } from "@loom/opencode";
 import { createChatRoutes } from "../src/chat";
 
-function setup() {
+function setup(
+	gatewayStatus: {
+		type: string;
+		message?: string;
+		attempt?: number;
+		next?: number;
+		action?: { reason?: string; title?: string; message?: string };
+	} = { type: "busy" },
+	openCodeSessionActive = true,
+) {
 	const requests: Request[] = [];
 	const runtime = new OpenCodeHttpRuntime({
 		fetcher: async (url, init) => {
@@ -23,8 +32,21 @@ function setup() {
 				return Response.json({ id: "ses_other", directory: "/outside" });
 			if (path.endsWith("/prompt_async"))
 				return new Response(null, { status: 204 });
+			if (path === "/session?limit=200")
+				return Response.json(
+					openCodeSessionActive
+						? [
+								{
+									id: "ses_test",
+									directory: "/tmp",
+									title: "Chat",
+									time: { updated: 1 },
+								},
+							]
+						: [],
+				);
 			if (path === "/session/status")
-				return Response.json({ ses_test: { type: "busy" } });
+				return Response.json({ ses_test: gatewayStatus });
 			if (path === "/permission")
 				return Response.json([
 					{ id: "per_one", sessionID: "ses_test" },
@@ -77,6 +99,76 @@ function setup() {
 	return { app: createChatRoutes({ projects, request }), requests };
 }
 describe("chat gateway", () => {
+	test("shows OpenCode quota retry details as a failed assistant turn instead of working forever", async () => {
+		const next = Date.now() + 12 * 60 * 60_000 + 25 * 60_000;
+		const { app } = setup({
+			type: "retry",
+			attempt: 1,
+			next,
+			message: "Free usage exceeded, subscribe to Go",
+			action: {
+				reason: "free_tier_limit",
+				title: "Free limit reached",
+				message: "Subscribe to OpenCode Go for reliable access.",
+			},
+		});
+		const response = await app.request("/sessions/ses_test");
+		const state = (await response.json()) as {
+			status: { type: string; message?: string };
+			messages: Array<{
+				info: { role: string; error?: { data?: { message?: string } } };
+			}>;
+		};
+		expect(state.status.type).toBe("error");
+		expect(state.status.message).toContain("Subscribe to OpenCode Go");
+		expect(state.status.message).toContain("Retry scheduled in 12h 25m");
+		expect(state.messages.at(-1)?.info.error?.data?.message).toBe(
+			state.status.message,
+		);
+
+		const summary = await app.request("/sessions/ses_test/status");
+		expect(await summary.json()).toMatchObject({
+			status: { type: "error" },
+			busy: false,
+		});
+	});
+
+	test("shows OpenCode retry failures even when the session has no assistant message yet", async () => {
+		const { app } = setup(
+			{
+				type: "retry",
+				message: "Free usage exceeded, subscribe to Go",
+				action: {
+					reason: "free_tier_limit",
+					title: "Free limit reached",
+					message: "Subscribe to OpenCode Go for reliable access.",
+				},
+			},
+			false,
+		);
+		const response = await app.request("/sessions/ses_test");
+		const state = (await response.json()) as {
+			status: { type: string; message?: string };
+		};
+		expect(state.status.type).toBe("error");
+		expect(state.status.message).toContain("Free usage exceeded");
+		expect(state.status.message).toContain("Subscribe to OpenCode Go");
+	});
+
+	test("keeps short transient OpenCode retries as active work", async () => {
+		const { app } = setup({
+			type: "retry",
+			attempt: 1,
+			next: Date.now() + 15_000,
+			message: "Temporary provider error",
+		});
+		const response = await app.request("/sessions/ses_test");
+		const state = (await response.json()) as {
+			status: { type: string };
+		};
+		expect(state.status.type).toBe("retry");
+	});
+
 	test("accepts a provider-neutral request gateway", async () => {
 		const root = await mkdtemp(join(tmpdir(), "loom-chat-files-"));
 		const git = Bun.spawnSync(["git", "init"], { cwd: root });

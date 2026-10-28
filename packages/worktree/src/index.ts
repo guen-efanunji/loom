@@ -8,6 +8,7 @@ import {
 	realpath,
 	rm,
 	stat,
+	symlink,
 	writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -84,6 +85,9 @@ export type OrphanWorkspace = {
 	reason: "missing_metadata" | "invalid_metadata" | "missing_task";
 };
 
+/** Relative path of a dependency directory mirrored into a new worktree. */
+export type LinkedDependency = { path: string; target: string };
+
 export class WorktreeError extends Error {
 	readonly code:
 		| "INVALID_PROJECT"
@@ -148,6 +152,20 @@ async function runGit(
 	args: readonly string[],
 	cwd: string,
 ): Promise<string> {
+	const result = await runGitRaw(runner, args, cwd);
+	return result.trim();
+}
+
+/**
+ * NUL-delimited output must not be trimmed: `git status --porcelain -z` writes
+ * `XY path`, and a worktree-only change starts with a space (` M api.ts`) that
+ * trimming would swallow, corrupting every path parsed from the first entry.
+ */
+async function runGitRaw(
+	runner: CommandRunner,
+	args: readonly string[],
+	cwd: string,
+): Promise<string> {
 	let result: CommandResult;
 	try {
 		result = await runner("git", args, { cwd });
@@ -169,7 +187,27 @@ async function runGit(
 			},
 		);
 	}
-	return result.stdout.trim();
+	return result.stdout;
+}
+
+/**
+ * Paths from `git status --porcelain -z`. Each entry is `XY path`, so only the
+ * path is kept; a rename/copy entry is followed by its source path as a bare
+ * NUL field, which is consumed rather than treated as another changed file.
+ */
+function porcelainPaths(output: string): string[] {
+	const entries = output.split("\0");
+	const paths: string[] = [];
+	for (let index = 0; index < entries.length; index += 1) {
+		const entry = entries[index];
+		if (!entry) continue;
+		let path = entry.length > 3 ? entry.slice(3) : "";
+		const arrow = path.indexOf(" -> ");
+		if (arrow >= 0) path = path.slice(arrow + 4);
+		if (/[RC]/.test(entry[0] ?? "")) index += 1;
+		if (path) paths.push(path);
+	}
+	return paths;
 }
 
 function validateSegment(value: string, label: string): void {
@@ -223,6 +261,88 @@ async function readdirSafe(path: string): Promise<string[]> {
 	} catch {
 		return [];
 	}
+}
+
+async function symlinkSafe(target: string, path: string): Promise<boolean> {
+	try {
+		await symlink(resolve(target), path, "junction");
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+async function readJsonSafe(
+	path: string,
+): Promise<Record<string, unknown> | null> {
+	try {
+		const parsed = JSON.parse(await readFile(path, "utf8"));
+		return parsed && typeof parsed === "object"
+			? (parsed as Record<string, unknown>)
+			: null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Workspace globs from a root manifest, in both the array form and the
+ * `{ packages: [...] }` object form, so monorepo installs are discovered too.
+ */
+function workspaceGlobs(manifest: Record<string, unknown> | null): string[] {
+	const workspaces = manifest?.workspaces;
+	const entries = Array.isArray(workspaces)
+		? workspaces
+		: workspaces &&
+				typeof workspaces === "object" &&
+				Array.isArray((workspaces as { packages?: unknown }).packages)
+			? (workspaces as { packages: unknown[] }).packages
+			: [];
+	return entries.filter((item): item is string => typeof item === "string");
+}
+
+/**
+ * Dependency directories a checkout needs in order to run builds and tests.
+ * Workspace globs are read from the root manifest so monorepos (the common
+ * fullstack layout) keep their per-package installs too.
+ */
+export async function dependencyDirectories(
+	projectPath: string,
+): Promise<string[]> {
+	const found = new Set<string>();
+	const globs = workspaceGlobs(
+		await readJsonSafe(join(projectPath, "package.json")),
+	);
+	if (await isDirectory(join(projectPath, "node_modules")))
+		found.add("node_modules");
+	for (const glob of globs) {
+		const segments = glob.split("/");
+		let current = "";
+		let wildcard = false;
+		for (const segment of segments) {
+			if (segment === "**" || segment === "*") {
+				wildcard = true;
+				break;
+			}
+			current = current ? join(current, segment) : segment;
+		}
+		// Only literal prefixes are walkable; `packages/*` yields `packages`.
+		const prefix = wildcard ? current : segments.join("/");
+		if (!prefix || prefix === ".") continue;
+		const base = join(projectPath, prefix);
+		if (!(await isDirectory(base))) continue;
+		if (await isDirectory(join(base, "node_modules"))) {
+			found.add(`${prefix}/node_modules`);
+			continue;
+		}
+		for (const entry of await readdirSafe(base)) {
+			if (entry.startsWith(".")) continue;
+			const candidate = join(base, entry, "node_modules");
+			if (await isDirectory(candidate))
+				found.add(`${prefix}/${entry}/node_modules`);
+		}
+	}
+	return [...found].sort();
 }
 
 async function isDirectory(path: string): Promise<boolean> {
@@ -393,24 +513,7 @@ export class WorktreeManager {
 				: ["worktree", "add", "--orphan", "-b", branch, path],
 			repository.path,
 		);
-		const excludePath = await runGit(
-			this.runner,
-			["rev-parse", "--git-path", "info/exclude"],
-			path,
-		);
-		const absoluteExcludePath = resolve(path, excludePath);
-		await mkdir(dirname(absoluteExcludePath), { recursive: true });
-		let existingExcludes = "";
-		try {
-			existingExcludes = await readFile(absoluteExcludePath, "utf8");
-		} catch {}
-		if (!existingExcludes.split(/\r?\n/).includes("/.loom-worktree.json")) {
-			await writeFile(
-				absoluteExcludePath,
-				`${existingExcludes}${existingExcludes.endsWith("\n") || !existingExcludes ? "" : "\n"}/.loom-worktree.json\n`,
-				"utf8",
-			);
-		}
+		await this.ensureExcluded(path, ["/.loom-worktree.json"]);
 		await writeFile(
 			join(path, ".loom-worktree.json"),
 			JSON.stringify({
@@ -436,6 +539,62 @@ export class WorktreeManager {
 		};
 	}
 
+	/** Append ignore patterns to the repository-local exclude file. */
+	private async ensureExcluded(
+		worktreePath: string,
+		patterns: readonly string[],
+	): Promise<void> {
+		const excludePath = await runGit(
+			this.runner,
+			["rev-parse", "--git-path", "info/exclude"],
+			worktreePath,
+		);
+		const absoluteExcludePath = resolve(worktreePath, excludePath);
+		await mkdir(dirname(absoluteExcludePath), { recursive: true });
+		let existingExcludes = "";
+		try {
+			existingExcludes = await readFile(absoluteExcludePath, "utf8");
+		} catch {}
+		const lines = existingExcludes.split(/\r?\n/);
+		const missing = patterns.filter((pattern) => !lines.includes(pattern));
+		if (!missing.length) return;
+		await writeFile(
+			absoluteExcludePath,
+			`${existingExcludes}${existingExcludes.endsWith("\n") || !existingExcludes ? "" : "\n"}${missing.join("\n")}\n`,
+			"utf8",
+		);
+	}
+
+	/**
+	 * Mirror the repository's installed dependencies into a managed worktree so
+	 * an agent can build, test, and start dev servers there immediately. Every
+	 * link is also added to the exclude file, keeping Git state clean enough to
+	 * checkpoint, merge, and remove the workspace.
+	 */
+	async prepareDependencies(workspace: Workspace): Promise<LinkedDependency[]> {
+		await this.assertWorkspacePath(workspace);
+		const linked: LinkedDependency[] = [];
+		for (const relativePath of await dependencyDirectories(
+			workspace.projectPath,
+		)) {
+			const target = join(workspace.projectPath, relativePath);
+			const linkPath = join(workspace.path, relativePath);
+			if (!(await isDirectory(target))) continue;
+			if (await isDirectory(linkPath)) continue;
+			// The package folder must exist in this checkout before its install can
+			// be linked; the branch may not contain it yet.
+			if (!(await isDirectory(dirname(linkPath)))) continue;
+			if (await symlinkSafe(target, linkPath))
+				linked.push({ path: relativePath, target });
+		}
+		if (linked.length)
+			await this.ensureExcluded(
+				workspace.path,
+				linked.map((entry) => `/${entry.path}`),
+			);
+		return linked;
+	}
+
 	async diff(workspace: Workspace): Promise<string> {
 		await this.assertWorkspacePath(workspace);
 		const tracked = await runGit(
@@ -443,7 +602,7 @@ export class WorktreeManager {
 			["diff", "--no-ext-diff", "--binary", workspace.baseCommit],
 			workspace.path,
 		);
-		const untracked = await runGit(
+		const untracked = await runGitRaw(
 			this.runner,
 			["ls-files", "--others", "--exclude-standard", "-z"],
 			workspace.path,
@@ -472,12 +631,13 @@ export class WorktreeManager {
 	 */
 	async checkpoint(workspace: Workspace, message: string): Promise<string> {
 		await this.assertWorkspacePath(workspace);
-		const status = await runGit(
+		const status = await runGitRaw(
 			this.runner,
 			["status", "--porcelain", "-z", "--untracked-files=all"],
 			workspace.path,
 		);
-		const ignored = await runGit(
+		const changed = porcelainPaths(status);
+		const ignored = await runGitRaw(
 			this.runner,
 			["ls-files", "--others", "--ignored", "--exclude-standard", "-z"],
 			workspace.path,
@@ -492,11 +652,9 @@ export class WorktreeManager {
 				"Workspace contains ignored secret-like files; remove them before checkpointing",
 				{ paths: ignoredSecrets.join("\n") },
 			);
-		const paths = status
-			.split("\0")
-			.filter(Boolean)
-			.map((entry) => entry.slice(3))
-			.filter((path) => path && !isExcludedCheckpointPath(path));
+		const paths = changed.filter(
+			(path) => path && !isExcludedCheckpointPath(path),
+		);
 		if (!paths.length) {
 			const head = await runGit(
 				this.runner,
@@ -516,7 +674,7 @@ export class WorktreeManager {
 					"Checkpoint HEAD is not based on the recorded task baseline",
 				);
 			const committedPaths = (
-				await runGit(
+				await runGitRaw(
 					this.runner,
 					["diff", "--name-only", "-z", `${workspace.baseCommit}..${head}`],
 					workspace.path,
@@ -535,11 +693,9 @@ export class WorktreeManager {
 				throw new WorktreeError("NOT_FOUND", "No checkpointable changes found");
 			return head;
 		}
-		const excluded = status
-			.split("\0")
-			.filter(Boolean)
-			.map((entry) => entry.slice(3))
-			.filter((path) => path && isExcludedCheckpointPath(path));
+		const excluded = changed.filter(
+			(path) => path && isExcludedCheckpointPath(path),
+		);
 		if (excluded.length)
 			throw new WorktreeError(
 				"SAFETY_ERROR",
@@ -547,7 +703,7 @@ export class WorktreeManager {
 				{ paths: excluded.join("\n") },
 			);
 		await runGit(this.runner, ["add", "--", ...paths], workspace.path);
-		const staged = await runGit(
+		const staged = await runGitRaw(
 			this.runner,
 			["diff", "--cached", "--name-only", "-z"],
 			workspace.path,
@@ -692,7 +848,15 @@ export class WorktreeManager {
 		}
 	}
 
-	async discard(workspace: Workspace): Promise<void> {
+	/**
+	 * Force-remove a workspace, keeping or deleting its branch. Discarding a chat
+	 * tab also drops its branch so abandoned sessions do not leave unreachable
+	 * commits behind; Kanban removal keeps the branch for later inspection.
+	 */
+	async discard(
+		workspace: Workspace,
+		options: { deleteBranch?: boolean } = {},
+	): Promise<void> {
 		await this.assertWorkspacePath(workspace);
 		await rm(join(workspace.path, ".loom-worktree.json"), { force: true });
 		await runGit(
@@ -700,6 +864,12 @@ export class WorktreeManager {
 			["worktree", "remove", "--force", workspace.path],
 			workspace.projectPath,
 		);
+		if (options.deleteBranch)
+			await runGit(
+				this.runner,
+				["branch", "-D", workspace.branch],
+				workspace.projectPath,
+			).catch(() => undefined);
 	}
 
 	async preflightMerge(workspace: Workspace): Promise<MergePreflight> {
@@ -1105,7 +1275,11 @@ export class WorktreeManager {
 		);
 	}
 
-	async merge(workspace: Workspace, expectedHead?: string): Promise<string> {
+	async merge(
+		workspace: Workspace,
+		expectedHead?: string,
+		options: { keepWorkspace?: boolean } = {},
+	): Promise<string> {
 		const repository = await this.preflightMerge(workspace);
 		const expectedTargetHead = expectedHead ?? repository.head;
 		if (!repository.clean)
@@ -1227,8 +1401,84 @@ export class WorktreeManager {
 				} catch {}
 			}
 		}
-		await this.remove(workspace);
+		// A chat session keeps talking to the worktree it was created in, so the
+		// caller can choose to retain it after its output is integrated.
+		if (!options.keepWorkspace) await this.remove(workspace);
 		return candidateHead;
+	}
+
+	/**
+	 * Bring a managed workspace up to date with its target branch. Used by an
+	 * isolated chat tab that needs another tab's freshly integrated work; Git
+	 * surfaces any real overlap as a conflict instead of silently mixing edits.
+	 */
+	async sync(
+		workspace: Workspace,
+		sourceRef?: string,
+	): Promise<{ head: string; conflicts: string[] }> {
+		await this.assertWorkspacePath(workspace);
+		const repository = await validateRepository(
+			workspace.projectPath,
+			this.runner,
+		);
+		const target =
+			sourceRef ?? workspace.targetBranch ?? repository.defaultBranch;
+		let sourceSha = "";
+		try {
+			sourceSha = await runGit(
+				this.runner,
+				["rev-parse", "--verify", `${target}^{commit}`],
+				repository.path,
+			);
+		} catch {
+			throw new WorktreeError("NOT_FOUND", "Sync source does not exist", {
+				target,
+			});
+		}
+		const status = await runGit(
+			this.runner,
+			["status", "--porcelain", "--untracked-files=all"],
+			workspace.path,
+		);
+		const dirty = status
+			.split("\n")
+			.filter((line) => line.trim() && !line.endsWith(".loom-worktree.json"));
+		if (dirty.length)
+			throw new WorktreeError(
+				"SAFETY_ERROR",
+				"Workspace has uncheckpointed changes; checkpoint them before syncing",
+				{ path: workspace.path },
+			);
+		try {
+			await runGit(
+				this.runner,
+				[
+					"merge",
+					"--no-ff",
+					"-m",
+					`Sync ${workspace.branch} with ${target}`,
+					sourceSha,
+				],
+				workspace.path,
+			);
+		} catch {
+			const conflicts = await this.conflictFiles(workspace.path);
+			if (conflicts.length)
+				throw new MergeConflictError(
+					conflicts,
+					`Syncing ${target} into this workspace conflicts on ${conflicts.length} file(s)`,
+					workspace,
+				);
+			throw new WorktreeError(
+				"COMMAND_FAILED",
+				"Workspace sync failed before it could merge",
+				{ target },
+			);
+		}
+		return {
+			head: await runGit(this.runner, ["rev-parse", "HEAD"], workspace.path),
+			conflicts: [],
+		};
 	}
 
 	private async conflictFiles(repositoryPath: string): Promise<string[]> {

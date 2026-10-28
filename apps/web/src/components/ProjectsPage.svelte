@@ -31,9 +31,10 @@ import {
 	Star,
 	Trash2,
 	TriangleAlert,
+	Upload,
 	X,
 } from "@lucide/svelte";
-import { onMount, tick } from "svelte";
+import { onMount, tick, untrack } from "svelte";
 import { toast } from "svelte-sonner";
 import { goto, replaceState } from "$app/navigation";
 import { page } from "$app/state";
@@ -43,6 +44,7 @@ import {
 	type ChatMessage,
 	type ChatSession,
 	type ChatState,
+	type ChatWorkspace,
 	canonicalModelSelection,
 	chat,
 	type FileDiff,
@@ -246,6 +248,8 @@ type WorkspaceChatTab = {
 	model: string;
 	agent: string;
 	customAgentId: string;
+	/** The session for this tab edits its own git worktree, not the project folder. */
+	isolated?: boolean;
 };
 function initialView(): ViewMode {
 	return page.url.searchParams.get("view") === "kanban" ? "kanban" : "chat";
@@ -1609,7 +1613,7 @@ function saveActiveChatTab() {
 	if (conversation?.session.title) tab.label = conversation.session.title;
 	persistChatTabs();
 }
-function newChatTab(projectId = selectedProjectId) {
+function newChatTab(projectId = selectedProjectId, isolated = false) {
 	if (previewHasUnsavedChanges && projectId !== selectedProjectId) {
 		toast.error("Save or discard file edits before switching projects.");
 		return;
@@ -1624,6 +1628,7 @@ function newChatTab(projectId = selectedProjectId) {
 		model: preferredModel(projectId),
 		agent: "build",
 		customAgentId: "",
+		isolated,
 	};
 	chatTabs = [...chatTabs, tab];
 	activeChatTabId = tab.id;
@@ -1638,6 +1643,8 @@ function newChatTab(projectId = selectedProjectId) {
 	customAgentId = "";
 	sessionLoading = false;
 	error = "";
+	chatWorkspace = null;
+	workspaceConflict = [];
 	if (window.innerWidth < 768) sidebarOpen = false;
 	updateChatUrl();
 	persistChatTabs();
@@ -2119,20 +2126,152 @@ function moveWalkthroughStep(direction: -1 | 1) {
 	const next = walkthroughSteps[index + direction];
 	if (next) walkthroughStepId = next.id;
 }
+/**
+ * Workspace of the active chat session: either the project folder (shared) or a
+ * private git worktree (isolated). Isolated tabs are what let a backend chat and
+ * a frontend chat run at the same time without editing the same files.
+ */
+let chatWorkspace = $state<ChatWorkspace | null>(null);
+let workspaceAction = $state<"" | "merge" | "sync" | "discard">("");
+let workspaceConflict = $state<string[]>([]);
+async function loadChatWorkspace(id = sessionId) {
+	if (!id) {
+		chatWorkspace = null;
+		return;
+	}
+	try {
+		const state = await chat.workspace(id);
+		if (disposed || sessionId !== id) return;
+		chatWorkspace = state;
+		const tab = chatTabs.find((item) => item.sessionId === id);
+		if (tab) {
+			tab.isolated = state.mode === "isolated";
+			persistChatTabs();
+		}
+	} catch {
+		// Git state is secondary to the conversation; never block the chat over it.
+		if (sessionId === id) chatWorkspace = null;
+	}
+}
+// Refresh on session switch and when a run settles, never on the 15s poll.
+$effect(() => {
+	sessionId;
+	untrack(() => void loadChatWorkspace());
+});
+let workspaceWasBusy = false;
+$effect(() => {
+	const running = busy;
+	if (workspaceWasBusy && !running && sessionId)
+		untrack(() => void loadChatWorkspace());
+	workspaceWasBusy = running;
+});
+/** Daemon signals a second writer on one checkout with this code. */
+function isProjectBusy(reason: unknown) {
+	const problem = reason as { code?: string; status?: number; message?: string };
+	return (
+		problem?.code === "PROJECT_BUSY" ||
+		(problem?.status === 409 &&
+			/already editing this project/i.test(problem.message ?? ""))
+	);
+}
+function conflictFiles(reason: unknown) {
+	const problem = reason as { files?: unknown };
+	return Array.isArray(problem?.files) ? (problem.files as string[]) : [];
+}
+/** Checkpoint the tab's output on its branch, then integrate it into the project. */
+async function mergeChatWorkspace() {
+	if (!sessionId || workspaceAction) return;
+	workspaceAction = "merge";
+	workspaceConflict = [];
+	try {
+		if (chatWorkspace?.pendingChanges !== false)
+			await chat.checkpoint(sessionId);
+		const result = await chat.mergeWorkspace(sessionId);
+		toast.success(`Merged into ${result.targetBranch ?? "the project branch"}`);
+		await loadChatWorkspace();
+		await refreshProjects().catch(() => {});
+		await refreshSession(sessionId).catch(() => {});
+	} catch (reason) {
+		workspaceConflict = conflictFiles(reason);
+		toast.error(
+			reason instanceof Error ? reason.message : "Unable to merge this workspace.",
+		);
+		await loadChatWorkspace();
+	} finally {
+		workspaceAction = "";
+	}
+}
+async function syncChatWorkspace() {
+	if (!sessionId || workspaceAction) return;
+	workspaceAction = "sync";
+	workspaceConflict = [];
+	try {
+		if (chatWorkspace?.pendingChanges !== false)
+			await chat.checkpoint(sessionId);
+		await chat.syncWorkspace(sessionId);
+		toast.success("Workspace synced with the project branch");
+		await loadChatWorkspace();
+	} catch (reason) {
+		workspaceConflict = conflictFiles(reason);
+		toast.error(
+			reason instanceof Error ? reason.message : "Unable to sync this workspace.",
+		);
+	}
+	finally {
+		workspaceAction = "";
+	}
+}
+async function discardChatWorkspace() {
+	if (!sessionId || workspaceAction) return;
+	if (
+		!confirm(
+			"Discard this isolated workspace? Agent output that is not merged will be lost.",
+		)
+	)
+		return;
+	workspaceAction = "discard";
+	try {
+		await chat.discardWorkspace(sessionId);
+		await chat.remove(sessionId).catch(() => {});
+		const tab = chatTabs.find((item) => item.sessionId === sessionId);
+		if (tab) tab.isolated = false;
+		chatWorkspace = null;
+		workspaceConflict = [];
+		sessionId = "";
+		conversation = null;
+		if (tab) tab.sessionId = "";
+		toast.success("Workspace discarded");
+	} catch (reason) {
+		toast.error(
+			reason instanceof Error
+				? reason.message
+				: "Unable to discard this workspace.",
+		);
+	} finally {
+		workspaceAction = "";
+	}
+}
 async function send(input: Parameters<typeof chat.send>[1]) {
 	if (!selectedProjectId || sending) return false;
 	const tabId = activeChatTabId;
 	const projectId = selectedProjectId;
 	sendingChatTabIds = [...sendingChatTabIds, tabId];
 	if (activeChatTabId === tabId) error = "";
+	let createdHere = "";
+	let retryIsolated = false;
 	try {
 		let id = sessionId;
 		if (!id) {
+			// Isolation is fixed when the session is created; the provider session is
+			// bound to its working directory for its whole life.
+			const isolated = chatTabs.find((item) => item.id === tabId)?.isolated === true;
 			const created = await chat.create(
 				projectId,
 				input.text.split("\n")[0].slice(0, 80) || "File discussion",
+				isolated ? "isolated" : "shared",
 			);
 			id = created.id;
+			createdHere = id;
 			const tab = chatTabs.find((item) => item.id === tabId);
 			if (tab) {
 				tab.sessionId = id;
@@ -2141,8 +2280,9 @@ async function send(input: Parameters<typeof chat.send>[1]) {
 			sessions = [{ ...created, projectId }, ...sessions];
 			if (activeChatTabId === tabId) {
 				sessionId = id;
+				chatWorkspace = created.workspace ?? null;
 				conversation = {
-					session: created,
+					session: { ...created, workspace: undefined },
 					messages: [],
 					status: { type: "idle" },
 					permissions: [],
@@ -2175,7 +2315,30 @@ async function send(input: Parameters<typeof chat.send>[1]) {
 		await chat.send(id, input);
 		return true;
 	} catch (reason) {
-		if (activeChatTabId === tabId) {
+		// The project folder already has a writer: a chat that has just started can
+		// be re-created inside its own worktree, so parallel work still begins.
+		if (
+			isProjectBusy(reason) &&
+			createdHere &&
+			chatTabs.find((item) => item.id === tabId)?.isolated !== true
+		) {
+			await chat.remove(createdHere).catch(() => {});
+			sessions = sessions.filter((item) => item.id !== createdHere);
+			const tab = chatTabs.find((item) => item.id === tabId);
+			if (tab) {
+				tab.sessionId = "";
+				tab.isolated = true;
+				persistChatTabs();
+			}
+			if (activeChatTabId === tabId) {
+				sessionId = "";
+				conversation = null;
+				optimistic = null;
+				chatWorkspace = null;
+				updateChatUrl();
+			}
+			retryIsolated = true;
+		} else if (activeChatTabId === tabId) {
 			optimistic = null;
 			report(reason);
 		}
@@ -2183,6 +2346,8 @@ async function send(input: Parameters<typeof chat.send>[1]) {
 	} finally {
 		sendingChatTabIds = sendingChatTabIds.filter((id) => id !== tabId);
 	}
+	if (retryIsolated) return send(input);
+	return false;
 }
 async function stop() {
 	try {
@@ -2984,7 +3149,11 @@ async function answer(requestId: string, answers: string[][]) {
 														>{tab.sessionId || tab.taskId
 															? tab.label
 															: (agentLabel ?? tab.label)}</span
-													>{#if runTask && (runTask.status === "running" || runTask.status === "preparing")}<span
+													>{#if tab.isolated}<GitBranch
+																size={11}
+																class="shrink-0 text-emerald-300"
+																aria-label="Isolated workspace"
+																title="Edits its own git worktree" />{/if}{#if runTask && (runTask.status === "running" || runTask.status === "preparing")}<span
 															class="size-1.5 shrink-0 animate-pulse rounded-full bg-sky-400"
 															aria-label="Task running"
 
@@ -3018,6 +3187,16 @@ async function answer(requestId: string, answers: string[][]) {
 										>
 										<Button
 											variant="ghost"
+											size="sm"
+											class="h-8 shrink-0 gap-1.5 px-2 text-xs text-muted-foreground"
+											aria-label="New isolated chat tab"
+											title="New chat in its own git worktree — runs in parallel with other chats"
+											disabled={!selectedProjectId}
+											onclick={() => newChatTab(selectedProjectId, true)}
+											><GitBranch size={13} />Isolated</Button
+										>
+										<Button
+											variant="ghost"
 											size="icon"
 											class="size-8 shrink-0 text-muted-foreground"
 											aria-label="Open split chat"
@@ -3026,6 +3205,85 @@ async function answer(requestId: string, answers: string[][]) {
 											onclick={openSplitChat}><Columns3 size={15} /></Button
 										>
 									</div>
+									{#if sessionId && !designId}
+										<div
+											class="flex min-h-9 shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-white/[0.08] px-3 py-1 text-[11px] text-muted-foreground"
+											aria-label="Chat workspace"
+										>
+											{#if chatWorkspace?.mode === "isolated"}
+												<span
+													class="flex items-center gap-1 rounded-md border border-emerald-400/25 bg-emerald-400/[0.07] px-1.5 py-0.5 text-emerald-200"
+													title={chatWorkspace.path}
+													><GitBranch size={11} />{chatWorkspace.branch}</span
+												>
+												<span>
+													{#if chatWorkspace.state === "ready"}
+														{chatWorkspace.pendingChanges
+															? "Uncommitted output"
+															: chatWorkspace.integrated
+																? `Integrated into ${chatWorkspace.targetBranch ?? "main"}`
+																: "Ready to merge"}
+													{:else}
+														{chatWorkspace.error ?? "Workspace status unavailable"}
+													{/if}
+												</span>
+												<span class="ml-auto flex items-center gap-1">
+													<Button
+														variant="outline"
+														size="sm"
+														class="h-6 px-2 text-[11px]"
+														title="Commit this chat's output and merge it into the project branch"
+														disabled={busy || workspaceAction !== ""}
+														onclick={() => void mergeChatWorkspace()}
+														><Upload size={11} />{workspaceAction === "merge"
+															? "Merging…"
+															: "Merge into project"}</Button
+													>
+													<Button
+														variant="ghost"
+														size="sm"
+														class="h-6 px-2 text-[11px]"
+														title="Pull the project branch into this workspace"
+														disabled={busy || workspaceAction !== ""}
+														onclick={() => void syncChatWorkspace()}
+														>{workspaceAction === "sync" ? "Syncing…" : "Sync"}</Button
+													>
+													<Button
+														variant="ghost"
+														size="sm"
+														class="h-6 px-2 text-[11px]"
+														title="Throw away this workspace and its unmerged output"
+														disabled={busy || workspaceAction !== ""}
+														onclick={() => void discardChatWorkspace()}
+														>{workspaceAction === "discard"
+															? "Discarding…"
+															: "Discard"}</Button
+													>
+												</span>
+											{:else}
+												<span
+													class="flex items-center gap-1 rounded-md border border-white/10 px-1.5 py-0.5"
+													title="This chat edits the project folder directly"
+													><Sparkles size={11} />Project folder</span
+												>
+												<span
+													>One agent edits here at a time · open an Isolated tab for parallel
+													work</span
+												>
+											{/if}
+										</div>
+									{/if}
+									{#if workspaceConflict.length}
+										<div
+											role="alert"
+											class="shrink-0 border-b border-destructive/30 bg-destructive/5 px-3 py-2 text-[11px] text-destructive"
+										>
+											Merge conflict in {workspaceConflict.length} file(s):
+											{workspaceConflict.slice(0, 8).join(", ")}
+											{#if workspaceConflict.length > 8}…{/if}
+											— resolve them in this workspace, then merge again.
+										</div>
+									{/if}
 								{/if}
 								{#if designId && viewMode === "chat"}
 									<div

@@ -1,9 +1,17 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+	mkdir,
+	mkdtemp,
+	readFile,
+	rm,
+	stat,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import {
+	dependencyDirectories,
 	getWorktreeBranch,
 	getWorktreePath,
 	validateRepository,
@@ -504,6 +512,197 @@ describe("temporary git repository", () => {
 		await expect(manager.merge(workspace)).rejects.toThrow();
 		expect((await run(["status", "--porcelain"])).stdout.trim()).toBe("");
 		expect((await run(["show", "HEAD:file.txt"])).stdout.trim()).toBe("main");
+		await manager.discard(workspace);
+	});
+
+	test("keeps a chat workspace after integrating its branch", async () => {
+		root = await mkdtemp(join(tmpdir(), "loom-repository-"));
+		home = await mkdtemp(join(tmpdir(), "loom-home-"));
+		const run = async (args: string[], cwd = root) => {
+			const process = Bun.spawn(["git", ...args], {
+				cwd,
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			return {
+				stdout: await new Response(process.stdout).text(),
+				stderr: await new Response(process.stderr).text(),
+				exitCode: await process.exited,
+			};
+		};
+		await run(["init", "-b", "main"]);
+		await run(["config", "user.name", "Loom"]);
+		await run(["config", "user.email", "loom@example.test"]);
+		await writeFile(join(root, "file.txt"), "base\n");
+		await run(["add", "."]);
+		await run(["commit", "-m", "initial"]);
+		const manager = new WorktreeManager({ home });
+		const workspace = await manager.create({
+			projectPath: root,
+			projectId: "project-chat",
+			taskId: "chat-backend",
+		});
+		await writeFile(join(workspace.path, "api.ts"), "export const api = 1;\n");
+		const sha = await manager.checkpoint(workspace, "feat: backend api");
+		await manager.merge(workspace, undefined, { keepWorkspace: true });
+		// The conversation is still live, so its checkout must survive the intake.
+		expect((await stat(workspace.path)).isDirectory()).toBe(true);
+		expect(await manager.isCommitIntegrated(workspace, sha)).toBe(true);
+		expect((await run(["show", "HEAD:api.ts"])).stdout).toContain("api = 1");
+		// Further work on the same branch integrates cleanly afterwards too.
+		await writeFile(join(workspace.path, "api.ts"), "export const api = 2;\n");
+		const second = await manager.checkpoint(workspace, "feat: backend api v2");
+		await manager.merge(workspace, undefined, { keepWorkspace: true });
+		expect((await run(["show", "HEAD:api.ts"])).stdout).toContain("api = 2");
+		expect(await manager.isCommitIntegrated(workspace, second)).toBe(true);
+		await manager.discard(workspace);
+	});
+
+	test("syncs a workspace with the branch another tab just merged", async () => {
+		root = await mkdtemp(join(tmpdir(), "loom-repository-"));
+		home = await mkdtemp(join(tmpdir(), "loom-home-"));
+		const run = async (args: string[], cwd = root) => {
+			const process = Bun.spawn(["git", ...args], {
+				cwd,
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			return {
+				stdout: await new Response(process.stdout).text(),
+				stderr: await new Response(process.stderr).text(),
+				exitCode: await process.exited,
+			};
+		};
+		await run(["init", "-b", "main"]);
+		await run(["config", "user.name", "Loom"]);
+		await run(["config", "user.email", "loom@example.test"]);
+		await writeFile(join(root, "shared.ts"), "base\n");
+		await run(["add", "."]);
+		await run(["commit", "-m", "initial"]);
+		const manager = new WorktreeManager({ home });
+		const backend = await manager.create({
+			projectPath: root,
+			projectId: "project-sync",
+			taskId: "chat-backend",
+		});
+		const frontend = await manager.create({
+			projectPath: root,
+			projectId: "project-sync",
+			taskId: "chat-frontend",
+		});
+		await writeFile(join(backend.path, "shared.ts"), "from backend\n");
+		await manager.checkpoint(backend, "backend change");
+		await manager.merge(backend, undefined, { keepWorkspace: true });
+		// The frontend tab cannot see the merged change until it syncs.
+		expect(
+			(await readFile(join(frontend.path, "shared.ts"), "utf8")).trim(),
+		).toBe("base");
+		await manager.sync(frontend);
+		expect(
+			(await readFile(join(frontend.path, "shared.ts"), "utf8")).trim(),
+		).toBe("from backend");
+		// A dirty workspace must not be merged into by the sync.
+		await writeFile(join(frontend.path, "draft.ts"), "uncommitted\n");
+		await expect(manager.sync(frontend)).rejects.toThrow(WorktreeError);
+		await manager.discard(backend);
+		await manager.discard(frontend);
+	});
+
+	test("discarding a chat workspace can drop its branch too", async () => {
+		root = await mkdtemp(join(tmpdir(), "loom-repository-"));
+		home = await mkdtemp(join(tmpdir(), "loom-home-"));
+		const run = async (args: string[], cwd = root) => {
+			const process = Bun.spawn(["git", ...args], {
+				cwd,
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			return {
+				stdout: await new Response(process.stdout).text(),
+				stderr: await new Response(process.stderr).text(),
+				exitCode: await process.exited,
+			};
+		};
+		await run(["init", "-b", "main"]);
+		await run(["config", "user.name", "Loom"]);
+		await run(["config", "user.email", "loom@example.test"]);
+		await writeFile(join(root, "file.txt"), "base\n");
+		await run(["add", "."]);
+		await run(["commit", "-m", "initial"]);
+		const manager = new WorktreeManager({ home });
+		const kept = await manager.create({
+			projectPath: root,
+			projectId: "project-drop",
+			taskId: "chat-kept",
+		});
+		const dropped = await manager.create({
+			projectPath: root,
+			projectId: "project-drop",
+			taskId: "chat-dropped",
+		});
+		await manager.discard(kept);
+		await manager.discard(dropped, { deleteBranch: true });
+		const branches = await run(["branch", "--list", "loom/chat-*"]);
+		// Kanban-style removal keeps the branch for later inspection; an abandoned
+		// chat tab must not leave an unreachable branch behind.
+		expect(branches.stdout).toContain("loom/chat-kept");
+		expect(branches.stdout).not.toContain("loom/chat-dropped");
+	});
+
+	test("links installed dependencies into a new workspace", async () => {
+		root = await mkdtemp(join(tmpdir(), "loom-repository-"));
+		home = await mkdtemp(join(tmpdir(), "loom-home-"));
+		const run = async (args: string[], cwd = root) => {
+			const process = Bun.spawn(["git", ...args], {
+				cwd,
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			return {
+				stdout: await new Response(process.stdout).text(),
+				stderr: await new Response(process.stderr).text(),
+				exitCode: await process.exited,
+			};
+		};
+		await run(["init", "-b", "main"]);
+		await run(["config", "user.name", "Loom"]);
+		await run(["config", "user.email", "loom@example.test"]);
+		await writeFile(
+			join(root, "package.json"),
+			JSON.stringify({ workspaces: ["apps/*", "packages/*"] }),
+		);
+		await mkdir(join(root, "node_modules", "left-pad"), { recursive: true });
+		await mkdir(join(root, "apps", "web", "node_modules", "vite"), {
+			recursive: true,
+		});
+		await mkdir(join(root, "apps", "web", "src"), { recursive: true });
+		await writeFile(join(root, "apps", "web", "src", "app.ts"), "app\n");
+		await run(["add", "."]);
+		await run(["commit", "-m", "initial"]);
+		expect(await dependencyDirectories(root)).toEqual([
+			"apps/web/node_modules",
+			"node_modules",
+		]);
+		const manager = new WorktreeManager({ home });
+		const workspace = await manager.create({
+			projectPath: root,
+			projectId: "project-deps",
+			taskId: "chat-deps",
+		});
+		const linked = await manager.prepareDependencies(workspace);
+		expect(linked.map((entry) => entry.path)).toEqual([
+			"apps/web/node_modules",
+			"node_modules",
+		]);
+		expect(
+			(await stat(join(workspace.path, "node_modules"))).isDirectory(),
+		).toBe(true);
+		// Linked installs stay invisible to Git so checkpoint/merge/remove still work.
+		expect((await manager.inspectHead(workspace)).clean).toBe(true);
+		await writeFile(join(workspace.path, "feature.ts"), "new\n");
+		const sha = await manager.checkpoint(workspace, "feat: isolated work");
+		expect(sha).not.toBe("");
+		await manager.merge(workspace, undefined, { keepWorkspace: true });
 		await manager.discard(workspace);
 	});
 });

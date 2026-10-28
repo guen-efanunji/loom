@@ -5,6 +5,40 @@ import { z } from "zod";
 
 type Fetcher = (input: string, init?: RequestInit) => Promise<Response>;
 
+type GatewaySessionStatus = {
+	type: string;
+	message?: string;
+	attempt?: number;
+	next?: number;
+	action?: { reason?: string; title?: string; message?: string };
+};
+
+function retryFailure(status: GatewaySessionStatus): string | null {
+	if (status.type !== "retry") return null;
+	const detail = [status.message, status.action?.title, status.action?.message]
+		.filter((value): value is string => Boolean(value?.trim()))
+		.filter((value, index, values) => values.indexOf(value) === index)
+		.join(". ");
+	const delay = typeof status.next === "number" ? status.next - Date.now() : 0;
+	const exhausted =
+		status.action?.reason === "free_tier_limit" ||
+		/quota|usage exceeded|billing|subscribe/i.test(detail ?? "");
+	if (!exhausted) return null;
+	const retryIn =
+		delay > 0
+			? ` Retry scheduled in ${formatRetryDelay(delay)}${status.attempt ? ` (attempt ${status.attempt})` : ""}.`
+			: "";
+	return `${detail || "Provider retry is not expected soon."}${retryIn}`;
+}
+
+function formatRetryDelay(delay: number): string {
+	const minutes = Math.ceil(delay / 60_000);
+	if (minutes < 60) return `${minutes}m`;
+	const hours = Math.floor(minutes / 60);
+	const remaining = minutes % 60;
+	return remaining ? `${hours}h ${remaining}m` : `${hours}h`;
+}
+
 function authHeaders(headers?: RequestInit["headers"]): Headers {
 	const result = new Headers(headers);
 	const password = process.env.OPENCODE_SERVER_PASSWORD?.trim();
@@ -37,6 +71,30 @@ export type AgentRunStatus =
 export type RuntimeOutput = {
 	output: string;
 	truncated?: boolean;
+	/** Assistant text parts plus tool activities, in conversation order. */
+	parts?: Array<
+		| { type: "text"; id: string; text: string }
+		| { type: "activity"; id: string }
+	>;
+	/** Normalized tool calls made during the run. */
+	activities?: Array<{
+		id: string;
+		tool: string;
+		status: "running" | "completed" | "error";
+		input?: Record<string, unknown>;
+		output?: string;
+		error?: string;
+		metadata?: Record<string, unknown>;
+	}>;
+	/** Usage the gateway reported for the turn. */
+	tokens?: {
+		total?: number;
+		input?: number;
+		output?: number;
+		reasoning?: number;
+		cache?: { read?: number; write?: number };
+	};
+	cost?: number;
 };
 
 export type AgentModel = {
@@ -392,6 +450,24 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 		images?: Array<{ mime: string; data: string }>;
 	}): Promise<void> {
 		this.cancelled.delete(input.sessionId);
+		// Catalog ids for this adapter's own models arrive already prefixed with
+		// the gateway's upstream provider (e.g. `opencode/glm-5.3-flash-free`).
+		// Passing that string as `modelID` makes the gateway fail the run with
+		// ProviderModelNotFoundError before any assistant message exists, which
+		// then reports as "stopped reporting status". Match the chat handler and
+		// re-split a prefixed modelID into its provider and model parts.
+		const model = input.model
+			? input.model.providerID.toLowerCase() === "opencode" &&
+				input.model.modelID.includes("/")
+				? (() => {
+						const separator = input.model!.modelID.indexOf("/");
+						return {
+							providerID: input.model!.modelID.slice(0, separator),
+							modelID: input.model!.modelID.slice(separator + 1),
+						};
+					})()
+				: input.model
+			: undefined;
 		await this.request(
 			`/session/${encodeURIComponent(input.sessionId)}/prompt_async`,
 			{
@@ -399,11 +475,11 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 				headers: { "content-type": "application/json" },
 				body: JSON.stringify({
 					...(input.system ? { system: input.system } : {}),
-					...(input.model
+					...(model
 						? {
 								model: {
-									providerID: input.model.providerID,
-									modelID: input.model.modelID,
+									providerID: model.providerID,
+									modelID: model.modelID,
 								},
 							}
 						: {}),
@@ -423,12 +499,19 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 	async status(sessionId: string): Promise<AgentRunStatus> {
 		if (this.cancelled.has(sessionId)) return "cancelled";
 		const directory = this.directories.get(sessionId);
-		const statuses = await this.request<Record<string, { type: string }>>(
+		const statuses = await this.request<Record<string, GatewaySessionStatus>>(
 			"/session/status",
 			{},
 			directory,
 		);
-		const entry = statuses[sessionId]?.type;
+		const gatewayStatus = statuses[sessionId];
+		const entry = gatewayStatus?.type;
+		const retryError = gatewayStatus ? retryFailure(gatewayStatus) : null;
+		if (retryError) {
+			this.lastErrors.set(sessionId, retryError);
+			this.idleSince.delete(sessionId);
+			return "failed";
+		}
 		if (entry === "busy" || entry === "retry") {
 			this.idleSince.delete(sessionId);
 			return "running";
@@ -535,19 +618,81 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 	async readOutput(sessionId: string): Promise<RuntimeOutput | null> {
 		const messages = await this.request<
 			Array<{
-				info: { role: string };
-				parts: Array<{ type: string; text?: string }>;
+				info: {
+					id?: string;
+					role: string;
+					tokens?: {
+						total?: number;
+						input?: number;
+						output?: number;
+						reasoning?: number;
+						cache?: { read?: number; write?: number };
+					};
+					cost?: number;
+				};
+				parts: Array<{
+					id?: string;
+					type: string;
+					text?: string;
+					tool?: string;
+					state?: {
+						status?: string;
+						input?: Record<string, unknown>;
+						output?: string;
+						error?: string | { message?: string };
+					};
+				}>;
 			}>
 		>(`/session/${encodeURIComponent(sessionId)}/message`);
+		const parts: RuntimeOutput["parts"] = [];
+		const activities: RuntimeOutput["activities"] = [];
+		const texts: string[] = [];
+		let tokens: RuntimeOutput["tokens"];
+		let cost: number | undefined;
+		for (const message of messages) {
+			if (message.info.role !== "assistant") continue;
+			if (message.info.tokens && typeof message.info.tokens === "object")
+				tokens ??= message.info.tokens;
+			if (typeof message.info.cost === "number") cost ??= message.info.cost;
+			for (const [index, part] of message.parts.entries()) {
+				const id = part.id ?? `${message.info.id ?? "msg"}-${index}`;
+				if (part.type === "text" && part.text?.trim()) {
+					texts.push(part.text);
+					parts.push({ type: "text", id, text: part.text });
+					continue;
+				}
+				if (part.type !== "tool") continue;
+				// Trace + chat surfaces need every tool call the agent made,
+				// including the one that failed or was permission-denied.
+				const rawStatus = part.state?.status;
+				const error =
+					typeof part.state?.error === "string"
+						? part.state.error
+						: (part.state?.error?.message ?? undefined);
+				activities.push({
+					id,
+					tool: part.tool ?? "tool",
+					status:
+						rawStatus === "running" || rawStatus === "pending"
+							? "running"
+							: rawStatus === "error"
+								? "error"
+								: "completed",
+					...(part.state?.input ? { input: part.state.input } : {}),
+					...(typeof part.state?.output === "string"
+						? { output: part.state.output }
+						: {}),
+					...(error ? { error } : {}),
+				});
+				parts.push({ type: "activity", id });
+			}
+		}
 		return {
-			output: messages
-				.filter((message) => message.info.role === "assistant")
-				.flatMap((message) =>
-					message.parts
-						.filter((part) => part.type === "text")
-						.map((part) => part.text ?? ""),
-				)
-				.join("\n\n"),
+			output: texts.join("\n\n"),
+			...(tokens ? { tokens } : {}),
+			...(cost !== undefined ? { cost } : {}),
+			...(parts.length ? { parts } : {}),
+			...(activities.length ? { activities } : {}),
 		};
 	}
 

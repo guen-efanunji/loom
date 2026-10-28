@@ -1569,6 +1569,10 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			projects: repos.projects,
 			request: openCodeChatRequest,
 			sessionScope: (id) => orchestrator.sessionScope(id),
+			// Parallel chat tabs: an isolated session edits its own git worktree and a
+			// shared checkout only ever hosts one agent run at a time.
+			chatWorkspaces: repos.chatWorkspaces,
+			worktrees: worktreeManager,
 			providerManager,
 			permissions: agyPermissions,
 			agyPermissionUrl: agyPermissionError ? undefined : agyPermissionBase,
