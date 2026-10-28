@@ -51,9 +51,11 @@
 	<div class="install-next-steps">
 		<p class="copy-feedback" aria-live="polite">
 			{error ||
-				(copied
-					? "Copied. Paste it into your terminal and watch the step-by-step install log."
-					: "Run this in Terminal or PowerShell. The installer prints each step and download progress.")}
+				(os === "windows"
+					? "Windows binaries are being prepared. Running this now installs nothing and tells you the release covers macOS and Linux."
+					: copied
+						? "Copied. Paste it into your terminal and watch the step-by-step install log."
+						: "Run this in Terminal or PowerShell. The installer prints each step and download progress.")}
 		</p>
 		<a class="install-release-link" href={`${repository}/releases`}>
 			<Download size={13} /> Direct downloads
@@ -81,6 +83,11 @@
 			configure an OpenCode model provider to use the workspace. The
 			command-line installer does not install a native desktop app; Loom opens
 			its local browser workspace after you run <code>loom</code>.
+		</p>
+		<p>
+			Published targets: macOS on Apple silicon and Intel, and Linux on x64 and
+			arm64 with glibc. Windows x64 is being prepared, so the PowerShell
+			installer reports that clearly instead of failing on a missing download.
 		</p>
 		<p>
 			You can also install this website from your browser menu as a shortcut.

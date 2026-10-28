@@ -8,7 +8,7 @@ Plan the work, let agents build side by side in isolated Git worktrees, and appr
 Your repositories, sessions and state stay on your machine.
 
 ![version](https://img.shields.io/badge/version-0.1.0-8b5cf6)
-![platforms](https://img.shields.io/badge/macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-x64%20%7C%20arm64-0ea5e9)
+![platforms](https://img.shields.io/badge/macOS%20%C2%B7%20Linux-x64%20%7C%20arm64-0ea5e9)
 ![runtime](https://img.shields.io/badge/runtime-Bun%20bundled-22c55e)
 ![checks](https://img.shields.io/github/actions/workflow/status/guen-efanunji/loom/ci.yml?branch=main&label=checks)
 
@@ -74,7 +74,7 @@ Loom ships a single executable with its runtime and UI bundled. Git and a config
 curl -fsSL https://loomworkspace.bond/install.sh | sh
 ```
 
-**Windows (PowerShell)**
+**Windows (PowerShell)** — binaries are being prepared; the installer reports it clearly:
 
 ```powershell
 irm https://loomworkspace.bond/install.ps1 | iex
@@ -99,9 +99,9 @@ Restart your terminal so the PATH change applies. This is a local CLI plus brows
 
 | Platform | Architectures |
 | --- | --- |
-| macOS | Apple silicon (`darwin-arm64`), Intel (`darwin-x64`) |
+| macOS | Apple silicon (`darwin-arm64`, cross-compiled), Intel (`darwin-x64`) |
 | Linux | x64 and arm64 with glibc — Alpine/musl is not published |
-| Windows | x64 — ARM64 is not published |
+| Windows | In preparation. `install.ps1` is published and explains that the current release covers macOS and Linux. |
 
 ## Your first run
 

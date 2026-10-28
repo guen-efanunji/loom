@@ -1,27 +1,27 @@
 <script lang="ts">
-import { Moon, Sun } from "@lucide/svelte";
-import { onMount } from "svelte";
-import { Button } from "$ui/button";
+	import { Moon, Sun } from "@lucide/svelte";
+	import { onMount } from "svelte";
+	import { Button } from "$ui/button";
 
-let theme = $state<"light" | "dark">("light");
+	let theme = $state<"light" | "dark">("light");
 
-onMount(() => {
-	const current = document.documentElement.dataset.theme;
-	theme = current === "dark" ? "dark" : "light";
-});
+	onMount(() => {
+		const current = document.documentElement.dataset.theme;
+		theme = current === "dark" ? "dark" : "light";
+	});
 
-function toggleTheme() {
-	theme = theme === "dark" ? "light" : "dark";
-	document.documentElement.dataset.theme = theme;
-	document
-		.querySelector('meta[name="theme-color"]')
-		?.setAttribute("content", theme === "dark" ? "#171a15" : "#f5f6f2");
-	try {
-		localStorage.setItem("loom-site-theme", theme);
-	} catch {
-		// The current-page choice still works if storage is unavailable.
+	function toggleTheme() {
+		theme = theme === "dark" ? "light" : "dark";
+		document.documentElement.dataset.theme = theme;
+		document
+			.querySelector('meta[name="theme-color"]')
+			?.setAttribute("content", theme === "dark" ? "#171a15" : "#f5f6f2");
+		try {
+			localStorage.setItem("loom-site-theme", theme);
+		} catch {
+			// The current-page choice still works if storage is unavailable.
+		}
 	}
-}
 </script>
 
 <Button

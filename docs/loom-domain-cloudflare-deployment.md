@@ -68,6 +68,20 @@ An existing installation is never overwritten by the installer; use `loom update
 
 `scripts/test-installer.ts` (also `bun run installer:test`) runs the installer end to end against fixture release files with a fake `curl`, so the log, the checksum rejection and the PATH step stay covered without network access.
 
+## Build matrix reality
+
+`bun run domain:setup` and the release workflow assume what GitHub actually gives this account:
+
+| Target | Runner | Startup check |
+| --- | --- | --- |
+| `linux-x64` | `ubuntu-24.04` | native |
+| `linux-arm64` | `ubuntu-24.04-arm` | native |
+| `darwin-x64` | `macos-15-intel` | native |
+| `darwin-arm64` | `macos-15-intel` (cross-compiled by Bun) | skipped, verified on the user's machine by the installer |
+| `windows-x64` | not in the matrix yet | `scripts/test.ts` currently fails 66 Windows tests: `EBUSY` on temp-directory removal while SQLite and Git hold files, 8.3 short-path comparisons, and line-ending differences. `install.ps1` and the site say Windows is in preparation. |
+
+`macos-14`, `macos-15` and `macos-13` (Apple silicon) stay queued forever on this account, which is why the Apple silicon target is cross-compiled. Re-check with the `Runner probe` workflow if that changes, and add the Windows row back to `release.yml` when its suite is green.
+
 ## Troubleshooting
 
 | Symptom | Cause and fix |

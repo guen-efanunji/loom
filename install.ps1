@@ -117,7 +117,9 @@ try {
 if ($manifest.version -notmatch '^\d+\.\d+\.\d+(-beta\.\d+)?$') { Stop-Install 'Invalid release version.' "Read: $($manifest.version)" }
 if ($channel -eq 'stable' -and $manifest.version.Contains('-')) { Stop-Install 'Stable channel contains a prerelease.' "Read: $($manifest.version)" }
 $artifact = $manifest.artifacts.$platform
-if (-not $artifact) { Stop-Install 'The release manifest has no windows-x64 artifact.' }
+if (-not $artifact) {
+  Stop-Install 'This release does not publish a windows-x64 binary yet.' 'Windows support is being prepared; the current release covers macOS and Linux.' "Track it at $site/docs/installation/ and https://github.com/guen-efanunji/loom/releases"
+}
 $expectedUrl = "$base/v$($manifest.version)/loom-windows-x64.exe"
 if ($artifact.url -cne $expectedUrl -or $artifact.sha256 -cnotmatch '^[a-f0-9]{64}$') { Stop-Install 'Invalid artifact metadata.' "Read: $($artifact.url)" }
 $declaredSize = [long]$artifact.size

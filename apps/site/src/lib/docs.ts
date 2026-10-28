@@ -27,7 +27,7 @@ export const docs: Doc[] = [
 				title: "What you need",
 				paragraphs: [
 					"Loom is built with Bun and uses Bun's JavaScript runtime. For the prebuilt release you do not need to install Bun separately: the executable bundles the Bun runtime with the Loom CLI and browser UI. Install Git and OpenCode, then configure a model provider in OpenCode for Loom's primary workspace and task workflow. Additional supported CLI providers can be connected for chat after installation. This is a local-first application: the executable and workspace data stay on your device; the website does not host your workspace or act as a remote Loom server.",
-					"Release targets are macOS on Apple silicon and Intel, Linux on x64 and arm64 with glibc, and Windows x64. Alpine/musl and Windows ARM64 are not included in the initial release matrix. The release CI runs a native startup check on each target.",
+					"Release targets are macOS on Apple silicon and Intel, and Linux on x64 and arm64 with glibc; Alpine/musl is not published. Windows x64 is still being prepared, and its installer says so until a binary is published. The release CI starts the packaged daemon natively on every Linux and Intel macOS build; the Apple silicon build is cross-compiled on an Intel runner and starts on your Mac at install time, which the installer verifies before it writes anything.",
 				],
 				links: [
 					{ label: "Install Git", href: "https://git-scm.com/downloads" },

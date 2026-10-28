@@ -1,13 +1,13 @@
 <script lang="ts">
-import "../site.css";
-import { ArrowUpRight, Code2 as Github, Menu, X } from "@lucide/svelte";
-import { page } from "$app/state";
-import { repository, sitePath } from "$lib/config";
-import ThemeToggle from "$lib/ThemeToggle.svelte";
-import { Button } from "$ui/button";
+	import "../site.css";
+	import { ArrowUpRight, Code2 as Github, Menu, X } from "@lucide/svelte";
+	import { page } from "$app/state";
+	import { repository, sitePath } from "$lib/config";
+	import ThemeToggle from "$lib/ThemeToggle.svelte";
+	import { Button } from "$ui/button";
 
-const { children } = $props();
-let menu = $state(false);
+	const { children } = $props();
+	let menu = $state(false);
 </script>
 
 <a class="skip-link" href="#main">Skip to content</a>
