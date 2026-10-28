@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, writeFile, rename } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
@@ -8,7 +8,7 @@ declare const LOOM_BUILD_VERSION: string;
 export const VERSION =
 	typeof LOOM_BUILD_VERSION === "undefined" ? "0.1.0" : LOOM_BUILD_VERSION;
 export const PROTOCOL_VERSION = 1;
-export const REPOSITORY = "MrPinguiiin/loom";
+export const REPOSITORY = "guen-efanunji/loom";
 export const releaseChannelSchema = z.enum(["stable", "beta"]);
 export type ReleaseChannel = z.infer<typeof releaseChannelSchema>;
 export const automationModeSchema = z.enum([

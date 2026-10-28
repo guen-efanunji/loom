@@ -20,7 +20,7 @@ const manifest: Manifest = {
 	releasedAt: "2026-09-13T00:00:00.000Z",
 	artifacts: {
 		"linux-x64": {
-			url: "https://github.com/MrPinguiiin/loom/releases/download/v1.2.3/loom-linux-x64",
+			url: "https://github.com/guen-efanunji/loom/releases/download/v1.2.3/loom-linux-x64",
 			sha256: createHash("sha256").update(bytes).digest("hex"),
 			size: bytes.length,
 		},
@@ -44,7 +44,7 @@ test("release artifacts cannot escape the official repository or version", () =>
 		),
 	).not.toThrow();
 	for (const url of [
-		"http://github.com/MrPinguiiin/loom/releases/download/v1.2.3/loom-linux-x64",
+		"http://github.com/guen-efanunji/loom/releases/download/v1.2.3/loom-linux-x64",
 		"https://evil.example/loom",
 		"https://github.com/other/loom/releases/download/v1.2.3/loom-linux-x64",
 		`${manifest.artifacts["linux-x64"]?.url}?redirect=evil`,

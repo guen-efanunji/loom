@@ -798,12 +798,15 @@ describe("design agent chat", () => {
 				],
 			});
 			expect(result.kind).toBe("chat");
-			expect(setup.runtime.prompts[1]).toContain(
+			// A plain question with attachments is clearly conversational, so the
+			// service skips the model-based intent pass and runs one assistant turn.
+			expect(setup.runtime.prompts).toHaveLength(1);
+			expect(setup.runtime.prompts[0]).toContain(
 				'<form><input name="email"><button>Continue</button></form>',
 			);
-			expect(setup.runtime.prompts[1]).toContain("screen.png");
-			expect(setup.runtime.prompts[1]).toContain("screen-reference.png");
-			expect(setup.runtime.images[1]).toEqual([
+			expect(setup.runtime.prompts[0]).toContain("screen.png");
+			expect(setup.runtime.prompts[0]).toContain("screen-reference.png");
+			expect(setup.runtime.images[0]).toEqual([
 				{ mime: "image/png", data: "c2NyZWVu" },
 				{ mime: "image/png", data: projectImage.toString("base64") },
 			]);
