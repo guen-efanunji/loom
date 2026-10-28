@@ -167,10 +167,12 @@ summary:focus-visible {
 :root[data-theme="dark"] .workflow-steps p,
 :root[data-theme="dark"] .local-note p:last-child,
 :root[data-theme="dark"] .install-section > div > p:not(.eyebrow),
+:root[data-theme="dark"] .site-install-shortcut-note,
 :root[data-theme="dark"] .install-top > span,
 :root[data-theme="dark"] .copy-feedback,
 :root[data-theme="dark"] .install-foot span,
 :root[data-theme="dark"] .release-note,
+:root[data-theme="dark"] .install-requirements,
 :root[data-theme="dark"] .faq details p,
 :root[data-theme="dark"] .site-footer p,
 :root[data-theme="dark"] .docs-search > svg,
@@ -924,6 +926,10 @@ h2 {
 	max-width: 360px;
 	margin-block: 24px;
 }
+.site-install-shortcut-note {
+	font-size: 11px !important;
+	margin-top: -12px !important;
+}
 .install-section code {
 	font-size: 12px;
 	color: #42553b;
@@ -995,6 +1001,145 @@ h2 {
 }
 .release-note a {
 	text-decoration: underline;
+}
+.install-next-steps {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 12px;
+}
+.install-release-link,
+.install-requirements a {
+	color: #5d7250;
+	font-size: 10px;
+	text-decoration: underline;
+	white-space: nowrap;
+}
+:root[data-theme="dark"] .install-release-link,
+:root[data-theme="dark"] .install-requirements a {
+	color: #a7c48a;
+}
+.install-requirements {
+	margin-top: 12px;
+	color: #7b8671;
+	font-size: 10px;
+	line-height: 1.7;
+}
+.install-requirements summary {
+	cursor: pointer;
+	font-weight: 600;
+}
+.install-requirements ol {
+	margin: 8px 0;
+	padding-left: 20px;
+}
+.install-requirements p {
+	margin: 8px 0;
+}
+.install-log {
+	margin-top: 14px;
+	font-size: 10px;
+	color: #7b8671;
+}
+.install-log summary {
+	cursor: pointer;
+	font-weight: 600;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	color: #5d7250;
+}
+:root[data-theme="dark"] .install-log summary {
+	color: #a7c48a;
+}
+.install-log-lines {
+	list-style: none;
+	margin: 10px 0 0;
+	padding: 13px 14px;
+	border-radius: 11px;
+	background: #12150f;
+	border: 1px solid #2a2f28;
+	max-height: 290px;
+	overflow: auto;
+	display: grid;
+	gap: 3px;
+}
+.install-log-lines li {
+	display: flex;
+	gap: 8px;
+	transition:
+		opacity 0.25s ease,
+		transform 0.25s ease;
+}
+.install-log-lines li.pending {
+	opacity: 0;
+	transform: translateY(3px);
+}
+.install-log-lines .gutter {
+	white-space: pre;
+	flex-shrink: 0;
+}
+.install-log-lines code {
+	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	font-size: 10px;
+	line-height: 1.7;
+	white-space: pre-wrap;
+	color: #cdd6c4;
+}
+.install-log-lines li.phase code,
+.install-log-lines li.phase .gutter {
+	color: #c9aaf5;
+	font-weight: 600;
+}
+.install-log-lines li.ok code,
+.install-log-lines li.ok .gutter {
+	color: #9ed6a0;
+}
+.install-log-lines li.warn code,
+.install-log-lines li.warn .gutter {
+	color: #f0cf7a;
+}
+.install-log-lines li.info code,
+.install-log-lines li.info .gutter {
+	color: #8fd0e8;
+}
+.install-log-lines li.detail code,
+.install-log-lines li.detail .gutter {
+	color: #93a08b;
+}
+.install-log-foot {
+	display: flex;
+	gap: 10px;
+	align-items: flex-start;
+	margin-top: 10px;
+}
+.log-replay {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	border: 1px solid #dfe5d5;
+	background: transparent;
+	color: #5d7250;
+	border-radius: 7px;
+	padding: 4px 8px;
+	font-size: 10px;
+	cursor: pointer;
+	flex-shrink: 0;
+}
+:root[data-theme="dark"] .log-replay {
+	border-color: #343b31;
+	color: #a7c48a;
+}
+.install-log-note {
+	font-size: 10px;
+	line-height: 1.7;
+	color: #7b8671;
+	margin: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+	.install-log-lines li {
+		transition: none;
+	}
 }
 .faq {
 	display: grid;
@@ -1301,7 +1446,12 @@ h2 {
 		gap: 25px;
 	}
 	.install-panel {
-		padding: 19px;
+		padding: 17px;
+	}
+	.install-next-steps {
+		align-items: flex-start;
+		flex-direction: column;
+		gap: 8px;
 	}
 	.install-top > span {
 		display: none;

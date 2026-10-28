@@ -1,88 +1,89 @@
 <script lang="ts">
-	import {
-		ArrowRight,
-		ArrowUpRight,
-		Check,
-		Command,
-		GitBranch,
-		Layers,
-		MessageSquare,
-		Pause,
-		Play,
-		ShieldCheck,
-	} from "@lucide/svelte";
-	import { repository, sitePath } from "$lib/config";
-	import InstallCommand from "$lib/InstallCommand.svelte";
-	import { Button } from "$ui/button";
-	import * as Tabs from "$ui/tabs";
+import {
+	ArrowRight,
+	ArrowUpRight,
+	Check,
+	Command,
+	Download,
+	GitBranch,
+	Layers,
+	MessageSquare,
+	Pause,
+	Play,
+	ShieldCheck,
+} from "@lucide/svelte";
+import { repository, sitePath } from "$lib/config";
+import InstallCommand from "$lib/InstallCommand.svelte";
+import { Button } from "$ui/button";
+import * as Tabs from "$ui/tabs";
 
-	let animate = $state(true);
-	let view = $state("workspace");
-	const screenshots = {
-		workspace: {
-			src: "workspace.png",
-			width: 1862,
-			height: 961,
-			label: "Your work, in one place",
-			alt: "Loom workspace showing the project and session sidebar, a chat session with its composer, and the Agents and tasks rail with running and idle counts",
-			text: "Move from an idea to a working branch without losing track of the conversation.",
-		},
-		plan: {
-			src: "plan.png",
-			width: 1440,
-			height: 900,
-			label: "A plan you can actually review",
-			alt: "Loom plan editor showing tasks, dependencies, and project commands",
-			text: "Edit the task breakdown, dependencies, and validation commands before any agent starts.",
-		},
-		review: {
-			src: "review.png",
-			width: 1440,
-			height: 900,
-			label: "Inspect every change",
-			alt: "Loom task page with run history and independent diff review",
-			text: "Read each task's diff and run history. You decide what moves forward to integration.",
-		},
-	};
-	const shot = $derived(screenshots[view as keyof typeof screenshots]);
-	const features = [
-		{
-			icon: GitBranch,
-			title: "A workspace for every task.",
-			text: "Each task works in its own Git worktree. Independent agents can make progress at the same time.",
-			tag: "Isolated workspaces",
-		},
-		{
-			icon: Layers,
-			title: "The right order, built in.",
-			text: "Plans make dependencies explicit. Dependent tasks wait for the work they need and receive its context.",
-			tag: "Dependency-aware planning",
-		},
-		{
-			icon: ShieldCheck,
-			title: "Your branch. Your call.",
-			text: "Loom brings task branches together, runs your checks, and presents a diff for approval before merging.",
-			tag: "Integration & review",
-		},
-		{
-			icon: MessageSquare,
-			title: "Keep workstreams in reach.",
-			text: "Open separate chat tabs, split the view, and keep conversations for different parts of a project easy to switch between.",
-			tag: "Multi-chat workspace",
-		},
-		{
-			icon: Command,
-			title: "Choose the right runtime.",
-			text: "Use OpenCode for the primary workspace flow, or route chat through a connected Claude Code, Codex CLI, or Antigravity CLI provider.",
-			tag: "Provider choice",
-		},
-		{
-			icon: Layers,
-			title: "See the work around the chat.",
-			text: "Keep project files, terminal sessions, agent activity, and available context close to the conversation.",
-			tag: "Workspace tools",
-		},
-	];
+let animate = $state(true);
+let view = $state("workspace");
+const screenshots = {
+	workspace: {
+		src: "workspace.png",
+		width: 1862,
+		height: 961,
+		label: "Your work, in one place",
+		alt: "Loom workspace showing the project and session sidebar, a chat session with its composer, and the Agents and tasks rail with running and idle counts",
+		text: "Move from an idea to a working branch without losing track of the conversation.",
+	},
+	plan: {
+		src: "plan.png",
+		width: 1440,
+		height: 900,
+		label: "A plan you can actually review",
+		alt: "Loom plan editor showing tasks, dependencies, and project commands",
+		text: "Edit the task breakdown, dependencies, and validation commands before any agent starts.",
+	},
+	review: {
+		src: "review.png",
+		width: 1440,
+		height: 900,
+		label: "Inspect every change",
+		alt: "Loom task page with run history and independent diff review",
+		text: "Read each task's diff and run history. You decide what moves forward to integration.",
+	},
+};
+const shot = $derived(screenshots[view as keyof typeof screenshots]);
+const features = [
+	{
+		icon: GitBranch,
+		title: "A workspace for every task.",
+		text: "Each task works in its own Git worktree. Independent agents can make progress at the same time.",
+		tag: "Isolated workspaces",
+	},
+	{
+		icon: Layers,
+		title: "The right order, built in.",
+		text: "Plans make dependencies explicit. Dependent tasks wait for the work they need and receive its context.",
+		tag: "Dependency-aware planning",
+	},
+	{
+		icon: ShieldCheck,
+		title: "Your branch. Your call.",
+		text: "Loom brings task branches together, runs your checks, and presents a diff for approval before merging.",
+		tag: "Integration & review",
+	},
+	{
+		icon: MessageSquare,
+		title: "Keep workstreams in reach.",
+		text: "Open separate chat tabs, split the view, and keep conversations for different parts of a project easy to switch between.",
+		tag: "Multi-chat workspace",
+	},
+	{
+		icon: Command,
+		title: "Choose the right runtime.",
+		text: "Use OpenCode for the primary workspace flow, or route chat through a connected Claude Code, Codex CLI, or Antigravity CLI provider.",
+		tag: "Provider choice",
+	},
+	{
+		icon: Layers,
+		title: "See the work around the chat.",
+		text: "Keep project files, terminal sessions, agent activity, and available context close to the conversation.",
+		tag: "Workspace tools",
+	},
+];
 </script>
 
 <svelte:head
@@ -110,14 +111,14 @@
 			</p>
 			<div class="hero-actions">
 				<Button href="#install" size="lg" class="primary-cta"
-					>Make room for your next idea <ArrowRight size={17} /></Button
+					>Install Loom <Download size={17} /></Button
 				><a class="text-link" href={sitePath("/docs/")}
 					>Take a look at the docs <ArrowUpRight size={15} /></a
 				>
 			</div>
 			<p class="platform-note">
 				<Command size={13} /> macOS <span>·</span> Windows <span>·</span> Linux
-				<span class="note-divider">/</span> No JavaScript runtime required
+				<span class="note-divider">/</span> Built with Bun
 			</p>
 		</div>
 		<div class="hero-object" class:motion-paused={!animate}>
@@ -307,8 +308,10 @@
 			<p class="eyebrow">A SMALL START FOR YOUR NEXT BIG THING</p>
 			<h2>One command.<br /><span>Your own workspace.</span></h2>
 			<p>
-				Install Loom, then open it with <code>loom</code>. Git and a configured
-				OpenCode installation are the only prerequisites.
+				Install Loom, then open it with <code>loom</code>. Git and OpenCode are the prerequisites. Loom itself runs on Bun, bundled with the release.
+			</p>
+			<p class="site-install-shortcut-note">
+				Want the website as an app shortcut? Use your browser menu to install Loom Workspace. The shortcut opens this public site; the CLI install below sets up Loom locally.
 			</p>
 			<a class="text-link" href={sitePath("/docs/installation/")}
 				>Full installation guide <ArrowUpRight size={16} /></a
@@ -317,7 +320,7 @@
 		<div class="install-panel glass">
 			<InstallCommand />
 			<div class="install-foot">
-				<span><Check size={13} /> Runtime included</span><span
+				<span><Check size={13} /> Bun runtime included</span><span
 					><Check size={13} /> Verified downloads</span
 				>
 			</div>
@@ -334,7 +337,8 @@
 			<h2>A few useful details.</h2>
 		</div>
 		<div>
-			{#each [["Do I need Node.js or Bun?", "No. The distributed Loom executable includes its runtime and web application. You will need Git and OpenCode available on your PATH for Loom's primary task workflow. For chat, you can also connect supported Claude Code, Codex CLI, or Antigravity CLI runtimes."], ["Can I use my existing repository?", "Yes. Add the path to a local Git repository with at least one commit. Loom creates separate worktrees for tasks. Keep your main checkout clean before approving a merge."], ["Does Loom choose my model?", "You choose a connected provider and model in chat. Custom agents can have their own provider and optional model. Loom's task workflow uses OpenCode; provider usage and charges follow the provider selected for each request."], ["Does the selected agent stay the same for every message?", "The model, custom agent, and thinking mode are selected for each message. You can switch them during a conversation, so check the composer before sending if you want to keep using the same setup."], ["What happens when changes conflict?", "Integration happens in a separate workspace. A resolver can propose a fix, and checks run again. The combined diff still needs your approval before it reaches your project branch."]] as [question, answer]}<details
+			{#each [					["Do I need to install Bun?", "Loom is built with Bun, and the release bundles Bun's runtime with the executable and browser UI. You do not need to install Bun, Node.js or npm separately. You will need Git and OpenCode available on your PATH for Loom's primary task workflow. For chat, you can also connect supported Claude Code, Codex CLI, or Antigravity CLI runtimes."],
+					["Can I install the site?", "Yes, your browser can install or pin the public Loom product site as an app shortcut. That is only the website; the Loom workspace is installed separately on each user's device with the command-line installer and runs locally."], ["Can I use my existing repository?", "Yes. Add the path to a local Git repository with at least one commit. Loom creates separate worktrees for tasks. Keep your main checkout clean before approving a merge."], ["Does Loom choose my model?", "You choose a connected provider and model in chat. Custom agents can have their own provider and optional model. Loom's task workflow uses OpenCode; provider usage and charges follow the provider selected for each request."], ["Does the selected agent stay the same for every message?", "The model, custom agent, and thinking mode are selected for each message. You can switch them during a conversation, so check the composer before sending if you want to keep using the same setup."], ["What happens when changes conflict?", "Integration happens in a separate workspace. A resolver can propose a fix, and checks run again. The combined diff still needs your approval before it reaches your project branch."]] as [question, answer]}<details
 				>
 					<summary>{question}<span>+</span></summary>
 					<p>{answer}</p>

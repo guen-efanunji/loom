@@ -43,6 +43,10 @@
 		"db:migrate": "turbo run db:migrate -F @loom/db --",
 		"db:local": "turbo run db:local -F @loom/db --",
 		"env:generate": "varlock codegen --path ./apps/web/ && varlock codegen --path ./apps/server/ && varlock codegen --path ./packages/db/",
+		"installer:test": "bun scripts/test-installer.ts",
+		"domain:setup": "bun scripts/cloudflare-setup.ts",
+		"domain:prepare": "bun scripts/cloudflare-setup.ts --prepare",
+		"domain:verify": "bun scripts/cloudflare-setup.ts --verify-only",
 		"lint": "biome lint .",
 		"format": "biome format --write . && prettier --write 'apps/**/*.svelte' --plugin prettier-plugin-svelte --config .prettierrc.json",
 		"check": "biome check --write ."

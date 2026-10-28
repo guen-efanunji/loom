@@ -59,5 +59,20 @@
 		"VERCEL_URL",
 		"_VARLOCK_ENV_KEY"
 	],
+	"globalPassThroughEnv": [
+		"CLOUDFLARE_ACCOUNT_ID",
+		"CLOUDFLARE_API_TOKEN",
+		"LOOM_CF_CREATE_ZONE",
+		"LOOM_CF_FIX_DNS",
+		"LOOM_CHANNEL",
+		"LOOM_DOMAIN",
+		"LOOM_HOME",
+		"LOOM_PAGES_BRANCH",
+		"LOOM_PAGES_PROJECT",
+		"LOOM_RELEASE_BASE",
+		"LOOM_SITE_BASE",
+		"NO_COLOR",
+		"PUBLIC_INSTALL_BASE"
+	],
 	"globalDependencies": [".env*", "apps/*/.env*", "packages/*/.env*"]
 }

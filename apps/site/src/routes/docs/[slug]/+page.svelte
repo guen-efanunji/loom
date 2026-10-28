@@ -1,9 +1,10 @@
 <script lang="ts">
-	import { ArrowLeft, ArrowRight, ArrowUpRight, Info } from "@lucide/svelte";
-	import InstallCommand from "$lib/InstallCommand.svelte";
-	import { sitePath, repository } from "$lib/config";
-	import type { PageData } from "./$types";
-	let { data }: { data: PageData } = $props();
+import { ArrowLeft, ArrowRight, ArrowUpRight, Info } from "@lucide/svelte";
+import { repository, sitePath } from "$lib/config";
+import InstallCommand from "$lib/InstallCommand.svelte";
+import type { PageData } from "./$types";
+
+let { data }: { data: PageData } = $props();
 </script>
 
 <svelte:head

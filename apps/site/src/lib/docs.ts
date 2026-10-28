@@ -26,7 +26,7 @@ export const docs: Doc[] = [
 				id: "requirements",
 				title: "What you need",
 				paragraphs: [
-					"Loom includes its JavaScript runtime and browser UI. You do not need Node.js, npm, or Bun to run a release build. Install Git and OpenCode, then configure a model provider in OpenCode for Loom's primary workspace and task workflow. Additional supported CLI providers can be connected for chat after installation.",
+					"Loom is built with Bun and uses Bun's JavaScript runtime. For the prebuilt release you do not need to install Bun separately: the executable bundles the Bun runtime with the Loom CLI and browser UI. Install Git and OpenCode, then configure a model provider in OpenCode for Loom's primary workspace and task workflow. Additional supported CLI providers can be connected for chat after installation. This is a local-first application: the executable and workspace data stay on your device; the website does not host your workspace or act as a remote Loom server.",
 					"Release targets are macOS on Apple silicon and Intel, Linux on x64 and arm64 with glibc, and Windows x64. Alpine/musl and Windows ARM64 are not included in the initial release matrix. The release CI runs a native startup check on each target.",
 				],
 				links: [
@@ -38,23 +38,35 @@ export const docs: Doc[] = [
 				id: "install",
 				title: "Install Loom",
 				paragraphs: [
-					"Run the command above in Terminal on macOS/Linux, or PowerShell on Windows. The installer finds the latest stable GitHub release, downloads your platform binary, verifies SHA-256, and adds Loom to your user PATH. It does not require administrator access.",
-					"The installer needs a published release. If it reports that no release is available, check GitHub Releases. The source repository can be built locally by contributors; the installer does not build from source.",
+					"Run the command above in Terminal on macOS/Linux, or PowerShell on Windows. The installer prints eight numbered phases, shows binary download progress, verifies SHA-256 (and size on Windows), checks that the executable starts, installs to your user folder, and updates your user PATH. It does not require administrator access.",
+					"The installer needs a published GitHub release. If it reports that no release is available, check GitHub Releases. This installs the Loom CLI and local browser workspace, not a native desktop app; run loom after installing to start Loom on your device. The installer does not build from source and never clones the repository onto your machine.",
 				],
 				links: [
 					{
 						label: "Browse releases and checksums",
-						href: "https://github.com/MrPinguiiin/loom/releases",
+						href: "https://github.com/guen-efanunji/loom/releases",
 					},
 					{
 						label: "Review the shell installer",
-						href: "https://github.com/MrPinguiiin/loom/blob/main/install.sh",
+						href: "https://github.com/guen-efanunji/loom/blob/main/install.sh",
 					},
 					{
 						label: "Review the PowerShell installer",
-						href: "https://github.com/MrPinguiiin/loom/blob/main/install.ps1",
+						href: "https://github.com/guen-efanunji/loom/blob/main/install.ps1",
 					},
 				],
+			},
+			{
+				id: "log",
+				title: "What the install log shows",
+				paragraphs: [
+					"Every run is a step-by-step log, so you can see what was detected, downloaded, verified and changed. The numbered phases are the same on macOS, Linux and Windows.",
+					"Phases 1 to 3 report your platform, the tools the installer itself needs, and the tools Loom needs afterwards (Git and OpenCode). Missing tools are reported with an install hint and never installed for you, so nothing outside ~/.loom changes without your decision.",
+					"Phases 4 to 6 resolve the published release, download the single binary for your platform with a progress bar, and compare its SHA-256 against the published manifest. A mismatch stops the run and nothing is installed.",
+					"Phases 7 and 8 run the new binary once to prove it starts on your machine, move it into place, and add its folder to your PATH. The final line prints the elapsed time and the next commands to run.",
+				],
+				code: "[1/8] Checking your system\n[2/8] Checking the tools this installer needs\n[3/8] Checking what Loom needs after the binary is installed\n[4/8] Resolving the latest release on the stable channel\n[5/8] Downloading the Loom binary\n[6/8] Verifying the download\n[7/8] Installing Loom\n[8/8] Adding Loom to your user PATH",
+				note: "Set LOOM_CHANNEL=beta to install a prerelease, or LOOM_HOME to choose another data directory. Both are printed in the log so you can see what a run used.",
 			},
 			{
 				id: "open",
@@ -287,7 +299,7 @@ export const docs: Doc[] = [
 				links: [
 					{
 						label: "Report an update problem",
-						href: "https://github.com/MrPinguiiin/loom/issues",
+						href: "https://github.com/guen-efanunji/loom/issues",
 					},
 				],
 			},
@@ -382,7 +394,7 @@ export const docs: Doc[] = [
 				links: [
 					{
 						label: "Open a GitHub issue",
-						href: "https://github.com/MrPinguiiin/loom/issues",
+						href: "https://github.com/guen-efanunji/loom/issues",
 					},
 				],
 			},
@@ -467,7 +479,7 @@ export const docs: Doc[] = [
 				links: [
 					{
 						label: "Repository security policy",
-						href: "https://github.com/MrPinguiiin/loom/blob/main/SECURITY.md",
+						href: "https://github.com/guen-efanunji/loom/blob/main/SECURITY.md",
 					},
 				],
 			},

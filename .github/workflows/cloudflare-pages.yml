@@ -1,0 +1,116 @@
+name: Deploy product site
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/site/**"
+      - "install.sh"
+      - "install.ps1"
+      - "README.md"
+      - "packages/distribution/src/index.ts"
+      - "packages/distribution/src/updates.ts"
+      - "scripts/cloudflare-setup.ts"
+      - "bun.lock"
+      - "package.json"
+      - ".github/workflows/cloudflare-pages.yml"
+  workflow_dispatch:
+    inputs:
+      setup_only:
+        description: Only wire and verify the domain, skip building the site
+        type: boolean
+        default: false
+      fix_dns:
+        description: Delete parked apex DNS records that block the Pages domain
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  deployments: write
+concurrency:
+  group: cloudflare-pages-production
+  cancel-in-progress: true
+env:
+  LOOM_DOMAIN: loomworkspace.bond
+  LOOM_PAGES_PROJECT: loomworkspace
+  LOOM_PAGES_BRANCH: main
+  PUBLIC_INSTALL_BASE: https://loomworkspace.bond
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+      - name: Require Cloudflare credentials
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          missing=""
+          [ -n "$CLOUDFLARE_API_TOKEN" ] || missing="$missing CLOUDFLARE_API_TOKEN"
+          [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || missing="$missing CLOUDFLARE_ACCOUNT_ID"
+          if [ -n "$missing" ]; then
+            echo "::error::Repository secret(s) not set:$missing"
+            echo "Create an API token at https://dash.cloudflare.com/profile/api-tokens"
+            echo "(template: Cloudflare Pages - Edit, plus Zone - DNS: Edit) and add both"
+            echo "values under your repository: Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          echo "Cloudflare credentials are available."
+      - run: bun install --frozen-lockfile
+      - name: Check the zone and create the Pages project
+        if: ${{ !inputs.setup_only }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: bun scripts/cloudflare-setup.ts --prepare
+      - name: Add verified installers to the site
+        if: ${{ !inputs.setup_only }}
+        run: |
+          cp install.sh apps/site/static/install.sh
+          cp install.ps1 apps/site/static/install.ps1
+      - name: Build static site
+        if: ${{ !inputs.setup_only }}
+        run: bun run --cwd apps/site build
+      - name: Deploy to Cloudflare Pages
+        if: ${{ !inputs.setup_only }}
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy apps/site/build --project-name=${{ env.LOOM_PAGES_PROJECT }} --branch=${{ env.LOOM_PAGES_BRANCH }}
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+      - name: Wire the public domain and publish the installers
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          LOOM_CF_FIX_DNS: ${{ inputs.fix_dns && '1' || '' }}
+        run: |
+          bun scripts/cloudflare-setup.ts ${{ inputs.fix_dns && '--fix-dns' || '' }} \
+            || echo "::warning title=Domain not wired yet::https://\$LOOM_DOMAIN is not serving this build. Add the zone to this Cloudflare account, then re-run with the fix-dns input."
+      - name: Compare the published installer with this commit
+        if: ${{ !inputs.setup_only }}
+        continue-on-error: true
+        run: |
+          curl -fsSL "https://$LOOM_DOMAIN/install.sh" -o /tmp/published-install.sh
+          diff -u install.sh /tmp/published-install.sh || {
+            echo "::error::https://$LOOM_DOMAIN/install.sh is not the installer from this commit."
+            echo "The Pages deployment is still propagating; re-run this workflow in a minute."
+            exit 1
+          }
+          echo "https://$LOOM_DOMAIN/install.sh matches the committed installer."
+      - name: Endpoint summary
+        if: always()
+        run: |
+          {
+            echo "### Loom public endpoints"
+            echo ""
+            echo "- Site: https://$LOOM_DOMAIN/"
+            echo "- macOS/Linux installer: https://$LOOM_DOMAIN/install.sh"
+            echo "- Windows installer: https://$LOOM_DOMAIN/install.ps1"
+            echo ""
+            echo "Install: \`curl -fsSL https://$LOOM_DOMAIN/install.sh | sh\`"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,19 +1,20 @@
 <script lang="ts">
-	import { page } from "$app/state";
-	import { Search, ArrowUpRight } from "@lucide/svelte";
-	import { Input } from "$ui/input";
-	import { docs } from "$lib/docs";
-	import { sitePath, repository } from "$lib/config";
-	const { children } = $props();
-	let query = $state("");
-	const matches = $derived(
-		docs.filter((doc) =>
-			`${doc.title} ${doc.description} ${doc.sections.map((s) => `${s.title} ${s.paragraphs.join(" ")}`).join(" ")}`
-				.toLowerCase()
-				.includes(query.toLowerCase()),
-		),
-	);
-	const groups = [...new Set(docs.map((doc) => doc.group))];
+import { ArrowUpRight, Search } from "@lucide/svelte";
+import { page } from "$app/state";
+import { repository, sitePath } from "$lib/config";
+import { docs } from "$lib/docs";
+import { Input } from "$ui/input";
+
+const { children } = $props();
+let query = $state("");
+const matches = $derived(
+	docs.filter((doc) =>
+		`${doc.title} ${doc.description} ${doc.sections.map((s) => `${s.title} ${s.paragraphs.join(" ")}`).join(" ")}`
+			.toLowerCase()
+			.includes(query.toLowerCase()),
+	),
+);
+const groups = [...new Set(docs.map((doc) => doc.group))];
 </script>
 
 <div class="docs-shell section-width">

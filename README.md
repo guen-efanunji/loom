@@ -9,8 +9,8 @@ Your repositories, sessions and state stay on your machine.
 
 ![version](https://img.shields.io/badge/version-0.1.0-8b5cf6)
 ![platforms](https://img.shields.io/badge/macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-x64%20%7C%20arm64-0ea5e9)
-![runtime](https://img.shields.io/badge/runtime-bundled%20%E2%80%94%20no%20Node.js%20required-22c55e)
-![checks](https://img.shields.io/github/actions/workflow/status/MrPinguiiin/loom/ci.yml?branch=main&label=checks)
+![runtime](https://img.shields.io/badge/runtime-Bun%20bundled-22c55e)
+![checks](https://img.shields.io/github/actions/workflow/status/guen-efanunji/loom/ci.yml?branch=main&label=checks)
 
 [Install](#install) · [First run](#your-first-run) · [Features](#what-you-can-do) · [Development](#development) · [Architecture](#architecture)
 
@@ -71,16 +71,31 @@ Loom ships a single executable with its runtime and UI bundled. Git and a config
 **macOS / Linux**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MrPinguiiin/loom/main/install.sh | sh
+curl -fsSL https://loomworkspace.bond/install.sh | sh
 ```
 
 **Windows (PowerShell)**
 
 ```powershell
-irm https://raw.githubusercontent.com/MrPinguiiin/loom/main/install.ps1 | iex
+irm https://loomworkspace.bond/install.ps1 | iex
 ```
 
-The installer finds the latest published release, downloads the binary for your platform, verifies its SHA-256 checksum and adds Loom to your user PATH. No administrator access required. Restart your terminal so the PATH change applies.
+Loom is built with Bun. The release executable bundles Bun's runtime and the browser UI, so you do not need Bun, Node.js or npm installed separately. Nothing is cloned or built on your device: the installer downloads one published binary for your platform, verifies it, and installs it into your user folder. No administrator access is required.
+
+Each run is a numbered log, so you always know what happened:
+
+```text
+[1/8] Checking your system                  platform, libc, install target, channel
+[2/8] Checking the tools this installer needs
+[3/8] Checking what Loom needs after install  git ✓   opencode — reported, never installed for you
+[4/8] Resolving the latest release          channel-stable/manifest.json
+[5/8] Downloading the Loom binary           progress bar with size and speed
+[6/8] Verifying the download                SHA-256 (and size on Windows)
+[7/8] Installing Loom                       runs the binary once to prove it starts
+[8/8] Adding Loom to your user PATH
+```
+
+Restart your terminal so the PATH change applies. This is a local CLI plus browser workspace, not a native desktop app.
 
 | Platform | Architectures |
 | --- | --- |
@@ -166,6 +181,8 @@ In development the web app proxies to the daemon, so `CORS_ORIGIN` must include 
 | `bun run dev:web` / `bun run dev:server` | Run one app individually |
 | `bun run dev:types` | Watch `@loom/api` declarations |
 | `bun run test` | Run the workspace test suite |
+| `bun run installer:test` | Run both installers against fixture release files, offline |
+| `bun run domain:prepare` · `domain:setup` · `domain:verify` | Check the Cloudflare zone, wire `loomworkspace.bond`, verify the public installers |
 | `bun run check-types` | TypeScript project references across all apps |
 | `bun run check` | Biome format, lint and autofix |
 | `bun run loom` | Run the CLI from source |
@@ -204,7 +221,7 @@ Two rules shape the design: one active writer per worktree, and every coding att
 
 ## Documentation
 
-Full product documentation — installation, provider setup, project safety, parallel tasks, worktree recovery, updates and rollback, troubleshooting, privacy and security — ships with the app and lives in `apps/site/src/lib/docs.ts`. Design specifications and deeper technical notes are in [`docs/`](docs).
+Full product documentation — installation, provider setup, project safety, parallel tasks, worktree recovery, updates and rollback, troubleshooting, privacy and security — ships with the app and lives in `apps/site/src/lib/docs.ts`. Design specifications and deeper technical notes are in [`docs/`](docs), including the public-domain and installer deployment runbook in [`docs/loom-domain-cloudflare-deployment.md`](docs/loom-domain-cloudflare-deployment.md).
 
 ## Security
 

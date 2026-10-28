@@ -1,7 +1,7 @@
 <script lang="ts">
-	import { ArrowRight, BookOpen, Terminal, GitBranch } from "@lucide/svelte";
-	import { docs } from "$lib/docs";
-	import { sitePath } from "$lib/config";
+import { ArrowRight, BookOpen, GitBranch, Terminal } from "@lucide/svelte";
+import { sitePath } from "$lib/config";
+import { docs } from "$lib/docs";
 </script>
 
 <svelte:head
