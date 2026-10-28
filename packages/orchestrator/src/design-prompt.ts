@@ -1,7 +1,7 @@
-import { readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ProjectContext } from "@loom/automation";
+import { loadPromptText } from "@loom/distribution";
 import {
 	DESIGN_FRAME_PRESETS,
 	type DesignFrame,
@@ -10,21 +10,14 @@ import {
 } from "@loom/protocol";
 import { frameFromSize, frameLabel } from "./design-frame";
 
+/** Repository prompt folder, used while running from a checkout. */
+const designPrompts = resolve(
+	dirname(fileURLToPath(import.meta.url)),
+	"../../../prompts/design",
+);
+
 function promptFile(name: string): string {
-	const paths = [
-		join(process.cwd(), "prompts", "design", name),
-		resolve(
-			dirname(fileURLToPath(import.meta.url)),
-			"../../../prompts/design",
-			name,
-		),
-	];
-	for (const path of paths) {
-		try {
-			return readFileSync(path, "utf8").trim();
-		} catch {}
-	}
-	throw new Error(`Prompt file is missing: ${name}`);
+	return loadPromptText(`design/${name}`, [designPrompts]).trim();
 }
 
 const DESIGN_SYSTEM_PROMPT = promptFile("system.md");

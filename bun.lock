@@ -229,6 +229,7 @@
       "dependencies": {
         "@loom/automation": "workspace:*",
         "@loom/db": "workspace:*",
+        "@loom/distribution": "workspace:*",
         "@loom/opencode": "workspace:*",
         "@loom/protocol": "workspace:*",
         "@loom/providers": "workspace:*",
@@ -256,6 +257,7 @@
       "name": "@loom/providers",
       "version": "0.0.0",
       "dependencies": {
+        "@loom/distribution": "workspace:*",
         "@loom/opencode": "workspace:*",
       },
       "devDependencies": {

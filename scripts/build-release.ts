@@ -37,6 +37,23 @@ if (!assets["/index.html"])
 	throw new Error(
 		"Build the static web application first: bun run --cwd apps/web build",
 	);
+// A single-file executable has no repository next to it, so every prompt the
+// runtime reads by path is bundled and resolved through @loom/distribution.
+const promptAssets: Record<string, string> = {};
+const promptsRoot = resolve("prompts");
+async function collectPrompts(directory: string) {
+	for (const entry of await readdir(directory, { withFileTypes: true })) {
+		const path = join(directory, entry.name);
+		if (entry.isDirectory()) await collectPrompts(path);
+		else if (entry.isFile() && entry.name.endsWith(".md")) {
+			const key = relative(promptsRoot, path).replaceAll("\\", "/");
+			promptAssets[key] = await Bun.file(path).text();
+		}
+	}
+}
+await collectPrompts(promptsRoot);
+if (!promptAssets["coding.md"] || !promptAssets["design/system.md"])
+	throw new Error("The prompts directory is incomplete; cannot ship a release");
 await mkdir("dist", { recursive: true });
 const outfile = `dist/loom-${platform}${platform.startsWith("windows") ? ".exe" : ""}`;
 const result = await Bun.build({
@@ -51,10 +68,11 @@ const result = await Bun.build({
 	define: {
 		LOOM_BUILD_VERSION: JSON.stringify(version),
 		LOOM_STATIC_ASSETS: JSON.stringify(assets),
+		LOOM_EMBEDDED_PROMPTS: JSON.stringify(promptAssets),
 	},
 });
 if (!result.success)
 	throw new AggregateError(result.logs, "Compilation failed");
 console.log(
-	`Built ${outfile} (v${version}), embedding ${Object.keys(assets).length} assets`,
+	`Built ${outfile} (v${version}), embedding ${Object.keys(assets).length} assets and ${Object.keys(promptAssets).length} prompts`,
 );

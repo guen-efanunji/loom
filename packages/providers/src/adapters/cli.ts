@@ -1,9 +1,9 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync } from "node:fs";
 import { access } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadPromptFile, loadPromptText } from "@loom/distribution";
 import type {
 	AgentEvent,
 	AgentModel,
@@ -301,7 +301,8 @@ class CliRuntime implements AgentRuntime {
 		if (status === "completed" || status === "failed" || status === "cancelled")
 			return status;
 		await this.abort(sessionId);
-		this.requireSession(sessionId).error = `${this.options.definition.name} timed out`;
+		this.requireSession(sessionId).error =
+			`${this.options.definition.name} timed out`;
 		throw new ProviderError(
 			"PROCESS_FAILED",
 			`${this.options.definition.name} timed out`,
@@ -409,31 +410,18 @@ export async function readVersion(
 	return undefined;
 }
 
+/** Repository prompt folder, used while running from a checkout. */
+const modulePrompts = resolve(
+	dirname(fileURLToPath(import.meta.url)),
+	"../../../../prompts",
+);
+
 export function promptPath(name: string): string {
-	const configured = process.env.LOOM_PROMPTS_DIR?.trim();
-	const candidates = [
-		...(configured ? [join(configured, name)] : []),
-		join(process.cwd(), "prompts", name),
-		resolve(
-			dirname(fileURLToPath(import.meta.url)),
-			"../../../../prompts",
-			name,
-		),
-	];
-	return (
-		candidates.find((path) => existsSync(path)) ??
-		candidates[0] ??
-		join(process.cwd(), "prompts", name)
-	);
+	return loadPromptFile(name, [modulePrompts]);
 }
 
 export async function readPrompt(name: string): Promise<string> {
-	const path = promptPath(name);
-	try {
-		return await Bun.file(path).text();
-	} catch {
-		throw new Error(`Prompt file is missing: ${path}`);
-	}
+	return loadPromptText(name, [modulePrompts]);
 }
 
 export function normalizeCliOutput(output: string): string {

@@ -1,10 +1,12 @@
 import { randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { z } from "zod";
 
 declare const LOOM_BUILD_VERSION: string;
+declare const LOOM_EMBEDDED_PROMPTS: Record<string, string> | undefined;
 export const VERSION =
 	typeof LOOM_BUILD_VERSION === "undefined" ? "0.1.0" : LOOM_BUILD_VERSION;
 export const PROTOCOL_VERSION = 1;
@@ -27,6 +29,72 @@ export const settingsSchema = z.object({
 export type Settings = z.infer<typeof settingsSchema>;
 export function dataDirectory() {
 	return process.env.LOOM_HOME || join(homedir(), ".loom");
+}
+/**
+ * Prompt text is editable on disk and embedded in the release binary, because a
+ * single-file executable has no repository next to it. Disk always wins.
+ * @param name path under `prompts/`, for example `design/system.md`
+ * @param origins extra directories to search, typically a module-relative one
+ */
+export function promptCandidates(
+	name: string,
+	origins: string[] = [],
+): string[] {
+	const configured = process.env.LOOM_PROMPTS_DIR?.trim();
+	const directory = promptsDirectory();
+	return [
+		...(configured ? [join(configured, name)] : []),
+		join(directory, name),
+		join(process.cwd(), "prompts", name),
+		...origins.map((origin) => join(origin, name)),
+	];
+}
+export function promptsDirectory() {
+	return join(dataDirectory(), "prompts");
+}
+export function embeddedPrompts(): Record<string, string> {
+	return typeof LOOM_EMBEDDED_PROMPTS === "undefined"
+		? {}
+		: LOOM_EMBEDDED_PROMPTS;
+}
+export function embeddedPrompt(name: string): string | null {
+	const value = embeddedPrompts()[name];
+	return typeof value === "string" ? value : null;
+}
+/** Reads a prompt, preferring an editable copy on disk over the bundled text. */
+export function loadPromptText(name: string, origins: string[] = []): string {
+	for (const path of promptCandidates(name, origins)) {
+		try {
+			return readFileSync(path, "utf8");
+		} catch {}
+	}
+	const embedded = embeddedPrompt(name);
+	if (embedded !== null) return embedded;
+	throw new Error(
+		`Prompt file is missing: ${name}. Reinstall Loom or set LOOM_PROMPTS_DIR.`,
+	);
+}
+/**
+ * Returns a readable file path for a prompt. Provider CLIs that take a file
+ * argument cannot accept inline text, so a bundled prompt is materialised into
+ * the Loom directory on first use.
+ */
+export function loadPromptFile(name: string, origins: string[] = []): string {
+	for (const path of promptCandidates(name, origins))
+		if (existsSync(path)) return path;
+	const embedded = embeddedPrompt(name);
+	if (embedded === null)
+		throw new Error(
+			`Prompt file is missing: ${name}. Reinstall Loom or set LOOM_PROMPTS_DIR.`,
+		);
+	const path = join(promptsDirectory(), name);
+	mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+	let current: string | null = null;
+	try {
+		current = readFileSync(path, "utf8");
+	} catch {}
+	if (current !== embedded) writeFileSync(path, embedded, { mode: 0o600 });
+	return path;
 }
 export function platformKey(
 	platform: string = process.platform,
