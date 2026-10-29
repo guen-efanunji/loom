@@ -50,6 +50,11 @@ const createZone =
 	args.has("--create-zone") || process.env.LOOM_CF_CREATE_ZONE === "1";
 
 const domain = process.env.LOOM_DOMAIN || "loomworkspace.bond";
+// Extra hostnames served beside the apex, e.g. "www". Empty string disables them.
+const aliases = (process.env.LOOM_CF_ALIASES ?? "www")
+	.split(",")
+	.map((value) => value.trim())
+	.filter(Boolean);
 const project = process.env.LOOM_PAGES_PROJECT || "loomworkspace";
 const branch = process.env.LOOM_PAGES_BRANCH || "main";
 const token = process.env.CLOUDFLARE_API_TOKEN || "";
@@ -128,6 +133,77 @@ function requireCredentials() {
 			"Find your account ID in the Cloudflare dashboard right-hand sidebar.",
 			`Then run: CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... bun scripts/cloudflare-setup.ts${dryRun ? " --dry-run" : ""}`,
 		);
+}
+
+/**
+ * Points one hostname at the Pages project. Cloudflare does not create the
+ * record for a root domain, so the flattened CNAME is written here, after any
+ * parked answer that would shadow it is removed.
+ */
+async function ensurePagesRecord(
+	zoneId: string,
+	host: string,
+	target: string,
+): Promise<void> {
+	const records =
+		(await call<DnsRecord[]>(
+			`/zones/${zoneId}/dns_records?name=${encodeURIComponent(host)}&match=all&per_page=100`,
+		)) ?? [];
+	if (records.some((r) => r.type === "CNAME" && r.content === target)) {
+		pass(`CNAME ${host} -> ${target} is already in place`);
+		return;
+	}
+	for (const record of records) {
+		if (dryRun) {
+			warn(`Would delete ${record.type} ${host} -> ${record.content}`);
+			continue;
+		}
+		await call(`/zones/${zoneId}/dns_records/${record.id}`, {
+			method: "DELETE",
+		});
+		detail(`removed stale ${record.type} ${host} -> ${record.content}`);
+	}
+	if (dryRun) {
+		warn(`Would create CNAME ${host} -> ${target} (proxied)`);
+		return;
+	}
+	await call(`/zones/${zoneId}/dns_records`, {
+		method: "POST",
+		body: JSON.stringify({
+			type: "CNAME",
+			name: host === domain ? "@" : host.slice(0, -1 - domain.length),
+			content: target,
+			proxied: true,
+			ttl: 1,
+			comment: "Loom on Cloudflare Pages",
+		}),
+	});
+	pass(`Created CNAME ${host} -> ${target} (proxied)`);
+}
+
+async function attachDomain(name: string): Promise<void> {
+	const domains =
+		(await call<{ name?: string; status?: string }[]>(
+			`/accounts/${account}/pages/projects/${project}/domains`,
+		)) ?? [];
+	const attached = domains.find(
+		(item) => (item.name ?? "").toLowerCase() === name.toLowerCase(),
+	);
+	if (attached) {
+		pass(
+			`${name} is already attached (status ${attached.status ?? "unknown"})`,
+		);
+		return;
+	}
+	if (dryRun) {
+		warn(`Would attach custom domain ${name} to ${project}`);
+		return;
+	}
+	await call(`/accounts/${account}/pages/projects/${project}/domains`, {
+		method: "POST",
+		body: JSON.stringify({ name }),
+	});
+	pass(`Requested the custom domain ${name}`);
 }
 
 async function verifyPublicUrls() {
@@ -321,26 +397,30 @@ async function main() {
 	}
 
 	phase(`Ensuring the Pages project ${project} exists`);
-	const existing = await call<PagesProject>(
+	let projectInfo = await call<PagesProject>(
 		`/accounts/${account}/pages/projects/${project}`,
 		undefined,
 		{ notFoundAsNull: true },
 	);
-	if (existing)
+	if (projectInfo)
 		pass(
-			`Project ${existing.name} (production branch ${existing.production_branch})`,
+			`Project ${projectInfo.name} (production branch ${projectInfo.production_branch})`,
 		);
 	else if (dryRun)
 		warn(
 			`Would create Pages project ${project} with production branch ${branch}`,
 		);
 	else {
-		await call<PagesProject>(`/accounts/${account}/pages/projects`, {
-			method: "POST",
-			body: JSON.stringify({ name: project, production_branch: branch }),
-		});
+		projectInfo = await call<PagesProject>(
+			`/accounts/${account}/pages/projects`,
+			{
+				method: "POST",
+				body: JSON.stringify({ name: project, production_branch: branch }),
+			},
+		);
 		pass(`Created Pages project ${project}`);
 	}
+	const target = projectInfo?.subdomain || `${project}.pages.dev`;
 
 	if (prepareOnly) {
 		warn(
@@ -356,28 +436,15 @@ async function main() {
 		);
 	}
 
-	phase(`Attaching ${domain} to the Pages project`);
-	const domains =
-		(await call<{ id?: string; status?: string }[]>(
-			`/accounts/${account}/pages/projects/${project}/domains`,
-		)) ?? [];
-	const attached = domains.find(
-		(item) => (item.id ?? "").toLowerCase() === domain.toLowerCase(),
-	);
-	if (attached)
-		pass(
-			`${domain} is already attached (status ${attached.status ?? "unknown"})`,
-		);
-	else if (dryRun) warn(`Would attach custom domain ${domain} to ${project}`);
-	else {
-		await call(`/accounts/${account}/pages/projects/${project}/domains`, {
-			method: "POST",
-			body: JSON.stringify({ name: domain }),
-		});
-		pass(`Requested the custom domain ${domain}`);
-		detail(
-			"Cloudflare provisions the DNS record and the TLS certificate for the zone automatically.",
-		);
+	const hosts = [domain, ...aliases.map((alias) => `${alias}.${domain}`)];
+	phase(`Pointing ${hosts.join(" and ")} at ${target}`);
+	if (!zone) {
+		warn("No zone to write records for; the domain steps are skipped.");
+		return;
+	}
+	for (const host of hosts) {
+		await ensurePagesRecord(zone.id, host, target);
+		await attachDomain(host);
 	}
 
 	if (zone && !dryRun) {
@@ -386,11 +453,11 @@ async function main() {
 			{
 				method: "POST",
 				body: JSON.stringify({
-					files: [
-						`https://${domain}/`,
-						`https://${domain}/install.sh`,
-						`https://${domain}/install.ps1`,
-					],
+					files: hosts.flatMap((host) => [
+						`https://${host}/`,
+						`https://${host}/install.sh`,
+						`https://${host}/install.ps1`,
+					]),
 				}),
 			},
 			{ tolerateFailure: true },

@@ -9,18 +9,19 @@ Everything is driven by `.github/workflows/cloudflare-pages.yml` plus `scripts/c
 
 ## One-time account setup
 
-> **Status of this repository right now:** the Pages project `loomworkspace` exists and serves
-> `https://loomworkspace.pages.dev` (site plus both installers). The apex `loomworkspace.bond`
-> is still answering with the registrar's parking page, and its zone is **not** in this
-> Cloudflare account, so the domain step warns instead of attaching. Adding the zone is a
-> dashboard action unless the API token also has Zone · Zone: Create.
+> **Done, and what it produced:** the zone `loomworkspace.bond` lives in the Cloudflare account
+> that owns the Pages project, its apex and `www` are proxied CNAME records pointing at
+> `loomworkspace.pages.dev`, both hostnames are attached with status `active`, and
+> `https://loomworkspace.bond/install.sh` answers `text/plain` with a valid certificate. The
+> registrar's parked `A`/`AAAA` records (DigitalOcean) were removed as part of that.
 
-1. The domain is registered at NicNames and its nameservers already point at Cloudflare (`brad`/`mona.ns.cloudflare.com`). The zone must live in the **same Cloudflare account** that hosts the Pages project, otherwise Pages cannot manage the apex record.
+1. The zone must live in the **same Cloudflare account** as the Pages project, and the nameservers at the registrar must be the pair Cloudflare assigned to that zone. A zone created by the registrar's own Cloudflare integration sits in a different account and cannot be attached.
 2. Create an API token at <https://dash.cloudflare.com/profile/api-tokens> with:
    - Account · Cloudflare Pages · **Edit**
+   - Zone · Zone · **Read**, **Edit** (and **Create** only if the zone does not exist yet)
    - Zone · DNS · **Edit**
-   - Zone · Zone · **Read**
-   - Zone · Cache Purge · **Edit** (optional, avoids a warning during the switch)
+   - Zone · Zone Cache Purge · **Purge**
+   - **Zone Resources** must be set (`Include → All zones from an account → <your account>`). An empty Zone Resources list makes `GET /zones` return nothing, which looks like a missing zone but is only a scope problem.
 3. Add two repository secrets (`Settings → Secrets and variables → Actions`):
 
    ```bash
@@ -47,7 +48,7 @@ Everything is driven by `.github/workflows/cloudflare-pages.yml` plus `scripts/c
 3. copies `install.sh` and `install.ps1` into `apps/site/static/` so the published installers are the ones from the same commit,
 4. builds the static site with `PUBLIC_INSTALL_BASE=https://loomworkspace.bond`,
 5. deploys to Pages production (`main`),
-6. attaches `loomworkspace.bond` to the project and purges the edge cache for `/`, `/install.sh` and `/install.ps1`,
+6. writes the proxied `CNAME` for `loomworkspace.bond` and `www.loomworkspace.bond` (Cloudflare does not create a record for a root domain, and Pages reports `CNAME record not set` until it exists), attaches both hostnames to the project, and purges the edge cache for `/`, `/install.sh` and `/install.ps1` on each host. `LOOM_CF_ALIASES` changes the extra hostnames; an empty value means apex only.
 7. diffs the published `install.sh` against `install.sh` in the commit — using the apex domain when it already serves scripts, and the `*.pages.dev` deployment until then — which catches a stale deployment or a lingering parking page.
 
 `workflow_dispatch` inputs: **Only wire and verify the domain** skips the build and re-runs steps 1–2 and 6–7; **Delete parked apex DNS records that block the Pages domain** adds `--fix-dns`.
