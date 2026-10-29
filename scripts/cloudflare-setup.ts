@@ -202,10 +202,31 @@ async function main() {
 		return;
 	}
 	requireCredentials();
+	// Reading the account name needs Account Settings: Read, which a Pages-only
+	// token does not have; the Pages project list proves the same access.
 	const accountInfo = await call<{ id: string; name: string }>(
 		`/accounts/${account}`,
+		undefined,
+		{ tolerateFailure: true },
 	);
-	pass(`Account ${accountInfo?.name ?? account} is reachable with this token`);
+	if (accountInfo) {
+		pass(`Account ${accountInfo.name} is reachable with this token`);
+	} else {
+		const projects =
+			(await call<{ name: string }[]>(
+				`/accounts/${account}/pages/projects`,
+				undefined,
+				{ tolerateFailure: true },
+			)) ?? null;
+		if (projects === null)
+			fail(
+				`This token cannot reach account ${account}.`,
+				"Needed: Account · Cloudflare Pages: Edit, plus Zone · Zone: Read and Zone · DNS: Edit for the domain's zone.",
+			);
+		pass(
+			`Account ${account} reachable through ${projects.length} Pages project(s)`,
+		);
+	}
 
 	const zones =
 		(await call<Zone[]>(`/zones?name=${encodeURIComponent(domain)}`)) ?? [];
