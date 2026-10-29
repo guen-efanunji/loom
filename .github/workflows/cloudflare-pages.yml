@@ -95,13 +95,18 @@ jobs:
         if: ${{ !inputs.setup_only }}
         continue-on-error: true
         run: |
-          curl -fsSL "https://$LOOM_DOMAIN/install.sh" -o /tmp/published-install.sh
+          url="https://$LOOM_DOMAIN/install.sh"
+          if ! curl -fsSI "$url" | grep -qi "content-type: text/plain"; then
+            echo "The apex domain is not serving scripts yet; comparing the Pages deployment."
+            url="https://$LOOM_PAGES_PROJECT.pages.dev/install.sh"
+          fi
+          curl -fsSL "$url" -o /tmp/published-install.sh
           diff -u install.sh /tmp/published-install.sh || {
-            echo "::error::https://$LOOM_DOMAIN/install.sh is not the installer from this commit."
+            echo "::error::$url is not the installer from this commit."
             echo "The Pages deployment is still propagating; re-run this workflow in a minute."
             exit 1
           }
-          echo "https://$LOOM_DOMAIN/install.sh matches the committed installer."
+          echo "$url matches the committed installer."
       - name: Endpoint summary
         if: always()
         run: |

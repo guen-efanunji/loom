@@ -9,6 +9,12 @@ Everything is driven by `.github/workflows/cloudflare-pages.yml` plus `scripts/c
 
 ## One-time account setup
 
+> **Status of this repository right now:** the Pages project `loomworkspace` exists and serves
+> `https://loomworkspace.pages.dev` (site plus both installers). The apex `loomworkspace.bond`
+> is still answering with the registrar's parking page, and its zone is **not** in this
+> Cloudflare account, so the domain step warns instead of attaching. Adding the zone is a
+> dashboard action unless the API token also has Zone · Zone: Create.
+
 1. The domain is registered at NicNames and its nameservers already point at Cloudflare (`brad`/`mona.ns.cloudflare.com`). The zone must live in the **same Cloudflare account** that hosts the Pages project, otherwise Pages cannot manage the apex record.
 2. Create an API token at <https://dash.cloudflare.com/profile/api-tokens> with:
    - Account · Cloudflare Pages · **Edit**
@@ -42,7 +48,7 @@ Everything is driven by `.github/workflows/cloudflare-pages.yml` plus `scripts/c
 4. builds the static site with `PUBLIC_INSTALL_BASE=https://loomworkspace.bond`,
 5. deploys to Pages production (`main`),
 6. attaches `loomworkspace.bond` to the project and purges the edge cache for `/`, `/install.sh` and `/install.ps1`,
-7. diffs `https://loomworkspace.bond/install.sh` against `install.sh` in the commit, which catches a stale deployment or a lingering parking page.
+7. diffs the published `install.sh` against `install.sh` in the commit — using the apex domain when it already serves scripts, and the `*.pages.dev` deployment until then — which catches a stale deployment or a lingering parking page.
 
 `workflow_dispatch` inputs: **Only wire and verify the domain** skips the build and re-runs steps 1–2 and 6–7; **Delete parked apex DNS records that block the Pages domain** adds `--fix-dns`.
 
