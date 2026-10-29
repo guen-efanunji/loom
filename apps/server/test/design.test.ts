@@ -120,6 +120,8 @@ class FakeDesignRuntime implements AgentRuntime {
 async function createDesignSetup() {
 	const root = await mkdtemp(join(tmpdir(), "loom-design-project-"));
 	await writeFile(join(root, "package.json"), '{"name":"demo"}\n');
+	// Kept after the test: the design runtime can still write while the daemon
+	// shuts down, and deleting a live WAL database breaks those writes on macOS.
 	const home = await mkdtemp(join(tmpdir(), "loom-design-home-"));
 	const database = createDb({ DATABASE_URL: `file:${join(home, "state.db")}` });
 	const repos = repositories(database);
@@ -171,7 +173,6 @@ async function withSetup(
 	} finally {
 		await setup.daemon.close();
 		await rm(setup.root, { recursive: true, force: true });
-		await rm(setup.home, { recursive: true, force: true });
 	}
 }
 

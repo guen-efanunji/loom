@@ -1616,7 +1616,15 @@ export class WorktreeManager {
 			["worktree", "list", "--porcelain"],
 			repository.path,
 		);
-		if (!worktree.split("\n").includes(`worktree ${expected}`)) {
+		// Git lists worktrees by their canonical path, while the managed path can
+		// be reached through a link, so either spelling proves ownership.
+		const owned = worktree
+			.split("\n")
+			.some(
+				(line) =>
+					line === `worktree ${expected}` || line === `worktree ${managed}`,
+			);
+		if (!owned) {
 			throw new WorktreeError(
 				"SAFETY_ERROR",
 				"Workspace is not owned by the project repository",

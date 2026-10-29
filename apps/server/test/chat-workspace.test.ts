@@ -473,6 +473,8 @@ describe("chat workspace isolation on a real repository", () => {
 		// Boot a genuine Git repository and the genuine WorktreeManager: this is the
 		// guarantee that a backend tab and a frontend tab cannot edit one checkout.
 		const base = await mkdtemp(join(tmpdir(), "loom-chat-git-"));
+		// The chat home keeps a live WAL database; it is left for the operating
+		// system to reclaim instead of deleted while writes are still in flight.
 		const home = await mkdtemp(join(tmpdir(), "loom-chat-git-home-"));
 		const projectPath = join(base, "repo");
 		const git = async (args: string[], cwd = projectPath) => {
@@ -608,7 +610,6 @@ describe("chat workspace isolation on a real repository", () => {
 			expect(log.stdout.toString()).toContain("Integrate task chat-");
 		} finally {
 			await rm(base, { recursive: true, force: true });
-			await rm(home, { recursive: true, force: true });
 		}
 	});
 });

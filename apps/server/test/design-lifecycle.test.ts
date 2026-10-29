@@ -125,6 +125,8 @@ async function withDaemon(
 ) {
 	const root = await mkdtemp(join(tmpdir(), "loom-canvas-lifecycle-"));
 	await writeFile(join(root, "package.json"), '{"name":"studio"}');
+	// Kept after the test: deleting a live WAL database breaks writes that the
+	// shutting-down design runtime still has in flight.
 	const home = await mkdtemp(join(tmpdir(), "loom-canvas-home-"));
 	const database = createDb({ DATABASE_URL: `file:${join(home, "state.db")}` });
 	const repos = repositories(database);
@@ -146,7 +148,6 @@ async function withDaemon(
 	} finally {
 		await daemon.close();
 		await rm(root, { recursive: true, force: true });
-		await rm(home, { recursive: true, force: true });
 	}
 }
 

@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { describe, expect, test } from "bun:test";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -11,6 +11,9 @@ import {
 } from "@loom/db";
 import { createAgentSettingsRoutes } from "../src/agents";
 
+// Each fixture owns a temporary Loom home with its own WAL database. Deleting
+// one while a shutting-down agent still writes breaks those writes on macOS, so
+// the directories are left for the operating system to reclaim from temp.
 const directories: string[] = [];
 
 async function fixture(providerStatus = "connected") {
@@ -73,11 +76,6 @@ async function fixture(providerStatus = "connected") {
 	});
 	return { db, app, project, promptCaptured };
 }
-
-afterEach(async () => {
-	for (const directory of directories.splice(0))
-		await rm(directory, { recursive: true, force: true });
-});
 
 describe("custom agent settings", () => {
 	test("serves Loom's built-in role prompt presets", async () => {

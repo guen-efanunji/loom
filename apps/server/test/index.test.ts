@@ -157,6 +157,9 @@ class FakeAgentRuntime implements AgentRuntime {
 
 async function createTestSetup(options: { allowAutoMerge?: boolean } = {}) {
 	const root = await createRepository();
+	// The home keeps the WAL database. A daemon that is shutting down can still
+	// write to it, and deleting a live WAL file breaks those writes on macOS, so
+	// the temporary home is left for the operating system to reclaim.
 	const home = await mkdtemp(join(tmpdir(), "loom-server-home-"));
 	const databasePath = join(home, "state.db");
 	const database = createDb({ DATABASE_URL: `file:${databasePath}` });
@@ -237,7 +240,6 @@ describe("server API", () => {
 		} finally {
 			await setup.daemon.close();
 			await rm(setup.root, { recursive: true, force: true });
-			await rm(setup.home, { recursive: true, force: true });
 		}
 	});
 
@@ -293,7 +295,6 @@ describe("server API", () => {
 		} finally {
 			await setup.daemon.close();
 			await rm(setup.root, { recursive: true, force: true });
-			await rm(setup.home, { recursive: true, force: true });
 		}
 	});
 
@@ -374,7 +375,6 @@ describe("server API", () => {
 		} finally {
 			await setup.daemon.close();
 			await rm(setup.root, { recursive: true, force: true });
-			await rm(setup.home, { recursive: true, force: true });
 		}
 	});
 
@@ -424,7 +424,6 @@ describe("server API", () => {
 		} finally {
 			await setup.daemon.close();
 			await rm(setup.root, { recursive: true, force: true });
-			await rm(setup.home, { recursive: true, force: true });
 		}
 	});
 
@@ -507,7 +506,6 @@ describe("server API", () => {
 		} finally {
 			await setup.daemon.close();
 			await rm(setup.root, { recursive: true, force: true });
-			await rm(setup.home, { recursive: true, force: true });
 		}
 	});
 
@@ -543,7 +541,6 @@ describe("server API", () => {
 		} finally {
 			await setup.daemon.close();
 			await rm(setup.root, { recursive: true, force: true });
-			await rm(setup.home, { recursive: true, force: true });
 		}
 	});
 
@@ -622,7 +619,6 @@ describe("server API", () => {
 		} finally {
 			await setup.daemon.close();
 			await rm(setup.root, { recursive: true, force: true });
-			await rm(setup.home, { recursive: true, force: true });
 		}
 	});
 
@@ -743,9 +739,9 @@ describe("server API", () => {
 		} finally {
 			await setup.daemon.close();
 			await rm(setup.root, { recursive: true, force: true });
-			await rm(setup.home, { recursive: true, force: true });
 		}
-	});
+		// Four real worktrees plus two review merges need more than the default budget.
+	}, 20_000);
 
 	test("maps missing task errors and protects bootstrap origin", async () => {
 		const setup = await createTestSetup();
@@ -767,7 +763,6 @@ describe("server API", () => {
 		} finally {
 			await setup.daemon.close();
 			await rm(setup.root, { recursive: true, force: true });
-			await rm(setup.home, { recursive: true, force: true });
 		}
 	});
 
@@ -902,7 +897,6 @@ describe("server API", () => {
 		} finally {
 			await setup.daemon.close();
 			await rm(setup.root, { recursive: true, force: true });
-			await rm(setup.home, { recursive: true, force: true });
 		}
 	});
 
@@ -916,7 +910,6 @@ describe("server API", () => {
 		} finally {
 			await setup.daemon.close();
 			await rm(setup.root, { recursive: true, force: true });
-			await rm(setup.home, { recursive: true, force: true });
 		}
 	});
 
@@ -971,7 +964,6 @@ describe("server API", () => {
 		} finally {
 			await setup.daemon.close();
 			await rm(setup.root, { recursive: true, force: true });
-			await rm(setup.home, { recursive: true, force: true });
 		}
 	});
 });
