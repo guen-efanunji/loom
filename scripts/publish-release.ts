@@ -1,11 +1,23 @@
-import { isNewer, manifestSchema } from "../packages/distribution/src/updates";
 import { REPOSITORY } from "../packages/distribution/src/index";
+import { isNewer, manifestSchema } from "../packages/distribution/src/updates";
+
 const manifest = manifestSchema.parse(
 	await Bun.file("dist/manifest.json").json(),
 );
 const tag = `v${manifest.version}`;
 if (tag !== process.env.RELEASE_TAG) throw new Error("Release tag mismatch");
 const channel = manifest.version.includes("-") ? "beta" : "stable";
+// GitHub validates a release target as a branch or a commit, never as a tag
+// name, so the channel pointer is anchored to the commit the tag points at.
+const revision = Bun.spawn(["git", "rev-parse", `${tag}^{commit}`], {
+	stdout: "pipe",
+	stderr: "pipe",
+});
+const commit = (await new Response(revision.stdout).text()).trim();
+if ((await revision.exited) !== 0 || !/^[0-9a-f]{40}$/.test(commit))
+	throw new Error(
+		`Cannot resolve ${tag} to a commit; fetch the tag with depth 0`,
+	);
 async function gh(args: string[], allowFailure = false) {
 	const child = Bun.spawn(["gh", ...args, "--repo", REPOSITORY], {
 		stdout: "pipe",
@@ -74,7 +86,7 @@ if ((await gh(["release", "view", pointer], true)).exit)
 		"create",
 		pointer,
 		"--target",
-		tag,
+		commit,
 		"--prerelease",
 		"--latest=false",
 		"--title",
