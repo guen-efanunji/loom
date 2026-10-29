@@ -130,7 +130,7 @@ Write-Phase 'Downloading the Loom binary'
 $temp = Join-Path ([IO.Path]::GetTempPath()) ('loom-' + [guid]::NewGuid().ToString() + '.exe')
 try {
   Write-Log "GET $($artifact.url)"
-  Invoke-WebRequest -UseBasicParsing -Uri $artifact.url -OutFile $temp -TimeoutSec 300
+  Invoke-WebRequest -UseBasicParsing -Uri $artifact.url -OutFile $temp -TimeoutSec 1800
   $downloaded = (Get-Item -LiteralPath $temp).Length
   $elapsed = [math]::Round(((Get-Date) - $started).TotalSeconds, 1)
   Write-Done ("Downloaded {0} in {1}s" -f (Format-Size $downloaded), $elapsed)

@@ -117,7 +117,9 @@ fetch() {
   log "$label"
   detail "GET $url"
   if [ "$downloader" = curl ]; then
-    set -- --proto '=https' --tlsv1.2 -fL --connect-timeout 10 --max-time 180 --retry 2
+    # Give a slow connection time to finish a 100 MB binary, but stop when the
+    # transfer really stalls instead of when the total run takes long.
+    set -- --proto '=https' --tlsv1.2 -fL --connect-timeout 10 --max-time 1800 --speed-limit 8192 --speed-time 60 --retry 2 --retry-delay 3
     if [ "$show_progress" = 1 ] && [ "${expected_size:-0}" -gt 0 ]; then
       curl "$@" --silent --show-error "$url" -o "$output" &
       job=$!
@@ -146,7 +148,7 @@ fetch() {
       curl "$@" --silent --show-error "$url" -o "$output" || return 1
     fi
   else
-    wget -q --timeout=180 --tries=2 "$url" -O "$output" || return 1
+    wget -q --timeout=60 --tries=3 "$url" -O "$output" || return 1
   fi
   if [ ! -s "$output" ]; then
     detail "the server returned no bytes for $(basename "$url")"
