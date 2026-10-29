@@ -222,7 +222,16 @@ mkdir -p "$bin"
 cp "$temp/loom" "$bin/loom.next"
 chmod 700 "$bin/loom.next"
 log 'Running a startup check on the downloaded executable'
-captured=$("$bin/loom.next" --version 2>/dev/null) || die 'This binary cannot run on your system.' 'Linux releases require glibc; Alpine/musl is not published.'
+if ! captured=$("$bin/loom.next" --version 2>&1); then
+  rm -f "$bin/loom.next"
+  detail "platform $platform ($(uname -s) $(uname -m))"
+  detail "executable $bin/loom.next"
+  [ -z "$captured" ] || detail "startup output: $captured"
+  if [ "$os" = linux ]; then
+    die 'The downloaded Loom executable could not start on this device; nothing was installed.' 'Check that your CPU matches the selected Linux artifact.' 'Loom Linux releases require glibc; Alpine/musl is not published.'
+  fi
+  die 'The downloaded Loom executable could not start on this device; nothing was installed.' 'Check that your macOS version and CPU match the selected release artifact.'
+fi
 pass "Executable answers: $captured"
 mv "$bin/loom.next" "$bin/loom"
 pass "Installed to $bin/loom (mode 700, no administrator access used)"

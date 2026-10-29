@@ -252,8 +252,28 @@ try {
 			`${badHome.stdout}${badHome.stderr}`.includes("absolute path"),
 		"Relative LOOM_HOME was accepted",
 	);
+	const brokenFixture =
+		"#!/bin/sh\nprintf 'loader error: incompatible architecture\\n' >&2\nexit 86\n";
+	await writeFile(join(fixtures, name), brokenFixture);
+	await writeFile(
+		join(fixtures, "SHA256SUMS"),
+		`${createHash("sha256").update(brokenFixture).digest("hex")}  ${name}\n`,
+	);
+	const brokenHome = join(sandbox, "broken-home");
+	const broken = await invoke(brokenHome);
+	const brokenLog = `${broken.stdout}${broken.stderr}`;
+	assert(broken.exitCode !== 0, "A non-starting executable was installed");
+	assert(
+		brokenLog.includes("incompatible architecture") &&
+			brokenLog.includes("nothing was installed"),
+		"Startup failure did not retain diagnostic output",
+	);
+	assert(
+		!(await Bun.file(join(brokenHome, ".loom", "bin", "loom")).exists()),
+		"Startup failure left a broken executable installed",
+	);
 	console.log(
-		`PASS ${platform}: installer phases, log detail, manifest and fallback paths, PATH setup, reinstall guard, checksum rejection, channel and LOOM_HOME validation`,
+		`PASS ${platform}: installer phases, log detail, manifest and fallback paths, PATH setup, reinstall guard, checksum and startup failure rejection, channel and LOOM_HOME validation`,
 	);
 } finally {
 	await rm(sandbox, { recursive: true, force: true });

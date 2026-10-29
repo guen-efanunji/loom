@@ -130,6 +130,7 @@ describe("chat gateway", () => {
 		expect(await summary.json()).toMatchObject({
 			status: { type: "error" },
 			busy: false,
+			lastMessagePreview: "Hello",
 		});
 	});
 

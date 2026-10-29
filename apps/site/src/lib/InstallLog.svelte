@@ -8,24 +8,28 @@
 	// read the exact install log before running anything on their device.
 	const lines: Line[] = [
 		{ tone: "phase", text: "[1/8] Checking your system" },
-		{ tone: "ok", text: "Platform linux-x64 (x86_64, kernel 6.18.26)" },
+		{ tone: "ok", text: "Platform detected: macOS/Linux · x64/arm64" },
 		{ tone: "detail", text: "install target  ~/.loom/bin/loom" },
 		{ tone: "detail", text: "data directory  ~/.loom" },
 		{ tone: "detail", text: "release channel stable" },
 		{ tone: "phase", text: "[2/8] Checking the tools this installer needs" },
-		{ tone: "ok", text: "curl 8.14.0" },
-		{ tone: "ok", text: "sha256sum found" },
+		{ tone: "ok", text: "curl or wget found" },
+		{ tone: "ok", text: "sha256sum or shasum found" },
 		{
 			tone: "phase",
 			text: "[3/8] Checking what Loom needs after the binary is installed",
 		},
 		{
 			tone: "ok",
-			text: "git 2.54.0 — worktrees and task branches are ready",
+			text: "git found — worktrees and task branches are ready",
 		},
 		{
-			tone: "warn",
-			text: "opencode not found — Loom runs chat and Kanban tasks through OpenCode",
+			tone: "ok",
+			text: "OpenCode found — task runtime available",
+		},
+		{
+			tone: "info",
+			text: "This demo is illustrative; the real checks use your device's detected state.",
 		},
 		{
 			tone: "info",
@@ -39,31 +43,30 @@
 			tone: "detail",
 			text: "GET .../releases/download/channel-stable/manifest.json",
 		},
-		{ tone: "ok", text: "Loom 0.1.0 for linux-x64 (48.2 MB)" },
+		{ tone: "ok", text: "Stable release · platform-specific binary" },
 		{ tone: "phase", text: "[5/8] Downloading the Loom binary" },
 		{
 			tone: "detail",
-			text: "[###########.............]  42%  20.3 MB / 48.2 MB",
+			text: "[###########.............] Download progress is shown in your terminal",
 		},
 		{
 			tone: "detail",
-			text: "[######################..] 100%  48.2 MB / 48.2 MB",
+			text: "[######################..] Download completes before verification",
 		},
-		{ tone: "ok", text: "Downloaded 48.2 MB in 12s (4.0 MB/s)" },
+		{ tone: "ok", text: "Binary downloaded to a temporary file" },
 		{ tone: "phase", text: "[6/8] Verifying the download" },
-		{ tone: "detail", text: "expected sha256 4f2a9c1e8b7d0a53…" },
-		{ tone: "detail", text: "actual   sha256 4f2a9c1e8b7d0a53…" },
-		{ tone: "ok", text: "SHA-256 verified for 48.2 MB" },
+		{ tone: "detail", text: "Comparing downloaded file to the signed-off release checksum" },
+		{ tone: "ok", text: "SHA-256 verified before installation" },
 		{ tone: "phase", text: "[7/8] Installing Loom" },
-		{ tone: "ok", text: "Executable answers: loom 0.1.0" },
+		{ tone: "ok", text: "Downloaded executable starts successfully" },
 		{
 			tone: "ok",
-			text: "Installed to ~/.loom/bin/loom (mode 700, no administrator access used)",
+			text: "Installed to your user folder; no administrator access used",
 		},
 		{ tone: "phase", text: "[8/8] Adding Loom to your user PATH" },
-		{ tone: "ok", text: "Wrote PATH entry to ~/.profile" },
-		{ tone: "ok", text: "Loom 0.1.0 installed successfully in 21s." },
-		{ tone: "detail", text: "next  restart your terminal, then run: loom" },
+		{ tone: "ok", text: "Added Loom to your shell PATH" },
+		{ tone: "ok", text: "Loom installed successfully" },
+		{ tone: "detail", text: "Next: restart your terminal, then run loom" },
 	];
 
 	let open = $state(false);

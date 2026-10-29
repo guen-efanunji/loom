@@ -17,22 +17,39 @@ import {
 const { children } = $props();
 let lock = $state<UiLockState | null>(null);
 let legacyChecked = $state(false);
+let previousPathname = page.url.pathname;
+let lockRefresh: Promise<UiLockState> | undefined;
+let lockRequest = 0;
 
-async function refresh() {
+async function refresh(force = false): Promise<UiLockState> {
+	if (lockRefresh && !force) return lockRefresh;
+	const request = ++lockRequest;
+	const pending = (async () => {
+		let state: UiLockState;
+		try {
+			state = await uiLock.state();
+		} catch {
+			// The daemon may still be starting; the workspace surfaces its own
+			// connection errors, so the gate stays open rather than blocking.
+			state = { configured: false, notInUse: true, unlocked: true };
+		}
+		if (request === lockRequest) lock = state;
+		return state;
+	})();
+	lockRefresh = pending;
 	try {
-		lock = await uiLock.state();
-	} catch {
-		// The daemon may still be starting; the workspace surfaces its own
-		// connection errors, so the gate stays open rather than blocking.
-		lock = { configured: false, notInUse: true, unlocked: true };
+		return await pending;
+	} finally {
+		if (lockRefresh === pending) lockRefresh = undefined;
 	}
 }
-// The gate resolves server-side lock state once per page load; the unlock
-// page performs its own checks, so route changes never re-trigger it.
 $effect(() => {
-	page.url.pathname;
-	if (page.url.pathname === "/unlock") return;
-	if (!lock) void refresh();
+	const pathname = page.url.pathname;
+	const previous = previousPathname;
+	previousPathname = pathname;
+	if (pathname === "/unlock") return;
+	if (previous === "/unlock") void refresh(true);
+	else if (!lock) void refresh();
 });
 /** Old browsers kept the password in localStorage; migrate it once. */
 $effect(() => {

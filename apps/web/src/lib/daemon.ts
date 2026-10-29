@@ -518,24 +518,35 @@ export function websocketProtocols() {
 	return ["loom", getDaemonToken()];
 }
 
+let tokenProvision: Promise<string> | undefined;
 export async function provisionDaemonToken() {
 	const current = getDaemonToken();
 	if (current) return current;
-	const response = await fetch(`${serverUrl()}/api/bootstrap`, {
-		method: "GET",
-		headers: { Accept: "application/json" },
+	if (tokenProvision) return tokenProvision;
+	tokenProvision = (async () => {
+		const response = await fetch(`${serverUrl()}/api/bootstrap`, {
+			method: "POST",
+			headers: {
+				Accept: "application/json",
+				"Content-Type": "application/json",
+			},
+			body: "{}",
+		});
+		if (!response.ok)
+			throw new Error(
+				"Loom daemon is unavailable. Start it with `loom`, then retry.",
+			);
+		const body = (await response.json()) as { token?: string };
+		if (!body.token)
+			throw new Error(
+				"Loom daemon did not provide a token. Restart the daemon and retry.",
+			);
+		setDaemonToken(body.token);
+		return body.token;
+	})().finally(() => {
+		tokenProvision = undefined;
 	});
-	if (!response.ok)
-		throw new Error(
-			"Loom daemon is unavailable. Start it with `loom`, then retry.",
-		);
-	const body = (await response.json()) as { token?: string };
-	if (!body.token)
-		throw new Error(
-			"Loom daemon did not provide a token. Restart the daemon and retry.",
-		);
-	setDaemonToken(body.token);
-	return body.token;
+	return tokenProvision;
 }
 
 export function parseDaemonEvent(value: unknown): DaemonEvent {

@@ -49,6 +49,7 @@ import {
 	chat,
 	type FileDiff,
 	groupTurns,
+	type Question,
 	supersededIds,
 	userMessageText,
 } from "$lib/chat";
@@ -117,9 +118,13 @@ let monitorRuns = $state<CustomAgentRunMonitorItem[]>([]);
 let monitorMcpConnections = $state<ManagedMcpConnection[]>([]);
 let monitorError = $state("");
 let monitorRequest = 0;
-let monitorTimer: ReturnType<typeof setInterval> | undefined;
+let monitorInFlight = false;
+let lastMonitorRefreshAt = 0;
 let panelSyncRequest = 0;
 let lastPanelSyncAt = 0;
+let sessionRefreshInFlight = new Map<string, Promise<ChatState | undefined>>();
+let socketSessionRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+let lastSocketSessionRefreshAt = 0;
 let monitorSocket: WebSocket | undefined;
 let monitorReconnectTimer: ReturnType<typeof setTimeout> | undefined;
 let monitorTaskOutput = $state<Record<string, string>>({});
@@ -130,6 +135,26 @@ type MonitorTaskActivity = {
 	input?: Record<string, unknown>;
 	metadata?: Record<string, unknown>;
 };
+function clearTaskMonitorData(taskId: string) {
+	monitorTaskOutput = Object.fromEntries(
+		Object.entries(monitorTaskOutput).filter(([id]) => id !== taskId),
+	);
+	monitorTaskActivities = Object.fromEntries(
+		Object.entries(monitorTaskActivities).filter(([id]) => id !== taskId),
+	);
+	monitorTaskProgress = Object.fromEntries(
+		Object.entries(monitorTaskProgress).filter(([id]) => id !== taskId),
+	);
+}
+function pruneTaskRecord<T>(record: Record<string, T>, keep: Set<string>) {
+	let next: Record<string, T> | undefined;
+	for (const [key, value] of Object.entries(record)) {
+		if (keep.has(key)) continue;
+		next ??= { ...record };
+		delete next[key];
+	}
+	return next ?? record;
+}
 let monitorTaskActivities = $state<Record<string, MonitorTaskActivity[]>>({});
 let monitorTaskProgress = $state<
 	Record<
@@ -475,7 +500,10 @@ $effect(() => {
 	walkthroughDocument = null;
 	walkthroughDocumentFingerprint = "";
 	walkthroughStepId = "";
-	if (panel === "agents") void refreshAgentMonitor();
+	if (panel === "agents") {
+		lastMonitorRefreshAt = Date.now();
+		void refreshAgentMonitor(true);
+	}
 	if (panel === "git" || panel === "pull-requests" || panel === "walkthrough")
 		void showPanel(panel, true);
 });
@@ -865,19 +893,76 @@ async function refreshProjects() {
 	if (failed?.status === "rejected") throw failed.reason;
 	connected = true;
 }
-async function refreshSession(id: string) {
+function samePermissions(
+	left: ChatState["permissions"],
+	right: ChatState["permissions"],
+) {
+	return (
+		left.length === right.length &&
+		left.every(
+			(permission, index) =>
+				permission.id === right[index]?.id &&
+				permission.permission === right[index]?.permission &&
+				permission.patterns.join("|") === right[index]?.patterns.join("|"),
+		)
+	);
+}
+function sameQuestions(left: Question[], right: Question[]) {
+	return (
+		left.length === right.length &&
+		left.every((question, index) => question.id === right[index]?.id)
+	);
+}
+function sameMessages(left: ChatMessage[], right: ChatMessage[]) {
+	if (left.length !== right.length) return false;
+	const message = left.at(-1);
+	const previous = right.at(-1);
+	if (!message || !previous) return message === previous;
+	if (
+		message.info.id !== previous.info.id ||
+		message.info.time.completed !== previous.info.time.completed ||
+		message.info.error?.data?.message !== previous.info.error?.data?.message ||
+		message.parts.length !== previous.parts.length
+	)
+		return false;
+	return message.parts.every((part, index) => {
+		const old = previous.parts[index];
+		if (!old || part.id !== old.id || part.type !== old.type) return false;
+		if (part.type === "text") return part.text === old.text;
+		if (part.type === "tool")
+			return (
+				part.state?.status === old.state?.status &&
+				part.state?.output === old.state?.output &&
+				part.state?.error === old.state?.error
+			);
+		return true;
+	});
+}
+function refreshSession(id: string): Promise<ChatState | undefined> {
+	const active = sessionRefreshInFlight.get(id);
+	if (active) return active;
+	const request = refreshSessionSnapshot(id).finally(() => {
+		if (sessionRefreshInFlight.get(id) === request)
+			sessionRefreshInFlight.delete(id);
+	});
+	sessionRefreshInFlight.set(id, request);
+	return request;
+}
+async function refreshSessionSnapshot(
+	id: string,
+): Promise<ChatState | undefined> {
 	const result = await chat.state(id);
 	if (disposed || sessionId !== id) return;
-	const changed =
-		JSON.stringify(result.messages) !==
-			JSON.stringify(conversation?.messages) ||
-		JSON.stringify(result.permissions) !==
-			JSON.stringify(conversation?.permissions);
+	const current = conversation;
+	const changed = !current || !sameMessages(result.messages, current.messages);
 	if (
 		changed ||
-		conversation?.status.type !== result.status.type ||
-		conversation?.session.title !== result.session.title ||
-		JSON.stringify(conversation?.questions) !== JSON.stringify(result.questions)
+		!current ||
+		!samePermissions(result.permissions, current.permissions) ||
+		!sameQuestions(result.questions, current.questions) ||
+		current.status.type !== result.status.type ||
+		current.status.message !== result.status.message ||
+		current.session.title !== result.session.title
 	)
 		conversation = result;
 	connected = true;
@@ -1062,7 +1147,6 @@ $effect(() => {
 $effect(() => {
 	const projectId = selectedProjectId;
 	void catalogNonce;
-	void refreshAgentMonitor();
 	if (!projectId) return;
 	const request = ++projectRequest;
 	const cachedCatalog = chat.cachedCatalog(projectId);
@@ -1197,8 +1281,20 @@ function applyMonitorEvent(event: DaemonEvent) {
 	// P1-7: an in-flight provider turn pushed a status change — refresh the
 	// open conversation immediately instead of waiting for the next poll tick.
 	if (event.type === "chat.updated") {
-		if (event.sessionId === sessionId && !sessionLoading)
-			void refreshSession(sessionId).catch(() => {});
+		if (event.sessionId === sessionId && !sessionLoading) {
+			const delay = Math.max(
+				0,
+				1_000 - (Date.now() - lastSocketSessionRefreshAt),
+			);
+			if (!socketSessionRefreshTimer) {
+				socketSessionRefreshTimer = setTimeout(() => {
+					socketSessionRefreshTimer = undefined;
+					lastSocketSessionRefreshAt = Date.now();
+					if (!disposed && event.sessionId === sessionId && !sessionLoading)
+						void refreshSession(event.sessionId).catch(() => {});
+				}, delay);
+			}
+		}
 		return;
 	}
 	if (
@@ -1220,6 +1316,8 @@ function applyMonitorEvent(event: DaemonEvent) {
 					task.id === event.task.id ? { ...task, ...event.task } : task,
 				)
 			: [...legacyTasks, event.task];
+		if (["completed", "failed", "cancelled"].includes(event.task.status))
+			clearTaskMonitorData(event.task.id);
 		return;
 	}
 	if (event.type === "run.started") {
@@ -1261,19 +1359,22 @@ function applyMonitorEvent(event: DaemonEvent) {
 		if (event.activities)
 			monitorTaskActivities = {
 				...monitorTaskActivities,
-				[event.taskId]: event.activities,
+				[event.taskId]: event.activities.slice(-80),
 			};
 		return;
 	}
 	if (
+		activePanel === "agents" &&
 		[
 			"task.started",
 			"task.completed",
 			"task.failed",
 			"task.cancelled",
 		].includes(event.type)
-	)
+	) {
+		lastMonitorRefreshAt = Date.now();
 		void refreshAgentMonitor();
+	}
 }
 async function connectMonitorSocket() {
 	if (disposed) return;
@@ -1326,28 +1427,64 @@ async function reloadModels() {
 	catalogNonce += 1;
 	await retryConnection();
 }
-let lastSessionPollAt = 0;
+let lastSessionStatusPollAt = 0;
+let lastSessionSnapshotAt = 0;
+let lastSessionStatusSignature = "";
+let sessionPollInFlight = false;
 async function poll() {
 	if (disposed) return;
 	try {
+		const now = Date.now();
 		if (
 			sessionId &&
 			!sessionLoading &&
 			!sending &&
-			(busy || Date.now() - lastSessionPollAt >= 15_000)
+			!sessionPollInFlight &&
+			now - lastSessionStatusPollAt >= 2_000
 		) {
-			lastSessionPollAt = Date.now();
-			await refreshSession(sessionId);
+			sessionPollInFlight = true;
+			try {
+				lastSessionStatusPollAt = now;
+				const currentSession = sessionId;
+				const summary = await chat.status(currentSession);
+				if (disposed || currentSession !== sessionId || sessionLoading) return;
+				const signature = [
+					summary.count,
+					summary.lastMessageId,
+					summary.lastCompleted ?? "",
+					summary.status.type,
+					summary.status.message ?? "",
+					summary.pendingPermissions,
+					summary.pendingQuestions,
+				].join("|");
+
+				const changed = signature !== lastSessionStatusSignature;
+				lastSessionStatusSignature = signature;
+				if (changed || (busy && now - lastSessionSnapshotAt >= 5_000)) {
+					lastSessionSnapshotAt = now;
+					await refreshSession(currentSession);
+				}
+			} finally {
+				sessionPollInFlight = false;
+			}
 		}
 		if (viewMode !== "chat" && ready) await refreshBoard();
+		if (
+			activePanel === "agents" &&
+			!monitorInFlight &&
+			Date.now() - lastMonitorRefreshAt >= (busy ? 15_000 : 30_000)
+		) {
+			lastMonitorRefreshAt = Date.now();
+			void refreshAgentMonitor();
+		}
 		if (
 			activePanel &&
 			["git", "changes", "pull-requests", "walkthrough"].includes(activePanel)
 		) {
-			const now = Date.now();
+			const panelNow = Date.now();
 			const interval = activePanel === "pull-requests" ? 15_000 : 2_000;
-			if (now - lastPanelSyncAt >= interval) {
-				lastPanelSyncAt = now;
+			if (panelNow - lastPanelSyncAt >= interval) {
+				lastPanelSyncAt = panelNow;
 				void refreshVisiblePanel();
 			}
 		}
@@ -1355,7 +1492,7 @@ async function poll() {
 		connected = false;
 		report(reason);
 	} finally {
-		if (!disposed) timer = setTimeout(poll, 1200);
+		if (!disposed) timer = setTimeout(poll, 2000);
 	}
 }
 async function refreshVisiblePanel() {
@@ -1399,18 +1536,23 @@ async function refreshVisiblePanel() {
 			walkthroughSnapshot = result.snapshot;
 	}
 }
-async function refreshAgentMonitor() {
+async function refreshAgentMonitor(includeStatic = false) {
+	if (disposed || monitorInFlight) return;
+	monitorInFlight = true;
 	const request = ++monitorRequest;
 	const projectId = selectedProjectId;
 	try {
-		const [agents, runs, tasks, permissions, mcpConnections] =
-			await Promise.all([
-				daemon.listCustomAgents(projectId || undefined),
-				daemon.listCustomAgentRuns(projectId || undefined),
-				daemon.listTasks(),
-				daemon.getPermissions(),
-				daemon.listManagedMcpConnections(),
-			]);
+		const [agents, runs, tasks] = await Promise.all([
+			daemon.listCustomAgents(projectId || undefined),
+			daemon.listCustomAgentRuns(projectId || undefined),
+			daemon.listTasks(),
+		]);
+		const [permissions, mcpConnections] = includeStatic
+			? await Promise.all([
+					daemon.getPermissions(),
+					daemon.listManagedMcpConnections(),
+				])
+			: [monitorPermissions, { connections: monitorMcpConnections }];
 		if (
 			disposed ||
 			request !== monitorRequest ||
@@ -1422,12 +1564,30 @@ async function refreshAgentMonitor() {
 		legacyTasks = tasks;
 		monitorPermissions = permissions;
 		monitorMcpConnections = mcpConnections.connections;
-		monitorError = "";
 		const activeTasks = tasks.filter(
 			(task) =>
 				(!projectId || task.projectId === projectId) &&
 				(task.status === "running" || task.status === "preparing"),
 		);
+		const retainedTaskIds = new Set([
+			...activeTasks.map((task) => task.id),
+			...tasks
+				.filter((task) => !projectId || task.projectId === projectId)
+				.sort(
+					(a, b) =>
+						monitorTimestamp(b.createdAt) - monitorTimestamp(a.createdAt),
+				)
+				.slice(0, 8)
+				.map((task) => task.id),
+			...(activeTaskRun ? [activeTaskRun.id] : []),
+		]);
+		monitorTaskOutput = pruneTaskRecord(monitorTaskOutput, retainedTaskIds);
+		monitorTaskActivities = pruneTaskRecord(
+			monitorTaskActivities,
+			retainedTaskIds,
+		);
+		monitorTaskProgress = pruneTaskRecord(monitorTaskProgress, retainedTaskIds);
+		monitorError = "";
 		void Promise.all(
 			activeTasks.map(async (task) => {
 				try {
@@ -1450,6 +1610,8 @@ async function refreshAgentMonitor() {
 				reason instanceof Error
 					? reason.message
 					: "Unable to load agent activity.";
+	} finally {
+		monitorInFlight = false;
 	}
 }
 async function decideTaskPermission(
@@ -1506,7 +1668,6 @@ onMount(() => {
 			if (sourceProject && projects.some((p) => p.id === sourceProject))
 				selectedProjectId = sourceProject;
 			legacyTasks = await daemon.listTasks();
-			void refreshAgentMonitor();
 			model = preferredModel(selectedProjectId);
 			try {
 				automationMode = (await daemon.getAutomationSettings()).automationMode;
@@ -1540,7 +1701,6 @@ onMount(() => {
 		} finally {
 			loading = false;
 			void poll();
-			monitorTimer = setInterval(() => void refreshAgentMonitor(), 5000);
 		}
 	})();
 	return () => {
@@ -1549,7 +1709,7 @@ onMount(() => {
 		window.removeEventListener("storage", syncPanelPreferences);
 		window.removeEventListener("loom:providers-changed", refreshProviders);
 		clearTimeout(timer);
-		if (monitorTimer) clearInterval(monitorTimer);
+		if (socketSessionRefreshTimer) clearTimeout(socketSessionRefreshTimer);
 		if (monitorReconnectTimer) clearTimeout(monitorReconnectTimer);
 		monitorSocket?.close();
 	};
@@ -1888,7 +2048,10 @@ async function showPanel(panel: ChatPanelId, force = false) {
 		panel === "terminal" ||
 		panel === "agents"
 	) {
-		if (panel === "agents") void refreshAgentMonitor();
+		if (panel === "agents") {
+			lastMonitorRefreshAt = Date.now();
+			void refreshAgentMonitor(true);
+		}
 		if (panel === "terminal" && !projectId)
 			panelError = "Choose a project before opening a terminal.";
 		return;
@@ -2167,7 +2330,11 @@ $effect(() => {
 });
 /** Daemon signals a second writer on one checkout with this code. */
 function isProjectBusy(reason: unknown) {
-	const problem = reason as { code?: string; status?: number; message?: string };
+	const problem = reason as {
+		code?: string;
+		status?: number;
+		message?: string;
+	};
 	return (
 		problem?.code === "PROJECT_BUSY" ||
 		(problem?.status === 409 &&
@@ -2194,7 +2361,9 @@ async function mergeChatWorkspace() {
 	} catch (reason) {
 		workspaceConflict = conflictFiles(reason);
 		toast.error(
-			reason instanceof Error ? reason.message : "Unable to merge this workspace.",
+			reason instanceof Error
+				? reason.message
+				: "Unable to merge this workspace.",
 		);
 		await loadChatWorkspace();
 	} finally {
@@ -2214,10 +2383,11 @@ async function syncChatWorkspace() {
 	} catch (reason) {
 		workspaceConflict = conflictFiles(reason);
 		toast.error(
-			reason instanceof Error ? reason.message : "Unable to sync this workspace.",
+			reason instanceof Error
+				? reason.message
+				: "Unable to sync this workspace.",
 		);
-	}
-	finally {
+	} finally {
 		workspaceAction = "";
 	}
 }
@@ -2264,7 +2434,8 @@ async function send(input: Parameters<typeof chat.send>[1]) {
 		if (!id) {
 			// Isolation is fixed when the session is created; the provider session is
 			// bound to its working directory for its whole life.
-			const isolated = chatTabs.find((item) => item.id === tabId)?.isolated === true;
+			const isolated =
+				chatTabs.find((item) => item.id === tabId)?.isolated === true;
 			const created = await chat.create(
 				projectId,
 				input.text.split("\n")[0].slice(0, 80) || "File discussion",

@@ -411,6 +411,7 @@ export const chat = {
 			count: number;
 			lastMessageId: string;
 			lastCompleted: number | null;
+			lastMessagePreview?: string;
 			busy: boolean;
 			pendingPermissions: number;
 			pendingQuestions: number;

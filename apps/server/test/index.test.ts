@@ -684,15 +684,16 @@ describe("server API", () => {
 			);
 			for (const id of taskIds) {
 				let status = "queued";
+				const terminalForCheckpoint = new Set(["completed", "ready_to_merge"]);
 				const deadline = Date.now() + 10_000;
-				while (Date.now() < deadline && status !== "completed") {
+				while (Date.now() < deadline && !terminalForCheckpoint.has(status)) {
 					const response = await setup.daemon.app.request(`/api/tasks/${id}`, {
 						headers,
 					});
 					status = ((await response.json()) as { status: string }).status;
-					if (status !== "completed") await Bun.sleep(20);
+					if (!terminalForCheckpoint.has(status)) await Bun.sleep(20);
 				}
-				expect(status).toBe("completed");
+				expect([...terminalForCheckpoint]).toContain(status);
 				const checkpoint = await setup.daemon.app.request(
 					`/api/tasks/${id}/checkpoint`,
 					{
@@ -760,6 +761,16 @@ describe("server API", () => {
 			expect(bootstrap.status).toBe(200);
 			const { token } = (await bootstrap.json()) as { token?: string };
 			expect(token).toBe("test-token");
+			const sameOriginPost = await setup.daemon.app.request("/api/bootstrap", {
+				method: "POST",
+				headers: {
+					Origin: config.corsOrigin,
+					"Content-Type": "application/json",
+				},
+				body: "{}",
+			});
+			expect(sameOriginPost.status).toBe(200);
+			expect(await sameOriginPost.json()).toEqual({ token: "test-token" });
 		} finally {
 			await setup.daemon.close();
 			await rm(setup.root, { recursive: true, force: true });

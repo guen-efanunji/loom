@@ -61,16 +61,12 @@ let outputError = $state("");
 let cancelling = $state(false);
 let replyingToPermission = $state("");
 let openActivities = $state<Record<string, boolean>>({});
-let taskPermissionSnapshot = $state<PermissionRequest[]>([]);
-let taskPermissionSnapshotLoaded = $state(false);
 let now = $state(Date.now());
 const active = $derived(
 	task.status === "running" || task.status === "preparing",
 );
 const visiblePermissions = $derived(
-	taskPermissionSnapshotLoaded
-		? taskPermissionSnapshot
-		: permissions.filter((request) => request.taskId === task.id),
+	permissions.filter((request) => request.taskId === task.id),
 );
 const permissionPending = $derived(
 	visiblePermissions.some((request) => request.status === "pending"),
@@ -274,22 +270,8 @@ async function decidePermission(
 	replyingToPermission = request.id;
 	try {
 		await onpermission(request.id, decision);
-		await refreshTaskPermissions(task.id);
 	} finally {
 		replyingToPermission = "";
-	}
-}
-
-async function refreshTaskPermissions(taskId = task.id) {
-	try {
-		const requests = await daemon.getPermissions();
-		if (task.id !== taskId) return;
-		taskPermissionSnapshot = requests.filter(
-			(request) => request.taskId === taskId,
-		);
-		taskPermissionSnapshotLoaded = true;
-	} catch {
-		// The passed monitor state remains the fallback if polling is unavailable.
 	}
 }
 
@@ -308,18 +290,6 @@ $effect(() => {
 $effect(() => {
 	if (!active) return;
 	const timer = window.setInterval(() => (now = Date.now()), 1000);
-	return () => window.clearInterval(timer);
-});
-
-$effect(() => {
-	const taskId = task.id;
-	if (!onpermission) return;
-	taskPermissionSnapshotLoaded = false;
-	void refreshTaskPermissions(taskId);
-	const timer = window.setInterval(
-		() => void refreshTaskPermissions(taskId),
-		1500,
-	);
 	return () => window.clearInterval(timer);
 });
 

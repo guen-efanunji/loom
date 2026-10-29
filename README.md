@@ -7,7 +7,7 @@
 Plan the work, let agents build side by side in isolated Git worktrees, and approve every line before it touches your branch.
 Your repositories, sessions and state stay on your machine.
 
-![version](https://img.shields.io/badge/version-0.1.0-8b5cf6)
+![version](https://img.shields.io/badge/version-0.1.1-8b5cf6)
 ![platforms](https://img.shields.io/badge/macOS%20%C2%B7%20Linux-x64%20%7C%20arm64-0ea5e9)
 ![runtime](https://img.shields.io/badge/runtime-Bun%20bundled-22c55e)
 ![checks](https://img.shields.io/github/actions/workflow/status/guen-efanunji/loom/ci.yml?branch=main&label=checks)
@@ -66,7 +66,7 @@ Project references, plans, tasks, sessions, artifacts, config and logs live in a
 
 ## Install
 
-Loom ships a single executable with its runtime and UI bundled. Git and a configured OpenCode installation are the only prerequisites.
+Loom is built with Bun. Each release is a single executable with the Bun runtime and browser UI bundled, so users do not need a separate Bun, Node.js, or npm install. Git and a configured OpenCode installation are the prerequisites.
 
 **macOS / Linux**
 

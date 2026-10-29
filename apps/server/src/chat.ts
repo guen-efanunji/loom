@@ -2296,6 +2296,13 @@ export function createChatRoutes(options: {
 				count: visible.length,
 				lastMessageId: visible.at(-1)?.info.id ?? "",
 				lastCompleted: lastAssistant?.info.time?.completed ?? null,
+				lastMessagePreview:
+					visible
+						.at(-1)
+						?.parts.filter((part) => part.type === "text")
+						.map((part) => part.text ?? "")
+						.join(" ")
+						.slice(-160) ?? "",
 				busy: status.type === "busy" || status.type === "retry",
 				pendingPermissions,
 				pendingQuestions,

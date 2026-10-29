@@ -4,6 +4,7 @@
   "workspaces": {
     "": {
       "name": "loom",
+      "version": "0.1.1",
       "dependencies": {
         "zod": "catalog:",
       },
@@ -22,7 +23,7 @@
     },
     "apps/cli": {
       "name": "@loom/cli",
-      "version": "0.0.0",
+      "version": "0.1.1",
       "bin": {
         "loom": "dist/index.js",
       },
@@ -201,7 +202,7 @@
     },
     "packages/distribution": {
       "name": "@loom/distribution",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "zod": "catalog:",
       },
