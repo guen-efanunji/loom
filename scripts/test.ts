@@ -35,6 +35,7 @@ if ((await build.exited) !== 0)
 
 // Each suite gets its own Loom home. State.db is WAL-backed, so two suites
 // sharing one directory can lock, delete or corrupt each other's database.
+const failed: string[] = [];
 for (const suite of suites) {
 	const directory = await mkdtemp(join(tmpdir(), "loom-suite-"));
 	try {
@@ -42,10 +43,12 @@ for (const suite of suites) {
 			stdio: ["inherit", "inherit", "inherit"],
 			env: { ...process.env, LOOM_HOME: directory, LOOM_DAEMON: "false" },
 		});
-		const exit = await result.exited;
-		if (exit !== 0) process.exitCode = exit;
+		if ((await result.exited) !== 0) failed.push(suite);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}
-	if (process.exitCode) break;
+}
+if (failed.length) {
+	console.error(`Suites with failures: ${failed.join(", ")}`);
+	process.exitCode = 1;
 }

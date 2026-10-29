@@ -135,7 +135,9 @@ test("migrates legacy kind columns before creating their indexes", async () => {
 		legacy.close();
 
 		createDb({ DATABASE_URL: `file:${path}` }).$client.close();
-		const migrated = new Database(path, { readonly: true });
+		// Reopened with no writer left alive: a WAL database must create its -shm
+		// file, which a readonly handle cannot do. The assertions only read.
+		const migrated = new Database(path);
 		try {
 			const entry = migrated
 				.query<{ kind: string; title: string }, [string]>(
