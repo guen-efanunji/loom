@@ -90,7 +90,7 @@ jobs:
           LOOM_CF_FIX_DNS: ${{ inputs.fix_dns && '1' || '' }}
         run: |
           bun scripts/cloudflare-setup.ts ${{ inputs.fix_dns && '--fix-dns' || '' }} \
-            || echo "::warning title=Domain not wired yet::https://\$LOOM_DOMAIN is not serving this build. Add the zone to this Cloudflare account, then re-run with the fix-dns input."
+            || echo "::warning title=Domain not wired yet::https://$LOOM_DOMAIN is not serving this build. Add the zone to this Cloudflare account, then re-run with the fix-dns input."
       - name: Compare the published installer with this commit
         if: ${{ !inputs.setup_only }}
         continue-on-error: true
