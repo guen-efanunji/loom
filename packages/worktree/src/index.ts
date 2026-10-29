@@ -12,7 +12,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
 export type CommandResult = {
 	stdout: string;
@@ -343,6 +343,20 @@ export async function dependencyDirectories(
 		}
 	}
 	return [...found].sort();
+}
+
+/**
+ * Git and the filesystem report the canonical form of a path, while Loom's
+ * configured home may contain links (/var to /private/var on macOS, a mapped
+ * drive on Windows). Compare identities instead of spellings.
+ */
+async function canonicalPath(path: string): Promise<string> {
+	const resolved = resolve(path);
+	try {
+		return await realpath(resolved);
+	} catch {}
+	if (resolved === sep) return resolved;
+	return join(await canonicalPath(dirname(resolved)), basename(resolved));
 }
 
 async function isDirectory(path: string): Promise<boolean> {
@@ -1556,7 +1570,8 @@ export class WorktreeManager {
 				{ path: workspace.path },
 			);
 		}
-		if (resolve(workspace.path) !== expected || actual !== expected) {
+		const managed = await canonicalPath(expected);
+		if (resolve(workspace.path) !== expected || actual !== managed) {
 			throw new WorktreeError(
 				"SAFETY_ERROR",
 				"Workspace path is outside its owned directory",

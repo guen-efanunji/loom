@@ -3,6 +3,7 @@ import {
 	mkdir,
 	mkdtemp,
 	readFile,
+	realpath,
 	rm,
 	stat,
 	writeFile,
@@ -18,6 +19,14 @@ import {
 	WorktreeError,
 	WorktreeManager,
 } from "../src";
+
+/**
+ * Git reports the canonical repository path, and a temporary directory can be a
+ * link (/var to /private/var on macOS), so fixtures start from the real path.
+ */
+async function tempDir(prefix: string): Promise<string> {
+	return realpath(await mkdtemp(join(tmpdir(), prefix)));
+}
 
 describe("worktree paths", () => {
 	test("uses the managed path and branch convention", () => {
@@ -46,7 +55,7 @@ describe("temporary git repository", () => {
 	});
 
 	test("accepts an empty Git repository", async () => {
-		root = await mkdtemp(join(tmpdir(), "loom-empty-repository-"));
+		root = await tempDir("loom-empty-repository-");
 		const process = Bun.spawn(["git", "init", "-b", "main"], {
 			cwd: root,
 			stdout: "pipe",
@@ -62,8 +71,8 @@ describe("temporary git repository", () => {
 	});
 
 	test("validates, creates, diffs, and discards an isolated worktree", async () => {
-		root = await mkdtemp(join(tmpdir(), "loom-repository-"));
-		home = await mkdtemp(join(tmpdir(), "loom-home-"));
+		root = await tempDir("loom-repository-");
+		home = await tempDir("loom-home-");
 		const run = async (
 			command: string,
 			args: readonly string[],
@@ -131,8 +140,8 @@ describe("temporary git repository", () => {
 	});
 
 	test("creates two isolated worktrees for different tasks", async () => {
-		root = await mkdtemp(join(tmpdir(), "loom-repository-"));
-		home = await mkdtemp(join(tmpdir(), "loom-home-"));
+		root = await tempDir("loom-repository-");
+		home = await tempDir("loom-home-");
 		const run = async (args: string[], cwd = root) => {
 			const process = Bun.spawn(["git", ...args], {
 				cwd,
@@ -172,8 +181,8 @@ describe("temporary git repository", () => {
 	});
 
 	test("assembles exact task output SHAs into a reviewable candidate before promotion", async () => {
-		root = await mkdtemp(join(tmpdir(), "loom-integration-repository-"));
-		home = await mkdtemp(join(tmpdir(), "loom-integration-home-"));
+		root = await tempDir("loom-integration-repository-");
+		home = await tempDir("loom-integration-home-");
 		const run = async (args: string[], cwd = root) => {
 			const process = Bun.spawn(["git", ...args], {
 				cwd,
@@ -296,8 +305,8 @@ describe("temporary git repository", () => {
 	});
 
 	test("uses an explicit baseline while leaving dirty checkout changes untouched", async () => {
-		root = await mkdtemp(join(tmpdir(), "loom-repository-"));
-		home = await mkdtemp(join(tmpdir(), "loom-home-"));
+		root = await tempDir("loom-repository-");
+		home = await tempDir("loom-home-");
 		const run = async (args: string[], cwd = root) => {
 			const process = Bun.spawn(["git", ...args], {
 				cwd,
@@ -339,8 +348,8 @@ describe("temporary git repository", () => {
 	});
 
 	test("refuses normal removal when task output is uncheckpointed", async () => {
-		root = await mkdtemp(join(tmpdir(), "loom-repository-"));
-		home = await mkdtemp(join(tmpdir(), "loom-home-"));
+		root = await tempDir("loom-repository-");
+		home = await tempDir("loom-home-");
 		const run = async (args: string[], cwd = root) => {
 			const process = Bun.spawn(["git", ...args], {
 				cwd,
@@ -376,8 +385,8 @@ describe("temporary git repository", () => {
 	});
 
 	test("checkpoints visible worktree output and rejects secret files", async () => {
-		root = await mkdtemp(join(tmpdir(), "loom-repository-"));
-		home = await mkdtemp(join(tmpdir(), "loom-home-"));
+		root = await tempDir("loom-repository-");
+		home = await tempDir("loom-home-");
 		const run = async (args: string[], cwd = root) => {
 			const process = Bun.spawn(["git", ...args], {
 				cwd,
@@ -433,8 +442,8 @@ describe("temporary git repository", () => {
 	});
 
 	test("merges committed changes and removes only a clean worktree", async () => {
-		root = await mkdtemp(join(tmpdir(), "loom-repository-"));
-		home = await mkdtemp(join(tmpdir(), "loom-home-"));
+		root = await tempDir("loom-repository-");
+		home = await tempDir("loom-home-");
 		const run = async (args: string[], cwd = root) => {
 			const process = Bun.spawn(["git", ...args], {
 				cwd,
@@ -477,8 +486,8 @@ describe("temporary git repository", () => {
 	});
 
 	test("aborts a conflicting merge and keeps main usable", async () => {
-		root = await mkdtemp(join(tmpdir(), "loom-repository-"));
-		home = await mkdtemp(join(tmpdir(), "loom-home-"));
+		root = await tempDir("loom-repository-");
+		home = await tempDir("loom-home-");
 		const run = async (args: string[], cwd = root) => {
 			const process = Bun.spawn(["git", ...args], {
 				cwd,
@@ -516,8 +525,8 @@ describe("temporary git repository", () => {
 	});
 
 	test("keeps a chat workspace after integrating its branch", async () => {
-		root = await mkdtemp(join(tmpdir(), "loom-repository-"));
-		home = await mkdtemp(join(tmpdir(), "loom-home-"));
+		root = await tempDir("loom-repository-");
+		home = await tempDir("loom-home-");
 		const run = async (args: string[], cwd = root) => {
 			const process = Bun.spawn(["git", ...args], {
 				cwd,
@@ -559,8 +568,8 @@ describe("temporary git repository", () => {
 	});
 
 	test("syncs a workspace with the branch another tab just merged", async () => {
-		root = await mkdtemp(join(tmpdir(), "loom-repository-"));
-		home = await mkdtemp(join(tmpdir(), "loom-home-"));
+		root = await tempDir("loom-repository-");
+		home = await tempDir("loom-home-");
 		const run = async (args: string[], cwd = root) => {
 			const process = Bun.spawn(["git", ...args], {
 				cwd,
@@ -609,8 +618,8 @@ describe("temporary git repository", () => {
 	});
 
 	test("discarding a chat workspace can drop its branch too", async () => {
-		root = await mkdtemp(join(tmpdir(), "loom-repository-"));
-		home = await mkdtemp(join(tmpdir(), "loom-home-"));
+		root = await tempDir("loom-repository-");
+		home = await tempDir("loom-home-");
 		const run = async (args: string[], cwd = root) => {
 			const process = Bun.spawn(["git", ...args], {
 				cwd,
@@ -650,8 +659,8 @@ describe("temporary git repository", () => {
 	});
 
 	test("links installed dependencies into a new workspace", async () => {
-		root = await mkdtemp(join(tmpdir(), "loom-repository-"));
-		home = await mkdtemp(join(tmpdir(), "loom-home-"));
+		root = await tempDir("loom-repository-");
+		home = await tempDir("loom-home-");
 		const run = async (args: string[], cwd = root) => {
 			const process = Bun.spawn(["git", ...args], {
 				cwd,

@@ -58,8 +58,10 @@ async function setup() {
 test("bootstraps an empty database and is idempotent", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "loom-db-"));
 	const path = join(directory, "state.db");
+	const handles: ReturnType<typeof createDb>[] = [];
 	try {
 		const db = createDb({ DATABASE_URL: `file:${path}` });
+		handles.push(db);
 		const tables = await db.all<{ name: string }>(
 			"SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
 		);
@@ -103,9 +105,12 @@ test("bootstraps an empty database and is idempotent", async () => {
 			"verification",
 			"workspaces",
 		]);
-		createDb({ DATABASE_URL: `file:${path}` });
+		handles.push(createDb({ DATABASE_URL: `file:${path}` }));
 		for (const statement of databaseSchemaStatements()) await db.run(statement);
 	} finally {
+		// WAL keeps shared-memory files beside state.db; they must be released
+		// before the temporary directory can be removed.
+		for (const handle of handles) handle.$client.close();
 		await rm(directory, { recursive: true, force: true });
 	}
 });
@@ -129,7 +134,7 @@ test("migrates legacy kind columns before creating their indexes", async () => {
 		);
 		legacy.close();
 
-		createDb({ DATABASE_URL: `file:${path}` });
+		createDb({ DATABASE_URL: `file:${path}` }).$client.close();
 		const migrated = new Database(path, { readonly: true });
 		try {
 			const entry = migrated
