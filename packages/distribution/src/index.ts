@@ -2,7 +2,8 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
 
 declare const LOOM_BUILD_VERSION: string;
@@ -42,9 +43,14 @@ export function promptCandidates(
 ): string[] {
 	const configured = process.env.LOOM_PROMPTS_DIR?.trim();
 	const directory = promptsDirectory();
+	const sourcePrompts = resolve(
+		dirname(fileURLToPath(import.meta.url)),
+		"../../../prompts",
+	);
 	return [
 		...(configured ? [join(configured, name)] : []),
 		join(directory, name),
+		join(sourcePrompts, name),
 		join(process.cwd(), "prompts", name),
 		...origins.map((origin) => join(origin, name)),
 	];

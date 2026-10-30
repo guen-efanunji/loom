@@ -97,6 +97,7 @@ test("bootstraps an empty database and is idempotent", async () => {
 			"scheduler_resource_leases",
 			"session",
 			"sqlite_sequence",
+			"ssh_connections",
 			"task_artifacts",
 			"task_dependencies",
 			"task_reviews",

@@ -1,491 +1,519 @@
 <script lang="ts">
-import {
-	Check,
-	Copy,
-	FileCode,
-	MessageSquarePlus,
-	PanelsTopLeft,
-	Pencil,
-	RotateCw,
-	Sparkles,
-	Terminal,
-	Wrench,
-	X,
-} from "@lucide/svelte";
-import { toast } from "svelte-sonner";
-import {
-	type Catalog,
-	type ChatMessage,
-	type ChatPart,
-	canonicalProviderID,
-	chat,
-	type FileDiff,
-	providerDisplayName,
-	userMessageText,
-} from "$lib/chat";
-import { Badge } from "$lib/components/ui/badge";
-import { Button } from "$lib/components/ui/button";
-import { Textarea } from "$lib/components/ui/textarea";
-import * as Trace from "$lib/components/ui/trace";
-import { type DesignNode, daemon } from "$lib/daemon";
-import CodeBlock from "./CodeBlock.svelte";
-import Markdown from "./Markdown.svelte";
+	import {
+		Check,
+		Copy,
+		FileCode,
+		MessageSquarePlus,
+		PanelsTopLeft,
+		Pencil,
+		RotateCw,
+		Sparkles,
+		Terminal,
+		Wrench,
+		X,
+	} from "@lucide/svelte";
+	import { toast } from "svelte-sonner";
+	import {
+		type Catalog,
+		type ChatChildSession,
+		type ChatMessage,
+		type ChatPart,
+		canonicalProviderID,
+		chat,
+		type FileDiff,
+		providerDisplayName,
+		userMessageText,
+	} from "$lib/chat";
+	import { childSessionsForUserMessage } from "$lib/chat-utils";
+	import { Badge } from "$lib/components/ui/badge";
+	import { Button } from "$lib/components/ui/button";
+	import { Textarea } from "$lib/components/ui/textarea";
+	import * as Trace from "$lib/components/ui/trace";
+	import { type DesignNode, daemon } from "$lib/daemon";
+	import CodeBlock from "./CodeBlock.svelte";
+	import Markdown from "./Markdown.svelte";
 
-let {
-	messages,
-	catalog,
-	sessionId,
-	projectId,
-	onfile,
-	onopenfile,
-	onbranch,
-	onregenerate,
-	onedit,
-}: {
-	messages: ChatMessage[];
-	catalog: Catalog;
-	sessionId: string;
-	projectId: string;
-	onfile: (path: string) => void;
-	onopenfile?: (path: string) => void;
-	onbranch?: (answer: string) => void;
-	/** Present on the latest completed assistant turn to redo it. */
-	onregenerate?: () => void;
-	/** Present on user turns to edit the prompt and re-send. */
-	onedit?: (messageId: string, text: string) => Promise<void> | void;
-} = $props();
+	let {
+		messages,
+		catalog,
+		sessionId,
+		childSessions = [],
+		conversationMessages = messages,
+		onfocuschild,
+		projectId,
+		onfile,
+		onopenfile,
+		onbranch,
+		onregenerate,
+		onedit,
+	}: {
+		messages: ChatMessage[];
+		catalog: Catalog;
+		sessionId: string;
+		childSessions?: ChatChildSession[];
+		conversationMessages?: ChatMessage[];
+		onfocuschild?: (id: string) => void;
+		projectId: string;
+		onfile: (path: string) => void;
+		onopenfile?: (path: string) => void;
+		onbranch?: (answer: string) => void;
+		/** Present on the latest completed assistant turn to redo it. */
+		onregenerate?: () => void;
+		/** Present on user turns to edit the prompt and re-send. */
+		onedit?: (messageId: string, text: string) => Promise<void> | void;
+	} = $props();
 
-const role = $derived(messages[0]?.info.role ?? "assistant");
-const first = $derived(messages[0]);
-const agent = $derived(messages.find((m) => m.info.agent)?.info.agent);
-const reportedProviderID = $derived(
-	messages.find((m) => m.info.providerID)?.info.providerID,
-);
-const modelID = $derived(messages.find((m) => m.info.modelID)?.info.modelID);
-const providerID = $derived(
-	canonicalProviderID(catalog, reportedProviderID, modelID),
-);
-const providerLabel = $derived(
-	providerDisplayName(catalog, reportedProviderID, modelID),
-);
-const modelTone = $derived(
-	providerID === "agy" || providerID === "antigravity"
-		? "agy"
-		: providerID === "claude" || providerID === "anthropic"
-			? "claude"
-			: providerID === "codex" || providerID === "openai"
-				? "codex"
-				: providerID === "opencode"
-					? "opencode"
-					: "default",
-);
-const time = $derived(first ? first.info.time.created : Date.now());
-const completedAt = $derived(messages.at(-1)?.info.time.completed);
-const elapsed = $derived(
-	completedAt !== undefined && first
-		? Math.max(0, completedAt - first.info.time.created)
-		: null,
-);
-const error = $derived(messages.find((m) => m.info.error)?.info.error);
-const responseText = $derived(
-	messages
-		.flatMap((message) => message.parts)
-		.filter((part) => part.type === "text")
-		.map((part) => part.text)
-		.filter(Boolean)
-		.join("\n\n"),
-);
-const canCopyResponse = $derived(
-	role === "assistant" &&
-		!!responseText.trim() &&
-		messages[messages.length - 1]?.info.time.completed !== undefined,
-);
-const canEdit = $derived(
-	role === "user" && !!onedit && !!first && first.info.id.startsWith("msg_"),
-);
-let editing = $state(false);
-let editText = $state("");
-let savingEdit = $state(false);
-function beginEdit() {
-	if (!first) return;
-	editText = userMessageText(first);
-	editing = true;
-}
-async function saveEdit() {
-	if (!first || !onedit || savingEdit) return;
-	const text = editText.trim();
-	if (!text) return;
-	savingEdit = true;
-	try {
-		await onedit(first.info.id, text);
-		editing = false;
-	} finally {
-		savingEdit = false;
-	}
-}
-type NativeTodo = {
-	id: string;
-	title: string;
-	status: "pending" | "in_progress" | "blocked" | "completed" | "cancelled";
-};
-function nativeTodoSnapshot(messages: ChatMessage[]): NativeTodo[] | null {
-	const snapshots = messages
-		.flatMap((message) => message.parts)
-		.filter((part) => {
-			if (part.type !== "tool" || !part.state) return false;
-			const name = (part.tool ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
-			return [
-				"todowrite",
-				"writetodos",
-				"updatetodolist",
-				"updateplan",
-			].includes(name);
-		});
-	const latest = snapshots.at(-1);
-	if (latest?.type !== "tool" || !latest.state) return null;
-	const input = latest.state.input as Record<string, unknown> | undefined;
-	if (!input) return null;
-	const raw = [input.todos, input.tasks, input.plan, input.steps].find(
-		Array.isArray,
+	const role = $derived(messages[0]?.info.role ?? "assistant");
+	const first = $derived(messages[0]);
+	const agent = $derived(messages.find((m) => m.info.agent)?.info.agent);
+	const reportedProviderID = $derived(
+		messages.find((m) => m.info.providerID)?.info.providerID,
 	);
-	if (!Array.isArray(raw)) return null;
-	const todos = raw.flatMap((value, index) => {
-		if (!value || typeof value !== "object") return [];
-		const item = value as Record<string, unknown>;
-		const title = [item.content, item.title, item.step, item.description].find(
-			(value): value is string => typeof value === "string" && !!value.trim(),
-		);
-		if (!title) return [];
-		const state = String(item.status ?? item.state ?? "pending").toLowerCase();
-		const status: NativeTodo["status"] =
-			state === "completed" || state === "complete" || state === "done"
-				? "completed"
-				: state === "in_progress" ||
-						state === "in-progress" ||
-						state === "active"
-					? "in_progress"
-					: state === "blocked"
-						? "blocked"
-						: state === "cancelled" || state === "canceled"
-							? "cancelled"
-							: "pending";
-		return [{ id: String(item.id ?? `${latest.id}-${index}`), title, status }];
-	});
-	return todos.length ? todos : null;
-}
-const nativeTodos = $derived(nativeTodoSnapshot(messages));
-
-let copied = $state(false);
-let openTools = $state<Record<string, boolean>>({});
-
-type InlineDiff = Pick<FileDiff, "file" | "patch" | "additions" | "deletions">;
-let inlineDiffs = $state<Record<string, InlineDiff | null>>({});
-let inlineDiffLoading = $state<Record<string, boolean>>({});
-let designPreviews = $state<Record<string, DesignNode>>({});
-let sessionDiffs = $state<FileDiff[] | null>(null);
-let diffPrefetchSignature = "";
-let diffPrefetchRequest = 0;
-
-$effect(() => {
-	sessionId;
-	inlineDiffs = {};
-	inlineDiffLoading = {};
-	sessionDiffs = null;
-	diffPrefetchSignature = "";
-	diffPrefetchRequest++;
-});
-
-function designIdOf(part: ChatPart) {
-	if (part.designId) return part.designId;
-	const legacyId = part.id.match(/-design-(.+)$/)?.[1];
-	if (part.type === "design" && legacyId) return legacyId;
-	return part.filename?.match(/^canvas-design:(.+)\.html$/)?.[1] ?? "";
-}
-
-function visibleText(part: ChatPart) {
-	const text = part.text ?? "";
-	if (!text.startsWith("IMPLEMENTATION PRIORITY:")) return text;
-	return (
-		text.match(
-			/\n\nUser request:\n([\s\S]*?)(?=\n\nAttached Canvas nodes:|$)/,
-		)?.[1] ?? ""
+	const modelID = $derived(messages.find((m) => m.info.modelID)?.info.modelID);
+	const providerID = $derived(
+		canonicalProviderID(catalog, reportedProviderID, modelID),
 	);
-}
-
-function thumbnailStyle(node: DesignNode, boxWidth: number, boxHeight: number) {
-	const frame =
-		node.viewport === "mobile"
-			? { width: 390, height: 844 }
-			: { width: 1440, height: 900 };
-	const scale = Math.min(boxWidth / frame.width, boxHeight / frame.height);
-	const left = (boxWidth - frame.width * scale) / 2;
-	const top = (boxHeight - frame.height * scale) / 2;
-	return `width:${frame.width}px;height:${frame.height}px;left:${left}px;top:${top}px;transform:scale(${scale})`;
-}
-
-$effect(() => {
-	const project = projectId;
-	const ids = [
-		...new Set(
-			messages
-				.flatMap((message) => message.parts)
-				.filter(
-					(part) =>
-						part.type === "design" ||
-						(part.type === "file" &&
-							part.filename?.startsWith("canvas-design:")),
-				)
-				.map(designIdOf)
-				.filter(Boolean),
-		),
-	];
-	let cancelled = false;
-	if (!project || !ids.length) {
-		designPreviews = {};
-		return;
+	const providerLabel = $derived(
+		providerDisplayName(catalog, reportedProviderID, modelID),
+	);
+	const modelTone = $derived(
+		providerID === "agy" || providerID === "antigravity"
+			? "agy"
+			: providerID === "claude" || providerID === "anthropic"
+				? "claude"
+				: providerID === "codex" || providerID === "openai"
+					? "codex"
+					: providerID === "opencode"
+						? "opencode"
+						: "default",
+	);
+	const time = $derived(first ? first.info.time.created : Date.now());
+	const completedAt = $derived(messages.at(-1)?.info.time.completed);
+	const elapsed = $derived(
+		completedAt !== undefined && first
+			? Math.max(0, completedAt - first.info.time.created)
+			: null,
+	);
+	const error = $derived(messages.find((m) => m.info.error)?.info.error);
+	const responseText = $derived(
+		messages
+			.flatMap((message) => message.parts)
+			.filter((part) => part.type === "text")
+			.map((part) => part.text)
+			.filter(Boolean)
+			.join("\n\n"),
+	);
+	const canCopyResponse = $derived(
+		role === "assistant" &&
+			!!responseText.trim() &&
+			messages[messages.length - 1]?.info.time.completed !== undefined,
+	);
+	const canEdit = $derived(
+		role === "user" && !!onedit && !!first && first.info.id.startsWith("msg_"),
+	);
+	let editing = $state(false);
+	let editText = $state("");
+	let savingEdit = $state(false);
+	function beginEdit() {
+		if (!first) return;
+		editText = userMessageText(first);
+		editing = true;
 	}
-	void Promise.all(
-		ids.map(async (id) => {
-			try {
-				const node = await daemon.getDesign(id);
-				return node.projectId === project ? ([id, node] as const) : null;
-			} catch {
-				return null;
-			}
-		}),
-	).then((nodes) => {
-		if (cancelled) return;
-		designPreviews = Object.fromEntries(nodes.filter((node) => node !== null));
-	});
-	return () => {
-		cancelled = true;
+	async function saveEdit() {
+		if (!first || !onedit || savingEdit) return;
+		const text = editText.trim();
+		if (!text) return;
+		savingEdit = true;
+		try {
+			await onedit(first.info.id, text);
+			editing = false;
+		} finally {
+			savingEdit = false;
+		}
+	}
+	type NativeTodo = {
+		id: string;
+		title: string;
+		status: "pending" | "in_progress" | "blocked" | "completed" | "cancelled";
 	};
-});
+	function nativeTodoSnapshot(messages: ChatMessage[]): NativeTodo[] | null {
+		const snapshots = messages
+			.flatMap((message) => message.parts)
+			.filter((part) => {
+				if (part.type !== "tool" || !part.state) return false;
+				const name = (part.tool ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+				return [
+					"todowrite",
+					"writetodos",
+					"updatetodolist",
+					"updateplan",
+				].includes(name);
+			});
+		const latest = snapshots.at(-1);
+		if (latest?.type !== "tool" || !latest.state) return null;
+		const input = latest.state.input as Record<string, unknown> | undefined;
+		if (!input) return null;
+		const raw = [input.todos, input.tasks, input.plan, input.steps].find(
+			Array.isArray,
+		);
+		if (!Array.isArray(raw)) return null;
+		const todos = raw.flatMap((value, index) => {
+			if (!value || typeof value !== "object") return [];
+			const item = value as Record<string, unknown>;
+			const title = [
+				item.content,
+				item.title,
+				item.step,
+				item.description,
+			].find(
+				(value): value is string => typeof value === "string" && !!value.trim(),
+			);
+			if (!title) return [];
+			const state = String(
+				item.status ?? item.state ?? "pending",
+			).toLowerCase();
+			const status: NativeTodo["status"] =
+				state === "completed" || state === "complete" || state === "done"
+					? "completed"
+					: state === "in_progress" ||
+						  state === "in-progress" ||
+						  state === "active"
+						? "in_progress"
+						: state === "blocked"
+							? "blocked"
+							: state === "cancelled" || state === "canceled"
+								? "cancelled"
+								: "pending";
+			return [
+				{ id: String(item.id ?? `${latest.id}-${index}`), title, status },
+			];
+		});
+		return todos.length ? todos : null;
+	}
+	const nativeTodos = $derived(nativeTodoSnapshot(messages));
 
-type ToolKind = "shell" | "read" | "search" | "edit" | "other";
-function kindOf(part: ChatPart): ToolKind {
-	const name = `${part.tool ?? ""} ${part.state?.title ?? ""}`.toLowerCase();
-	if (/shell|bash|command|exec/.test(name)) return "shell";
-	if (/search|grep|glob|find|list/.test(name)) return "search";
-	const metadata = part.state?.metadata as
-		| { filediff?: unknown; files?: unknown[] }
-		| undefined;
-	if (metadata?.filediff || metadata?.files?.length) return "edit";
-	if (/edit|write|patch|apply|file_change|create|delete|replace/.test(name))
-		return "edit";
-	if (/read|view|open|cat/.test(name)) return "read";
-	return "other";
-}
-function formatDuration(milliseconds: number | null) {
-	if (milliseconds === null) return "";
-	const seconds = Math.floor(milliseconds / 1000);
-	if (seconds < 60) return `${seconds}s`;
-	const minutes = Math.floor(seconds / 60);
-	return `${minutes}m ${seconds % 60}s`;
-}
-function commandOf(part: ChatPart) {
-	const input = part.state?.input as Record<string, unknown> | undefined;
-	for (const key of ["command", "cmd", "script"]) {
-		if (typeof input?.[key] === "string" && input[key])
-			return input[key] as string;
+	let copied = $state(false);
+	let openTools = $state<Record<string, boolean>>({});
+
+	type InlineDiff = Pick<
+		FileDiff,
+		"file" | "patch" | "additions" | "deletions"
+	>;
+	let inlineDiffs = $state<Record<string, InlineDiff | null>>({});
+	let inlineDiffLoading = $state<Record<string, boolean>>({});
+	let designPreviews = $state<Record<string, DesignNode>>({});
+	let sessionDiffs = $state<FileDiff[] | null>(null);
+	let diffPrefetchSignature = "";
+	let diffPrefetchRequest = 0;
+
+	$effect(() => {
+		sessionId;
+		inlineDiffs = {};
+		inlineDiffLoading = {};
+		sessionDiffs = null;
+		diffPrefetchSignature = "";
+		diffPrefetchRequest++;
+	});
+
+	function designIdOf(part: ChatPart) {
+		if (part.designId) return part.designId;
+		const legacyId = part.id.match(/-design-(.+)$/)?.[1];
+		if (part.type === "design" && legacyId) return legacyId;
+		return part.filename?.match(/^canvas-design:(.+)\.html$/)?.[1] ?? "";
 	}
-	return part.state?.title || part.tool || "Tool call";
-}
-function fileOf(part: ChatPart) {
-	const input = part.state?.input as Record<string, unknown> | undefined;
-	for (const key of [
-		"filePath",
-		"fileName",
-		"file_name",
-		"TargetFile",
-		"targetFile",
-		"target_file",
-		"targetPath",
-		"target_path",
-		"file_path",
-		"absolute_path",
-		"AbsolutePath",
-		"DirectoryPath",
-		"path",
-		"file",
-		"filename",
-	]) {
-		if (typeof input?.[key] === "string" && input[key])
-			return input[key] as string;
+
+	function visibleText(part: ChatPart) {
+		const text = part.text ?? "";
+		if (!text.startsWith("IMPLEMENTATION PRIORITY:")) return text;
+		return (
+			text.match(
+				/\n\nUser request:\n([\s\S]*?)(?=\n\nAttached Canvas nodes:|$)/,
+			)?.[1] ?? ""
+		);
 	}
-	return "";
-}
-function fileNameOf(path: string) {
-	return path.replaceAll("\\", "/").split("/").filter(Boolean).at(-1) || path;
-}
-function toolSubject(part: ChatPart, kind: ToolKind, file: string) {
-	if ((kind === "read" || kind === "edit") && file) return fileNameOf(file);
-	if (kind === "read") return "file";
-	return commandOf(part);
-}
-function diffStats(part: ChatPart) {
-	const metadata = part.state?.metadata as
-		| {
-				filediff?: { additions?: number; deletions?: number };
-				files?: Array<{ additions?: number; deletions?: number }>;
-		  }
-		| undefined;
-	const files = metadata?.filediff
-		? [metadata.filediff]
-		: (metadata?.files ?? []);
-	let additions = 0;
-	let deletions = 0;
-	let found = false;
-	for (const file of files) {
-		if (typeof file.additions === "number") {
-			additions += file.additions;
-			found = true;
+
+	function thumbnailStyle(
+		node: DesignNode,
+		boxWidth: number,
+		boxHeight: number,
+	) {
+		const frame =
+			node.viewport === "mobile"
+				? { width: 390, height: 844 }
+				: { width: 1440, height: 900 };
+		const scale = Math.min(boxWidth / frame.width, boxHeight / frame.height);
+		const left = (boxWidth - frame.width * scale) / 2;
+		const top = (boxHeight - frame.height * scale) / 2;
+		return `width:${frame.width}px;height:${frame.height}px;left:${left}px;top:${top}px;transform:scale(${scale})`;
+	}
+
+	$effect(() => {
+		const project = projectId;
+		const ids = [
+			...new Set(
+				messages
+					.flatMap((message) => message.parts)
+					.filter(
+						(part) =>
+							part.type === "design" ||
+							(part.type === "file" &&
+								part.filename?.startsWith("canvas-design:")),
+					)
+					.map(designIdOf)
+					.filter(Boolean),
+			),
+		];
+		let cancelled = false;
+		if (!project || !ids.length) {
+			designPreviews = {};
+			return;
 		}
-		if (typeof file.deletions === "number") {
-			deletions += file.deletions;
-			found = true;
-		}
+		void Promise.all(
+			ids.map(async (id) => {
+				try {
+					const node = await daemon.getDesign(id);
+					return node.projectId === project ? ([id, node] as const) : null;
+				} catch {
+					return null;
+				}
+			}),
+		).then((nodes) => {
+			if (cancelled) return;
+			designPreviews = Object.fromEntries(
+				nodes.filter((node) => node !== null),
+			);
+		});
+		return () => {
+			cancelled = true;
+		};
+	});
+
+	type ToolKind = "shell" | "read" | "search" | "edit" | "other";
+	function kindOf(part: ChatPart): ToolKind {
+		const name = `${part.tool ?? ""} ${part.state?.title ?? ""}`.toLowerCase();
+		if (/shell|bash|command|exec/.test(name)) return "shell";
+		if (/search|grep|glob|find|list/.test(name)) return "search";
+		const metadata = part.state?.metadata as
+			{ filediff?: unknown; files?: unknown[] } | undefined;
+		if (metadata?.filediff || metadata?.files?.length) return "edit";
+		if (/edit|write|patch|apply|file_change|create|delete|replace/.test(name))
+			return "edit";
+		if (/read|view|open|cat/.test(name)) return "read";
+		return "other";
 	}
-	return found ? { additions, deletions } : null;
-}
-function toolFileDiff(part: ChatPart, file: string): InlineDiff | null {
-	const metadata = part.state?.metadata as
-		| {
-				filediff?: InlineDiff & {
-					diff?: string;
-					filePath?: string;
-					relativePath?: string;
-				};
-				files?: Array<
-					InlineDiff & {
+	function formatDuration(milliseconds: number | null) {
+		if (milliseconds === null) return "";
+		const seconds = Math.floor(milliseconds / 1000);
+		if (seconds < 60) return `${seconds}s`;
+		const minutes = Math.floor(seconds / 60);
+		return `${minutes}m ${seconds % 60}s`;
+	}
+	function commandOf(part: ChatPart) {
+		const input = part.state?.input as Record<string, unknown> | undefined;
+		for (const key of ["command", "cmd", "script"]) {
+			if (typeof input?.[key] === "string" && input[key])
+				return input[key] as string;
+		}
+		return part.state?.title || part.tool || "Tool call";
+	}
+	function fileOf(part: ChatPart) {
+		const input = part.state?.input as Record<string, unknown> | undefined;
+		for (const key of [
+			"filePath",
+			"fileName",
+			"file_name",
+			"TargetFile",
+			"targetFile",
+			"target_file",
+			"targetPath",
+			"target_path",
+			"file_path",
+			"absolute_path",
+			"AbsolutePath",
+			"DirectoryPath",
+			"path",
+			"file",
+			"filename",
+		]) {
+			if (typeof input?.[key] === "string" && input[key])
+				return input[key] as string;
+		}
+		return "";
+	}
+	function fileNameOf(path: string) {
+		return path.replaceAll("\\", "/").split("/").filter(Boolean).at(-1) || path;
+	}
+	function toolSubject(part: ChatPart, kind: ToolKind, file: string) {
+		if ((kind === "read" || kind === "edit") && file) return fileNameOf(file);
+		if (kind === "read") return "file";
+		return commandOf(part);
+	}
+	function diffStats(part: ChatPart) {
+		const metadata = part.state?.metadata as
+			| {
+					filediff?: { additions?: number; deletions?: number };
+					files?: Array<{ additions?: number; deletions?: number }>;
+			  }
+			| undefined;
+		const files = metadata?.filediff
+			? [metadata.filediff]
+			: (metadata?.files ?? []);
+		let additions = 0;
+		let deletions = 0;
+		let found = false;
+		for (const file of files) {
+			if (typeof file.additions === "number") {
+				additions += file.additions;
+				found = true;
+			}
+			if (typeof file.deletions === "number") {
+				deletions += file.deletions;
+				found = true;
+			}
+		}
+		return found ? { additions, deletions } : null;
+	}
+	function toolFileDiff(part: ChatPart, file: string): InlineDiff | null {
+		const metadata = part.state?.metadata as
+			| {
+					filediff?: InlineDiff & {
 						diff?: string;
 						filePath?: string;
 						relativePath?: string;
-					}
-				>;
-		  }
-		| undefined;
-	const files = metadata?.filediff
-		? [metadata.filediff]
-		: (metadata?.files ?? []);
-	const matching = files.find((item) => {
-		const path = item.file ?? item.filePath ?? item.relativePath;
-		return (
-			typeof path === "string" && (path === file || file.endsWith(`/${path}`))
+					};
+					files?: Array<
+						InlineDiff & {
+							diff?: string;
+							filePath?: string;
+							relativePath?: string;
+						}
+					>;
+			  }
+			| undefined;
+		const files = metadata?.filediff
+			? [metadata.filediff]
+			: (metadata?.files ?? []);
+		const matching = files.find((item) => {
+			const path = item.file ?? item.filePath ?? item.relativePath;
+			return (
+				typeof path === "string" && (path === file || file.endsWith(`/${path}`))
+			);
+		});
+		if (!matching) return null;
+		const patch = matching.patch ?? matching.diff;
+		return typeof patch === "string"
+			? {
+					file:
+						matching.file ?? matching.filePath ?? matching.relativePath ?? file,
+					patch,
+					additions: matching.additions ?? 0,
+					deletions: matching.deletions ?? 0,
+				}
+			: null;
+	}
+	async function setToolDiffOpen(
+		key: string,
+		part: ChatPart,
+		file: string,
+		open: boolean,
+	) {
+		if (!open || inlineDiffs[key] !== undefined || inlineDiffLoading[key])
+			return;
+		const metadataDiff = toolFileDiff(part, file);
+		if (metadataDiff) {
+			inlineDiffs[key] = metadataDiff;
+			return;
+		}
+		if (!sessionId) {
+			inlineDiffs[key] = null;
+			return;
+		}
+		inlineDiffLoading[key] = true;
+		try {
+			if (!sessionDiffs) sessionDiffs = await chat.diff(sessionId);
+			inlineDiffs[key] =
+				sessionDiffs.find(
+					(diff) => diff.file === file || file.endsWith(`/${diff.file}`),
+				) ?? null;
+		} catch (reason) {
+			inlineDiffs[key] = null;
+			toast.error(
+				reason instanceof Error
+					? reason.message
+					: "Unable to load file changes",
+			);
+		} finally {
+			inlineDiffLoading[key] = false;
+		}
+	}
+
+	$effect(() => {
+		const currentSession = sessionId;
+		const editTools = messages.flatMap((message) =>
+			message.parts.flatMap((part) => {
+				if (part.type !== "tool" || kindOf(part) !== "edit") return [];
+				const file = fileOf(part);
+				if (!file || diffStats(part)) return [];
+				return [
+					{
+						key: `${message.info.id}-${part.id}`,
+						file,
+						status: statusOf(part),
+					},
+				];
+			}),
 		);
+		if (!currentSession || !editTools.length) return;
+		const signature = `${currentSession}:${editTools
+			.map((tool) => `${tool.key}:${tool.file}:${tool.status}`)
+			.join("|")}`;
+		if (signature === diffPrefetchSignature) return;
+		diffPrefetchSignature = signature;
+		const request = ++diffPrefetchRequest;
+		void chat
+			.diff(currentSession)
+			.then((diffs) => {
+				if (sessionId !== currentSession || request !== diffPrefetchRequest)
+					return;
+				sessionDiffs = diffs;
+				const next = { ...inlineDiffs };
+				for (const tool of editTools) {
+					const diff = diffs.find(
+						(item) =>
+							item.file === tool.file || tool.file.endsWith(`/${item.file}`),
+					);
+					if (!diff) continue;
+					next[tool.key] = {
+						file: diff.file,
+						patch: diff.patch,
+						additions: diff.additions,
+						deletions: diff.deletions,
+					};
+				}
+				inlineDiffs = next;
+			})
+			.catch(() => {});
 	});
-	if (!matching) return null;
-	const patch = matching.patch ?? matching.diff;
-	return typeof patch === "string"
-		? {
-				file:
-					matching.file ?? matching.filePath ?? matching.relativePath ?? file,
-				patch,
-				additions: matching.additions ?? 0,
-				deletions: matching.deletions ?? 0,
-			}
-		: null;
-}
-async function setToolDiffOpen(
-	key: string,
-	part: ChatPart,
-	file: string,
-	open: boolean,
-) {
-	if (!open || inlineDiffs[key] !== undefined || inlineDiffLoading[key]) return;
-	const metadataDiff = toolFileDiff(part, file);
-	if (metadataDiff) {
-		inlineDiffs[key] = metadataDiff;
-		return;
-	}
-	if (!sessionId) {
-		inlineDiffs[key] = null;
-		return;
-	}
-	inlineDiffLoading[key] = true;
-	try {
-		if (!sessionDiffs) sessionDiffs = await chat.diff(sessionId);
-		inlineDiffs[key] =
-			sessionDiffs.find(
-				(diff) => diff.file === file || file.endsWith(`/${diff.file}`),
-			) ?? null;
-	} catch (reason) {
-		inlineDiffs[key] = null;
-		toast.error(
-			reason instanceof Error ? reason.message : "Unable to load file changes",
-		);
-	} finally {
-		inlineDiffLoading[key] = false;
-	}
-}
 
-$effect(() => {
-	const currentSession = sessionId;
-	const editTools = messages.flatMap((message) =>
-		message.parts.flatMap((part) => {
-			if (part.type !== "tool" || kindOf(part) !== "edit") return [];
-			const file = fileOf(part);
-			if (!file || diffStats(part)) return [];
-			return [
-				{
-					key: `${message.info.id}-${part.id}`,
-					file,
-					status: statusOf(part),
-				},
-			];
-		}),
-	);
-	if (!currentSession || !editTools.length) return;
-	const signature = `${currentSession}:${editTools
-		.map((tool) => `${tool.key}:${tool.file}:${tool.status}`)
-		.join("|")}`;
-	if (signature === diffPrefetchSignature) return;
-	diffPrefetchSignature = signature;
-	const request = ++diffPrefetchRequest;
-	void chat
-		.diff(currentSession)
-		.then((diffs) => {
-			if (sessionId !== currentSession || request !== diffPrefetchRequest)
-				return;
-			sessionDiffs = diffs;
-			const next = { ...inlineDiffs };
-			for (const tool of editTools) {
-				const diff = diffs.find(
-					(item) =>
-						item.file === tool.file || tool.file.endsWith(`/${item.file}`),
-				);
-				if (!diff) continue;
-				next[tool.key] = {
-					file: diff.file,
-					patch: diff.patch,
-					additions: diff.additions,
-					deletions: diff.deletions,
-				};
-			}
-			inlineDiffs = next;
-		})
-		.catch(() => {});
-});
-
-function statusOf(part: ChatPart) {
-	const status = part.state?.status ?? "unknown";
-	if (status === "completed") return "completed";
-	if (status === "running" || status === "pending") return "running";
-	if (status === "error" || status === "failed") return "error";
-	return status;
-}
-
-async function copy() {
-	try {
-		await navigator.clipboard.writeText(responseText);
-		copied = true;
-		setTimeout(() => {
-			copied = false;
-		}, 2000);
-	} catch {
-		toast.error("Unable to copy message");
+	function statusOf(part: ChatPart) {
+		const status = part.state?.status ?? "unknown";
+		if (status === "completed") return "completed";
+		if (status === "running" || status === "pending") return "running";
+		if (status === "error" || status === "failed") return "error";
+		return status;
 	}
-}
+
+	async function copy() {
+		try {
+			await navigator.clipboard.writeText(responseText);
+			copied = true;
+			setTimeout(() => {
+				copied = false;
+			}, 2000);
+		} catch {
+			toast.error("Unable to copy message");
+		}
+	}
 </script>
 
 <article
@@ -567,6 +595,43 @@ async function copy() {
 				{/each}
 			</div>
 		{/each}
+		{@const relatedChildren = messages.flatMap((message) =>
+			childSessionsForUserMessage(message, conversationMessages, childSessions),
+		)}
+		{#if relatedChildren.length}
+			<section
+				class="mt-2 rounded-lg border bg-muted/20 p-2"
+				aria-label="Subagents"
+			>
+				<p class="mb-1 px-2 text-[11px] font-medium text-muted-foreground">
+					Subagent
+				</p>
+				<ul class="space-y-1">
+					{#each relatedChildren as child (child.id)}
+						<li class="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5">
+							<span
+								class={`size-1.5 shrink-0 rounded-full ${child.status.type === "busy" || child.status.type === "running" ? "animate-pulse bg-sky-400" : child.status.type === "error" ? "bg-destructive" : "bg-emerald-400"}`}
+								aria-hidden="true"
+							></span>
+							<span class="min-w-0 flex-1 truncate text-xs"
+								>{child.title || "Untitled subagent"}</span
+							>
+							<span class="shrink-0 text-[10px] text-muted-foreground">
+								{child.status.type === "busy" || child.status.type === "retry"
+									? "Working…"
+									: (child.status.message ?? child.status.type)}
+							</span>
+							<Button
+								variant="ghost"
+								size="sm"
+								class="h-7 px-2 text-xs"
+								onclick={() => onfocuschild?.(child.id)}>Open</Button
+							>
+						</li>
+					{/each}
+				</ul>
+			</section>
+		{/if}
 		{#if canEdit}
 			<div class="mt-1.5 flex justify-end gap-1">
 				{#if editing}<div class="w-full space-y-2">
@@ -587,8 +652,8 @@ async function copy() {
 								size="sm"
 								class="h-7 gap-1.5 text-xs"
 								disabled={savingEdit || !editText.trim()}
-								onclick={() => void saveEdit()}><Check size={13} />{#if
-									savingEdit}
+								onclick={() => void saveEdit()}
+								><Check size={13} />{#if savingEdit}
 									Saving…
 								{:else}
 									Save & resend
@@ -897,7 +962,7 @@ async function copy() {
 							hour: "numeric",
 							minute: "2-digit",
 						})}</time
-				>{/if}
+					>{/if}
 				{#if onregenerate}<Button
 						variant="ghost"
 						size="sm"
@@ -921,9 +986,9 @@ async function copy() {
 						size="sm"
 						class="h-7 gap-1.5 text-xs"
 						onclick={copy}
-						>{#if copied}<Check size={13} />{:else}<Copy size={13} />{/if}{copied
-							? "Copied"
-							: "Copy response"}</Button
+						>{#if copied}<Check size={13} />{:else}<Copy
+								size={13}
+							/>{/if}{copied ? "Copied" : "Copy response"}</Button
 					>{/if}
 			</div>
 		{/if}

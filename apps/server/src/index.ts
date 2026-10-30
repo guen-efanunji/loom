@@ -21,6 +21,8 @@ import {
 import { appRouter } from "@loom/api/routers/index";
 import type { Database } from "@loom/db";
 import {
+	and,
+	asc,
 	customAgentAssignmentRuns,
 	customAgentRunEvents,
 	customAgentRuns,
@@ -36,6 +38,7 @@ import {
 	orchestrationEvents,
 	planRepository,
 	repositories,
+	sshConnections,
 } from "@loom/db";
 import {
 	automationModeSchema,
@@ -131,7 +134,7 @@ import {
 } from "./projects";
 import { checkProviderUpdate, updateProviderCli } from "./provider-updates";
 import { auth, checkDbHealth, getDb } from "./services";
-import { TerminalManager } from "./terminal";
+import { SSH_SCOPE, TerminalManager } from "./terminal";
 import {
 	createUiLockRoutes,
 	createUiLockStore,
@@ -1167,6 +1170,8 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			c.req.path === "/api/events" ||
 			c.req.path === "/api/bootstrap" ||
 			(/^\/api\/terminals\/[^/]+\/stream$/.test(c.req.path) &&
+				c.req.method === "GET") ||
+			(/^\/api\/ssh\/sessions\/[^/]+\/stream$/.test(c.req.path) &&
 				c.req.method === "GET")
 		)
 			return next();
@@ -1324,6 +1329,208 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	});
 	app.get(
 		"/api/terminals/:id/stream",
+		upgradeWebSocket((c) => {
+			const terminalId = c.req.param("id") ?? "";
+			const ticket = c.req.query("ticket") ?? "";
+			let attachment: ReturnType<typeof terminalManager.attach> | undefined;
+			return {
+				onOpen(_event, ws) {
+					attachment = terminalManager.attach(terminalId, ticket, {
+						send: (value) => ws.send(value),
+						close: (code, reason) => ws.close(code, reason),
+					});
+				},
+				onMessage(event, _ws) {
+					const attachmentId = attachment?.id;
+					if (!attachmentId) return;
+					const data = typeof event.data === "string" ? event.data : "";
+					terminalManager.message(terminalId, attachmentId, data);
+				},
+				onClose() {
+					attachment?.detach();
+				},
+				onError() {
+					attachment?.detach();
+				},
+			};
+		}),
+	);
+	const sshConnectionInputSchema = z.object({
+		label: z.string().trim().min(1).max(80),
+		host: z.string().trim().min(1).max(255),
+		username: z.string().trim().min(1).max(100),
+		port: z.number().int().min(1).max(65535).default(22),
+		auth: z.enum(["agent", "key", "password"]).default("agent"),
+		notes: z.string().max(4000).default(""),
+	});
+	function resolveSshBinary() {
+		return Bun.which(process.platform === "win32" ? "ssh.exe" : "ssh");
+	}
+	app.get("/api/ssh/check", (c) => {
+		const sshPath = resolveSshBinary();
+		return c.json({
+			available: Boolean(sshPath),
+			sshPath: sshPath ?? undefined,
+			error: sshPath
+				? undefined
+				: process.platform === "win32"
+					? "OpenSSH client is not installed. Enable it from Windows Settings › Optional Features › OpenSSH Client."
+					: "OpenSSH client is not installed. Install OpenSSH first (e.g. `sudo apt install openssh-client` or `brew install openssh`).",
+		});
+	});
+	app.get("/api/ssh/connections", async (c) => {
+		const rows = await db
+			.select()
+			.from(sshConnections)
+			.orderBy(asc(sshConnections.label));
+		return c.json(rows);
+	});
+	app.post("/api/ssh/connections", async (c) => {
+		try {
+			const input = sshConnectionInputSchema.parse(await jsonBody(c));
+			const duplicate = await db
+				.select({ id: sshConnections.id })
+				.from(sshConnections)
+				.where(
+					and(
+						eq(sshConnections.username, input.username),
+						eq(sshConnections.host, input.host),
+						eq(sshConnections.port, input.port),
+					),
+				)
+				.limit(1);
+			if (duplicate[0])
+				return c.json(
+					{
+						error: {
+							message: `A connection for ${input.username}@${input.host}:${input.port} already exists.`,
+						},
+					},
+					409,
+				);
+			const [row] = await db
+				.insert(sshConnections)
+				.values({ id: crypto.randomUUID(), ...input })
+				.returning();
+			return c.json(row, 201);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.patch("/api/ssh/connections/:id", async (c) => {
+		try {
+			const id = c.req.param("id");
+			const input = sshConnectionInputSchema.partial().parse(await jsonBody(c));
+			const [row] = await db
+				.select()
+				.from(sshConnections)
+				.where(eq(sshConnections.id, id))
+				.limit(1);
+			if (!row) return errorResponse(c, new Error("SSH connection not found"));
+			const [updated] = await db
+				.update(sshConnections)
+				.set({ ...input, updatedAt: new Date() })
+				.where(eq(sshConnections.id, id))
+				.returning();
+			return c.json(updated);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.delete("/api/ssh/connections/:id", async (c) => {
+		try {
+			const id = c.req.param("id");
+			const deleted = await db
+				.delete(sshConnections)
+				.where(eq(sshConnections.id, id))
+				.returning({ id: sshConnections.id });
+			if (!deleted[0])
+				return errorResponse(c, new Error("SSH connection not found"));
+			return c.body(null, 204);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.get("/api/ssh/sessions", async (c) =>
+		c.json(await terminalManager.list(SSH_SCOPE)),
+	);
+	app.post("/api/ssh/sessions", async (c) => {
+		try {
+			const input = z
+				.object({
+					connectionId: z.string().min(1).max(120),
+					cols: z.number().int().min(20).max(300),
+					rows: z.number().int().min(5).max(120),
+					idempotencyKey: z.string().trim().min(1).max(120),
+				})
+				.parse(await jsonBody(c));
+			const [row] = await db
+				.select()
+				.from(sshConnections)
+				.where(eq(sshConnections.id, input.connectionId))
+				.limit(1);
+			if (!row) return errorResponse(c, new Error("SSH connection not found"));
+			const sshPath = resolveSshBinary();
+			if (!sshPath)
+				return c.json(
+					{
+						error: {
+							message:
+								process.platform === "win32"
+									? "The OpenSSH client is not installed. Enable it from Windows Settings › Optional Features › OpenSSH Client."
+									: "The OpenSSH client is not installed on this machine.",
+						},
+					},
+					503,
+				);
+			return c.json(
+				await terminalManager.createSsh({
+					connectionId: row.id,
+					label: `${row.label} · ${row.username}@${row.host}`,
+					sshPath,
+					username: row.username,
+					host: row.host,
+					port: row.port,
+					auth:
+						row.auth === "password" || row.auth === "key" ? row.auth : "agent",
+					cols: input.cols,
+					rows: input.rows,
+					idempotencyKey: input.idempotencyKey,
+				}),
+				201,
+			);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.post("/api/ssh/sessions/:id/ticket", (c) => {
+		try {
+			return c.json(terminalManager.issueTicket(c.req.param("id"), SSH_SCOPE));
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.delete("/api/ssh/sessions/:id", async (c) => {
+		try {
+			const input = z
+				.object({
+					expectedGeneration: z.number().int().positive(),
+					approved: z.literal(true),
+				})
+				.parse(await jsonBody(c));
+			await terminalManager.closeSession(
+				c.req.param("id"),
+				SSH_SCOPE,
+				input.expectedGeneration,
+				input.approved,
+			);
+			return c.body(null, 204);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	app.get(
+		"/api/ssh/sessions/:id/stream",
 		upgradeWebSocket((c) => {
 			const terminalId = c.req.param("id") ?? "";
 			const ticket = c.req.query("ticket") ?? "";

@@ -1,4 +1,4 @@
-import type { ChatMessage } from "./chat";
+import type { ChatChildSession, ChatMessage } from "./chat";
 
 /** Group a flat message list into chat turns (assistant runs merge together). */
 export function groupTurns(messages: ChatMessage[]) {
@@ -16,6 +16,38 @@ export function groupTurns(messages: ChatMessage[]) {
 			});
 	}
 	return groups;
+}
+
+export function childSessionsForUserMessage(
+	message: ChatMessage,
+	messages: ChatMessage[],
+	children: ChatChildSession[],
+) {
+	if (message.info.role !== "user") return [];
+	const precedingUserMessages = messages
+		.filter(
+			(candidate) =>
+				candidate.info.role === "user" &&
+				candidate.info.time.created <= message.info.time.created,
+		)
+		.sort((a, b) => a.info.time.created - b.info.time.created);
+	const targetMessage = precedingUserMessages.at(-1);
+	if (targetMessage?.info.id !== message.info.id) return [];
+	const nextUserMessage = messages
+		.filter(
+			(candidate) =>
+				candidate.info.role === "user" &&
+				candidate.info.time.created > message.info.time.created,
+		)
+		.sort((a, b) => a.info.time.created - b.info.time.created)[0];
+	return children.filter((child) => {
+		const created = child.time.created;
+		return (
+			created !== undefined &&
+			created >= message.info.time.created &&
+			(!nextUserMessage || created < nextUserMessage.info.time.created)
+		);
+	});
 }
 
 /** Extract the visible text of a user message (ignores hidden design/meta parts). */

@@ -5,4 +5,5 @@ export * from "./chat";
 export * from "./context";
 export * from "./design";
 export * from "./orchestration";
+export * from "./ssh";
 export * from "./workflow";

@@ -15,6 +15,7 @@ type FakeSession = {
 	id: string;
 	directory: string;
 	title: string;
+	parentID?: string;
 	time: { updated: number };
 };
 
@@ -82,6 +83,8 @@ async function harness(
 				return created as T;
 			}
 			if (path === "/session/status") return Object.fromEntries(statuses) as T;
+			if (path.endsWith("/message")) return [] as T;
+			if (path === "/permission" || path === "/question") return [] as T;
 			const single = /^\/session\/(ses_[\w-]+)$/.exec(path);
 			if (single) {
 				const found = sessions.get(single[1]!);
@@ -286,6 +289,35 @@ describe("chat workspace isolation", () => {
 			const isolated = await h.createIsolated("Parallel frontend");
 			// The other chat is busy in the project folder; this one must still start.
 			expect((await h.send(isolated.id)).status).toBe(204);
+		} finally {
+			await rm(h.base, { recursive: true, force: true });
+		}
+	});
+
+	test("child sessions in an isolated worktree resolve as Loom project sessions", async () => {
+		const h = await harness();
+		try {
+			const isolated = await h.createIsolated("Isolated parent");
+			const child: FakeSession = {
+				id: "ses_child",
+				directory: isolated.directory,
+				title: "Subagent",
+				parentID: isolated.id,
+				time: { updated: Date.now() },
+			};
+			h.sessions.set(child.id, child);
+			const response = await h.app.request(`/sessions/${child.id}`);
+			expect(response.status).toBe(200);
+			expect(await response.json()).toMatchObject({
+				session: {
+					id: child.id,
+					projectId: "p1",
+					workspace: {
+						path: isolated.directory,
+						projectId: "p1",
+					},
+				},
+			});
 		} finally {
 			await rm(h.base, { recursive: true, force: true });
 		}

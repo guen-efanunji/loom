@@ -19,6 +19,12 @@ const shellNames = new Set([
 	"cmd",
 ]);
 
+/**
+ * Terminal sessions that run a custom command (SSH) live under this pseudo
+ * project scope instead of a real project id.
+ */
+export const SSH_SCOPE = "__ssh__";
+
 export type TerminalStatus =
 	| "creating"
 	| "running"
@@ -47,6 +53,8 @@ type InternalSession = {
 	metadata: TerminalSession;
 	cwd: string;
 	shell: string;
+	/** Custom command (e.g. ssh) replacing the default interactive shell. */
+	command?: string[];
 	pty?: PtyProcess;
 	ptyDataSubscription?: { dispose(): void };
 	ptyExitSubscription?: { dispose(): void };
@@ -261,11 +269,68 @@ export class TerminalManager {
 		rows: number;
 		idempotencyKey: string;
 	}) {
+		return this.createSession({ ...input, command: undefined });
+	}
+
+	async createSsh(input: {
+		connectionId: string;
+		label: string;
+		sshPath: string;
+		username: string;
+		host: string;
+		port: number;
+		auth: "agent" | "key" | "password";
+		cols: number;
+		rows: number;
+		idempotencyKey: string;
+	}) {
 		if (!validDimensions(input.cols, input.rows))
 			throw new Error("Terminal dimensions are out of range.");
 		if (!input.idempotencyKey || input.idempotencyKey.length > 120)
 			throw new Error("A valid idempotency key is required.");
-		const key = `${input.projectId}:${input.workspaceId}:${input.idempotencyKey}`;
+		const sshPath = resolve(input.sshPath);
+		const args = [
+			sshPath,
+			`${input.username}@${input.host}`,
+			"-p",
+			String(input.port),
+		];
+		// Keep auth prompts interactive; ssh already prefers agent/keys first.
+		if (input.auth === "agent") args.push("-o", "BatchMode=no");
+		const params = {
+			projectId: SSH_SCOPE,
+			workspaceId: `${input.username}@${input.host}:${input.port}`,
+			label: input.label,
+			cwd: this.homeDirectory(),
+			command: [sshPath, ...args.slice(1)],
+			cols: input.cols,
+			rows: input.rows,
+			idempotencyKey: input.idempotencyKey,
+			idempotencySalt: `ssh:${input.connectionId}`,
+		};
+		return this.createSession(params);
+	}
+
+	private homeDirectory() {
+		return process.env.HOME || process.env.USERPROFILE || process.cwd();
+	}
+
+	private async createSession(input: {
+		projectId: string;
+		workspaceId: string;
+		label?: string;
+		cwd: string;
+		cols: number;
+		rows: number;
+		idempotencyKey: string;
+		command?: string[];
+		idempotencySalt?: string;
+	}) {
+		if (!validDimensions(input.cols, input.rows))
+			throw new Error("Terminal dimensions are out of range.");
+		if (!input.idempotencyKey || input.idempotencyKey.length > 120)
+			throw new Error("A valid idempotency key is required.");
+		const key = `${input.projectId}:${input.workspaceId}:${input.idempotencySalt ?? ""}:${input.idempotencyKey}`;
 		const previousId = this.createIdempotency.get(key);
 		if (previousId) {
 			const previous = this.sessions.get(previousId);
@@ -301,7 +366,7 @@ export class TerminalManager {
 			id: randomUUID(),
 			projectId: input.projectId,
 			workspaceId: input.workspaceId,
-			label: `Terminal ${this.sessions.size + 1}`,
+			label: input.label ?? `Terminal ${this.sessions.size + 1}`,
 			generation: 1,
 			status: "creating",
 			cols: input.cols,
@@ -310,8 +375,9 @@ export class TerminalManager {
 		};
 		const session: InternalSession = {
 			metadata,
-			cwd: input.cwd,
-			shell: safeShell(),
+			cwd: resolve(input.cwd),
+			shell: input.command?.[0] ?? safeShell(),
+			command: input.command ? [...input.command] : undefined,
 			tickets: new Map(),
 			history: [],
 			historyBytes: 0,
@@ -614,21 +680,37 @@ export class TerminalManager {
 			const provider = await this.ptyProviderPromise;
 			const failures: string[] = [];
 			let pty: PtyProcess | undefined;
-			for (const candidate of shellCandidates(session.shell)) {
+			if (session.command) {
 				try {
-					pty = provider.spawn(candidate, shellArgs(candidate), {
+					pty = provider.spawn(session.command[0]!, session.command.slice(1), {
 						name: "xterm-256color",
 						cwd: session.cwd,
 						cols: session.metadata.cols,
 						rows: session.metadata.rows,
 						env: this.hostEnvironment(),
 					});
-					session.shell = candidate;
-					break;
 				} catch (error) {
 					failures.push(
-						`${basename(candidate)}: ${error instanceof Error ? error.message : String(error)}`,
+						`${basename(session.command[0]!)}: ${error instanceof Error ? error.message : String(error)}`,
 					);
+				}
+			} else {
+				for (const candidate of shellCandidates(session.shell)) {
+					try {
+						pty = provider.spawn(candidate, shellArgs(candidate), {
+							name: "xterm-256color",
+							cwd: session.cwd,
+							cols: session.metadata.cols,
+							rows: session.metadata.rows,
+							env: this.hostEnvironment(),
+						});
+						session.shell = candidate;
+						break;
+					} catch (error) {
+						failures.push(
+							`${basename(candidate)}: ${error instanceof Error ? error.message : String(error)}`,
+						);
+					}
 				}
 			}
 			if (!pty)

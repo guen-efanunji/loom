@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ChatMessage } from "../src/lib/chat";
 import {
+	childSessionsForUserMessage,
 	groupTurns,
 	permissionActionLabel,
 	supersededIds,
@@ -31,6 +32,42 @@ describe("chat-utils", () => {
 		]);
 		expect(turns.map((turn) => turn.key)).toEqual(["u1", "a1", "u2"]);
 		expect(turns[1]?.messages).toHaveLength(2);
+	});
+
+	test("associates child sessions with the user prompt before the next prompt", () => {
+		const first = message("u1", "user", "first");
+		const assistant = message("a1", "assistant", "answer");
+		const second = message("u2", "user", "second");
+		first.info.time.created = 10;
+		assistant.info.time.created = 20;
+		second.info.time.created = 30;
+		const children = [
+			{
+				id: "c1",
+				title: "Research",
+				parentID: "s1",
+				time: { created: 12, updated: 18 },
+				status: { type: "idle" },
+			},
+			{
+				id: "c2",
+				title: "Implement",
+				parentID: "s1",
+				time: { created: 32, updated: 40 },
+				status: { type: "busy" },
+			},
+		];
+		const messages = [first, assistant, second];
+		expect(
+			childSessionsForUserMessage(first, messages, children).map(
+				(child) => child.id,
+			),
+		).toEqual(["c1"]);
+		expect(
+			childSessionsForUserMessage(second, messages, children).map(
+				(child) => child.id,
+			),
+		).toEqual(["c2"]);
 	});
 
 	test("extracts only text parts from a user message", () => {

@@ -7,6 +7,7 @@ import {
 	GitBranch,
 	GitPullRequest,
 	ListTree,
+	Server,
 	SquareTerminal,
 } from "@lucide/svelte";
 
@@ -18,7 +19,8 @@ export type ChatPanelId =
 	| "changes"
 	| "walkthrough"
 	| "terminal"
-	| "agents";
+	| "agents"
+	| "ssh";
 
 export type ChatPanelContext = {
 	projectId: string;
@@ -110,6 +112,15 @@ export const chatPanelRegistry: readonly ChatPanelDefinition[] = [
 		configurable: true,
 		isAvailable: () => true,
 		open: ({ openPanel }) => openPanel("agents"),
+	},
+	{
+		id: "ssh",
+		label: "SSH connections",
+		icon: Server,
+		defaultVisible: true,
+		configurable: true,
+		isAvailable: () => true,
+		open: ({ openPanel }) => openPanel("ssh"),
 	},
 ];
 

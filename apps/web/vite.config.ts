@@ -7,7 +7,7 @@ export default defineConfig(({ mode }) => {
 	const serverUrl =
 		env.PUBLIC_SERVER_URL ||
 		env.SERVER_URL ||
-		`http://127.0.0.1:${env.LOOM_PORT || process.env.LOOM_PORT || "4317"}`;
+		`http://127.0.0.1:${env.LOOM_PORT || process.env.LOOM_PORT || "4318"}`;
 	const proxy: ProxyOptions = {
 		target: serverUrl,
 		changeOrigin: true,

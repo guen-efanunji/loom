@@ -78,6 +78,8 @@ const schemaStatements = [
 	"CREATE INDEX IF NOT EXISTS custom_agent_runs_agent_idx ON custom_agent_runs(agent_id, created_at)",
 	"CREATE TABLE IF NOT EXISTS custom_agent_run_events (id text PRIMARY KEY NOT NULL, run_id text NOT NULL REFERENCES custom_agent_runs(id) ON DELETE CASCADE, type text NOT NULL, message text NOT NULL, created_at integer NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)))",
 	"CREATE INDEX IF NOT EXISTS custom_agent_run_events_run_idx ON custom_agent_run_events(run_id, created_at)",
+	"CREATE TABLE IF NOT EXISTS ssh_connections (id text PRIMARY KEY NOT NULL, label text NOT NULL, host text NOT NULL, port integer NOT NULL DEFAULT 22, username text NOT NULL, auth text NOT NULL DEFAULT 'agent', notes text NOT NULL DEFAULT '', created_at integer NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)), updated_at integer NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)))",
+	"CREATE UNIQUE INDEX IF NOT EXISTS ssh_connections_host_uidx ON ssh_connections (username, ifnull('', '') || host, port)",
 ];
 
 export function bootstrapDatabase(path: string): void {

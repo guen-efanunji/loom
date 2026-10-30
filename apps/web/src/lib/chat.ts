@@ -36,7 +36,7 @@ export type ChatChildSession = {
 	id: string;
 	title: string;
 	parentID: string;
-	time: { updated: number };
+	time: { created?: number; updated: number };
 	status: { type: string; message?: string };
 };
 export type ChatPart = {

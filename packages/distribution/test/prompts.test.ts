@@ -37,6 +37,26 @@ test("an editable prompt on disk wins over the bundled copy", async () => {
 	}
 });
 
+test("finds checkout prompts when dev runs from a workspace package directory", async () => {
+	const previousHome = process.env.LOOM_HOME;
+	const previousPrompts = process.env.LOOM_PROMPTS_DIR;
+	const previousCwd = process.cwd();
+	const home = await mkdtemp(join(tmpdir(), "loom-prompts-dev-"));
+	process.env.LOOM_HOME = home;
+	delete process.env.LOOM_PROMPTS_DIR;
+	process.chdir(join(import.meta.dir, "../../../apps/server"));
+	try {
+		expect(loadPromptText("design/system.md")).toContain(
+			"Loom's UI/UX design assistant",
+		);
+	} finally {
+		process.chdir(previousCwd);
+		restore("LOOM_HOME", previousHome);
+		restore("LOOM_PROMPTS_DIR", previousPrompts);
+		await rm(home, { recursive: true, force: true });
+	}
+});
+
 test("LOOM_PROMPTS_DIR is searched first and a missing prompt explains itself", () => {
 	const previous = process.env.LOOM_PROMPTS_DIR;
 	process.env.LOOM_PROMPTS_DIR = "/custom/prompts";

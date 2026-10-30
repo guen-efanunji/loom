@@ -64,7 +64,7 @@ type Session = {
 	directory: string;
 	title: string;
 	parentID?: string;
-	time: { updated: number; archived?: number };
+	time: { created?: number; updated: number; archived?: number };
 };
 
 /** Row describing the private worktree a chat session runs in. */
@@ -1008,12 +1008,30 @@ export function createChatRoutes(options: {
 			? { directory: workspace.path, projectId: workspace.projectId }
 			: await options.sessionScope?.(sessionId);
 		const projects = await options.projects.list();
+		const workspaces = scope
+			? []
+			: (
+					await Promise.all(
+						projects.map(
+							(project) =>
+								options.chatWorkspaces?.listByProject(project.id) ?? [],
+						),
+					)
+				).flat();
 		const candidates = scope
-			? [{ directory: scope.directory, projectId: scope.projectId }]
-			: projects.map((project) => ({
-					directory: project.path,
-					projectId: project.id,
-				}));
+			? [{ directory: scope.directory, projectId: scope.projectId, workspace }]
+			: [
+					...projects.map((project) => ({
+						directory: project.path,
+						projectId: project.id,
+						workspace: undefined,
+					})),
+					...workspaces.map((item) => ({
+						directory: item.path,
+						projectId: item.projectId,
+						workspace: item,
+					})),
+				];
 		let notFound = false;
 		for (const candidate of candidates) {
 			let found: Session;
@@ -1039,12 +1057,12 @@ export function createChatRoutes(options: {
 			);
 			const isScopedWorkspace =
 				scope && resolve(scope.directory) === resolve(found.directory);
-			if (!isScopedWorkspace && !project) continue;
+			if (!isScopedWorkspace && !project && !candidate.workspace) continue;
 			return {
 				...found,
 				// An isolated session runs in its own worktree; the binding is carried
 				// so routes and the write gate can skip shared-checkout protection.
-				workspace,
+				workspace: candidate.workspace,
 				projectId: scope?.projectId ?? project?.id ?? candidate.projectId,
 			};
 		}

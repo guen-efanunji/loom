@@ -791,6 +791,7 @@
 							>Load earlier messages</Button
 						>{/if}{#each visibleTurns as turn (turn.key)}<Turn
 							messages={turn.messages}
+							conversationMessages={displayedMessages}
 							{catalog}
 							sessionId={active.sessionId}
 							projectId={active.projectId}
