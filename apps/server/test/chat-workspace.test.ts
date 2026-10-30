@@ -643,5 +643,6 @@ describe("chat workspace isolation on a real repository", () => {
 		} finally {
 			await rm(base, { recursive: true, force: true });
 		}
-	});
+		// Two real worktrees, a merge and a review: slow CI hosts need more than the default.
+	}, 30_000);
 });

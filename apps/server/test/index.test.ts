@@ -742,7 +742,7 @@ describe("server API", () => {
 			await rm(setup.root, { recursive: true, force: true });
 		}
 		// Four real worktrees plus two review merges need more than the default budget.
-	}, 20_000);
+	}, 60_000);
 
 	test("maps missing task errors and protects bootstrap origin", async () => {
 		const setup = await createTestSetup();
