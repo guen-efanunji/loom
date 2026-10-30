@@ -709,21 +709,22 @@ describe("server API", () => {
 			}
 
 			for (const id of taskIds) {
-				const reviewedTask = await setup.daemon.app.request(
-					`/api/tasks/${id}`,
-					{ headers },
-				);
-				expect(((await reviewedTask.json()) as { status: string }).status).toBe(
-					"completed",
-				);
+				// Automatic integration merges on its own schedule after the review is
+				// approved, so the task can still be ready_to_merge right after the
+				// checkpoint returns. Wait for the settled state instead of assuming
+				// it, which slower CI hosts exposed as a flake.
+				let status = "";
+				const mergedBy = Date.now() + 20_000;
+				while (Date.now() < mergedBy && status !== "completed") {
+					const reviewedTask = await setup.daemon.app.request(
+						`/api/tasks/${id}`,
+						{ headers },
+					);
+					status = ((await reviewedTask.json()) as { status: string }).status;
+					if (status !== "completed") await Bun.sleep(50);
+				}
+				expect(status).toBe("completed");
 			}
-			const reviewedTask = await setup.daemon.app.request(
-				`/api/tasks/${taskIds[0]}`,
-				{ headers },
-			);
-			expect(((await reviewedTask.json()) as { status: string }).status).toBe(
-				"completed",
-			);
 			expect(await readFile(join(setup.root, "backend-race.txt"), "utf8")).toBe(
 				"FIXED_RACE\n",
 			);
