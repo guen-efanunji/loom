@@ -166,6 +166,7 @@ export async function downloadUpdate(
 		 * `loom update` impossible there.
 		 */
 		stallTimeoutMs?: number;
+		onProgress?: (downloaded: number, total: number) => void;
 	} = {},
 ) {
 	const platform = options.platform ?? platformKey();
@@ -202,6 +203,7 @@ export async function downloadUpdate(
 			size += chunk.length;
 			if (size > artifact.size)
 				throw new Error("Artifact exceeds its declared size");
+			options.onProgress?.(size, artifact.size);
 			hash.update(chunk);
 			await file.writeFile(chunk);
 		}

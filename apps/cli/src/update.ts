@@ -25,7 +25,14 @@ import {
 } from "@loom/distribution/updates";
 import { control, health, launch, stop, waitHealthy } from "./process";
 
-export async function prepareUpdate(channelValue?: string) {
+export async function prepareUpdate(
+	channelValue?: string,
+	onProgress?: (
+		stage: "checking" | "downloading",
+		downloaded?: number,
+		total?: number,
+	) => void,
+) {
 	const directory = dataDirectory();
 	const settings = await readSettings();
 	const channel = releaseChannelSchema.parse(
@@ -43,6 +50,7 @@ export async function prepareUpdate(channelValue?: string) {
 		throw new Error(
 			"Updates require the installed standalone Loom executable. Use the installer first.",
 		);
+	onProgress?.("checking");
 	const status = await checkForUpdate(channel, { force: true });
 	if (status.error) throw new Error(status.error);
 	if (!status.available || !status.latest)
@@ -56,7 +64,10 @@ export async function prepareUpdate(channelValue?: string) {
 	let staged: string | undefined;
 	try {
 		if (await health()) await control("/api/updates/ready");
-		staged = await downloadUpdate(status.latest);
+		staged = await downloadUpdate(status.latest, {
+			onProgress: (downloaded, total) =>
+				onProgress?.("downloading", downloaded, total),
+		});
 		const helper = join(
 			lock,
 			process.platform === "win32" ? "helper.exe" : "helper",

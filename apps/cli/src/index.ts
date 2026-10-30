@@ -278,7 +278,33 @@ export async function main(args = process.argv.slice(2)) {
 			const i = args.indexOf("--channel");
 			if (i >= 0 && !args[i + 1])
 				throw new Error("--channel requires stable or beta");
-			const result = await prepareUpdate(i >= 0 ? args[i + 1] : undefined);
+			const interactive = Boolean(process.stdout.isTTY);
+			let lastPercent = -1;
+			const result = await prepareUpdate(
+				i >= 0 ? args[i + 1] : undefined,
+				(stage, downloaded, total) => {
+					if (stage === "checking") {
+						if (interactive) process.stdout.write("Checking for updates…");
+						else console.log("Checking for updates…");
+						return;
+					}
+					const percent = Math.min(
+						100,
+						Math.floor(((downloaded ?? 0) / (total ?? 1)) * 100),
+					);
+					if (interactive) {
+						const width = 24;
+						const filled = Math.floor((percent / 100) * width);
+						process.stdout.write(
+							`\r\x1b[2KDownloading update… [${"#".repeat(filled)}${"-".repeat(width - filled)}] ${percent}%`,
+						);
+					} else if (percent === 0 || percent >= lastPercent + 10) {
+						console.log(`Downloading update… ${percent}%`);
+						lastPercent = percent;
+					}
+				},
+			);
+			if (interactive) process.stdout.write("\r\x1b[2K");
 			console.log(
 				result.updating
 					? `Installing ${result.version}; Loom will restart. Run loom logs to follow progress.`

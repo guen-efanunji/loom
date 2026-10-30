@@ -84,12 +84,15 @@ test("update checks are cached and a network failure stays nonblocking", async (
 test("downloads verify size and checksum and remove corrupt files", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "loom-download-"));
 	try {
+		const progress: Array<[number, number]> = [];
 		const path = await downloadUpdate(manifest, {
 			directory,
 			platform: "linux-x64",
 			fetcher: async () => new Response(bytes),
+			onProgress: (downloaded, total) => progress.push([downloaded, total]),
 		});
 		expect(await Bun.file(path).text()).toBe("verified executable fixture");
+		expect(progress.at(-1)).toEqual([bytes.length, bytes.length]);
 		await rm(path);
 		await expect(
 			downloadUpdate(manifest, {
