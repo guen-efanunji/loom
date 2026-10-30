@@ -682,17 +682,26 @@ describe("server API", () => {
 					}),
 				),
 			);
-			for (const id of taskIds) {
-				let status = "queued";
-				const terminalForCheckpoint = new Set(["completed", "ready_to_merge"]);
-				const deadline = Date.now() + 10_000;
-				while (Date.now() < deadline && !terminalForCheckpoint.has(status)) {
-					const response = await setup.daemon.app.request(`/api/tasks/${id}`, {
-						headers,
-					});
-					status = ((await response.json()) as { status: string }).status;
-					if (!terminalForCheckpoint.has(status)) await Bun.sleep(20);
-				}
+			// Four tasks share the provider's two slots, so the last one only settles
+			// after the others merge. They are polled together, each with a generous
+			// deadline, because a loaded CI host needs more than one pass.
+			const terminalForCheckpoint = new Set(["completed", "ready_to_merge"]);
+			const settled = await Promise.all(
+				taskIds.map(async (id) => {
+					let status = "queued";
+					const deadline = Date.now() + 30_000;
+					while (Date.now() < deadline && !terminalForCheckpoint.has(status)) {
+						const response = await setup.daemon.app.request(
+							`/api/tasks/${id}`,
+							{ headers },
+						);
+						status = ((await response.json()) as { status: string }).status;
+						if (!terminalForCheckpoint.has(status)) await Bun.sleep(50);
+					}
+					return { id, status };
+				}),
+			);
+			for (const { id, status } of settled) {
 				expect([...terminalForCheckpoint]).toContain(status);
 				const checkpoint = await setup.daemon.app.request(
 					`/api/tasks/${id}/checkpoint`,
@@ -742,8 +751,9 @@ describe("server API", () => {
 			await setup.daemon.close();
 			await rm(setup.root, { recursive: true, force: true });
 		}
-		// Four real worktrees plus two review merges need more than the default budget.
-	}, 60_000);
+		// Four real worktrees, two review rounds and automatic integration: the budget
+		// covers the slowest CI host, not the average one.
+	}, 120_000);
 
 	test("maps missing task errors and protects bootstrap origin", async () => {
 		const setup = await createTestSetup();
