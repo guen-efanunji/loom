@@ -4176,6 +4176,14 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			let task = await repos.tasks.getById(taskId);
 			if (!task) return errorResponse(c, new Error("Task not found"));
 			const policy = await orchestrator.getReviewPolicy(task.projectId);
+			const settledReview = async () => {
+				const latest = await repos.taskReviews.list(taskId);
+				const settled = latest.at(0);
+				return c.json({
+					outputSha: settled?.subjectSha ?? "",
+					...(settled ? { review: settled } : {}),
+				});
+			};
 			if (policy.mode === "automatic") {
 				// The automatic pipeline checkpoints and reviews on completion and
 				// can already merge an approved task. Repeat checkpoints must wait
@@ -4190,21 +4198,25 @@ export async function createApp(options: DaemonAppOptions = {}) {
 					task = await repos.tasks.getById(taskId);
 					if (!task) return errorResponse(c, new Error("Task not found"));
 				}
-				if (task.status === "completed" && !task.workspaceId) {
-					const latest = await repos.taskReviews.list(taskId);
-					const settled = latest.at(0);
-					return c.json({
-						outputSha: settled?.subjectSha ?? "",
-						...(settled ? { review: settled } : {}),
-					});
-				}
+				if (task.status === "completed" && !task.workspaceId)
+					return settledReview();
 			}
-			const { outputSha } = await orchestrator.checkpoint(taskId);
-			const review =
-				policy.mode === "automatic"
-					? await orchestrator.runTaskReviewWithRepairs(taskId)
-					: undefined;
-			return c.json({ outputSha, ...(review ? { review } : {}) });
+			try {
+				const { outputSha } = await orchestrator.checkpoint(taskId);
+				const review =
+					policy.mode === "automatic"
+						? await orchestrator.runTaskReviewWithRepairs(taskId)
+						: undefined;
+				return c.json({ outputSha, ...(review ? { review } : {}) });
+			} catch (error) {
+				// The pipeline can integrate the task in the moment between the poll
+				// above and this call, so its workspace is gone by the time the
+				// checkpoint runs. Report what was settled instead of a 404; any other
+				// failure keeps its original status.
+				const current = await repos.tasks.getById(taskId);
+				if (policy.mode !== "automatic" || current?.workspaceId) throw error;
+				return settledReview();
+			}
 		} catch (error) {
 			return errorResponse(c, error);
 		}
