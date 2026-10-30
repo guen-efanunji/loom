@@ -147,16 +147,32 @@ try {
 
   # ---------- 7. install ----------
   Write-Phase 'Installing Loom'
+  # The same one-liner is the recovery path when loom update cannot finish, so an
+  # existing installation is upgraded in place instead of refusing to run.
+  $installed = ''
   if (Test-Path -LiteralPath $target) {
-    Stop-Install 'Loom is installed. Run loom update to update safely.' "Existing binary: $target"
+    $reportedInstalled = ((& $target --version 2>$null) | Out-String)
+    if ($reportedInstalled -match '(\d+\.\d+\.\d+(-beta\.\d+)?)') { $installed = $Matches[1] }
+    if ($installed -eq $manifest.version) {
+      Stop-Install 'Loom is installed. Run loom update to update safely.' "Existing binary: $target ($installed)"
+    }
+    Write-Log "Found Loom $(if ($installed) { $installed } else { 'another build' }) in place; updating it to $($manifest.version)"
   }
   New-Item -ItemType Directory -Force -Path $bin | Out-Null
   Write-Log 'Running a startup check on the downloaded executable'
   $reported = & $temp --version
   if ($LASTEXITCODE -ne 0) { Stop-Install 'The release binary cannot run on this system.' }
   Write-Done "Executable answers: $reported"
-  Move-Item -LiteralPath $temp -Destination $target
-  Write-Done "Installed to $target (no administrator access used)"
+  if ($installed) {
+    $previous = Join-Path $bin 'loom.exe.previous'
+    Copy-Item -LiteralPath $target -Destination $previous -Force
+    Write-Done "Kept the previous build at $previous for rollback"
+    Move-Item -LiteralPath $temp -Destination $target
+    Write-Done "Updated $target from $installed to $($manifest.version) (no administrator access used)"
+  } else {
+    Move-Item -LiteralPath $temp -Destination $target
+    Write-Done "Installed to $target (no administrator access used)"
+  }
 
   # ---------- 8. PATH ----------
   Write-Phase 'Adding Loom to your user PATH'
@@ -170,8 +186,13 @@ try {
   $env:Path = "$bin;$env:Path"
 
   $totalSeconds = [math]::Round(((Get-Date) - $started).TotalSeconds, 1)
+  if ($installed) {
+    $headline = ("Loom updated from $installed to {0} in {1}s." -f $manifest.version, $totalSeconds)
+  } else {
+    $headline = ("Loom {0} installed successfully in {1}s." -f $manifest.version, $totalSeconds)
+  }
   Write-Host ''
-  Write-Host ("Loom {0} installed successfully in {1}s." -f $manifest.version, $totalSeconds) -ForegroundColor $(if ($useColor) { 'Green' } else { 'Gray' })
+  Write-Host $headline -ForegroundColor $(if ($useColor) { 'Green' } else { 'Gray' })
   Write-Detail 'next  open a new terminal, then run: loom'
   Write-Detail '      the workspace opens at http://127.0.0.1:4317 on this device'
   Write-Detail 'check loom doctor  -  logs loom logs'

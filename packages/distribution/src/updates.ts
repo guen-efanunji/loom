@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdir, readFile, rm, open } from "node:fs/promises";
+import { chmod, mkdir, open, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import {
@@ -7,8 +7,8 @@ import {
 	dataDirectory,
 	platformKey,
 	REPOSITORY,
-	VERSION,
 	type ReleaseChannel,
+	VERSION,
 } from "./index";
 
 const semver =
@@ -160,6 +160,12 @@ export async function downloadUpdate(
 		directory?: string;
 		platform?: string;
 		fetcher?: ReleaseFetcher;
+		/**
+		 * Cancel only when no byte arrives for this long. A 100 MB executable over a
+		 * slow link legitimately takes many minutes, and a total deadline made
+		 * `loom update` impossible there.
+		 */
+		stallTimeoutMs?: number;
 	} = {},
 ) {
 	const platform = options.platform ?? platformKey();
@@ -173,15 +179,26 @@ export async function downloadUpdate(
 		`update-${randomUUID()}${platform.startsWith("windows") ? ".exe" : ""}`,
 	);
 	const file = await open(path, "wx", 0o600);
+	const stallTimeoutMs = options.stallTimeoutMs ?? 120_000;
+	let lastByteAt = Date.now();
+	const controller = new AbortController();
+	const watchdog = setInterval(
+		() => {
+			if (Date.now() - lastByteAt > stallTimeoutMs) controller.abort();
+		},
+		Math.max(25, Math.min(2_000, Math.floor(stallTimeoutMs / 4))),
+	);
+	watchdog.unref();
 	try {
 		const response = await (options.fetcher ?? fetch)(artifact.url, {
-			signal: AbortSignal.timeout(180000),
+			signal: controller.signal,
 		});
 		if (!response.ok || !response.body)
 			throw new Error(`Download failed: HTTP ${response.status}`);
 		const hash = createHash("sha256");
 		let size = 0;
 		for await (const chunk of response.body) {
+			lastByteAt = Date.now();
 			size += chunk.length;
 			if (size > artifact.size)
 				throw new Error("Artifact exceeds its declared size");
@@ -199,6 +216,12 @@ export async function downloadUpdate(
 	} catch (error) {
 		await file.close().catch(() => {});
 		await rm(path, { force: true });
+		if (controller.signal.aborted)
+			throw new Error(
+				`The download stalled for ${Math.round(stallTimeoutMs / 1000)}s and was cancelled.`,
+			);
 		throw error;
+	} finally {
+		clearInterval(watchdog);
 	}
 }

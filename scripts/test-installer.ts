@@ -207,6 +207,60 @@ try {
 		"Reinstall guard did not trigger",
 	);
 
+	// A newer published release upgrades the same installation in place, which is
+	// the recovery path when `loom update` cannot finish on a slow connection.
+	const newer = "9.9.10";
+	const newerBinary = `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "loom ${newer}-test"; exit 0; fi\n`;
+	const newerSha = createHash("sha256").update(newerBinary).digest("hex");
+	await writeFile(join(fixtures, name), newerBinary);
+	await writeFile(
+		join(fixtures, "manifest.json"),
+		`${JSON.stringify(
+			{
+				...manifest,
+				version: newer,
+				artifacts: {
+					[platform]: {
+						url: `${base}/v${newer}/${name}`,
+						sha256: newerSha,
+						size: newerBinary.length,
+					},
+				},
+			},
+			null,
+			2,
+		)}\n`,
+	);
+	const upgraded = await invoke(join(sandbox, "home"));
+	assert(
+		upgraded.exitCode === 0,
+		`Upgrade failed:\n${upgraded.stdout}\n${upgraded.stderr}`,
+	);
+	for (const line of [
+		`Found Loom ${version} in place; updating it to ${newer}`,
+		"Kept the previous build",
+		`Updated ${join(sandbox, "home", ".loom", "bin", "loom")} from ${version} to ${newer}`,
+		`Loom updated from ${version} to ${newer}`,
+	])
+		assert(upgraded.stdout.includes(line), `Upgrade log is missing: ${line}`);
+	assert(
+		await Bun.file(
+			join(sandbox, "home", ".loom", "bin", "loom.previous"),
+		).exists(),
+		"Upgrade kept no previous build for rollback",
+	);
+	assert(
+		(await run([installed, "--version"], {}, root)).stdout.includes(
+			`${newer}-test`,
+		),
+		"Upgraded binary does not run",
+	);
+	await writeFile(join(fixtures, name), binaryFixture);
+	await writeFile(
+		join(fixtures, "manifest.json"),
+		`${JSON.stringify(manifest, null, 2)}\n`,
+	);
+
 	// A tampered artifact is rejected and nothing is left behind.
 	await writeFile(join(fixtures, name), `${binaryFixture}tampered`);
 	const tamperedHome = join(sandbox, "tampered-home");

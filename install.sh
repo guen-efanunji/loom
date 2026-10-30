@@ -216,7 +216,16 @@ pass "SHA-256 verified for $(human "$size")"
 
 # ---------- 7. install ----------
 phase 'Installing Loom'
-[ ! -e "$bin/loom" ] || die 'Loom is already installed. Run loom update to update safely.' "Existing binary: $bin/loom"
+# The same one-liner is the recovery path when `loom update` cannot finish, so an
+# existing installation is upgraded in place instead of refusing to run.
+installed=''
+if [ -e "$bin/loom" ]; then
+  installed=$("$bin/loom" --version 2>/dev/null | LC_ALL=C grep -Eo '[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?' | head -1)
+  if [ "$installed" = "$version" ]; then
+    die "Loom $version is already installed. Run loom update to update safely." "Existing binary: $bin/loom"
+  fi
+  log "Found Loom ${installed:-another build} in place; updating it to $version"
+fi
 umask 077
 mkdir -p "$bin"
 cp "$temp/loom" "$bin/loom.next"
@@ -233,8 +242,17 @@ if ! captured=$("$bin/loom.next" --version 2>&1); then
   die 'The downloaded Loom executable could not start on this device; nothing was installed.' 'Check that your macOS version and CPU match the selected release artifact.'
 fi
 pass "Executable answers: $captured"
-mv "$bin/loom.next" "$bin/loom"
-pass "Installed to $bin/loom (mode 700, no administrator access used)"
+if [ -n "$installed" ]; then
+  if cp "$bin/loom" "$bin/loom.previous"; then
+    chmod 700 "$bin/loom.previous" 2>/dev/null || true
+    pass "Kept the previous build at $bin/loom.previous for rollback"
+  fi
+  mv "$bin/loom.next" "$bin/loom"
+  pass "Updated $bin/loom from ${installed:-an older build} to $version (mode 700, no administrator access used)"
+else
+  mv "$bin/loom.next" "$bin/loom"
+  pass "Installed to $bin/loom (mode 700, no administrator access used)"
+fi
 
 # ---------- 8. PATH ----------
 phase 'Adding Loom to your user PATH'
@@ -255,7 +273,13 @@ else
 fi
 
 finished=$(date +%s 2>/dev/null || echo 0)
-printf '\n%s\n' "$(paint '1;32' 'Loom '"$version"' installed successfully in '"$((finished - started))"'s.')"
+elapsed_total=$((finished - started))
+if [ -n "$installed" ]; then
+  headline="Loom updated from ${installed:-an older build} to $version in ${elapsed_total}s."
+else
+  headline="Loom $version installed successfully in ${elapsed_total}s."
+fi
+printf '\n%s\n' "$(paint '1;32' "$headline")"
 detail 'next  restart your terminal, then run: loom'
 detail '      the workspace opens at http://127.0.0.1:4317 on this device'
 detail 'check loom doctor  ·  logs loom logs'

@@ -103,6 +103,62 @@ test("downloads verify size and checksum and remove corrupt files", async () => 
 		await rm(directory, { recursive: true, force: true });
 	}
 });
+test("a slow link completes and a stalled connection is cancelled", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "loom-download-slow-"));
+	const pieces = [
+		bytes.slice(0, 7),
+		bytes.slice(7, 14),
+		bytes.slice(14, 20),
+		bytes.slice(20),
+	];
+	const trickle = async (gapMs: number) =>
+		new Response(
+			new ReadableStream<Uint8Array>({
+				async start(output) {
+					for (const piece of pieces) {
+						await new Promise((resolve) => setTimeout(resolve, gapMs));
+						output.enqueue(piece);
+					}
+					output.close();
+				},
+			}),
+		);
+	try {
+		// Four chunks of 120ms take 480ms in total, longer than the 300ms window,
+		// yet every chunk lands inside it: progress must reset the watchdog.
+		const path = await downloadUpdate(manifest, {
+			directory,
+			platform: "linux-x64",
+			fetcher: async () => trickle(120),
+			stallTimeoutMs: 300,
+		});
+		expect(await Bun.file(path).text()).toBe("verified executable fixture");
+		await rm(path);
+		await expect(
+			downloadUpdate(manifest, {
+				directory,
+				platform: "linux-x64",
+				// One chunk arrives and then the connection goes quiet. A real fetch
+				// errors the body when its signal aborts, so the stub does too.
+				fetcher: async (_url, init) =>
+					new Response(
+						new ReadableStream<Uint8Array>({
+							start(output) {
+								for (const piece of pieces.slice(0, 1)) output.enqueue(piece);
+								init?.signal?.addEventListener("abort", () =>
+									output.error(new Error("aborted")),
+								);
+							},
+						}),
+					),
+				stallTimeoutMs: 150,
+			}),
+		).rejects.toThrow("stalled");
+		expect(await readdir(join(directory, "cache"))).toEqual([]);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+}, 8_000);
 test("structured log redaction covers nested credentials and URL query secrets", () => {
 	expect(
 		redact({
