@@ -108,7 +108,18 @@ log 'Bun, Node.js and npm are not needed: the release bundles the Bun runtime wi
 
 # ---------- download helper ----------
 temp=$(mktemp -d)
-trap 'rm -rf "$temp"' EXIT HUP INT TERM
+candidate=''
+cleanup() {
+  cleanup_status=$?
+  trap - EXIT HUP INT TERM
+  if [ -n "$candidate" ]; then rm -f "$candidate"; fi
+  rm -rf "$temp"
+  exit "$cleanup_status"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 fetch() {
   label=$1
   url=$2
@@ -218,39 +229,132 @@ pass "SHA-256 verified for $(human "$size")"
 phase 'Installing Loom'
 # The same one-liner is the recovery path when `loom update` cannot finish, so an
 # existing installation is upgraded in place instead of refusing to run.
+had_existing=0
 installed=''
-if [ -e "$bin/loom" ]; then
-  installed=$("$bin/loom" --version 2>/dev/null | LC_ALL=C grep -Eo '[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?' | head -1)
-  if [ "$installed" = "$version" ]; then
-    die "Loom $version is already installed. Run loom update to update safely." "Existing binary: $bin/loom"
+if [ -e "$bin/loom" ] || [ -L "$bin/loom" ]; then
+  [ -f "$bin/loom" ] && [ ! -L "$bin/loom" ] || die 'The existing Loom target is not a regular file.' "Refusing to replace: $bin/loom"
+  had_existing=1
+  old_version_log="$temp/old-version.log"
+  if [ -x "$bin/loom" ] && "$bin/loom" --version >"$old_version_log" 2>&1; then
+    installed=$(LC_ALL=C awk 'match($0, /loom [0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?/) { print substr($0, RSTART + 5, RLENGTH - 5); exit }' "$old_version_log")
+    if [ -n "$installed" ]; then
+      if [ "$installed" = "$version" ] && [ "${LOOM_REINSTALL:-0}" != 1 ]; then
+        die "Loom $version is already installed. Set LOOM_REINSTALL=1 when running the installer to reinstall it." "Existing binary: $bin/loom"
+      fi
+    else
+      note 'Existing executable returned output that did not contain a Loom version.'
+    fi
+  else
+    old_status=$?
+    note "Existing executable could not report its version (status $old_status); preparing a verified replacement."
   fi
-  log "Found Loom ${installed:-another build} in place; updating it to $version"
+  if [ -f "$loom_home/daemon.json" ] && [ -n "$installed" ]; then
+    daemon_pid=$(awk -F '[^0-9]+' '/"pid"[[:space:]]*:/ { for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+$/) { print $i; exit } }' "$loom_home/daemon.json")
+    case "$daemon_pid" in ''|*[!0-9]*) daemon_pid='' ;; esac
+    if [ -n "$daemon_pid" ] && kill -0 "$daemon_pid" 2>/dev/null; then
+      daemon_version=$(awk -F '"' '/"version"[[:space:]]*:/ { print $4; exit }' "$loom_home/daemon.json")
+      if [ "$daemon_version" = "$installed" ]; then
+        daemon_command=$(ps -p "$daemon_pid" -o command= 2>/dev/null || true)
+        case "$daemon_command" in
+          *"$bin/loom"*)
+            die 'A Loom daemon appears to be running; refusing to replace its executable.' 'Stop Loom with `loom stop`, then rerun the installer.'
+            ;;
+          *)
+            die 'A recorded Loom daemon may be running; refusing to replace the executable without confirming process identity.' 'Run `loom stop` if Loom is open, then retry the installer.'
+            ;;
+        esac
+      fi
+    fi
+  fi
+  if [ -n "$installed" ]; then
+    log "Found Loom $installed in place; updating it to $version"
+  elif [ -f "$bin/loom" ]; then
+    log "Found an existing Loom executable; preparing verified version $version"
+  else
+    log "No existing Loom executable; preparing version $version"
+  fi
 fi
 umask 077
 mkdir -p "$bin"
-cp "$temp/loom" "$bin/loom.next"
-chmod 700 "$bin/loom.next"
+candidate="$bin/loom.candidate.$$"
+[ ! -e "$candidate" ] && [ ! -L "$candidate" ] || die 'The candidate path already exists; refusing to overwrite it.'
+if ! cp "$temp/loom" "$candidate"; then rm -f "$candidate"; die 'Could not stage the verified Loom executable.' 'The existing installation was not replaced.'; fi
+if ! chmod 700 "$candidate"; then rm -f "$candidate"; die 'Could not set executable permissions on the staged Loom binary.' 'The existing installation was not replaced.'; fi
 log 'Running a startup check on the downloaded executable'
-if ! captured=$("$bin/loom.next" --version 2>&1); then
-  rm -f "$bin/loom.next"
-  detail "platform $platform ($(uname -s) $(uname -m))"
-  detail "executable $bin/loom.next"
-  [ -z "$captured" ] || detail "startup output: $captured"
-  if [ "$os" = linux ]; then
-    die 'The downloaded Loom executable could not start on this device; nothing was installed.' 'Check that your CPU matches the selected Linux artifact.' 'Loom Linux releases require glibc; Alpine/musl is not published.'
+startup_log="$temp/startup.log"
+if "$candidate" --version >"$startup_log" 2>&1; then
+  startup_status=0
+else
+  startup_status=$?
+fi
+startup_output_bytes=$(wc -c < "$startup_log" 2>/dev/null | tr -d ' ' || true)
+case "$startup_output_bytes" in ''|*[!0-9]*) startup_output_bytes=0 ;; esac
+if [ "$startup_output_bytes" -gt 4096 ]; then
+  if has dd; then captured="$(dd if="$startup_log" bs=1 count=4096 2>/dev/null) [output truncated after 4096 bytes]"
+  else captured='[output exceeded 4096 bytes and was truncated]'; fi
+else captured=$(cat "$startup_log" 2>/dev/null || true); fi
+reported_version=$(printf '%s\n' "$captured" | LC_ALL=C awk 'match($0, /loom [0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?/) { print substr($0, RSTART + 5, RLENGTH - 5); exit }')
+if [ "$startup_status" -ne 0 ] || [ -z "$reported_version" ] || [ "$reported_version" != "$version" ]; then
+  detail "artifact $platform, version $version"
+  detail "startup exit code: $startup_status"
+  detail "startup output: ${captured:-empty}"
+  detail "expected sha256 $expected"
+  detail "actual sha256 $actual"
+  detail "downloaded bytes $size"
+  if [ "$os" = darwin ]; then
+    detail "uname: $(uname -s 2>/dev/null || printf unavailable) $(uname -m 2>/dev/null || printf unavailable) $(uname -r 2>/dev/null || printf unavailable)"
+    if has sw_vers; then
+      macos_version=$(sw_vers -productVersion 2>/dev/null || true)
+      detail "macOS product version: ${macos_version:-unavailable}"
+    else detail 'macOS product version: sw_vers unavailable'; fi
+    detail "candidate: $candidate"
+    detail "candidate sha256 $actual; expected sha256 $expected; downloaded bytes $size"
+    if has file; then
+      file_output=$(file "$candidate" 2>&1 | head -c 1000 || true)
+      detail "file: ${file_output:-unavailable}"
+    else detail 'file: unavailable'; fi
+    if has codesign; then
+      if signature_output=$(codesign --verify --strict --verbose=4 "$candidate" 2>&1); then
+        detail "codesign verification: ${signature_output:-passed with no diagnostic output}"
+      else
+        signature_status=$?
+        detail "codesign verification: failed (status $signature_status): ${signature_output:-no diagnostic output}"
+      fi
+    else detail 'codesign verification: unavailable'; fi
+    if has xattr; then
+      xattr_names=$(xattr "$candidate" 2>/dev/null | head -c 1000 || true)
+      detail "extended attribute names: ${xattr_names:-none or unavailable}"
+    else detail 'extended attribute names: xattr unavailable'; fi
   fi
-  die 'The downloaded Loom executable could not start on this device; nothing was installed.' 'Check that your macOS version and CPU match the selected release artifact.'
+  rm -f "$candidate"
+  candidate=''
+  if [ "$startup_status" -ne 0 ]; then
+    die 'Download integrity was verified, but Loom failed its startup check; the candidate was not activated.' 'The existing installation was not replaced.'
+  fi
+  if [ -z "$reported_version" ]; then
+    die 'The candidate exited successfully but did not report a recognizable Loom version; it was not activated.' 'The existing installation was not replaced.'
+  fi
+  die "The candidate reported Loom $reported_version instead of expected $version; it was not activated." 'The existing installation was not replaced.'
 fi
 pass "Executable answers: $captured"
-if [ -n "$installed" ]; then
-  if cp "$bin/loom" "$bin/loom.previous"; then
-    chmod 700 "$bin/loom.previous" 2>/dev/null || true
-    pass "Kept the previous build at $bin/loom.previous for rollback"
+if [ "$had_existing" -eq 1 ]; then
+  if [ -e "$bin/loom.previous" ] || [ -L "$bin/loom.previous" ]; then
+    backup="$bin/loom.previous.$(date +%s).$$"
+  else backup="$bin/loom.previous"; fi
+  [ ! -e "$backup" ] && [ ! -L "$backup" ] || { rm -f "$candidate"; die 'The rollback path already exists; refusing to overwrite it.'; }
+  if ! cp "$bin/loom" "$backup"; then rm -f "$candidate"; candidate=''; die 'Could not preserve the previous executable; refusing to replace it.'; fi
+  if ! chmod 700 "$backup"; then rm -f "$backup" "$candidate"; candidate=''; die 'Could not secure the previous executable backup; refusing to replace it.'; fi
+  pass "Kept the previous build at $backup for rollback"
+  if ! mv "$candidate" "$bin/loom"; then rm -f "$candidate"; candidate=''; die 'Could not activate the candidate; the previous executable remains in place.'; fi
+  candidate=''
+  if [ -n "$installed" ]; then
+    pass "Updated $bin/loom from $installed to $version (mode 700, no administrator access used)"
+  else
+    pass "Repaired $bin/loom with verified version $version (mode 700, no administrator access used)"
   fi
-  mv "$bin/loom.next" "$bin/loom"
-  pass "Updated $bin/loom from ${installed:-an older build} to $version (mode 700, no administrator access used)"
 else
-  mv "$bin/loom.next" "$bin/loom"
+  if ! mv "$candidate" "$bin/loom"; then rm -f "$candidate"; candidate=''; die 'Could not activate the candidate.'; fi
+  candidate=''
   pass "Installed to $bin/loom (mode 700, no administrator access used)"
 fi
 
@@ -275,7 +379,9 @@ fi
 finished=$(date +%s 2>/dev/null || echo 0)
 elapsed_total=$((finished - started))
 if [ -n "$installed" ]; then
-  headline="Loom updated from ${installed:-an older build} to $version in ${elapsed_total}s."
+  headline="Loom updated from $installed to $version in ${elapsed_total}s."
+elif [ "$had_existing" -eq 1 ]; then
+  headline="Loom repaired to $version in ${elapsed_total}s."
 else
   headline="Loom $version installed successfully in ${elapsed_total}s."
 fi

@@ -93,7 +93,7 @@ if (platform.startsWith("windows")) {
 const [os, arch] = platform.split("-");
 const name = `loom-${os}-${arch}`;
 const version = "9.9.9";
-const binaryFixture = `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "loom 9.9.9-test"; exit 0; fi\necho "loom 9.9.9-test"\n`;
+const binaryFixture = `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "loom ${version}"; exit 0; fi\necho "loom ${version}"\n`;
 const sha256 = createHash("sha256").update(binaryFixture).digest("hex");
 const sandbox = await mkdtemp(join(tmpdir(), "loom-installer-"));
 try {
@@ -154,10 +154,12 @@ try {
 	const invoke = (home: string, extra: Record<string, string> = {}) =>
 		run(
 			["sh", join(root, "install.sh")],
-			{ ...env, HOME: home, ...extra },
+			{ ...env, HOME: home, LOOM_HOME: join(home, ".loom"), ...extra },
 			root,
 		);
-	const first = await invoke(join(sandbox, "home"));
+	const first = await invoke(join(sandbox, "home"), {
+		LOOM_HOME: join(sandbox, "home", ".loom"),
+	});
 	assert(
 		first.exitCode === 0,
 		`Installer failed:\n${first.stdout}\n${first.stderr}`,
@@ -180,7 +182,7 @@ try {
 		`Loom ${version} for ${platform}`,
 		"expected sha256",
 		"SHA-256 verified",
-		"Executable answers: loom 9.9.9-test",
+		`Executable answers: loom ${version}`,
 		"Wrote PATH entry",
 		"installed successfully",
 		"loom doctor",
@@ -189,7 +191,7 @@ try {
 	const installed = join(sandbox, "home", ".loom", "bin", "loom");
 	assert(
 		(await run([installed, "--version"], {}, root)).stdout.includes(
-			"9.9.9-test",
+			`loom ${version}`,
 		),
 		"Installed binary does not run",
 	);
@@ -200,17 +202,48 @@ try {
 	);
 
 	// Re-running the installer refuses to overwrite a healthy installation.
-	const rerun = await invoke(join(sandbox, "home"));
+	const rerun = await invoke(join(sandbox, "home"), {
+		LOOM_HOME: join(sandbox, "home", ".loom"),
+	});
 	assert(
 		rerun.exitCode !== 0 &&
 			`${rerun.stdout}${rerun.stderr}`.includes("already installed"),
 		"Reinstall guard did not trigger",
 	);
+	const reinstall = await invoke(join(sandbox, "home"), {
+		LOOM_HOME: join(sandbox, "home", ".loom"),
+		LOOM_REINSTALL: "1",
+	});
+	assert(
+		reinstall.exitCode === 0 && reinstall.stdout.includes("Updated "),
+		`Explicit same-version reinstall failed:\n${reinstall.stdout}\n${reinstall.stderr}`,
+	);
+
+	const brokenPrior = "#!/bin/sh\\nexit 42\\n";
+	await writeFile(installed, brokenPrior);
+	const repaired = await invoke(join(sandbox, "home"), {
+		LOOM_HOME: join(sandbox, "home", ".loom"),
+	});
+	assert(
+		repaired.exitCode === 0 &&
+			repaired.stdout.includes("preparing verified version") &&
+			repaired.stdout.includes("Repaired ") &&
+			repaired.stdout.includes("Loom repaired to"),
+		`Broken-install repair failed:\\n${repaired.stdout}\\n${repaired.stderr}`,
+	);
+	assert(
+		(await run([installed, "--version"], {}, root)).stdout.includes(
+			`loom ${version}`,
+		),
+		"Repair did not activate the verified candidate",
+	);
 
 	// A newer published release upgrades the same installation in place, which is
 	// the recovery path when `loom update` cannot finish on a slow connection.
 	const newer = "9.9.10";
-	const newerBinary = `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "loom ${newer}-test"; exit 0; fi\n`;
+	const newerBinary = `#!/bin/sh
+if [ "$1" = "--version" ]; then echo "loom ${newer}"; exit 0; fi
+`;
 	const newerSha = createHash("sha256").update(newerBinary).digest("hex");
 	await writeFile(join(fixtures, name), newerBinary);
 	await writeFile(
@@ -251,7 +284,7 @@ try {
 	);
 	assert(
 		(await run([installed, "--version"], {}, root)).stdout.includes(
-			`${newer}-test`,
+			`loom ${newer}`,
 		),
 		"Upgraded binary does not run",
 	);
@@ -314,20 +347,91 @@ try {
 		`${createHash("sha256").update(brokenFixture).digest("hex")}  ${name}\n`,
 	);
 	const brokenHome = join(sandbox, "broken-home");
-	const broken = await invoke(brokenHome);
+	const broken = await invoke(brokenHome, {
+		LOOM_HOME: join(brokenHome, ".loom"),
+	});
 	const brokenLog = `${broken.stdout}${broken.stderr}`;
 	assert(broken.exitCode !== 0, "A non-starting executable was installed");
 	assert(
 		brokenLog.includes("incompatible architecture") &&
-			brokenLog.includes("nothing was installed"),
-		"Startup failure did not retain diagnostic output",
+			brokenLog.includes("startup exit code: 86") &&
+			brokenLog.includes("actual sha256") &&
+			brokenLog.includes("startup output: loader error"),
+		"Startup failure did not retain useful diagnostics",
 	);
 	assert(
 		!(await Bun.file(join(brokenHome, ".loom", "bin", "loom")).exists()),
 		"Startup failure left a broken executable installed",
 	);
+	const existingHome = join(sandbox, "existing-home");
+	const existingPath = join(existingHome, ".loom", "bin", "loom");
+	await mkdir(join(existingHome, ".loom", "bin"), { recursive: true });
+	await writeFile(existingPath, `#!/bin/sh\necho 'loom ${version}'\n`);
+	await chmod(existingPath, 0o700);
+	const silentFixture = "#!/bin/sh\nexit 86\n";
+	await writeFile(join(fixtures, name), silentFixture);
+	const silentManifest = {
+		...manifest,
+		artifacts: {
+			[platform]: {
+				url: `${base}/v${version}/${name}`,
+				sha256: createHash("sha256").update(silentFixture).digest("hex"),
+				size: silentFixture.length,
+			},
+		},
+	};
+	await writeFile(
+		join(fixtures, "manifest.json"),
+		`${JSON.stringify(silentManifest, null, 2)}\n`,
+	);
+	const silent = await invoke(existingHome, { LOOM_REINSTALL: "1" });
+	const silentLog = `${silent.stdout}${silent.stderr}`;
+	assert(
+		silent.exitCode !== 0 &&
+			silentLog.includes("startup exit code: 86") &&
+			silentLog.includes("startup output: empty") &&
+			silentLog.includes("existing installation was not replaced"),
+		`Silent startup failure was not explained or replaced the prior binary:\n${silentLog}`,
+	);
+	assert(
+		(await run([existingPath, "--version"], {}, root)).stdout.includes(version),
+		"Startup failure replaced the prior executable",
+	);
+	const wrongVersion = `#!/bin/sh
+echo 'loom 1.2.3'
+`;
+	await writeFile(join(fixtures, name), wrongVersion);
+	await writeFile(
+		join(fixtures, "manifest.json"),
+		`${JSON.stringify(
+			{
+				...manifest,
+				artifacts: {
+					[platform]: {
+						url: `${base}/v${version}/${name}`,
+						sha256: createHash("sha256").update(wrongVersion).digest("hex"),
+						size: wrongVersion.length,
+					},
+				},
+			},
+			null,
+			2,
+		)}\n`,
+	);
+	const unexpectedVersion = await invoke(existingHome, { LOOM_REINSTALL: "1" });
+	assert(
+		unexpectedVersion.exitCode !== 0 &&
+			`${unexpectedVersion.stdout}${unexpectedVersion.stderr}`.includes(
+				"instead of expected",
+			),
+		"A candidate reporting an unexpected version was activated",
+	);
+	assert(
+		(await run([existingPath, "--version"], {}, root)).stdout.includes(version),
+		"Unexpected-version candidate replaced the prior executable",
+	);
 	console.log(
-		`PASS ${platform}: installer phases, log detail, manifest and fallback paths, PATH setup, reinstall guard, checksum and startup failure rejection, channel and LOOM_HOME validation`,
+		`PASS ${platform}: installer phases, diagnostics, manifest and fallback paths, PATH setup, repair/reinstall, checksum and startup failure rejection`,
 	);
 } finally {
 	await rm(sandbox, { recursive: true, force: true });

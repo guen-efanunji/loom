@@ -42,7 +42,7 @@ jobs:
           ref: ${{ inputs.tag || github.ref_name }}
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.13
+          bun-version: 1.4.1
       - name: Validate version
         run: bun scripts/validate-release.ts
       - run: bun install --frozen-lockfile
@@ -51,6 +51,16 @@ jobs:
       - run: bun run --cwd apps/web check
       - run: bun run --cwd apps/web build
       - run: bun scripts/build-release.ts ${{ matrix.platform }}
+      - name: Verify macOS arm64 executable signature
+        if: matrix.platform == 'darwin-arm64'
+        run: |
+          bun --version
+          sw_vers
+          codesign --verify --strict --verbose=4 dist/loom-darwin-arm64
+          cp dist/loom-darwin-arm64 "$RUNNER_TEMP/loom-darwin-arm64-copy"
+          chmod 700 "$RUNNER_TEMP/loom-darwin-arm64-copy"
+          codesign --verify --strict --verbose=4 "$RUNNER_TEMP/loom-darwin-arm64-copy"
+          "$RUNNER_TEMP/loom-darwin-arm64-copy" --version
       - name: Check the target executable starts
         run: |
           if [ "${{ matrix.platform }}" = "windows-x64" ]; then
@@ -86,7 +96,7 @@ jobs:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.13
+          bun-version: 1.4.1
       - run: bun install --frozen-lockfile
       - uses: actions/download-artifact@v4
         with:

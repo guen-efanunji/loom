@@ -27,7 +27,7 @@ export const docs: Doc[] = [
 				title: "What you need",
 				paragraphs: [
 					"Loom is built with Bun and uses Bun's JavaScript runtime. For the prebuilt release you do not need to install Bun separately: the executable bundles the Bun runtime with the Loom CLI and browser UI. Install Git and OpenCode, then configure a model provider in OpenCode for Loom's primary workspace and task workflow. Additional supported CLI providers can be connected for chat after installation. This is a local-first application: the executable and workspace data stay on your device; the website does not host your workspace or act as a remote Loom server.",
-					"Release targets are macOS on Apple silicon and Intel, and Linux on x64 and arm64 with glibc; Alpine/musl is not published. Windows x64 is still being prepared, and its installer says so until a binary is published. The release CI executes every target binary before publication and checks the packaged daemon on native Linux and Intel macOS runners.",
+					"Release targets are macOS on Apple silicon and Intel, and Linux on x64 and arm64 with glibc; Alpine/musl is not published. Windows x64 is still being prepared, and its installer says so until a binary is published. Release CI tests artifacts on native runners, including signature verification for macOS arm64; this does not guarantee compatibility with every OS point release.",
 				],
 				links: [
 					{ label: "Install Git", href: "https://git-scm.com/downloads" },
@@ -39,7 +39,7 @@ export const docs: Doc[] = [
 				title: "Install Loom",
 				paragraphs: [
 					"Run the command above in Terminal on macOS/Linux, or PowerShell on Windows. The installer prints eight numbered phases, shows binary download progress, verifies SHA-256 (and size on Windows), checks that the executable starts, installs to your user folder, and updates your user PATH. It does not require administrator access.",
-					"The installer needs a published GitHub release. If it reports that no release is available, check GitHub Releases. This installs the Loom CLI and local browser workspace, not a native desktop app; run loom after installing to start Loom on your device. The installer does not build from source and never clones the repository onto your machine.",
+					"The installer needs a published GitHub release. If it reports that no release is available, check GitHub Releases. This installs the Loom CLI and local browser workspace, not a native desktop app; run loom after installing to start Loom on your device. The installer does not build from source and never clones the repository onto your machine. A startup failure prints the exit status and best-effort platform/signature diagnostics; it does not disable Gatekeeper or replace the existing binary.",
 				],
 				links: [
 					{
@@ -63,7 +63,7 @@ export const docs: Doc[] = [
 					"Every run is a step-by-step log, so you can see what was detected, downloaded, verified and changed. The numbered phases are the same on macOS, Linux and Windows.",
 					"Phases 1 to 3 report your platform, the tools the installer itself needs, and the tools Loom needs afterwards (Git and OpenCode). Missing tools are reported with an install hint and never installed for you, so nothing outside ~/.loom changes without your decision.",
 					"Phases 4 to 6 resolve the published release, download the single binary for your platform with a progress bar, and compare its SHA-256 against the published manifest. A mismatch stops the run and nothing is installed.",
-					"Phases 7 and 8 run the new binary once to prove it starts on your machine, move it into place, and add its folder to your PATH. The final line prints the elapsed time and the next commands to run.",
+					"Phase 7 validates that the staged executable reports the exact release version before activation. For an existing installation, it preserves a rollback copy; it refuses to replace a recorded running Loom daemon. A failed startup reports its exit status, bounded output and available macOS diagnostics, while leaving the existing executable untouched. A healthy same-version install is left unchanged unless LOOM_REINSTALL=1 is set in the environment passed to sh; broken installs can be repaired after validation. Phase 8 adds the executable folder to PATH.",
 				],
 				code: "[1/8] Checking your system\n[2/8] Checking the tools this installer needs\n[3/8] Checking what Loom needs after the binary is installed\n[4/8] Resolving the latest release on the stable channel\n[5/8] Downloading the Loom binary\n[6/8] Verifying the download\n[7/8] Installing Loom\n[8/8] Adding Loom to your user PATH",
 				note: "Set LOOM_CHANNEL=beta to install a prerelease, or LOOM_HOME to choose another data directory. Both are printed in the log so you can see what a run used.",
