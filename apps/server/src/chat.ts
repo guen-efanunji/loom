@@ -39,6 +39,7 @@ const promptSchema = z
 		thinkingMode: z.string().min(1).max(100).optional(),
 		files: z.array(z.string()).max(50).default([]),
 		designNodeIds: z.array(z.string().min(1)).max(5).default([]),
+		sshConnectionIds: z.array(z.string().min(1).max(120)).max(10).default([]),
 		attachments: z
 			.array(
 				z.object({
@@ -56,7 +57,8 @@ const promptSchema = z
 			value.text.trim() ||
 			value.files.length ||
 			value.attachments.length ||
-			value.designNodeIds.length,
+			value.designNodeIds.length ||
+			value.sshConnectionIds.length,
 		"Message cannot be empty",
 	);
 type Session = {
@@ -306,6 +308,18 @@ export function createChatRoutes(options: {
 		getById(
 			id: string,
 		): Promise<{ path: string; autoAccept?: boolean } | null | undefined>;
+	};
+	sshConnections?: {
+		getByIds(ids: string[]): Promise<
+			Array<{
+				id: string;
+				label: string;
+				host: string;
+				port: number;
+				username: string;
+				notes: string;
+			}>
+		>;
 	};
 	request: ChatRequestGateway;
 	providerManager?: ProviderManager;
@@ -1682,6 +1696,22 @@ export function createChatRoutes(options: {
 				});
 			}
 		}
+		const sshConnections = input.sshConnectionIds.length
+			? await options.sshConnections?.getByIds(input.sshConnectionIds)
+			: [];
+		if (input.sshConnectionIds.length && sshConnections?.length !== input.sshConnectionIds.length)
+			throw new HTTPException(400, {
+				message: "A selected SSH connection was not found",
+			});
+		const sshContext =
+			sshConnections?.length
+				? `Selected SSH servers (connection metadata only; no SSH session has been opened and no credentials are available to you):\n${sshConnections
+						.map(
+							(connection) =>
+								`- ${connection.label}: ${connection.username}@${connection.host}:${connection.port}${connection.notes ? `\n  Notes: ${connection.notes}` : ""}`,
+						)
+						.join("\n")}\nUse this information to tailor guidance. Do not claim to have connected to or inspected these servers.`
+				: "";
 		const customAgentCanWriteFiles =
 			customAgent?.approvalPolicy === "ask_before_write" &&
 			customAgent.skills.some(
@@ -1730,12 +1760,14 @@ export function createChatRoutes(options: {
 		const promptText = [
 			designInstruction,
 			input.text,
+			sshContext,
 			designContext ? `Canvas visual reference(s):\n${designContext}` : "",
 		]
 			.filter(Boolean)
 			.join("\n\n");
 		const openCodeSystemPrompt = [
 			customAgentInstructions,
+			sshContext,
 			designInstruction,
 			designNodes.length
 				? `Attached Canvas nodes: ${designNodes.map((node) => `${node.title} (${node.viewport}): ${node.brief}`).join("; ")}. Inspect the attached HTML files as the visual source of truth.`

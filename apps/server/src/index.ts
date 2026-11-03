@@ -1774,6 +1774,22 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		"/api/chat",
 		createChatRoutes({
 			projects: repos.projects,
+			sshConnections: {
+				async getByIds(ids) {
+					const rows = await db
+						.select({
+							id: sshConnections.id,
+							label: sshConnections.label,
+							host: sshConnections.host,
+							port: sshConnections.port,
+							username: sshConnections.username,
+							notes: sshConnections.notes,
+						})
+						.from(sshConnections)
+						.where(or(...ids.map((id) => eq(sshConnections.id, id))));
+					return rows;
+				},
+			},
 			request: openCodeChatRequest,
 			sessionScope: (id) => orchestrator.sessionScope(id),
 			// Parallel chat tabs: an isolated session edits its own git worktree and a

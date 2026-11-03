@@ -398,6 +398,7 @@ export const chat = {
 			files: string[];
 			attachments?: ChatAttachment[];
 			designNodeIds?: string[];
+			sshConnectionIds?: string[];
 			agents: string[];
 		},
 	) => post<void>(`/sessions/${encodeURIComponent(id)}/messages`, input),
