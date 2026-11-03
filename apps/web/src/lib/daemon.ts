@@ -97,6 +97,8 @@ export type ManagedMcpConnection = {
 		| "error"
 		| "interrupted"
 		| string;
+	autoReconnect: boolean;
+	allowPrivateNetwork: boolean;
 	endpointHost?: string;
 	command?: string;
 	argumentCount: number;
@@ -671,6 +673,11 @@ export const daemon = {
 				method: "POST",
 				body: JSON.stringify(options),
 			},
+		),
+	setManagedMcpAutoReconnect: (id: string, enabled: boolean) =>
+		request<{ connection: ManagedMcpConnection }>(
+			`/api/mcp/connections/${encodeURIComponent(id)}/auto-reconnect`,
+			{ method: "POST", body: JSON.stringify({ enabled }) },
 		),
 	disconnectManagedMcpConnection: (id: string) =>
 		request<{ connection: ManagedMcpConnection }>(

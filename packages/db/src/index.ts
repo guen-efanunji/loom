@@ -36,6 +36,20 @@ export function createDb(env: DatabaseConfig = {}) {
 	// but running them here as well covers callers that open a database through
 	// a cached package build during development.
 	for (const column of [
+		"auto_reconnect integer NOT NULL DEFAULT 0",
+		"allow_private_network integer NOT NULL DEFAULT 0",
+	]) {
+		try {
+			client.exec(`ALTER TABLE managed_mcp_connections ADD COLUMN ${column}`);
+		} catch (error) {
+			if (
+				!(error instanceof Error) ||
+				!error.message.includes("duplicate column")
+			)
+				throw error;
+		}
+	}
+	for (const column of [
 		"source_message text NOT NULL DEFAULT ''",
 		"source_session_id text",
 		"automation_mode text NOT NULL DEFAULT 'review'",

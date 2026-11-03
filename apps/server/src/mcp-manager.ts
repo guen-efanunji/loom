@@ -41,6 +41,8 @@ type McpConnectionRow = {
 	transport: McpTransportKind;
 	config_json: string;
 	status: string;
+	auto_reconnect: number;
+	allow_private_network: number;
 	protocol_version: string | null;
 	capabilities_json: string;
 	tools_json: string;
@@ -84,6 +86,8 @@ function publicMcpConnection(row: McpConnectionRow) {
 		label: row.label,
 		transport: row.transport,
 		status: row.status,
+		autoReconnect: row.auto_reconnect === 1,
+		allowPrivateNetwork: row.allow_private_network === 1,
 		endpointHost: config.endpoint ? new URL(config.endpoint).host : undefined,
 		command: config.command ? basename(config.command) : undefined,
 		argumentCount: config.args.length,
@@ -783,9 +787,83 @@ export function createMcpManagerRoutes(options: Options) {
 			"UPDATE managed_mcp_connections SET status = 'interrupted', last_error = 'Loom restarted; reconnect to verify this server.' WHERE status IN ('connected', 'connecting')",
 		)
 		.run();
-	app.get("/connections", (c) =>
-		c.json({ connections: mcpRows(options.db).map(publicMcpConnection) }),
-	);
+	const reconnectOnStartup = async () => {
+		for (const row of mcpRows(options.db).filter(
+			(connection) =>
+				connection.auto_reconnect === 1 && connection.status === "interrupted",
+		)) {
+			try {
+				sqlite
+					.query(
+						"UPDATE managed_mcp_connections SET status = 'connecting', last_error = NULL, updated_at = ? WHERE id = ?",
+					)
+					.run(Date.now(), row.id);
+				const current = mcpRow(options.db, row.id);
+				if (!current) continue;
+				const opened = await openMcpConnection(
+					readMcpConfig(current),
+					current.allow_private_network === 1,
+				);
+				liveConnections.set(row.id, opened);
+				saveMcpResult(options.db, row.id, opened, "connected");
+				opened.transport.onclose = () => {
+					if (!liveConnections.has(row.id)) return;
+					liveConnections.delete(row.id);
+					sqlite
+						.query(
+							"UPDATE managed_mcp_connections SET status = 'degraded', last_error = 'The MCP session closed unexpectedly.', updated_at = ? WHERE id = ?",
+						)
+					.run(Date.now(), row.id);
+				};
+				opened.transport.onerror = () => {
+					if (!liveConnections.has(row.id)) return;
+					sqlite
+						.query(
+							"UPDATE managed_mcp_connections SET status = 'degraded', last_error = 'The MCP transport reported an error.', updated_at = ? WHERE id = ?",
+						)
+					.run(Date.now(), row.id);
+				};
+			} catch (error) {
+				const message = safeMcpError(error, readMcpConfig(row));
+				sqlite
+					.query(
+						"UPDATE managed_mcp_connections SET status = 'error', last_error = ?, updated_at = ? WHERE id = ?",
+					)
+					.run(message, Date.now(), row.id);
+			}
+		}
+	};
+	const startupReconnect = reconnectOnStartup();
+	app.get("/connections", async (c) => {
+		await startupReconnect;
+		return c.json({ connections: mcpRows(options.db).map(publicMcpConnection) });
+	});
+	app.post("/connections/:id/auto-reconnect", async (c) => {
+		const id = c.req.param("id");
+		const row = mcpRow(options.db, id);
+		if (!row)
+			return c.json({ error: { message: "MCP connection not found" } }, 404);
+		let body: Dict | undefined;
+		try {
+			body = asDict(await c.req.json());
+		} catch {
+			body = undefined;
+		}
+		if (typeof body?.enabled !== "boolean")
+			return c.json(
+				{
+					error: { message: "Choose whether to reconnect automatically." },
+				},
+				400,
+			);
+		sqlite
+			.query(
+				"UPDATE managed_mcp_connections SET auto_reconnect = ?, updated_at = ? WHERE id = ?",
+			)
+			.run(body.enabled ? 1 : 0, Date.now(), id);
+		const next = mcpRow(options.db, id);
+		return c.json({ connection: next ? publicMcpConnection(next) : null });
+	});
 	app.post("/connections", async (c) => {
 		try {
 			const payload = connectionPayload(await c.req.json());
@@ -966,9 +1044,9 @@ export function createMcpManagerRoutes(options: Options) {
 		try {
 			sqlite
 				.query(
-					"UPDATE managed_mcp_connections SET status = 'connecting', last_error = NULL, updated_at = ? WHERE id = ?",
+					"UPDATE managed_mcp_connections SET status = 'connecting', last_error = NULL, allow_private_network = ?, updated_at = ? WHERE id = ?",
 				)
-				.run(Date.now(), id);
+				.run(body.allowPrivateNetwork === true ? 1 : 0, Date.now(), id);
 			const config = readMcpConfig(row);
 			const opened = await openMcpConnection(
 				config,

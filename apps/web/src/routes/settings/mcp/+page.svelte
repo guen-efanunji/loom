@@ -53,7 +53,7 @@ let connectionActionId = $state("");
 let connectionConfirmOpen = $state(false);
 let pendingConnectionAction = $state<{
 	connection: ManagedMcpConnection;
-	action: "test" | "connect" | "remove";
+	action: "test" | "connect" | "remove" | "auto-reconnect";
 } | null>(null);
 
 const visibleServers = $derived(
@@ -276,7 +276,7 @@ async function runConnectionAction(
 
 function requestConnectionConfirmation(
 	connection: ManagedMcpConnection,
-	action: "test" | "connect" | "remove",
+	action: "test" | "connect" | "remove" | "auto-reconnect",
 ) {
 	pendingConnectionAction = { connection, action };
 	connectionConfirmOpen = true;
@@ -287,8 +287,34 @@ async function confirmConnectionAction() {
 	connectionConfirmOpen = false;
 	pendingConnectionAction = null;
 	if (!pending) return;
-	if (pending.action === "remove") await removeConnection(pending.connection);
-	else await runConnectionAction(pending.connection, pending.action);
+		if (pending.action === "remove") await removeConnection(pending.connection);
+		else if (pending.action === "auto-reconnect")
+			await setAutoReconnect(pending.connection, !pending.connection.autoReconnect);
+		else await runConnectionAction(pending.connection, pending.action);
+}
+
+async function setAutoReconnect(
+	connection: ManagedMcpConnection,
+	enabled: boolean,
+) {
+	connectionActionId = connection.id;
+	try {
+		await daemon.setManagedMcpAutoReconnect(connection.id, enabled);
+		await refreshConnections();
+		toast.success(
+			enabled
+				? "Automatic reconnect enabled for Loom restarts."
+				: "Automatic reconnect disabled.",
+		);
+	} catch (reason) {
+		toast.error(
+			reason instanceof Error
+				? reason.message
+				: "Unable to update automatic reconnect.",
+		);
+	} finally {
+		connectionActionId = "";
+	}
 }
 
 async function disconnectConnection(connection: ManagedMcpConnection) {
@@ -501,8 +527,9 @@ async function removeConnection(connection: ManagedMcpConnection) {
 										<p
 											class="mt-1 max-w-2xl text-sm leading-6 text-neutral-500"
 										>
-											Connections here are owned by Loom and kept separate from
-											native runtime configuration.
+												Connections here are owned by Loom and kept separate from
+												native runtime configuration. Native definitions appear in
+												Discovered and are not imported or connected automatically.
 										</p>
 									</div>
 								</div>
@@ -603,8 +630,24 @@ async function removeConnection(connection: ManagedMcpConnection) {
 															{connection.lastError}
 														</p>{/if}
 												</div>
-												<div class="flex flex-wrap gap-2">
-													<Button
+												<div class="flex flex-wrap items-center gap-3">
+													<label class="flex items-center gap-2 text-xs text-neutral-400">
+														<input
+															type="checkbox"
+															checked={connection.autoReconnect}
+															disabled={!!connectionActionId}
+															onchange={() =>
+																requestConnectionConfirmation(
+																	connection,
+																	"auto-reconnect",
+																)}
+															class="size-4 accent-emerald-400"
+														/>
+														Reconnect after Loom restart
+													</label>
+													{#if connection.autoReconnect && connection.allowPrivateNetwork}<span class="text-[10px] text-amber-300">Private network access will be reused</span>{/if}
+													<div class="flex flex-wrap gap-2">
+														<Button
 														variant="outline"
 														size="sm"
 														disabled={!!connectionActionId}
@@ -1044,12 +1087,20 @@ async function removeConnection(connection: ManagedMcpConnection) {
 			<AlertDialog.Title>
 				{pendingConnectionAction?.action === "remove"
 					? "Remove MCP connection?"
-					: pendingConnectionAction?.action === "test"
-						? "Test MCP connection?"
-						: "Connect MCP server?"}
+					: pendingConnectionAction?.action === "auto-reconnect"
+						? pendingConnectionAction.connection.autoReconnect
+							? "Disable automatic reconnect?"
+							: "Enable automatic reconnect?"
+						: pendingConnectionAction?.action === "test"
+							? "Test MCP connection?"
+							: "Connect MCP server?"}
 			</AlertDialog.Title>
 			<AlertDialog.Description>
-				{#if pendingConnectionAction?.action === "remove"}
+				{#if pendingConnectionAction?.action === "auto-reconnect"}
+					{pendingConnectionAction.connection.autoReconnect
+						? "Loom will stop reconnecting this connection automatically after future restarts."
+						: "Loom will reconnect this connection on future restarts, using the saved endpoint or executable and configured environment-variable references. Private or local network access will only be reused if explicitly allowed when connecting."}
+				{:else if pendingConnectionAction?.action === "remove"}
 					Remove “{pendingConnectionAction.connection.label}” from Loom and stop
 					its Loom-owned session if active. Native runtime configuration will
 					not change.
@@ -1075,9 +1126,13 @@ async function removeConnection(connection: ManagedMcpConnection) {
 			>
 				{pendingConnectionAction?.action === "remove"
 					? "Remove connection"
-					: pendingConnectionAction?.action === "test"
-						? "Test connection"
-						: "Start connection"}
+					: pendingConnectionAction?.action === "auto-reconnect"
+						? pendingConnectionAction.connection.autoReconnect
+							? "Disable automatic reconnect"
+							: "Enable automatic reconnect"
+						: pendingConnectionAction?.action === "test"
+							? "Test connection"
+							: "Start connection"}
 			</AlertDialog.Action>
 		</AlertDialog.Footer>
 	</AlertDialog.Content>
