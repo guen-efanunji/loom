@@ -6,7 +6,7 @@ import { OpenCodeHttpRuntime } from "@loom/opencode";
 import { createChatRoutes } from "../src/chat";
 
 function setup(
-	gatewayStatus: {
+	initialGatewayStatus: {
 		type: string;
 		message?: string;
 		attempt?: number;
@@ -15,7 +15,34 @@ function setup(
 	} = { type: "busy" },
 	openCodeSessionActive = true,
 ) {
+	let gatewayStatus = initialGatewayStatus;
 	const requests: Request[] = [];
+	const gatewayMessages: Array<Record<string, unknown>> = [
+		{
+			info: {
+				id: "msg_1",
+				role: "assistant",
+				time: { created: 1, completed: 2 },
+			},
+			parts: [
+				{ type: "text", text: "Hello" },
+				{
+					type: "tool",
+					state: {
+						status: "completed",
+						metadata: {
+							filediff: {
+								file: "/tmp/README.md",
+								patch: "@@ -1 +1 @@\n-old\n+new",
+								additions: 1,
+								deletions: 1,
+							},
+						},
+					},
+				},
+			],
+		},
+	];
 	const runtime = new OpenCodeHttpRuntime({
 		fetcher: async (url, init) => {
 			const req = new Request(url, init);
@@ -30,8 +57,26 @@ function setup(
 				});
 			if (path === "/session/ses_other")
 				return Response.json({ id: "ses_other", directory: "/outside" });
-			if (path.endsWith("/prompt_async"))
+			if (path.endsWith("/prompt_async")) {
+				const body = (await req.clone().json()) as {
+					parts?: Array<{ type: string; text?: string }>;
+				};
+				const text = body.parts?.find((part) => part.type === "text")?.text;
+				if (text)
+					gatewayMessages.push({
+						info: {
+							id: `user-${gatewayMessages.length}`,
+							role: "user",
+							time: { created: Date.now() },
+						},
+						parts: [{ type: "text", text }],
+					});
 				return new Response(null, { status: 204 });
+			}
+			if (path.endsWith("/abort")) {
+				gatewayStatus = { type: "idle" };
+				return new Response(null, { status: 204 });
+			}
 			if (path === "/session?limit=200")
 				return Response.json(
 					openCodeSessionActive
@@ -54,29 +99,7 @@ function setup(
 				]);
 			if (path === "/question" || path.endsWith("/diff"))
 				return Response.json([]);
-			if (path.endsWith("/message"))
-				return Response.json([
-					{
-						info: { id: "msg_1", role: "assistant" },
-						parts: [
-							{ type: "text", text: "Hello" },
-							{
-								type: "tool",
-								state: {
-									status: "completed",
-									metadata: {
-										filediff: {
-											file: "/tmp/README.md",
-											patch: "@@ -1 +1 @@\n-old\n+new",
-											additions: 1,
-											deletions: 1,
-										},
-									},
-								},
-							},
-						],
-					},
-				]);
+			if (path.endsWith("/message")) return Response.json(gatewayMessages);
 			return Response.json(true);
 		},
 	});
@@ -96,7 +119,8 @@ function setup(
 			},
 			options.directory,
 		);
-	return { app: createChatRoutes({ projects, request }), requests };
+	const app = createChatRoutes({ projects, request });
+	return { app, requests, gatewayMessages };
 }
 describe("chat gateway", () => {
 	test("shows OpenCode quota retry details as a failed assistant turn instead of working forever", async () => {
@@ -265,6 +289,47 @@ describe("chat gateway", () => {
 				?.headers.get("x-opencode-directory"),
 		).toBe(encodeURIComponent("/tmp"));
 	});
+	test("quota recovery with a different model aborts stale retry and preserves the thread", async () => {
+		const { app, requests, gatewayMessages } = setup({
+			type: "retry",
+			message: "Free usage exceeded",
+			action: { reason: "free_tier_limit", title: "Limit reached" },
+		});
+		const failed = await app.request("/sessions/ses_test");
+		expect(
+			((await failed.json()) as { status: { type: string } }).status.type,
+		).toBe("error");
+		const response = await app.request("/sessions/ses_test/messages", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				text: "Continue with another model",
+				model: { providerID: "opencode", modelID: "omniroute/BACKEND" },
+				files: [],
+				agents: [],
+			}),
+		});
+		expect(response.status).toBe(204);
+		const prompt = requests.findLast((request) =>
+			request.url.endsWith("/prompt_async"),
+		);
+		expect(await prompt?.json()).toMatchObject({
+			model: { providerID: "omniroute", modelID: "BACKEND" },
+			system: expect.stringContaining("Adapt execution"),
+			parts: [{ type: "text", text: "Continue with another model" }],
+		});
+		expect(
+			requests.some((request) =>
+				request.url.endsWith("/session/ses_test/abort"),
+			),
+		).toBe(true);
+		expect(
+			gatewayMessages.map(
+				(message) => (message.parts as Array<{ text?: string }>)[0]?.text,
+			),
+		).toContain("Continue with another model");
+	});
+
 	test("sends model, agent and subsequent prompts to the same OpenCode session", async () => {
 		const { app, requests } = setup();
 		for (const text of ["Hello", "Follow up"]) {

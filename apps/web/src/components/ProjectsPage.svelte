@@ -370,6 +370,7 @@
 	let lastSyncedRouteSession = page.url.searchParams.get("session") ?? "";
 	let draft = $state("");
 	let model = $state("");
+	let modelSelectionVersion = $state(0);
 	let agent = $state("build");
 	let customAgentId = $state("");
 	let customAgents = $state<
@@ -1053,17 +1054,24 @@
 				await goto(`/task/${encodeURIComponent(task.id)}`);
 				return;
 			}
+			const modelVersionAtLoad = modelSelectionVersion;
 			const updated = await refreshSession(id);
 			const recent = updated?.messages.findLast(
 				(message) => message.info.role === "assistant",
 			)?.info;
-			if (recent?.providerID && recent.modelID) {
+			if (
+				modelSelectionVersion === modelVersionAtLoad &&
+				recent?.providerID &&
+				recent.modelID
+			) {
 				model = canonicalModelSelection(
 					catalog,
 					recent.providerID,
 					recent.modelID,
 				);
-			} else model = preferredModel(selectedProjectId);
+			} else if (modelSelectionVersion === modelVersionAtLoad) {
+				model = preferredModel(selectedProjectId);
+			}
 			if (recent?.agent) agent = recent.agent;
 		} catch (reason) {
 			if (id === sessionId) report(reason);
@@ -3915,7 +3923,13 @@
 													onsend={send}
 													onstop={stop}
 													bind:draft
-													bind:model
+													bind:model={
+														() => model,
+														(value) => {
+															model = value;
+															modelSelectionVersion += 1;
+														}
+													}
 													bind:agent
 													bind:customAgentId
 													autoAccept={selectedProject?.autoAccept ?? false}
@@ -3950,7 +3964,13 @@
 												onsend={send}
 												onstop={stop}
 												bind:draft
-												bind:model
+												bind:model={
+													() => model,
+													(value) => {
+														model = value;
+														modelSelectionVersion += 1;
+													}
+												}
 												bind:agent
 												bind:customAgentId
 												autoAccept={selectedProject?.autoAccept ?? false}

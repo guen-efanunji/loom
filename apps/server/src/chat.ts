@@ -654,8 +654,7 @@ export function createChatRoutes(options: {
 							name: string;
 							limit?: { context?: number };
 							variants?:
-								| Array<string | { id?: string }>
-								| Record<string, unknown>;
+								Array<string | { id?: string }> | Record<string, unknown>;
 						}
 					>;
 				}>;
@@ -759,7 +758,7 @@ export function createChatRoutes(options: {
 							: error.code === "WORKSPACE_BUSY"
 								? 423
 								: error.code === "FORBIDDEN" ||
-										error.code === "READ_ONLY_CONTEXT"
+									  error.code === "READ_ONLY_CONTEXT"
 									? 403
 									: error.code === "STALE_CONTEXT"
 										? 409
@@ -2128,6 +2127,21 @@ export function createChatRoutes(options: {
 			}
 			return c.body(null, 204);
 		}
+		const gatewayStatuses = await request<Record<string, RuntimeSessionStatus>>(
+			"/session/status",
+			current.directory,
+		);
+		const currentGatewayStatus = gatewayStatuses[current.id];
+		if (
+			currentGatewayStatus?.type === "retry" &&
+			normalizeRetryStatus(currentGatewayStatus).type === "error"
+		)
+			await request(
+				`/session/${current.id}/abort`,
+				current.directory,
+				{},
+				"POST",
+			);
 		const files = await Promise.all(
 			input.files.map(async (path) => {
 				const local = await filePath(current.directory, path);
