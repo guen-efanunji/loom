@@ -81,6 +81,21 @@ export function supersededIds(
 }
 
 /** A short, human label for what a permission request is about to do. */
+export function isContextOverflowError(reason: unknown): reason is Error & {
+	handoff?: string;
+} {
+	const error = reason as { code?: string; message?: string };
+	const message =
+		typeof reason === "string" ? reason : (error?.message ?? "");
+	return (
+		error?.code === "CONTEXT_WINDOW_EXCEEDED" ||
+		error?.code === "CONTEXT_BUDGET_EXCEEDED" ||
+		/context.{0,40}(?:exceed|too large|too long|limit)|(?:exceed|exceeded).{0,50}context|input.{0,30}(?:too long|exceed)|prompt is too long/i.test(
+			message,
+		)
+	);
+}
+
 export function permissionActionLabel(permission: string, patterns: string[]) {
 	const tool = permission.toLowerCase().replace(/[^a-z]/g, "");
 	const target = patterns.find(

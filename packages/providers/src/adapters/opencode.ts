@@ -97,7 +97,7 @@ export class OpenCodeProviderAdapter implements CliProviderAdapter {
 					{
 						id?: string;
 						name?: string;
-						limit?: { context?: number };
+						limit?: { context?: number; output?: number };
 						capabilities?: Record<string, boolean>;
 					}
 				>;
@@ -112,6 +112,7 @@ export class OpenCodeProviderAdapter implements CliProviderAdapter {
 					name: model.name ?? model.id ?? modelId,
 					displayName: model.name ?? model.id ?? modelId,
 					contextWindow: model.limit?.context,
+					outputLimit: model.limit?.output,
 					capabilities: [
 						"text",
 						"coding",

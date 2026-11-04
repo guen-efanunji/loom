@@ -20,6 +20,7 @@ import { onMount, tick } from "svelte";
 import {
 	type Catalog,
 	type ChatAttachment,
+	type ChatSession,
 	canonicalProviderID,
 	chat,
 	type Model,
@@ -38,6 +39,7 @@ import { type DesignNode, daemon } from "$lib/daemon";
 
 let {
 	projectId,
+	currentSessionId = "",
 	catalog,
 	busy,
 	disabled,
@@ -59,6 +61,7 @@ let {
 	onAutoAcceptChange,
 }: {
 	projectId: string;
+	currentSessionId?: string;
 	catalog: Catalog;
 	busy: boolean;
 	disabled: boolean;
@@ -66,6 +69,7 @@ let {
 	onsend: (input: {
 		text: string;
 		files: string[];
+		sessionRefs?: string[];
 		attachments?: ChatAttachment[];
 		designNodeIds: string[];
 		agents: string[];
@@ -95,6 +99,8 @@ let {
 } = $props();
 let textarea = $state<HTMLTextAreaElement | null>(null);
 let files = $state<string[]>([]);
+let sessionRefs = $state<string[]>([]);
+let projectSessions = $state<ChatSession[]>([]);
 let attachments = $state<globalThis.File[]>([]);
 let previews = $state<{ file: globalThis.File; url: string }[]>([]);
 let previewCache: { file: globalThis.File; url: string }[] = [];
@@ -215,8 +221,30 @@ const attachmentAccept = $derived(
 		? "image/*,.txt,.md,.json,.ts,.tsx,.js,.jsx,.css,.html,.pdf"
 		: "image/*",
 );
+const sessionMention = $derived(
+	query === "session" || query?.startsWith("session:") === true,
+);
+const sessionSearch = $derived(
+	query?.startsWith("session:") ? query.slice("session:".length) : "",
+);
 const choices = $derived([
-	...(supportsFullMentions
+	...(sessionMention
+		? projectSessions
+				.filter(
+					(session) =>
+						session.id !== currentSessionId &&
+						`${session.title} ${session.id}`
+							.toLowerCase()
+							.includes(sessionSearch.toLowerCase()),
+				)
+				.slice(0, 8)
+				.map((session) => ({
+					value: session.title,
+					type: "session",
+					id: session.id,
+				}))
+		: []),
+	...(!sessionMention && supportsFullMentions
 		? catalog.agents
 				.filter(
 					(a) =>
@@ -225,7 +253,7 @@ const choices = $derived([
 				)
 				.map((a) => ({ value: a.name, type: "agent" }))
 		: []),
-	...customAgents
+	...(!sessionMention ? customAgents : [])
 		.filter(
 			(item) =>
 				supportsFullMentions &&
@@ -237,7 +265,9 @@ const choices = $derived([
 			type: "custom-agent",
 			id: item.id,
 		})),
-	...results.map((value) => ({ value, type: "file" })),
+	...(!sessionMention
+		? results.map((value) => ({ value, type: "file" }))
+		: []),
 ]);
 function modelKey(item: Model) {
 	return `${item.providerID}/${item.modelID}`;
@@ -480,6 +510,24 @@ $effect(() => {
 	}
 });
 $effect(() => {
+	const project = projectId;
+	if (!project) {
+		projectSessions = [];
+		return;
+	}
+	let cancelled = false;
+	void chat.sessions(project)
+		.then((sessions) => {
+			if (!cancelled) projectSessions = sessions;
+		})
+		.catch(() => {
+			if (!cancelled) projectSessions = [];
+		});
+	return () => {
+		cancelled = true;
+	};
+});
+$effect(() => {
 	const value = query;
 	const project = projectId;
 	if (value === null || !project) return;
@@ -514,7 +562,15 @@ function input(event?: Event) {
 	if (!element) return;
 	cursor = element.selectionStart;
 	const match = element.value.slice(0, cursor).match(/@([^\s@]*)$/);
-	query = match ? match[1] : null;
+			query = match
+				? match[1] === "session"
+					? "session"
+					: match[1].startsWith("session:")
+						? match[1]
+						: match[1].startsWith("session")
+							? "session"
+							: match[1]
+				: null;
 	if (match) {
 		mentionStart = cursor - match[1].length - 1;
 		updateMentionPosition();
@@ -689,12 +745,17 @@ function removeMention(label: string) {
 	draft = `${draft.slice(0, index)}${draft.slice(end < draft.length && draft[end] === " " ? end + 1 : end)}`;
 }
 async function choose(item: { value: string; type: string; id?: string }) {
-	if (item.type === "file") {
-		files = [...new Set([...files, item.value])];
-		await insertMention(item.value, mentionStart, cursor);
-		return;
-	}
-	if (item.type === "custom-agent") customAgentId = item.id ?? "";
+		if (item.type === "file") {
+			files = [...new Set([...files, item.value])];
+			await insertMention(item.value, mentionStart, cursor);
+			return;
+		}
+		if (item.type === "session") {
+			sessionRefs = [...new Set([...sessionRefs, item.id ?? ""])].filter(Boolean);
+			await insertMention(`session:${item.value}`, mentionStart, cursor);
+			return;
+		}
+		if (item.type === "custom-agent") customAgentId = item.id ?? "";
 	else agents = [...new Set([...agents, item.value])];
 	draft = `${draft.slice(0, mentionStart)}${draft.slice(cursor)}`;
 	query = null;
@@ -777,6 +838,7 @@ async function send() {
 		disabled ||
 		(!draft.trim() &&
 			!files.length &&
+			!sessionRefs.length &&
 			!attachments.length &&
 			!selectedDesignIds.length)
 	)
@@ -785,6 +847,7 @@ async function send() {
 	query = null;
 	const pendingDraft = draft;
 	const pendingFiles = [...files];
+	const pendingSessionRefs = [...sessionRefs];
 	const pendingAttachments = [...attachments];
 	const pendingDesignIds = [...selectedDesignIds];
 	const pendingAgents = [...agents];
@@ -807,6 +870,7 @@ async function send() {
 		const request = onsend({
 			text: pendingDraft.trim(),
 			files: pendingFiles,
+			sessionRefs: pendingSessionRefs,
 			attachments: attachmentsPayload,
 			designNodeIds: pendingDesignIds,
 			agents: pendingAgents,
@@ -822,6 +886,7 @@ async function send() {
 		});
 		draft = "";
 		files = [];
+		sessionRefs = [];
 		attachments = [];
 		selectedDesignIds = [];
 		agents = [];
@@ -836,6 +901,7 @@ async function send() {
 		if (!ok) {
 			draft = pendingDraft;
 			files = pendingFiles;
+			sessionRefs = pendingSessionRefs;
 			attachments = pendingAttachments;
 			selectedDesignIds = pendingDesignIds;
 			agents = pendingAgents;
@@ -843,6 +909,7 @@ async function send() {
 	} catch (error) {
 		draft = pendingDraft;
 		files = pendingFiles;
+		sessionRefs = pendingSessionRefs;
 		attachments = pendingAttachments;
 		selectedDesignIds = pendingDesignIds;
 		agents = pendingAgents;
@@ -954,7 +1021,7 @@ function keydown(event: KeyboardEvent) {
 			<div
 				class="flex items-center justify-between border-b px-3 py-2 text-xs text-muted-foreground"
 			>
-				<span>Files & agents · {choices.length} results</span><span
+						<span							>{sessionMention ? "Project sessions" : "Files & agents"} · {choices.length} results</span><span
 					>↑ ↓ select · Enter attach · Esc close</span
 				>
 			</div>
@@ -965,7 +1032,7 @@ function keydown(event: KeyboardEvent) {
 				id="mention-list"
 			>
 				{#if searching}<p class="p-3 text-xs text-muted-foreground">
-						Searching project files and folders…
+										{sessionMention ? "Loading project sessions…" : "Searching project files and folders…"}
 					</p>{:else if searchError}<p
 						role="alert"
 						class="p-3 text-xs text-destructive"
@@ -974,7 +1041,7 @@ function keydown(event: KeyboardEvent) {
 					</p>{:else if !choices.length}<p
 						class="p-3 text-xs text-muted-foreground"
 					>
-						No matching files, folders, or agents.
+											{sessionMention ? "No matching sessions." : "No matching files, folders, or agents."}
 					</p>{/if}
 				{#each choices as item, index}
 					<Button
@@ -988,7 +1055,7 @@ function keydown(event: KeyboardEvent) {
 					>
 						{#if item.type === "agent" || item.type === "custom-agent"}<Bot
 								size={15}
-							/>{:else if item.value.endsWith("/")}<Folder
+							/>{:else if item.type === "session"}<PanelsTopLeft size={15} />{:else if item.value.endsWith("/")}<Folder
 								size={15}
 							/>{:else}<FileIcon size={15} />{/if}<span class="min-w-0 truncate"
 							>{item.value}</span
@@ -997,16 +1064,18 @@ function keydown(event: KeyboardEvent) {
 								? "Loom agent"
 								: item.type === "agent"
 									? "agent"
-									: item.value.endsWith("/")
-										? "folder"
-										: "file"}</span
+									: item.type === "session"
+										? "session"
+										: item.value.endsWith("/")
+											? "folder"
+											: "file"}</span
 						>
 					</Button>
 				{/each}
 			</div>
 		</div>
 	{/if}
-	{#if files.length || agents.length || attachments.length || selectedDesignIds.length}<div
+	{#if files.length || sessionRefs.length || agents.length || attachments.length || selectedDesignIds.length}<div
 			class="flex flex-wrap gap-1 px-3 pt-3"
 			aria-label="Message attachments"
 		>
@@ -1027,6 +1096,11 @@ function keydown(event: KeyboardEvent) {
 						onclick={() => void openProjectPreview(file)}
 					/></Attachment.Root
 				>{/each}
+			{#each sessionRefs as sessionId}<Attachment.Root size="sm">
+					<Attachment.Media><PanelsTopLeft /></Attachment.Media>
+					<Attachment.Content><Attachment.Title>{projectSessions.find((item) => item.id === sessionId)?.title ?? sessionId}</Attachment.Title></Attachment.Content>
+					<Attachment.Actions><Attachment.Action type="button" aria-label={`Remove session ${sessionId}`} onclick={() => { sessionRefs = sessionRefs.filter((id) => id !== sessionId); removeMention(`session:${projectSessions.find((item) => item.id === sessionId)?.title ?? sessionId}`); }}><X /></Attachment.Action></Attachment.Actions>
+				</Attachment.Root>{/each}
 			{#each agents as name}<Attachment.Root size="sm"
 					><Attachment.Media><Bot /></Attachment.Media><Attachment.Content
 						><Attachment.Title>{name}</Attachment.Title></Attachment.Content

@@ -49,6 +49,7 @@
 		chat,
 		type FileDiff,
 		groupTurns,
+		isContextOverflowError,
 		type Question,
 		supersededIds,
 		userMessageText,
@@ -635,6 +636,9 @@
 	const latestUsageMessage = $derived(
 		assistantMessages.findLast((message) => message.info.tokens),
 	);
+	const latestContextMessage = $derived(
+		assistantMessages.findLast((message) => message.info.contextManagement),
+	);
 	const hasProviderUsage = $derived(
 		assistantMessages.some((message) => message.info.tokens !== undefined),
 	);
@@ -672,14 +676,33 @@
 				)
 			: undefined,
 	);
+	const contextManagement = $derived(
+		latestContextMessage?.info.contextManagement,
+	);
+	const currentContextModel = $derived.by(() => {
+		const [providerID, ...modelParts] = model.split("/");
+		const modelID = modelParts.join("/");
+		return catalog.models.find(
+			(item) => item.providerID === providerID && item.modelID === modelID,
+		);
+	});
+	const contextWindow = $derived(
+		latestContextMessage?.info.contextManagement?.contextWindowTokens ??
+		contextModel?.contextWindow ??
+		currentContextModel?.contextWindow,
+	);
 	const contextTokens = $derived(
 		(latestUsageMessage?.info.tokens?.input ?? 0) +
 			(latestUsageMessage?.info.tokens?.cache?.read ?? 0) +
 			(latestUsageMessage?.info.tokens?.cache?.write ?? 0),
 	);
+	const contextEstimate = $derived(
+		latestContextMessage?.info.contextManagement?.estimatedInputTokens ??
+		contextTokens,
+	);
 	const contextPercent = $derived(
-		contextModel?.contextWindow
-			? Math.min(100, (contextTokens / contextModel.contextWindow) * 100)
+		contextWindow
+			? Math.min(100, (contextEstimate / contextWindow) * 100)
 			: null,
 	);
 	$effect(() => {
@@ -2476,6 +2499,86 @@
 			workspaceAction = "";
 		}
 	}
+	const contextHandoffSessions = new Set<string>();
+	async function startContextHandoff(reason: unknown, failedPrompt = "") {
+		const failure = reason as { message?: string; handoff?: string };
+		const previousSession = sessionId;
+		if (previousSession && contextHandoffSessions.has(previousSession)) return;
+		if (previousSession) contextHandoffSessions.add(previousSession);
+		const savedModel = model;
+		const savedAgent = agent;
+		const savedCustomAgent = customAgentId;
+		const recent = conversation?.messages
+			.slice(-16)
+			.map((message) => {
+				const text = message.parts
+					.filter((part) => part.type === "text" && part.text)
+					.map((part) => part.text)
+					.join("\n")
+					.slice(0, message.info.role === "assistant" ? 900 : 1_200);
+				const tools = message.parts
+					.filter((part) => part.type === "tool")
+					.map(
+						(part) =>
+							`Tool ${part.tool ?? "activity"} (${part.state?.status ?? "unknown"}): ${(part.state?.output ?? part.state?.error ?? "").slice(0, 300)}`,
+					)
+					.join("\n");
+				const failure = message.info.error?.data?.message
+					? `Untrusted provider error: ${message.info.error.data.message.slice(0, 400)}`
+					: "";
+				return [
+					`${message.info.role} [${message.info.id}]:`,
+					text,
+					tools,
+					failure,
+				]
+					.filter(Boolean)
+					.join("\n");
+			})
+			.filter(Boolean)
+			.join("\n\n")
+			.slice(-12_000);
+		const handoff = [
+			failure.handoff ||
+				[
+					"Continue the previous task in a new chat. Re-read current files and verify state; this handoff is lossy.",
+					recent ? `Recent user requests:\n${recent}` : "",
+				].join("\n\n"),
+			failedPrompt ? `Failed request:\n${failedPrompt}` : "",
+			failure.message ? `Context overflow diagnostic: ${failure.message}` : "",
+		]
+			.filter(Boolean)
+			.join("\n\n");
+		newChatTab(selectedProjectId);
+		draft = `${handoff}\n\nContinue from this handoff.`;
+		model = savedModel;
+		agent = savedAgent;
+		customAgentId = savedCustomAgent;
+		saveActiveChatTab();
+		toast.info("Context limit reached. A new chat was opened with a handoff.");
+		if (previousSession) await refreshSession(previousSession).catch(() => {});
+	}
+	$effect(() => {
+		const id = sessionId;
+		const failed = conversation?.messages.findLast(
+			(message) =>
+				message.info.role === "assistant" &&
+				!!message.info.error &&
+				isContextOverflowError(message.info.error.data?.message ?? ""),
+		);
+		if (id && failed && !contextHandoffSessions.has(id))
+			void startContextHandoff(
+				{
+					message: failed.info.error?.data?.message,
+					handoff: "",
+				},
+				conversation?.messages
+					.findLast((message) => message.info.role === "user")
+					?.parts.filter((part) => part.type === "text")
+					.map((part) => part.text ?? "")
+					.join("\n\n") ?? "",
+			);
+	});
 	async function send(input: Parameters<typeof chat.send>[1]) {
 		if (!selectedProjectId || sending) return false;
 		const tabId = activeChatTabId;
@@ -2566,7 +2669,8 @@
 				retryIsolated = true;
 			} else if (activeChatTabId === tabId) {
 				optimistic = null;
-				report(reason);
+				if (isContextOverflowError(reason)) void startContextHandoff(reason, input.text);
+				else report(reason);
 			}
 			return false;
 		} finally {
@@ -3916,6 +4020,7 @@
 													</div>{/if}
 												<Composer
 													projectId={selectedProjectId}
+													currentSessionId={sessionId}
 													{catalog}
 													{customAgents}
 													{busy}
@@ -3956,8 +4061,9 @@
 									>
 										<div class="mx-auto max-w-3xl">
 											<Composer
-												projectId={selectedProjectId}
-												{catalog}
+projectId={selectedProjectId}
+								currentSessionId={sessionId}
+								{catalog}
 												{customAgents}
 												{busy}
 												disabled={!conversation || sessionLoading}
@@ -4382,11 +4488,11 @@
 											<div class="flex flex-col gap-3">
 												<section class="rounded-xl border bg-card/70 p-4">
 													<p class="text-xs text-muted-foreground">
-														Latest provider context
+														Context usage
 													</p>
 													<p class="mt-2 text-2xl font-semibold tabular-nums">
-														{!sessionId || latestUsageMessage
-															? contextTokens.toLocaleString()
+														{!sessionId || latestUsageMessage || latestContextMessage
+															? contextEstimate.toLocaleString()
 															: "—"}
 														<span
 															class="text-sm font-normal text-muted-foreground"
@@ -4403,14 +4509,18 @@
 															></div>
 														</div>
 														<p class="mt-2 text-[11px] text-muted-foreground">
-															{contextPercent.toFixed(1)}% of {contextModel?.contextWindow?.toLocaleString()}
+															{contextPercent.toFixed(1)}% of {contextWindow?.toLocaleString()}
 															token window
 														</p>
-													{:else if latestUsageMessage}
-														<p class="mt-2 text-[11px] text-muted-foreground">
-															Provider reported usage; context window size is
-															unavailable.
-														</p>
+														{:else if latestContextMessage}
+															<p class="mt-2 text-[11px] text-muted-foreground">
+																Loom-estimated request size; tokenizer variance applies. Model context window unavailable.
+															</p>
+														{:else if latestUsageMessage}
+															<p class="mt-2 text-[11px] text-muted-foreground">
+																Provider reported usage; context window size is
+																unavailable.
+															</p>
 													{:else}
 														<p
 															class="mt-2 text-[11px] leading-5 text-muted-foreground"
@@ -4420,12 +4530,13 @@
 																: "A new session starts at 0 tokens. Usage appears after the provider returns it."}
 														</p>
 													{/if}
-													{#if latestUsageMessage}<p
-															class="mt-2 truncate text-[11px] text-muted-foreground"
-														>
-															{latestUsageMessage.info
-																.providerID}/{latestUsageMessage.info.modelID}
-														</p>{/if}
+														{#if latestUsageMessage || contextManagement || model}<p
+																class="mt-2 truncate text-[11px] text-muted-foreground"
+															>
+																{latestUsageMessage
+																	? `${latestUsageMessage.info.providerID}/${latestUsageMessage.info.modelID}`
+																	: `${currentContextModel?.provider ?? currentContextModel?.providerID ?? contextManagement?.providerId ?? "Selected"}/${currentContextModel?.name ?? model}`}
+															</p>{/if}
 												</section>
 												<div class="grid grid-cols-2 gap-2">
 													<div class="rounded-lg border bg-card/50 p-3">

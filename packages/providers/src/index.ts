@@ -1,7 +1,7 @@
 export * from "./adapters/agy";
 export * from "./adapters/claude";
 export * from "./adapters/custom-provider";
-export type { CliAdapterOptions } from "./adapters/cli";
+export type { CliAdapterOptions, CliModelMetadata } from "./adapters/cli";
 export {
 	CliProviderAdapter as GenericCliProviderAdapter,
 	findExecutable,

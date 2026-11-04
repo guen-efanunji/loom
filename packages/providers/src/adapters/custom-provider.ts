@@ -733,6 +733,7 @@ export class CustomProviderAdapter implements CliProviderAdapter {
 				name: model.name,
 				displayName: model.name,
 				...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
+				...(model.outputLimit ? { outputLimit: model.outputLimit } : {}),
 				capabilities: ["text", "coding", "tools"],
 				isAvailable: true,
 				metadata: { modelId: model.id, providerName: this.definition.name },

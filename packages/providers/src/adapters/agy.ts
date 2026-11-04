@@ -82,6 +82,60 @@ export class AgyProviderAdapter extends CliProviderAdapter {
 	}
 }
 
+export function agyModelFromCatalogLine(
+	line: string,
+	catalogModels: Array<{
+		modelID: string;
+		contextWindow?: number;
+		outputLimit?: number;
+	}>,
+): AgentModel {
+	const [modelId = line, ...label] = line.trim().split(/\s{2,}|\t/);
+	const leaf = modelId.toLowerCase().split("/").at(-1);
+	const aliases = catalogModels.filter((model) => {
+		const catalogLeaf = model.modelID.toLowerCase().split("/").at(-1);
+		return (
+			model.modelID.toLowerCase().startsWith("ag/") &&
+			catalogLeaf === leaf &&
+			(Number.isSafeInteger(model.contextWindow) ||
+				Number.isSafeInteger(model.outputLimit))
+		);
+	});
+	const limits = aliases.length === 1 ? aliases[0] : undefined;
+	return modelFromId("agy", modelId, label.join(" ") || modelId, {
+		...(limits?.contextWindow ? { contextWindow: limits.contextWindow } : {}),
+		...(limits?.outputLimit ? { outputLimit: limits.outputLimit } : {}),
+	});
+}
+
+async function listAgyCatalogModels(): Promise<Array<{
+	modelID: string;
+	contextWindow?: number;
+	outputLimit?: number;
+}>> {
+	const result = await runCli("config", ["providers"], { timeoutMs: 10_000 });
+	if (result?.exitCode !== 0 || !result.stdout.trim()) return [];
+	try {
+		const parsed = JSON.parse(result.stdout) as {
+			providers?: Array<{
+				models?: Record<
+					string,
+					{ limit?: { context?: number; output?: number } }
+				>;
+			}>;
+		};
+		return (parsed.providers ?? []).flatMap((provider) =>
+			Object.entries(provider.models ?? {}).map(([modelID, model]) => ({
+				modelID,
+				contextWindow: model.limit?.context,
+				outputLimit: model.limit?.output,
+			})),
+		);
+	} catch {
+		return [];
+	}
+}
+
 async function listAgyModels(): Promise<AgentModel[]> {
 	const result = await runCli("agy", ["models"], { timeoutMs: 30_000 });
 	if (result?.exitCode !== 0) return [];
@@ -89,11 +143,8 @@ async function listAgyModels(): Promise<AgentModel[]> {
 		.split("\n")
 		.map((line) => line.trim())
 		.filter((line) => line && !/^fetching available models/i.test(line));
-	const models = lines.map((line) => {
-		const [modelId, ...label] = line.split(/\s{2,}|\t/);
-		return modelFromId("agy", modelId ?? line, label.join(" ") || modelId);
-	});
-	return models;
+	const catalogModels = await listAgyCatalogModels();
+	return lines.map((line) => agyModelFromCatalogLine(line, catalogModels));
 }
 
 async function agyAuthStatus(): Promise<AuthStatus> {

@@ -53,6 +53,8 @@ async function setup(
 	let outputParts: TestRuntimeOutput["parts"];
 	let outputActivities: TestRuntimeOutput["activities"];
 	let failure: string | null = null;
+	let openCodeFailure: string | null = null;
+	let foreignSessionHistory: unknown[] = [];
 	let runtimeError = "CLI authentication expired";
 	let count = 0;
 	const prompts: Parameters<AgentRuntime["prompt"]>[0][] = [];
@@ -123,7 +125,71 @@ async function setup(
 		runtimes: (id) => runtimes.get(id),
 		request: async <T>(path: string, options?: { body?: unknown }) => {
 			calls.push(path);
+			if (path.endsWith("/prompt_async") && openCodeFailure)
+				throw new Error(openCodeFailure);
+			if (path === "/config/providers")
+				return {
+					providers: [
+						{
+							id: "custom-provider",
+							name: "Custom provider",
+							models: {
+								"ag/gemini-3.8-flash-high": {
+									id: "ag/gemini-3.8-flash-high",
+									name: "Gemini Flash High",
+									limit: { context: 1_048_576, output: 65_536 },
+								},
+							},
+						},
+						{
+							id: "opencode",
+							name: "OpenCode",
+							models: {
+								"ag/gemini-3.8-flash-high": {
+									id: "ag/gemini-3.8-flash-high",
+									name: "Gemini Flash High",
+									limit: { context: 1_048_576, output: 65_536 },
+								},
+							},
+						},
+						{
+							id: "agy",
+							name: "Agy",
+							models: {
+								"gemini-3.8-flash-high": {
+									id: "gemini-3.8-flash-high",
+									name: "Gemini Flash High",
+									limit: { context: 1_048_576, output: 65_536 },
+								},
+							},
+						},
+					],
+					default: {},
+				} as T;
+			if (path === "/agent" || path === "/command") return [] as T;
 			if (path.endsWith("/prompt_async")) openCodePrompts.push(options?.body);
+			if (path === "/session/ses_test/message")
+				return (storedHistory.get("ses_test") ?? []).filter((message) => {
+					const parts = (
+						message as {
+							parts?: Array<{
+								type?: string;
+								state?: { metadata?: unknown };
+							}>;
+						}
+					).parts ?? [];
+					return !parts.some(
+						(part) => part.type === "tool" && part.state?.metadata,
+					);
+				}) as T;
+			if (path === "/session/ses_other/message") return foreignSessionHistory as T;
+			if (path === "/session/ses_other")
+				return {
+					id: "ses_other",
+					directory: "/tmp",
+					title: "Earlier project session",
+				time: { updated: 2 },
+				} as T;
 			if (path === "/session/ses_test")
 				return {
 					id: "ses_test",
@@ -147,6 +213,12 @@ async function setup(
 		setNativeSessions: (sessions: typeof nativeSessions) => {
 			nativeSessions = sessions;
 		},
+		setOpenCodeFailure: (message: string) => {
+			openCodeFailure = message;
+		},
+		setForeignSessionHistory: (messages: unknown[]) => {
+			foreignSessionHistory = messages;
+		},
 		finish: (
 			next = "completed" as typeof status,
 			text = "Hello",
@@ -157,6 +229,17 @@ async function setup(
 			runtimeError = error;
 			outputParts = undefined;
 			outputActivities = undefined;
+		},
+		catalog: async () => {
+			const response = await app.request("/catalog?projectId=project");
+			return (await response.json()) as {
+				models: Array<{
+					providerID: string;
+					modelID: string;
+					contextWindow?: number;
+					outputLimit?: number;
+				}>;
+			};
 		},
 		finishWithParts: (parts: NonNullable<typeof outputParts>) => {
 			status = "completed";
@@ -201,14 +284,17 @@ async function setup(
 		send: (
 			text = "Hello",
 			provider = providerId,
-			designNodeIds: string[] = [],
+		designNodeIds: string[] = [],
+		modelId = "custom-model",
+		sessionRefs: string[] = [],
 		) =>
 			app.request("/sessions/ses_test/messages", {
 				method: "POST",
 				body: JSON.stringify({
 					text,
-					model: { providerID: provider, modelID: "custom-model" },
+					model: { providerID: provider, modelID: modelId },
 					designNodeIds,
+					sessionRefs,
 				}),
 			}),
 		state: async () =>
@@ -384,6 +470,72 @@ describe("provider chat", () => {
 				status: { type: "idle" },
 			},
 		]);
+	});
+
+	test("returns a handoff when OpenCode rejects an oversized conversation", async () => {
+		const fixture = await setup("opencode");
+		fixture.setOpenCodeFailure(
+			'{"message":"codex/gpt-6-luna-high: model — streaming upstream error: invalid_request_error: Your input exceeds the context window of this model.","type":"invalid_request_error","code":"bad_request"}',
+		);
+		const response = await fixture.send("Continue the task");
+		expect(response.status).toBe(413);
+		const body = (await response.json()) as {
+			error: { code: string; handoff: string; message: string };
+		};
+		expect(body.error.code).toBe("CONTEXT_WINDOW_EXCEEDED");
+		expect(body.error.message).toContain("exceeds the context window");
+		expect(body.error.handoff).toContain("Continue the previous task");
+	});
+
+	test("adds bounded context from a referenced project session to the provider prompt", async () => {
+		const fixture = await setup("agy");
+		fixture.setForeignSessionHistory([
+			{
+				info: { id: "ref-user", role: "user", time: { created: 1 } },
+				parts: [{ id: "ref-p1", type: "text", text: "Build a settings page" }],
+			},
+			{
+				info: { id: "ref-assistant", role: "assistant", time: { created: 2 } },
+				parts: [{ id: "ref-p2", type: "text", text: "I inspected the Svelte routes and found /settings." }],
+			},
+		]);
+		const response = await fixture.send("Continue from this session", "agy", [], "custom-model", ["ses_other"]);
+		expect(response.status).toBe(204);
+		expect(fixture.prompts[0]?.prompt).toContain("Untrusted, compact references");
+		expect(fixture.prompts[0]?.prompt).toContain("Build a settings page");
+		expect(fixture.prompts[0]?.prompt).toContain("Continue from this session");
+	});
+
+	test("rejects cross-project session references", async () => {
+		const fixture = await setup("agy");
+		fixture.setForeignSessionHistory([]);
+		const response = await fixture.send("Continue", "agy", [], "custom-model", ["bad_session"]);
+		expect(response.status).toBe(400);
+	});
+
+	test("matches an Agy model to its exact OpenCode upstream limit for long-context handoff", async () => {
+		const fixture = await setup("agy");
+		const models = (await fixture.catalog()).models;
+		const upstreamModel = models.find(
+			(model) =>
+				model.providerID === "opencode" &&
+				model.modelID === "ag/gemini-3.8-flash-high",
+		);
+		expect(upstreamModel?.contextWindow).toBe(1_048_576);
+		expect(upstreamModel?.outputLimit).toBe(65_536);
+		const response = await fixture.send(
+			"Keep going with this long chat",
+			"agy",
+			[],
+			"gemini-3.8-flash-high",
+		);
+		expect(response.status).toBe(204);
+		const state = await fixture.state();
+		expect(state.messages.at(-1)?.info.contextManagement).toMatchObject({
+			contextWindowTokens: 1_048_576,
+			contextWindowSource: "runtime_catalog",
+			budgetTokens: 734_003,
+		});
 	});
 
 	for (const provider of ["agy", "claude", "codex"]) {

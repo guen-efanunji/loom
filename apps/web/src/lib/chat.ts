@@ -79,6 +79,7 @@ export type ChatMessage = {
 			providerId: string;
 			modelId?: string;
 			contextWindowTokens: number | null;
+			contextWindowSource: "runtime_catalog" | "open_code_alias" | "unknown";
 			budgetTokens: number;
 			estimatedInputTokens: number;
 			estimateSource: "characters_divided_by_four";
@@ -149,6 +150,7 @@ export type Model = {
 	capabilities?: string[];
 	variants?: string[];
 	contextWindow?: number;
+	outputLimit?: number;
 	designSupported?: boolean;
 	openCodeProviderID?: string;
 	openCodeModelID?: string;
@@ -398,6 +400,7 @@ export const chat = {
 			files: string[];
 			attachments?: ChatAttachment[];
 			designNodeIds?: string[];
+			sessionRefs?: string[];
 			agents: string[];
 		},
 	) => post<void>(`/sessions/${encodeURIComponent(id)}/messages`, input),
@@ -549,6 +552,7 @@ export const chat = {
 // unit tested and shared by the split pane and the projects page.
 export {
 	groupTurns,
+	isContextOverflowError,
 	permissionActionLabel,
 	supersededIds,
 	userMessageText,

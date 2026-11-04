@@ -72,7 +72,10 @@ test("CLI wait timeout aborts the running child process", async () => {
 		getAuthStatus: async () => ({ authenticated: true, strategy: "none" }),
 		buildPrompt: async () => ({
 			command: process.execPath,
-			args: ["-e", "process.stdout.write(String(process.pid)); setInterval(() => {}, 1000)"],
+			args: [
+				"-e",
+				"process.stdout.write(String(process.pid)); setInterval(() => {}, 1000)",
+			],
 		}),
 	}).getRuntime();
 	const session = await runtime.createSession({ cwd: "/tmp", title: "Test" });
