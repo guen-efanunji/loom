@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0](https://github.com/guen-efanunji/loom/compare/v0.2.0...v0.3.0) (2026-11-04)
+
+
+### Features
+
+* **chat:** compact context and reference sessions ([4320c4c](https://github.com/guen-efanunji/loom/commit/4320c4c42b5fa9cfc571fb0759ee4c195ba27f07))
+* **ssh:** open terminals in workspace tabs ([e1167ca](https://github.com/guen-efanunji/loom/commit/e1167ca1440817326a20ae86a7ec0340e049bf3a))
+
 ## [0.2.0](https://github.com/guen-efanunji/loom/compare/v0.1.3...v0.2.0) (2026-11-03)
 
 
