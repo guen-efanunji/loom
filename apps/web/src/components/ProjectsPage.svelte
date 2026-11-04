@@ -29,6 +29,7 @@
 		SlidersHorizontal,
 		Sparkles,
 		Star,
+		TerminalSquare,
 		Trash2,
 		TriangleAlert,
 		Upload,
@@ -106,7 +107,8 @@
 	import TaskRunChat from "./chat/TaskRunChat.svelte";
 	import Turn from "./chat/Turn.svelte";
 	import KanbanBoard from "./KanbanBoard.svelte";
-	import SshPanel from "./SshPanel.svelte";
+	import SshPanel, { type SshConnection } from "./SshPanel.svelte";
+	import SshTerminal from "./SshTerminal.svelte";
 	import TerminalPanel from "./TerminalPanel.svelte";
 	import WorkspaceCodePreview from "./WorkspaceCodePreview.svelte";
 
@@ -299,6 +301,8 @@
 		},
 	]);
 	let activeChatTabId = $state("chat-tab-1");
+	let activeSshServer = $state<SshConnection | null>(null);
+	let activeWorkspaceTab = $state<"chat" | "ssh">("chat");
 	const chatTabsStorageKey = "loom:workspace-chat-tabs";
 	function persistChatTabs() {
 		if (!ready) return;
@@ -1856,7 +1860,23 @@
 		customAgentId = selectedCustomAgent;
 		saveActiveChatTab();
 	}
+	function openSshTerminal(server: SshConnection) {
+		if (previewHasUnsavedChanges) {
+			toast.error("Save or discard file edits before opening an SSH terminal.");
+			return;
+		}
+		activeSshServer = server;
+		activeWorkspaceTab = "ssh";
+		activePanel = null;
+		previewExpanded = false;
+	}
+	function returnToChatFromSsh() {
+		activeSshServer = null;
+		activeWorkspaceTab = "chat";
+	}
 	async function switchChatTab(id: string) {
+		activeSshServer = null;
+		activeWorkspaceTab = "chat";
 		const next = chatTabs.find((item) => item.id === id);
 		if (!next || (id === activeChatTabId && !designId)) return;
 		if (previewHasUnsavedChanges) {
@@ -3319,7 +3339,37 @@
 						<div
 							class={`flex min-h-0 min-w-0 flex-1 flex-col ${activePanel === "files" && previewExpanded ? "hidden" : ""}`}
 						>
-							{#if splitChat && viewMode === "chat" && !designId}
+							{#if activeSshServer}
+								<div
+									class="flex h-12 shrink-0 items-center gap-1 overflow-x-auto border-b border-white/[0.08] bg-background/40 px-3"
+									role="tablist"
+									aria-label="Workspace tabs"
+								>
+									<Button
+										variant="ghost"
+										role="tab"
+										aria-selected={false}
+										class="h-8 max-w-56 justify-start gap-2 px-2 text-xs text-muted-foreground"
+										onclick={returnToChatFromSsh}
+										><MessageSquare size={13} /><span class="max-w-40 truncate"
+											>{activeChatTab?.label ?? "Chat"}</span
+										></Button
+									>
+									<Button
+										variant="ghost"
+										role="tab"
+										aria-selected={true}
+										class="h-8 max-w-56 justify-start gap-2 border border-white/15 bg-white/[0.08] px-2 text-xs"
+										><TerminalSquare size={13} /><span class="max-w-40 truncate"
+											>{(activeSshServer as SshConnection).label}</span
+										></Button
+									>
+								</div>
+								<SshTerminal
+									server={activeSshServer}
+									onback={returnToChatFromSsh}
+								/>
+							{:else if splitChat && viewMode === "chat" && !designId}
 								<SplitChatWorkspace
 									project={selectedProject}
 									{catalog}
@@ -3337,9 +3387,9 @@
 							{:else}
 								{#if viewMode === "chat"}
 									<div
-										class="nice-scroll flex shrink-0 items-center gap-1 overflow-x-auto border-b border-white/[0.08] bg-background/40 px-3 py-2"
+										class="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-white/[0.08] bg-background/40 px-3 py-2"
 										role="tablist"
-										aria-label="Chat tabs"
+										aria-label="Workspace tabs"
 									>
 										{#each chatTabs as tab (tab.id)}
 											{@const isActive = tab.id === activeChatTabId}
@@ -3406,6 +3456,29 @@
 												>
 											</div>
 										{/each}
+										{#if activeSshServer}<div
+												role="group"
+												aria-label={`SSH terminal tab ${(activeSshServer as SshConnection).label}`}
+												class="flex h-8 max-w-56 shrink-0 items-center rounded-md border border-white/15 bg-white/[0.08] text-foreground"
+											>
+												<Button
+													variant="ghost"
+													role="tab"
+													aria-selected={activeWorkspaceTab === "ssh"}
+													class="h-7 min-w-0 justify-start gap-2 px-2 text-xs"
+													onclick={() => (activeWorkspaceTab = "ssh")}
+													><TerminalSquare size={13} /><span
+														class="max-w-40 truncate"
+														>{(activeSshServer as SshConnection).label}</span
+													>
+												</Button><Button
+													variant="ghost"
+													size="icon"
+													class="mr-0.5 size-6 shrink-0 opacity-60 hover:opacity-100"
+													aria-label={`Close SSH terminal ${(activeSshServer as SshConnection).label}`}
+													onclick={returnToChatFromSsh}><X size={12} /></Button
+												>
+											</div>{/if}
 										<Button
 											variant="ghost"
 											size="icon"
@@ -4019,6 +4092,7 @@
 										/>{/key}
 								{:else if activePanel === "ssh"}
 									<SshPanel
+										onconnect={openSshTerminal}
 										onclose={() => {
 											activePanel = null;
 											previewExpanded = false;
