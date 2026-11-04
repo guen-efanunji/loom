@@ -3,6 +3,7 @@ import type { ChatMessage } from "../src/lib/chat";
 import {
 	childSessionsForUserMessage,
 	groupTurns,
+	isContextOverflowError,
 	permissionActionLabel,
 	supersededIds,
 	userMessageText,
@@ -85,6 +86,24 @@ describe("chat-utils", () => {
 		expect(supersededIds(messages, "u1")).toEqual(["u1", "a1"]);
 		expect(supersededIds(messages, "u2")).toEqual(["u2", "a2"]);
 		expect(supersededIds(messages, "missing")).toEqual([]);
+	});
+
+	test("recognizes provider context overflow errors without matching unrelated failures", () => {
+		expect(
+			isContextOverflowError(
+				new Error("Your input exceeds the context window of this model."),
+			),
+		).toBe(true);
+		expect(
+			isContextOverflowError(
+				Object.assign(new Error("Packet too large"), {
+					code: "CONTEXT_BUDGET_EXCEEDED",
+				}),
+			),
+		).toBe(true);
+		expect(isContextOverflowError(new Error("CLI authentication expired"))).toBe(
+			false,
+		);
 	});
 
 	test("labels permission actions from the tool name and target", () => {

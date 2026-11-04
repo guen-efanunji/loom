@@ -3219,7 +3219,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 					name?: string;
 					models: Record<
 						string,
-						{ id?: string; name?: string; limit?: { context?: number } }
+						{ id?: string; name?: string; limit?: { context?: number; output?: number } }
 					>;
 				}>;
 			}>("/config/providers")
@@ -3239,6 +3239,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 						? model.metadata.providerName
 						: model.providerId,
 				contextWindow: model.contextWindow,
+				outputLimit: model.outputLimit,
 			}));
 		const managedProviderIds = new Set(
 			managedModels.map((model) => model.providerID),
@@ -3252,7 +3253,9 @@ export async function createApp(options: DaemonAppOptions = {}) {
 						name: model.name || modelID,
 						provider: provider.name || provider.id,
 						contextWindow: model.limit?.context,
+						outputLimit: model.limit?.output,
 					})),
+
 		);
 		return c.json([...openCodeModels, ...managedModels]);
 	});

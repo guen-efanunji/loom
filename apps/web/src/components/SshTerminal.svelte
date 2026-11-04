@@ -266,6 +266,14 @@
 			resizeObserver?.disconnect();
 			socket?.close();
 			terminal?.dispose();
+			if (session && !closing)
+				void request(`/api/ssh/sessions/${encodeURIComponent(session.id)}`, {
+					method: "DELETE",
+					body: JSON.stringify({
+						expectedGeneration: session.generation,
+						approved: true,
+					}),
+				}).catch(() => {});
 		};
 	});
 </script>

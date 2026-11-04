@@ -21,6 +21,7 @@
 	import {
 		type Catalog,
 		type ChatAttachment,
+		type ChatSession,
 		canonicalProviderID,
 		chat,
 		type Model,
@@ -39,6 +40,7 @@
 
 	let {
 		projectId,
+		currentSessionId = "",
 		catalog,
 		busy,
 		disabled,
@@ -60,6 +62,7 @@
 		onAutoAcceptChange,
 	}: {
 		projectId: string;
+		currentSessionId?: string;
 		catalog: Catalog;
 		busy: boolean;
 		disabled: boolean;
@@ -67,9 +70,10 @@
 		onsend: (input: {
 			text: string;
 			files: string[];
+			sessionRefs?: string[];
+			sshConnectionIds: string[];
 			attachments?: ChatAttachment[];
 			designNodeIds: string[];
-			sshConnectionIds: string[];
 			agents: string[];
 			agent?: string;
 			customAgentId?: string;
@@ -97,6 +101,18 @@
 	} = $props();
 	let textarea = $state<HTMLTextAreaElement | null>(null);
 	let files = $state<string[]>([]);
+	let sessionRefs = $state<string[]>([]);
+	let projectSessions = $state<ChatSession[]>([]);
+	let sshConnections = $state<
+		Array<{
+			id: string;
+			label: string;
+			host: string;
+			port: number;
+			username: string;
+		}>
+	>([]);
+	let selectedSshConnections = $state<Array<{ id: string; label: string }>>([]);
 	let attachments = $state<globalThis.File[]>([]);
 	let previews = $state<{ file: globalThis.File; url: string }[]>([]);
 	let previewCache: { file: globalThis.File; url: string }[] = [];
@@ -120,16 +136,6 @@
 	let designNotice = $state("");
 	let attachmentInput = $state<HTMLInputElement | null>(null);
 	let agents = $state<string[]>([]);
-	let sshConnections = $state<
-		Array<{
-			id: string;
-			label: string;
-			host: string;
-			port: number;
-			username: string;
-		}>
-	>([]);
-	let selectedSshConnections = $state<Array<{ id: string; label: string }>>([]);
 	let attachmentOpen = $state(false);
 	let modelOpen = $state(false);
 	let modelSearch = $state("");
@@ -172,21 +178,6 @@
 	let favoriteSave = Promise.resolve();
 	let favoriteRevision = 0;
 	onMount(() => {
-		void request<typeof sshConnections>("/api/ssh/connections")
-			.then((connections) => {
-				sshConnections = connections.map(
-					({ id, label, host, port, username }) => ({
-						id,
-						label,
-						host,
-						port,
-						username,
-					}),
-				);
-			})
-			.catch(() => {
-				sshConnections = [];
-			});
 		const repositionMention = () => updateMentionPosition();
 		window.addEventListener("resize", repositionMention);
 		document.addEventListener("scroll", repositionMention, true);
@@ -228,9 +219,25 @@
 		const top = (boxHeight - frame.height * scale) / 2;
 		return `width:${frame.width}px;height:${frame.height}px;left:${left}px;top:${top}px;transform:scale(${scale})`;
 	}
+	onMount(() => {
+		void request<typeof sshConnections>("/api/ssh/connections")
+			.then((connections) => {
+				sshConnections = connections.map(
+					({ id, label, host, port, username }) => ({
+						id,
+						label,
+						host,
+						port,
+						username,
+					}),
+				);
+			})
+			.catch(() => (sshConnections = []));
+	});
 	const selectedModel = $derived(
 		catalog.models.find((m) => `${m.providerID}/${m.modelID}` === model),
 	);
+
 	// P2-8: provider runtimes other than the OpenCode gateway accept image
 	// attachments and @file mentions, but not agent mentions or non-image files.
 	// Reflect that here so the composer never produces a confusing rejected send.
@@ -247,6 +254,12 @@
 			? "image/*,.txt,.md,.json,.ts,.tsx,.js,.jsx,.css,.html,.pdf"
 			: "image/*",
 	);
+	const sessionMention = $derived(
+		query === "session" || query?.startsWith("session:") === true,
+	);
+	const sessionSearch = $derived(
+		query?.startsWith("session:") ? query.slice("session:".length) : "",
+	);
 	const sshQuery = $derived(
 		query?.toLowerCase().startsWith("ssh")
 			? query.slice(3).trim().toLowerCase()
@@ -258,7 +271,23 @@
 		id?: string;
 		detail?: string;
 	}> = $derived([
-		...(supportsFullMentions
+		...(sessionMention
+			? projectSessions
+					.filter(
+						(session) =>
+							session.id !== currentSessionId &&
+							`${session.title} ${session.id}`
+								.toLowerCase()
+								.includes(sessionSearch.toLowerCase()),
+					)
+					.slice(0, 8)
+					.map((session) => ({
+						value: session.title,
+						type: "session",
+						id: session.id,
+					}))
+			: []),
+		...(!sessionMention && supportsFullMentions
 			? catalog.agents
 					.filter(
 						(a) =>
@@ -267,7 +296,7 @@
 					)
 					.map((a) => ({ value: a.name, type: "agent" }))
 			: []),
-		...customAgents
+		...(!sessionMention ? customAgents : [])
 			.filter(
 				(item) =>
 					supportsFullMentions &&
@@ -281,15 +310,14 @@
 			})),
 		...(sshQuery !== null
 			? sshConnections
-					.filter((connection) => {
-						return (
+					.filter(
+						(connection) =>
 							!sshQuery ||
 							[connection.label, connection.host, connection.username]
 								.join(" ")
 								.toLowerCase()
-								.includes(sshQuery)
-						);
-					})
+								.includes(sshQuery),
+					)
 					.map((connection) => ({
 						value: connection.label,
 						type: "ssh",
@@ -297,7 +325,9 @@
 						detail: `${connection.username}@${connection.host}:${connection.port}`,
 					}))
 			: []),
-		...results.map((value) => ({ value, type: "file" })),
+		...(!sessionMention
+			? results.map((value) => ({ value, type: "file" }))
+			: []),
 	]);
 	function modelKey(item: Model) {
 		return `${item.providerID}/${item.modelID}`;
@@ -550,6 +580,25 @@
 		}
 	});
 	$effect(() => {
+		const project = projectId;
+		if (!project) {
+			projectSessions = [];
+			return;
+		}
+		let cancelled = false;
+		void chat
+			.sessions(project)
+			.then((sessions) => {
+				if (!cancelled) projectSessions = sessions;
+			})
+			.catch(() => {
+				if (!cancelled) projectSessions = [];
+			});
+		return () => {
+			cancelled = true;
+		};
+	});
+	$effect(() => {
 		const value = query;
 		const project = projectId;
 		if (value === null || !project) return;
@@ -584,7 +633,15 @@
 		if (!element) return;
 		cursor = element.selectionStart;
 		const match = element.value.slice(0, cursor).match(/@([^\s@]*)$/);
-		query = match ? match[1] : null;
+		query = match
+			? match[1] === "session"
+				? "session"
+				: match[1].startsWith("session:")
+					? match[1]
+					: match[1].startsWith("session")
+						? "session"
+						: match[1]
+			: null;
 		if (match) {
 			mentionStart = cursor - match[1].length - 1;
 			updateMentionPosition();
@@ -767,7 +824,7 @@
 			if (!connection) return;
 			selectedSshConnections = [
 				...selectedSshConnections.filter(
-					(candidate) => candidate.id !== connection.id,
+					(server) => server.id !== connection.id,
 				),
 				{ id: connection.id, label: connection.label },
 			];
@@ -781,6 +838,13 @@
 		if (item.type === "file") {
 			files = [...new Set([...files, item.value])];
 			await insertMention(item.value, mentionStart, cursor);
+			return;
+		}
+		if (item.type === "session") {
+			sessionRefs = [...new Set([...sessionRefs, item.id ?? ""])].filter(
+				Boolean,
+			);
+			await insertMention(`session:${item.value}`, mentionStart, cursor);
 			return;
 		}
 		if (item.type === "custom-agent") customAgentId = item.id ?? "";
@@ -866,6 +930,7 @@
 			disabled ||
 			(!draft.trim() &&
 				!files.length &&
+				!sessionRefs.length &&
 				!attachments.length &&
 				!selectedDesignIds.length &&
 				!selectedSshConnections.length)
@@ -875,6 +940,7 @@
 		query = null;
 		const pendingDraft = draft;
 		const pendingFiles = [...files];
+		const pendingSessionRefs = [...sessionRefs];
 		const pendingAttachments = [...attachments];
 		const pendingDesignIds = [...selectedDesignIds];
 		const pendingSshConnections = [...selectedSshConnections];
@@ -896,11 +962,12 @@
 			const request = onsend({
 				text: pendingDraft.trim(),
 				files: pendingFiles,
-				attachments: attachmentsPayload,
-				designNodeIds: pendingDesignIds,
+				sessionRefs: pendingSessionRefs,
 				sshConnectionIds: pendingSshConnections.map(
 					(connection) => connection.id,
 				),
+				attachments: attachmentsPayload,
+				designNodeIds: pendingDesignIds,
 				agents: pendingAgents,
 				agent,
 				customAgentId: customAgentId || undefined,
@@ -914,9 +981,10 @@
 			});
 			draft = "";
 			files = [];
+			sessionRefs = [];
+			selectedSshConnections = [];
 			attachments = [];
 			selectedDesignIds = [];
-			selectedSshConnections = [];
 			agents = [];
 			const ok = await request;
 			if (ok) {
@@ -929,17 +997,19 @@
 			if (!ok) {
 				draft = pendingDraft;
 				files = pendingFiles;
+				sessionRefs = pendingSessionRefs;
+				selectedSshConnections = pendingSshConnections;
 				attachments = pendingAttachments;
 				selectedDesignIds = pendingDesignIds;
-				selectedSshConnections = pendingSshConnections;
 				agents = pendingAgents;
 			}
 		} catch (error) {
 			draft = pendingDraft;
 			files = pendingFiles;
+			sessionRefs = pendingSessionRefs;
+			selectedSshConnections = pendingSshConnections;
 			attachments = pendingAttachments;
 			selectedDesignIds = pendingDesignIds;
-			selectedSshConnections = pendingSshConnections;
 			agents = pendingAgents;
 			throw error;
 		} finally {
@@ -1048,9 +1118,10 @@
 			<div
 				class="flex items-center justify-between border-b px-3 py-2 text-xs text-muted-foreground"
 			>
-				<span>Files, agents & SSH servers · {choices.length} results</span><span
-					>↑ ↓ select · Enter attach · Esc close</span
-				>
+				<span
+					>{sessionMention ? "Project sessions" : "Files & agents"} · {choices.length}
+					results</span
+				><span>↑ ↓ select · Enter attach · Esc close</span>
 			</div>
 			<div
 				class="max-h-64 overflow-y-auto p-1"
@@ -1059,7 +1130,9 @@
 				id="mention-list"
 			>
 				{#if searching}<p class="p-3 text-xs text-muted-foreground">
-						Searching project files and folders…
+						{sessionMention
+							? "Loading project sessions…"
+							: "Searching project files and folders…"}
 					</p>{:else if searchError}<p
 						role="alert"
 						class="p-3 text-xs text-destructive"
@@ -1068,7 +1141,9 @@
 					</p>{:else if !choices.length}<p
 						class="p-3 text-xs text-muted-foreground"
 					>
-						No matching files, folders, or agents.
+						{sessionMention
+							? "No matching sessions."
+							: "No matching files, folders, or agents."}
 					</p>{/if}
 				{#each choices as item, index}
 					<Button
@@ -1084,6 +1159,8 @@
 								size={15}
 							/>{:else if item.type === "ssh"}<Lock
 								size={15}
+							/>{:else if item.type === "session"}<PanelsTopLeft
+								size={15}
 							/>{:else if item.value.endsWith("/")}<Folder
 								size={15}
 							/>{:else}<FileIcon size={15} />{/if}<span class="min-w-0 truncate"
@@ -1093,18 +1170,20 @@
 								? "Loom agent"
 								: item.type === "agent"
 									? "agent"
-									: item.type === "ssh"
-										? item.detail
-										: item.value.endsWith("/")
-											? "folder"
-											: "file"}</span
+									: item.type === "session"
+										? "session"
+										: item.type === "ssh"
+											? item.detail
+											: item.value.endsWith("/")
+												? "folder"
+												: "file"}</span
 						>
 					</Button>
 				{/each}
 			</div>
 		</div>
 	{/if}
-	{#if files.length || agents.length || attachments.length || selectedDesignIds.length || selectedSshConnections.length}<div
+	{#if files.length || sessionRefs.length || agents.length || attachments.length || selectedDesignIds.length || selectedSshConnections.length}<div
 			class="flex flex-wrap gap-1 px-3 pt-3"
 			aria-label="Message attachments"
 		>
@@ -1123,8 +1202,8 @@
 									(item) => item.id !== connection.id,
 								))}><X /></Attachment.Action
 						></Attachment.Actions
-					></Attachment.Root
-				>{/each}
+					>
+				</Attachment.Root>{/each}
 			{#each files as file}<Attachment.Root size="sm" class="max-w-56"
 					><Attachment.Media><FileIcon /></Attachment.Media><Attachment.Content
 						><Attachment.Title>{file}</Attachment.Title></Attachment.Content
@@ -1142,6 +1221,27 @@
 						onclick={() => void openProjectPreview(file)}
 					/></Attachment.Root
 				>{/each}
+			{#each sessionRefs as sessionId}<Attachment.Root size="sm">
+					<Attachment.Media><PanelsTopLeft /></Attachment.Media>
+					<Attachment.Content
+						><Attachment.Title
+							>{projectSessions.find((item) => item.id === sessionId)?.title ??
+								sessionId}</Attachment.Title
+						></Attachment.Content
+					>
+					<Attachment.Actions
+						><Attachment.Action
+							type="button"
+							aria-label={`Remove session ${sessionId}`}
+							onclick={() => {
+								sessionRefs = sessionRefs.filter((id) => id !== sessionId);
+								removeMention(
+									`session:${projectSessions.find((item) => item.id === sessionId)?.title ?? sessionId}`,
+								);
+							}}><X /></Attachment.Action
+						></Attachment.Actions
+					>
+				</Attachment.Root>{/each}
 			{#each agents as name}<Attachment.Root size="sm"
 					><Attachment.Media><Bot /></Attachment.Media><Attachment.Content
 						><Attachment.Title>{name}</Attachment.Title></Attachment.Content

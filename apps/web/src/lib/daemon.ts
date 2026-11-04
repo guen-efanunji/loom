@@ -97,6 +97,8 @@ export type ManagedMcpConnection = {
 		| "error"
 		| "interrupted"
 		| string;
+	autoReconnect: boolean;
+	allowPrivateNetwork: boolean;
 	endpointHost?: string;
 	command?: string;
 	argumentCount: number;
@@ -596,12 +598,14 @@ export async function request<T>(path: string, init: RequestInit = {}) {
 	if (!response.ok) {
 		let message = `${response.status} ${response.statusText}`;
 		let code: string | undefined;
+		let handoff: string | undefined;
 		try {
 			const body = (await response.json()) as {
-				error?: { message?: string; code?: string };
+				error?: { message?: string; code?: string; handoff?: string };
 			};
 			message = body.error?.message ?? message;
 			code = body.error?.code;
+			handoff = body.error?.handoff;
 		} catch {}
 		if (response.status === 423) throw new UiLockedError(message);
 		// Structured codes let callers react (offer isolation, show conflicts) without
@@ -609,6 +613,7 @@ export async function request<T>(path: string, init: RequestInit = {}) {
 		throw Object.assign(new Error(message), {
 			code,
 			status: response.status,
+			handoff,
 		});
 	}
 	if (response.status === 204) return undefined as T;
@@ -668,6 +673,11 @@ export const daemon = {
 				method: "POST",
 				body: JSON.stringify(options),
 			},
+		),
+	setManagedMcpAutoReconnect: (id: string, enabled: boolean) =>
+		request<{ connection: ManagedMcpConnection }>(
+			`/api/mcp/connections/${encodeURIComponent(id)}/auto-reconnect`,
+			{ method: "POST", body: JSON.stringify({ enabled }) },
 		),
 	disconnectManagedMcpConnection: (id: string) =>
 		request<{ connection: ManagedMcpConnection }>(

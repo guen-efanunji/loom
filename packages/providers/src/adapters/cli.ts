@@ -509,7 +509,7 @@ export function parseCliOutput(output: string): {
 							: event.result?.usage && typeof event.result.usage === "object"
 								? event.result.usage
 								: event.result?.usageMetadata &&
-										typeof event.result.usageMetadata === "object"
+									  typeof event.result.usageMetadata === "object"
 									? event.result.usageMetadata
 									: undefined;
 			const numeric = (value: unknown) =>
@@ -857,10 +857,16 @@ export function parseCliOutput(output: string): {
 	};
 }
 
+export type CliModelMetadata = {
+	contextWindow?: number;
+	outputLimit?: number;
+};
+
 export function modelFromId(
 	providerId: string,
 	modelId: string,
 	name = modelId,
+	limits: CliModelMetadata = {},
 ): AgentModel {
 	return normalizeModel({
 		providerId,
@@ -868,6 +874,8 @@ export function modelFromId(
 		modelId,
 		name,
 		displayName: name,
+		...(limits.contextWindow ? { contextWindow: limits.contextWindow } : {}),
+		...(limits.outputLimit ? { outputLimit: limits.outputLimit } : {}),
 		capabilities: ["text", "coding"],
 		isAvailable: true,
 	});

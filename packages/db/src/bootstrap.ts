@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 const schemaStatements = [
 	"CREATE TABLE IF NOT EXISTS orchestration_events (cursor integer PRIMARY KEY AUTOINCREMENT NOT NULL, scope_id text NOT NULL DEFAULT 'global', type text NOT NULL, payload_redacted text NOT NULL, created_at integer NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)))",
 	"CREATE INDEX IF NOT EXISTS orchestration_events_scope_cursor_idx ON orchestration_events(scope_id, cursor)",
-	"CREATE TABLE IF NOT EXISTS managed_mcp_connections (id text PRIMARY KEY NOT NULL, label text NOT NULL, transport text NOT NULL, config_json text NOT NULL, status text NOT NULL DEFAULT 'disconnected', protocol_version text, capabilities_json text NOT NULL DEFAULT '{}', tools_json text NOT NULL DEFAULT '[]', last_connected_at integer, last_tested_at integer, last_error text, created_at integer NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)), updated_at integer NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)))",
+	"CREATE TABLE IF NOT EXISTS managed_mcp_connections (id text PRIMARY KEY NOT NULL, label text NOT NULL, transport text NOT NULL, config_json text NOT NULL, status text NOT NULL DEFAULT 'disconnected', auto_reconnect integer NOT NULL DEFAULT 0, allow_private_network integer NOT NULL DEFAULT 0, protocol_version text, capabilities_json text NOT NULL DEFAULT '{}', tools_json text NOT NULL DEFAULT '[]', last_connected_at integer, last_tested_at integer, last_error text, created_at integer NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)), updated_at integer NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)))",
 	"CREATE INDEX IF NOT EXISTS managed_mcp_connections_status_idx ON managed_mcp_connections(status)",
 	"PRAGMA foreign_keys = ON",
 	"CREATE TABLE IF NOT EXISTS user (id text PRIMARY KEY NOT NULL, name text NOT NULL, email text NOT NULL UNIQUE, email_verified integer DEFAULT 0 NOT NULL, image text, created_at integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL, updated_at integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL)",
@@ -87,6 +87,20 @@ export function bootstrapDatabase(path: string): void {
 	try {
 		database.exec("BEGIN");
 		for (const statement of schemaStatements) database.exec(statement);
+		for (const column of [
+			"auto_reconnect integer NOT NULL DEFAULT 0",
+			"allow_private_network integer NOT NULL DEFAULT 0",
+		]) {
+			try {
+				database.exec(`ALTER TABLE managed_mcp_connections ADD COLUMN ${column}`);
+			} catch (error) {
+				if (
+					!(error instanceof Error) ||
+					!error.message.includes("duplicate column")
+				)
+					throw error;
+			}
+		}
 		try {
 			database.exec(
 				"ALTER TABLE task_artifacts ADD COLUMN kind text NOT NULL DEFAULT 'evidence'",

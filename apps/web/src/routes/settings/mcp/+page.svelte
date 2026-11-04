@@ -1,329 +1,359 @@
 <script lang="ts">
-import {
-	CircleHelp,
-	Cloud,
-	Folder,
-	Globe,
-	MessageSquareText,
-	RefreshCw,
-	ShieldAlert,
-	Terminal,
-} from "@lucide/svelte";
-import { onMount } from "svelte";
-import { toast } from "svelte-sonner";
-import { goto } from "$app/navigation";
-import SettingsSidebar from "$lib/components/settings/SettingsSidebar.svelte";
-import * as AlertDialog from "$lib/components/ui/alert-dialog";
-import { Button } from "$lib/components/ui/button";
-import * as Dialog from "$lib/components/ui/dialog";
-import { Input } from "$lib/components/ui/input";
-import * as Select from "$lib/components/ui/select";
-import * as Tabs from "$lib/components/ui/tabs";
-import { Textarea } from "$lib/components/ui/textarea";
-import {
-	daemon,
-	type ManagedMcpConnection,
-	type ManagedMcpConnectionInput,
-	type McpInventory,
-	type Project,
-} from "$lib/daemon";
+	import {
+		CircleHelp,
+		Cloud,
+		Folder,
+		Globe,
+		MessageSquareText,
+		RefreshCw,
+		ShieldAlert,
+		Terminal,
+	} from "@lucide/svelte";
+	import { onMount } from "svelte";
+	import { toast } from "svelte-sonner";
+	import { goto } from "$app/navigation";
+	import SettingsSidebar from "$lib/components/settings/SettingsSidebar.svelte";
+	import * as AlertDialog from "$lib/components/ui/alert-dialog";
+	import { Button } from "$lib/components/ui/button";
+	import * as Dialog from "$lib/components/ui/dialog";
+	import { Input } from "$lib/components/ui/input";
+	import * as Select from "$lib/components/ui/select";
+	import * as Tabs from "$lib/components/ui/tabs";
+	import { Textarea } from "$lib/components/ui/textarea";
+	import {
+		daemon,
+		type ManagedMcpConnection,
+		type ManagedMcpConnectionInput,
+		type McpInventory,
+		type Project,
+	} from "$lib/daemon";
 
-let projects = $state<Project[]>([]);
-let projectId = $state("all");
-let inventory = $state<McpInventory | null>(null);
-let loading = $state(true);
-let refreshing = $state(false);
-let search = $state("");
-let activeTab = $state("discovered");
-let loadError = $state("");
-let managedConnections = $state<ManagedMcpConnection[]>([]);
-let connectionDialogOpen = $state(false);
-let connectionSaving = $state(false);
-let connectionError = $state("");
-let connectionName = $state("");
-let connectionTransport = $state<"stdio" | "streamable-http">("stdio");
-let connectionEndpoint = $state("");
-let connectionCommand = $state("");
-let connectionArgs = $state("[]");
-let connectionCwd = $state("");
-let connectionEnvRefs = $state("{}");
-let connectionHeaderRefs = $state("{}");
-let allowPrivateNetwork = $state(false);
-let connectionActionId = $state("");
-let connectionConfirmOpen = $state(false);
-let pendingConnectionAction = $state<{
-	connection: ManagedMcpConnection;
-	action: "test" | "connect" | "remove";
-} | null>(null);
+	let projects = $state<Project[]>([]);
+	let projectId = $state("all");
+	let inventory = $state<McpInventory | null>(null);
+	let loading = $state(true);
+	let refreshing = $state(false);
+	let search = $state("");
+	let activeTab = $state("discovered");
+	let loadError = $state("");
+	let managedConnections = $state<ManagedMcpConnection[]>([]);
+	let connectionDialogOpen = $state(false);
+	let connectionSaving = $state(false);
+	let connectionError = $state("");
+	let connectionName = $state("");
+	let connectionTransport = $state<"stdio" | "streamable-http">("stdio");
+	let connectionEndpoint = $state("");
+	let connectionCommand = $state("");
+	let connectionArgs = $state("[]");
+	let connectionCwd = $state("");
+	let connectionEnvRefs = $state("{}");
+	let connectionHeaderRefs = $state("{}");
+	let allowPrivateNetwork = $state(false);
+	let connectionActionId = $state("");
+	let connectionConfirmOpen = $state(false);
+	let pendingConnectionAction = $state<{
+		connection: ManagedMcpConnection;
+		action: "test" | "connect" | "remove" | "auto-reconnect";
+	} | null>(null);
 
-const visibleServers = $derived(
-	(inventory?.servers ?? []).filter((server) =>
-		`${server.name} ${server.runtime} ${server.transport} ${server.source}`
-			.toLowerCase()
-			.includes(search.toLowerCase()),
-	),
-);
-const configuredSources = $derived(
-	(inventory?.sources ?? []).filter((source) => source.status === "available")
-		.length,
-);
-const sourceIssues = $derived(
-	(inventory?.sources ?? []).filter(
-		(source) => source.status === "invalid" || source.status === "unavailable",
-	).length,
-);
-
-const runtimeSupport = [
-	{
-		name: "OpenCode",
-		discovery: "Supported",
-		status: "Not observed",
-		binding: "Not available",
-		note: "Global and workspace config files are scanned read-only.",
-	},
-	{
-		name: "Claude Code",
-		discovery: "Supported",
-		status: "Not observed",
-		binding: "Not available",
-		note: "Global and workspace config files are scanned read-only.",
-	},
-	{
-		name: "Codex",
-		discovery: "Supported",
-		status: "Not observed",
-		binding: "Not available",
-		note: "Global and workspace TOML config is scanned read-only.",
-	},
-	{
-		name: "Custom model",
-		discovery: "Host runtime",
-		status: "Not observed",
-		binding: "Not available",
-		note: "Tool support follows its actual host runtime; Loom cannot bind tools to arbitrary completion APIs.",
-	},
-	{
-		name: "Agy",
-		discovery: "Not verified",
-		status: "Unsupported",
-		binding: "Not available",
-		note: "No Agy MCP discovery or injection adapter has been verified yet.",
-	},
-];
-
-onMount(() => {
-	// MCP settings is a global route. Strip legacy returnTo and any other
-	// inherited query parameters so navigation always lands on the clean URL.
-	if (window.location.search) {
-		void goto("/settings/mcp", {
-			replaceState: true,
-			keepFocus: true,
-			noScroll: true,
-		});
-	}
-	void loadInventory();
-});
-
-async function loadInventory(isRefresh = false) {
-	if (isRefresh) refreshing = true;
-	else loading = true;
-	loadError = "";
-	try {
-		const [nextProjects, nextInventory] = await Promise.all([
-			projects.length ? Promise.resolve(projects) : daemon.listProjects(),
-			daemon.getMcpInventory(projectId === "all" ? undefined : projectId),
-		]);
-		projects = nextProjects;
-		inventory = nextInventory;
-		await refreshConnections();
-	} catch (reason) {
-		loadError =
-			reason instanceof Error
-				? reason.message
-				: "Unable to read MCP configuration";
-		toast.error(loadError);
-	} finally {
-		loading = false;
-		refreshing = false;
-	}
-}
-
-async function refreshConnections() {
-	const result = await daemon.listManagedMcpConnections();
-	managedConnections = result.connections;
-}
-
-function chooseProject(value: string) {
-	projectId = value;
-	void loadInventory(true);
-}
-
-function scopeLabel(scope: string) {
-	if (scope === "global") return "User / global";
-	if (scope === "workspace-local") return "Workspace entry in user config";
-	return "Workspace";
-}
-
-function sourceStatus(status: string) {
-	if (status === "available") return "Read";
-	if (status === "not-found") return "Not found";
-	if (status === "invalid") return "Invalid";
-	return "Unavailable";
-}
-
-function resetConnectionForm() {
-	connectionName = "";
-	connectionTransport = "stdio";
-	connectionEndpoint = "";
-	connectionCommand = "";
-	connectionArgs = "[]";
-	connectionCwd = "";
-	connectionEnvRefs = "{}";
-	connectionHeaderRefs = "{}";
-	allowPrivateNetwork = false;
-	connectionError = "";
-}
-
-function parseObjectJson(
-	value: string,
-	fieldName: string,
-): Record<string, string> {
-	const parsed = JSON.parse(value) as unknown;
-	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-		throw new Error(`${fieldName} must be a JSON object.`);
-	return parsed as Record<string, string>;
-}
-
-function connectionInput(): ManagedMcpConnectionInput {
-	const args = JSON.parse(connectionArgs) as unknown;
-	if (!Array.isArray(args) || args.some((arg) => typeof arg !== "string"))
-		throw new Error("Arguments must be a JSON array of text values.");
-	const input: ManagedMcpConnectionInput = {
-		label: connectionName,
-		transport: connectionTransport,
-		args,
-		envRefs: parseObjectJson(connectionEnvRefs, "Environment references"),
-		headerEnvRefs: parseObjectJson(
-			connectionHeaderRefs,
-			"HTTP header references",
+	const visibleServers = $derived(
+		(inventory?.servers ?? []).filter((server) =>
+			`${server.name} ${server.runtime} ${server.transport} ${server.source}`
+				.toLowerCase()
+				.includes(search.toLowerCase()),
 		),
-	};
-	if (connectionTransport === "stdio") {
-		input.command = connectionCommand;
-		if (connectionCwd.trim()) input.cwd = connectionCwd.trim();
-	} else {
-		input.endpoint = connectionEndpoint.trim();
-	}
-	return input;
-}
+	);
+	const configuredSources = $derived(
+		(inventory?.sources ?? []).filter((source) => source.status === "available")
+			.length,
+	);
+	const sourceIssues = $derived(
+		(inventory?.sources ?? []).filter(
+			(source) =>
+				source.status === "invalid" || source.status === "unavailable",
+		).length,
+	);
 
-async function saveConnection(event: SubmitEvent) {
-	event.preventDefault();
-	connectionError = "";
-	connectionSaving = true;
-	try {
-		await daemon.createManagedMcpConnection(connectionInput());
-		await refreshConnections();
-		connectionDialogOpen = false;
-		resetConnectionForm();
-		toast.success("Connection saved. Loom has not started it.");
-	} catch (reason) {
-		connectionError =
-			reason instanceof Error
-				? reason.message
-				: "Unable to save the connection.";
-	} finally {
-		connectionSaving = false;
-	}
-}
+	const runtimeSupport = [
+		{
+			name: "OpenCode",
+			discovery: "Supported",
+			status: "Not observed",
+			binding: "Not available",
+			note: "Global and workspace config files are scanned read-only.",
+		},
+		{
+			name: "Claude Code",
+			discovery: "Supported",
+			status: "Not observed",
+			binding: "Not available",
+			note: "Global and workspace config files are scanned read-only.",
+		},
+		{
+			name: "Codex",
+			discovery: "Supported",
+			status: "Not observed",
+			binding: "Not available",
+			note: "Global and workspace TOML config is scanned read-only.",
+		},
+		{
+			name: "Custom model",
+			discovery: "Host runtime",
+			status: "Not observed",
+			binding: "Not available",
+			note: "Tool support follows its actual host runtime; Loom cannot bind tools to arbitrary completion APIs.",
+		},
+		{
+			name: "Agy",
+			discovery: "Not verified",
+			status: "Unsupported",
+			binding: "Not available",
+			note: "No Agy MCP discovery or injection adapter has been verified yet.",
+		},
+	];
 
-async function runConnectionAction(
-	connection: ManagedMcpConnection,
-	action: "test" | "connect",
-) {
-	connectionActionId = connection.id;
-	try {
-		if (action === "test") {
-			const result = await daemon.testManagedMcpConnection(connection.id, {
-				approved: true,
-				allowPrivateNetwork,
+	onMount(() => {
+		// MCP settings is a global route. Strip legacy returnTo and any other
+		// inherited query parameters so navigation always lands on the clean URL.
+		if (window.location.search) {
+			void goto("/settings/mcp", {
+				replaceState: true,
+				keepFocus: true,
+				noScroll: true,
 			});
-			toast.success(
-				`Handshake succeeded · ${result.toolCount} tools discovered`,
-			);
-		} else {
-			await daemon.connectManagedMcpConnection(connection.id, {
-				approved: true,
-				allowPrivateNetwork,
-			});
-			toast.success(
-				"Loom connection is active. It is not yet bound to an agent.",
-			);
 		}
-		await refreshConnections();
-	} catch (reason) {
-		toast.error(
-			reason instanceof Error
-				? reason.message
-				: `Unable to ${action} connection.`,
-		);
-		await refreshConnections().catch(() => undefined);
-	} finally {
-		connectionActionId = "";
+		void loadInventory();
+	});
+
+	async function loadInventory(isRefresh = false) {
+		if (isRefresh) refreshing = true;
+		else loading = true;
+		loadError = "";
+		try {
+			const [nextProjects, nextInventory] = await Promise.all([
+				projects.length ? Promise.resolve(projects) : daemon.listProjects(),
+				daemon.getMcpInventory(projectId === "all" ? undefined : projectId),
+			]);
+			projects = nextProjects;
+			inventory = nextInventory;
+			await refreshConnections();
+		} catch (reason) {
+			loadError =
+				reason instanceof Error
+					? reason.message
+					: "Unable to read MCP configuration";
+			toast.error(loadError);
+		} finally {
+			loading = false;
+			refreshing = false;
+		}
+	}
+
+	async function refreshConnections() {
+		const result = await daemon.listManagedMcpConnections();
+		managedConnections = result.connections;
+	}
+
+	function chooseProject(value: string) {
+		projectId = value;
+		void loadInventory(true);
+	}
+
+	function scopeLabel(scope: string) {
+		if (scope === "global") return "User / global";
+		if (scope === "workspace-local") return "Workspace entry in user config";
+		return "Workspace";
+	}
+
+	function sourceStatus(status: string) {
+		if (status === "available") return "Read";
+		if (status === "not-found") return "Not found";
+		if (status === "invalid") return "Invalid";
+		return "Unavailable";
+	}
+
+	function resetConnectionForm() {
+		connectionName = "";
+		connectionTransport = "stdio";
+		connectionEndpoint = "";
+		connectionCommand = "";
+		connectionArgs = "[]";
+		connectionCwd = "";
+		connectionEnvRefs = "{}";
+		connectionHeaderRefs = "{}";
 		allowPrivateNetwork = false;
+		connectionError = "";
 	}
-}
 
-function requestConnectionConfirmation(
-	connection: ManagedMcpConnection,
-	action: "test" | "connect" | "remove",
-) {
-	pendingConnectionAction = { connection, action };
-	connectionConfirmOpen = true;
-}
-
-async function confirmConnectionAction() {
-	const pending = pendingConnectionAction;
-	connectionConfirmOpen = false;
-	pendingConnectionAction = null;
-	if (!pending) return;
-	if (pending.action === "remove") await removeConnection(pending.connection);
-	else await runConnectionAction(pending.connection, pending.action);
-}
-
-async function disconnectConnection(connection: ManagedMcpConnection) {
-	connectionActionId = connection.id;
-	try {
-		await daemon.disconnectManagedMcpConnection(connection.id);
-		await refreshConnections();
-		toast.success("Loom-owned session disconnected.");
-	} catch (reason) {
-		toast.error(
-			reason instanceof Error
-				? reason.message
-				: "Unable to disconnect this connection.",
-		);
-	} finally {
-		connectionActionId = "";
+	function parseObjectJson(
+		value: string,
+		fieldName: string,
+	): Record<string, string> {
+		const parsed = JSON.parse(value) as unknown;
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+			throw new Error(`${fieldName} must be a JSON object.`);
+		return parsed as Record<string, string>;
 	}
-}
 
-async function removeConnection(connection: ManagedMcpConnection) {
-	connectionActionId = connection.id;
-	try {
-		await daemon.deleteManagedMcpConnection(connection.id);
-		await refreshConnections();
-		toast.success("Loom connection removed.");
-	} catch (reason) {
-		toast.error(
-			reason instanceof Error
-				? reason.message
-				: "Unable to remove this connection.",
-		);
-	} finally {
-		connectionActionId = "";
+	function connectionInput(): ManagedMcpConnectionInput {
+		const args = JSON.parse(connectionArgs) as unknown;
+		if (!Array.isArray(args) || args.some((arg) => typeof arg !== "string"))
+			throw new Error("Arguments must be a JSON array of text values.");
+		const input: ManagedMcpConnectionInput = {
+			label: connectionName,
+			transport: connectionTransport,
+			args,
+			envRefs: parseObjectJson(connectionEnvRefs, "Environment references"),
+			headerEnvRefs: parseObjectJson(
+				connectionHeaderRefs,
+				"HTTP header references",
+			),
+		};
+		if (connectionTransport === "stdio") {
+			input.command = connectionCommand;
+			if (connectionCwd.trim()) input.cwd = connectionCwd.trim();
+		} else {
+			input.endpoint = connectionEndpoint.trim();
+		}
+		return input;
 	}
-}
+
+	async function saveConnection(event: SubmitEvent) {
+		event.preventDefault();
+		connectionError = "";
+		connectionSaving = true;
+		try {
+			await daemon.createManagedMcpConnection(connectionInput());
+			await refreshConnections();
+			connectionDialogOpen = false;
+			resetConnectionForm();
+			toast.success("Connection saved. Loom has not started it.");
+		} catch (reason) {
+			connectionError =
+				reason instanceof Error
+					? reason.message
+					: "Unable to save the connection.";
+		} finally {
+			connectionSaving = false;
+		}
+	}
+
+	async function runConnectionAction(
+		connection: ManagedMcpConnection,
+		action: "test" | "connect",
+	) {
+		connectionActionId = connection.id;
+		try {
+			if (action === "test") {
+				const result = await daemon.testManagedMcpConnection(connection.id, {
+					approved: true,
+					allowPrivateNetwork,
+				});
+				toast.success(
+					`Handshake succeeded · ${result.toolCount} tools discovered`,
+				);
+			} else {
+				await daemon.connectManagedMcpConnection(connection.id, {
+					approved: true,
+					allowPrivateNetwork,
+				});
+				toast.success(
+					"Loom connection is active. It is not yet bound to an agent.",
+				);
+			}
+			await refreshConnections();
+		} catch (reason) {
+			toast.error(
+				reason instanceof Error
+					? reason.message
+					: `Unable to ${action} connection.`,
+			);
+			await refreshConnections().catch(() => undefined);
+		} finally {
+			connectionActionId = "";
+			allowPrivateNetwork = false;
+		}
+	}
+
+	function requestConnectionConfirmation(
+		connection: ManagedMcpConnection,
+		action: "test" | "connect" | "remove" | "auto-reconnect",
+	) {
+		pendingConnectionAction = { connection, action };
+		connectionConfirmOpen = true;
+	}
+
+	async function confirmConnectionAction() {
+		const pending = pendingConnectionAction;
+		connectionConfirmOpen = false;
+		pendingConnectionAction = null;
+		if (!pending) return;
+		if (pending.action === "remove") await removeConnection(pending.connection);
+		else if (pending.action === "auto-reconnect")
+			await setAutoReconnect(
+				pending.connection,
+				!pending.connection.autoReconnect,
+			);
+		else await runConnectionAction(pending.connection, pending.action);
+	}
+
+	async function setAutoReconnect(
+		connection: ManagedMcpConnection,
+		enabled: boolean,
+	) {
+		connectionActionId = connection.id;
+		try {
+			await daemon.setManagedMcpAutoReconnect(connection.id, enabled);
+			await refreshConnections();
+			toast.success(
+				enabled
+					? "Automatic reconnect enabled for Loom restarts."
+					: "Automatic reconnect disabled.",
+			);
+		} catch (reason) {
+			toast.error(
+				reason instanceof Error
+					? reason.message
+					: "Unable to update automatic reconnect.",
+			);
+		} finally {
+			connectionActionId = "";
+		}
+	}
+
+	async function disconnectConnection(connection: ManagedMcpConnection) {
+		connectionActionId = connection.id;
+		try {
+			await daemon.disconnectManagedMcpConnection(connection.id);
+			await refreshConnections();
+			toast.success("Loom-owned session disconnected.");
+		} catch (reason) {
+			toast.error(
+				reason instanceof Error
+					? reason.message
+					: "Unable to disconnect this connection.",
+			);
+		} finally {
+			connectionActionId = "";
+		}
+	}
+
+	async function removeConnection(connection: ManagedMcpConnection) {
+		connectionActionId = connection.id;
+		try {
+			await daemon.deleteManagedMcpConnection(connection.id);
+			await refreshConnections();
+			toast.success("Loom connection removed.");
+		} catch (reason) {
+			toast.error(
+				reason instanceof Error
+					? reason.message
+					: "Unable to remove this connection.",
+			);
+		} finally {
+			connectionActionId = "";
+		}
+	}
 </script>
 
 <svelte:head><title>MCP · Loom</title></svelte:head>
@@ -502,7 +532,9 @@ async function removeConnection(connection: ManagedMcpConnection) {
 											class="mt-1 max-w-2xl text-sm leading-6 text-neutral-500"
 										>
 											Connections here are owned by Loom and kept separate from
-											native runtime configuration.
+											native runtime configuration. Native definitions appear in
+											Discovered and are not imported or connected
+											automatically.
 										</p>
 									</div>
 								</div>
@@ -603,42 +635,66 @@ async function removeConnection(connection: ManagedMcpConnection) {
 															{connection.lastError}
 														</p>{/if}
 												</div>
-												<div class="flex flex-wrap gap-2">
-													<Button
-														variant="outline"
-														size="sm"
-														disabled={!!connectionActionId}
-														onclick={() =>
-															requestConnectionConfirmation(connection, "test")}
-														>Test</Button
+												<div class="flex flex-wrap items-center gap-3">
+													<label
+														class="flex items-center gap-2 text-xs text-neutral-400"
 													>
-													{#if connection.status === "connected"}<Button
-															variant="outline"
-															size="sm"
+														<input
+															type="checkbox"
+															checked={connection.autoReconnect}
 															disabled={!!connectionActionId}
-															onclick={() =>
-																void disconnectConnection(connection)}
-															>Disconnect</Button
-														>{:else}<Button
+															onchange={() =>
+																requestConnectionConfirmation(
+																	connection,
+																	"auto-reconnect",
+																)}
+															class="size-4 accent-emerald-400"
+														/>
+														Reconnect after Loom restart
+													</label>
+													{#if connection.autoReconnect && connection.allowPrivateNetwork}<span
+															class="text-[10px] text-amber-300"
+															>Private network access will be reused</span
+														>{/if}
+													<div class="flex flex-wrap gap-2">
+														<Button
+															variant="outline"
 															size="sm"
 															disabled={!!connectionActionId}
 															onclick={() =>
 																requestConnectionConfirmation(
 																	connection,
-																	"connect",
-																)}>Connect</Button
-														>{/if}
-													<Button
-														variant="ghost"
-														size="sm"
-														class="text-red-300 hover:text-red-200"
-														disabled={!!connectionActionId}
-														onclick={() =>
-															requestConnectionConfirmation(
-																connection,
-																"remove",
-															)}>Remove</Button
-													>
+																	"test",
+																)}>Test</Button
+														>
+														{#if connection.status === "connected"}<Button
+																variant="outline"
+																size="sm"
+																disabled={!!connectionActionId}
+																onclick={() =>
+																	void disconnectConnection(connection)}
+																>Disconnect</Button
+															>{:else}<Button
+																size="sm"
+																disabled={!!connectionActionId}
+																onclick={() =>
+																	requestConnectionConfirmation(
+																		connection,
+																		"connect",
+																	)}>Connect</Button
+															>{/if}
+														<Button
+															variant="ghost"
+															size="sm"
+															class="text-red-300 hover:text-red-200"
+															disabled={!!connectionActionId}
+															onclick={() =>
+																requestConnectionConfirmation(
+																	connection,
+																	"remove",
+																)}>Remove</Button
+														>
+													</div>
 												</div>
 											</div>
 											{#if connection.toolCount > 0}<details
@@ -1044,12 +1100,20 @@ async function removeConnection(connection: ManagedMcpConnection) {
 			<AlertDialog.Title>
 				{pendingConnectionAction?.action === "remove"
 					? "Remove MCP connection?"
-					: pendingConnectionAction?.action === "test"
-						? "Test MCP connection?"
-						: "Connect MCP server?"}
+					: pendingConnectionAction?.action === "auto-reconnect"
+						? pendingConnectionAction.connection.autoReconnect
+							? "Disable automatic reconnect?"
+							: "Enable automatic reconnect?"
+						: pendingConnectionAction?.action === "test"
+							? "Test MCP connection?"
+							: "Connect MCP server?"}
 			</AlertDialog.Title>
 			<AlertDialog.Description>
-				{#if pendingConnectionAction?.action === "remove"}
+				{#if pendingConnectionAction?.action === "auto-reconnect"}
+					{pendingConnectionAction.connection.autoReconnect
+						? "Loom will stop reconnecting this connection automatically after future restarts."
+						: "Loom will reconnect this connection on future restarts, using the saved endpoint or executable and configured environment-variable references. Private or local network access will only be reused if explicitly allowed when connecting."}
+				{:else if pendingConnectionAction?.action === "remove"}
 					Remove “{pendingConnectionAction.connection.label}” from Loom and stop
 					its Loom-owned session if active. Native runtime configuration will
 					not change.
@@ -1075,9 +1139,13 @@ async function removeConnection(connection: ManagedMcpConnection) {
 			>
 				{pendingConnectionAction?.action === "remove"
 					? "Remove connection"
-					: pendingConnectionAction?.action === "test"
-						? "Test connection"
-						: "Start connection"}
+					: pendingConnectionAction?.action === "auto-reconnect"
+						? pendingConnectionAction.connection.autoReconnect
+							? "Disable automatic reconnect"
+							: "Enable automatic reconnect"
+						: pendingConnectionAction?.action === "test"
+							? "Test connection"
+							: "Start connection"}
 			</AlertDialog.Action>
 		</AlertDialog.Footer>
 	</AlertDialog.Content>

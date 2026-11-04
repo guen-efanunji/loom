@@ -115,7 +115,10 @@ test("read-only design requests omit tools and preserve system instructions and 
 	const originalFetch = globalThis.fetch;
 	const requests: Array<Record<string, unknown>> = [];
 	globalThis.fetch = async (input, init) => {
-		const body = (await new Request(input, init).json()) as Record<string, unknown>;
+		const body = (await new Request(input, init).json()) as Record<
+			string,
+			unknown
+		>;
 		requests.push(body);
 		return Response.json({
 			choices: [{ message: { content: "A visual design proposal" } }],
@@ -129,7 +132,10 @@ test("read-only design requests omit tools and preserve system instructions and 
 			apiKey: "",
 			models: [{ id: "DESIGN", name: "DESIGN" }],
 		});
-		const session = await adapter.createSession({ cwd: "/tmp", title: "design" });
+		const session = await adapter.createSession({
+			cwd: "/tmp",
+			title: "design",
+		});
 		let approvals = 0;
 		await adapter.prompt({
 			sessionId: session.id,
@@ -152,7 +158,10 @@ test("read-only design requests omit tools and preserve system instructions and 
 				role: "user",
 				content: [
 					{ type: "text", text: "Design this screen" },
-					{ type: "image_url", image_url: { url: "data:image/png;base64,aGVsbG8=" } },
+					{
+						type: "image_url",
+						image_url: { url: "data:image/png;base64,aGVsbG8=" },
+					},
 				],
 			},
 		]);
@@ -169,10 +178,23 @@ test("read-only requests do not execute unsolicited tool calls", async () => {
 	globalThis.fetch = async () => {
 		requests += 1;
 		return Response.json({
-			choices: [{ message: {
-				content: "Safe response",
-				tool_calls: [{ id: "call_1", type: "function", function: { name: "run_command", arguments: '{"command":"true"}' } }],
-			} }],
+			choices: [
+				{
+					message: {
+						content: "Safe response",
+						tool_calls: [
+							{
+								id: "call_1",
+								type: "function",
+								function: {
+									name: "run_command",
+									arguments: '{"command":"true"}',
+								},
+							},
+						],
+					},
+				},
+			],
 		});
 	};
 	try {
@@ -183,7 +205,10 @@ test("read-only requests do not execute unsolicited tool calls", async () => {
 			apiKey: "",
 			models: [{ id: "DESIGN", name: "DESIGN" }],
 		});
-		const session = await adapter.createSession({ cwd: "/tmp", title: "design" });
+		const session = await adapter.createSession({
+			cwd: "/tmp",
+			title: "design",
+		});
 		await adapter.prompt({
 			sessionId: session.id,
 			prompt: "Design this screen",
@@ -196,7 +221,10 @@ test("read-only requests do not execute unsolicited tool calls", async () => {
 		expect(await adapter.wait(session.id)).toBe("completed");
 		expect(requests).toBe(1);
 		expect(approvals).toBe(0);
-		expect(await adapter.readOutput(session.id)).toMatchObject({ output: "Safe response", activities: [] });
+		expect(await adapter.readOutput(session.id)).toMatchObject({
+			output: "Safe response",
+			activities: [],
+		});
 	} finally {
 		globalThis.fetch = originalFetch;
 	}
@@ -218,11 +246,17 @@ test("coding requests retain tool invitations and declarations", async () => {
 			models: [{ id: "CODE", name: "CODE" }],
 		});
 		const session = await adapter.createSession({ cwd: "/tmp", title: "code" });
-		await adapter.prompt({ sessionId: session.id, prompt: "Edit a file", permission: { mode: "ask" } });
+		await adapter.prompt({
+			sessionId: session.id,
+			prompt: "Edit a file",
+			permission: { mode: "ask" },
+		});
 		expect(await adapter.wait(session.id)).toBe("completed");
 		expect(body?.tool_choice).toBe("auto");
 		expect(body?.tools).toBeArray();
-		expect((body?.messages as Array<{ content: string }> | undefined)?.[0]?.content).toContain("write_file");
+		expect(
+			(body?.messages as Array<{ content: string }> | undefined)?.[0]?.content,
+		).toContain("write_file");
 	} finally {
 		globalThis.fetch = originalFetch;
 	}

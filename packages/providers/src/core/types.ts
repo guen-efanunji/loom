@@ -38,11 +38,7 @@ export type ProviderDefinition = {
 };
 
 export type ProviderConnectionStatus =
-	| "disconnected"
-	| "checking"
-	| "connected"
-	| "auth-required"
-	| "error";
+	"disconnected" | "checking" | "connected" | "auth-required" | "error";
 
 export type ProviderConnection = {
 	id: string;
@@ -60,12 +56,7 @@ export type ProviderConnection = {
 };
 
 export type ModelCapability =
-	| "text"
-	| "image"
-	| "tools"
-	| "reasoning"
-	| "coding"
-	| "structured-output";
+	"text" | "image" | "tools" | "reasoning" | "coding" | "structured-output";
 
 export type ModelRef = {
 	providerId: string;
@@ -83,6 +74,7 @@ export type AgentModel = {
 	displayName: string;
 	description?: string;
 	contextWindow?: number;
+	outputLimit?: number;
 	capabilities: ModelCapability[];
 	isDefault?: boolean;
 	isAvailable: boolean;
