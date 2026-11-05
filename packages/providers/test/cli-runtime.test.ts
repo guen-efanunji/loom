@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+import { readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { agyPermissionArgs, agyPromptText } from "../src/adapters/agy";
 import { CliProviderAdapter, parseCliOutput } from "../src/adapters/cli";
 
@@ -30,33 +33,56 @@ function runtimeWithOutput(output: string) {
 	}).getRuntime();
 }
 
-test("CLI image input is rejected before spawning instead of silently dropping images", async () => {
+test("CLI image input is persisted to disk and referenced in the prompt", async () => {
 	let built = false;
-	const runtime = new CliProviderAdapter({
-		definition: {
-			id: "agy",
-			name: "Agy",
-			executable: process.execPath,
-			capabilities: ["chat"],
-			install: { supported: false },
-			authStrategy: "none",
-		},
-		getAuthStatus: async () => ({ authenticated: true, strategy: "none" }),
-		buildPrompt: async () => {
-			built = true;
-			return { command: process.execPath, args: [] };
-		},
-	}).getRuntime();
-	const session = await runtime.createSession({ cwd: "/tmp", title: "Test" });
-	await expect(
-		runtime.prompt({
-			sessionId: session.id,
-			prompt: "Describe this image",
-			images: [{ mime: "image/png", data: "aGVsbG8=" }],
-		}),
-	).rejects.toThrow("does not support direct image input");
-	expect(built).toBe(false);
-	expect(await runtime.status(session.id)).toBe("queued");
+	let receivedPrompt = "";
+	const imageStore = join(tmpdir(), "loom-image-store-test");
+	process.env.LOOM_HOME = imageStore;
+	try {
+		const runtime = new CliProviderAdapter({
+			definition: {
+				id: "agy",
+				name: "Agy",
+				executable: process.execPath,
+				capabilities: ["chat"],
+				install: { supported: false },
+				authStrategy: "none",
+			},
+			getAuthStatus: async () => ({ authenticated: true, strategy: "none" }),
+			buildPrompt: async ({ prompt }) => {
+				built = true;
+				receivedPrompt = prompt;
+				return {
+					command: process.execPath,
+					args: ["-e", "process.stdout.write('imaged')"],
+				};
+			},
+		}).getRuntime();
+		const session = await runtime.createSession({
+			cwd: "/tmp",
+			title: "Test",
+		});
+		await expect(
+			runtime.prompt({
+				sessionId: session.id,
+				prompt: "Describe this image",
+				images: [
+					{ mime: "image/png", data: Buffer.from("hello").toString("base64") },
+				],
+			}),
+		).resolves.toBeUndefined();
+		await runtime.wait(session.id);
+		expect(built).toBe(true);
+		const referenced =
+			receivedPrompt.match(/\d+\. (\/\S+\.(?:png|jpg|webp|avif|bin))/g) ?? [];
+		expect(referenced.length).toBe(1);
+		const [, savedPath = ""] = referenced[0]?.split(" ") ?? [];
+		expect(await readFile(savedPath, "utf8")).toBe("hello");
+		expect(await runtime.status(session.id)).toBe("completed");
+	} finally {
+		delete process.env.LOOM_HOME;
+		await rm(imageStore, { recursive: true, force: true });
+	}
 });
 
 test("CLI wait timeout aborts the running child process", async () => {

@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { access } from "node:fs/promises";
+import { access, mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -195,17 +195,17 @@ class CliRuntime implements AgentRuntime {
 		const session = this.requireSession(input.sessionId);
 		if (session.process)
 			throw new ProviderError("PROCESS_FAILED", "Session is already running");
-		if (input.images?.length)
-			throw new ProviderError(
-				"PROCESS_FAILED",
-				`${this.options.definition.name} CLI does not support direct image input; no images were sent`,
-				{ providerId: this.options.definition.id },
-			);
+		// CLI backends cannot take inline base64 images, but the underlying
+		// models read images from disk: persist the attachments under the loom
+		// home and reference their paths in the prompt instead of dropping them.
+		const promptText = input.images?.length
+			? `${input.prompt}\n\n${await this.persistAndReferenceImages(session.id, input.images)}`
+			: input.prompt;
 		if (input.permission) session.permission = input.permission;
 		const command = await this.options.buildPrompt({
 			prompt: input.system
-				? `${input.system.trim()}\n\n---\n\n${input.prompt}`
-				: input.prompt,
+				? `${input.system.trim()}\n\n---\n\n${promptText}`
+				: promptText,
 			model: input.model?.modelID,
 			thinkingMode: input.thinkingMode,
 			permission: input.permission ?? session.permission,
@@ -278,6 +278,49 @@ class CliRuntime implements AgentRuntime {
 	async readOutput(sessionId: string) {
 		const session = this.requireSession(sessionId);
 		return parseCliOutput(session.output);
+	}
+
+	/**
+	 * CLI backends read images from disk, not from base64 channels: save each
+	 * attachment under the loom image store and return a prompt section that
+	 * points the model at the saved files. The store lives outside the session
+	 * cwd so agent-driven diffs and "changed files" views stay clean.
+	 */
+	private async persistAndReferenceImages(
+		sessionId: string,
+		images: Array<{ mime: string; data: string }>,
+	): Promise<string> {
+		const imageStore = join(
+			process.env.LOOM_HOME ?? join(homedir(), ".loom"),
+			"images",
+			sessionId,
+		);
+		const stamp = Date.now();
+		const saved: string[] = [];
+		try {
+			await mkdir(imageStore, { recursive: true });
+			for (const [index, image] of images.entries()) {
+				const extension = IMAGE_EXTENSIONS[image.mime] ?? "bin";
+				const path = join(
+					imageStore,
+					`attachment-${stamp}-${index + 1}.${extension}`,
+				);
+				await writeFile(path, Buffer.from(image.data, "base64"));
+				saved.push(path);
+			}
+		} catch (error) {
+			throw new ProviderError(
+				"PROCESS_FAILED",
+				`Saving image attachments failed: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+				{ providerId: this.options.definition.id },
+			);
+		}
+		return [
+			"The user attached these image files; read or open them to see the referenced visuals:",
+			...saved.map((path, index) => `${index + 1}. ${path}`),
+		].join("\n");
 	}
 
 	async wait(
@@ -415,6 +458,14 @@ const modulePrompts = resolve(
 	dirname(fileURLToPath(import.meta.url)),
 	"../../../../prompts",
 );
+
+const IMAGE_EXTENSIONS: Record<string, string> = {
+	"image/png": "png",
+	"image/jpeg": "jpg",
+	"image/webp": "webp",
+	"image/gif": "gif",
+	"image/avif": "avif",
+};
 
 export function promptPath(name: string): string {
 	return loadPromptFile(name, [modulePrompts]);
