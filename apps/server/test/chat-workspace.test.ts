@@ -32,6 +32,7 @@ async function harness(
 		dirtyOnRemove?: boolean;
 		/** False while the branch head has not been integrated into the target. */
 		integrated?: boolean;
+		checkpointGate?: { promise: Promise<void> };
 	} = {},
 ) {
 	const base = await mkdtemp(join(tmpdir(), "loom-chat-workspace-"));
@@ -155,6 +156,7 @@ async function harness(
 			isCommitIntegrated: async () => options.integrated !== false,
 			checkpoint: async (workspace) => {
 				calls.push(`worktree:checkpoint:${workspace.taskId}`);
+				await options.checkpointGate?.promise;
 				return "checkpoint-sha";
 			},
 			merge: async (_workspace, _expected, mergeOptions) => {
@@ -458,6 +460,32 @@ describe("chat workspace isolation", () => {
 			);
 			expect(h.bindings.has(isolated.id)).toBe(false);
 		} finally {
+			await rm(h.base, { recursive: true, force: true });
+		}
+	});
+
+	test("workspace operations are serialized per chat", async () => {
+		let releaseCheckpoint!: () => void;
+		const checkpointGate = new Promise<void>((resolve) => {
+			releaseCheckpoint = resolve;
+		});
+		const h = await harness({ checkpointGate: { promise: checkpointGate } });
+		try {
+			const isolated = await h.createIsolated("Backend");
+			const checkpoint = h.app.request(
+				`/sessions/${isolated.id}/workspace/checkpoint`,
+				{ method: "POST", body: "{}" },
+			);
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			const discard = await h.app.request(
+				`/sessions/${isolated.id}/workspace/discard`,
+				{ method: "POST", body: "{}" },
+			);
+			expect(discard.status).toBe(409);
+			releaseCheckpoint();
+			expect((await checkpoint).status).toBe(200);
+		} finally {
+			releaseCheckpoint();
 			await rm(h.base, { recursive: true, force: true });
 		}
 	});

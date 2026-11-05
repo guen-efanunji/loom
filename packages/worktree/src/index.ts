@@ -527,18 +527,32 @@ export class WorktreeManager {
 				: ["worktree", "add", "--orphan", "-b", branch, path],
 			repository.path,
 		);
-		await this.ensureExcluded(path, ["/.loom-worktree.json"]);
-		await writeFile(
-			join(path, ".loom-worktree.json"),
-			JSON.stringify({
-				owner: "loom",
-				projectId: input.projectId,
-				taskId: input.taskId,
-				runId: input.runId ?? null,
-				branch,
-			}),
-			"utf8",
-		);
+		try {
+			await this.ensureExcluded(path, ["/.loom-worktree.json"]);
+			await writeFile(
+				join(path, ".loom-worktree.json"),
+				JSON.stringify({
+					owner: "loom",
+					projectId: input.projectId,
+					taskId: input.taskId,
+					runId: input.runId ?? null,
+					branch,
+				}),
+				"utf8",
+			);
+		} catch (error) {
+			try {
+				await runGit(
+					this.runner,
+					["worktree", "remove", "--force", path],
+					repository.path,
+				);
+			} catch {}
+			try {
+				await runGit(this.runner, ["branch", "-D", branch], repository.path);
+			} catch {}
+			throw error;
+		}
 		return {
 			id: input.taskId,
 			taskId: input.taskId,

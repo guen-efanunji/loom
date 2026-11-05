@@ -962,6 +962,21 @@ export function createChatRoutes(options: {
 		}
 		throw error;
 	}
+	function beginWorkspaceMutation(sessionId: string) {
+		const turn = providerSessions.get(sessionId);
+		if (turn && !turn.finished)
+			throw new HTTPException(409, {
+				message:
+					"This chat is still working. Wait for the response to finish before changing its workspace.",
+			});
+		if (workspaceMutations.has(sessionId))
+			throw new HTTPException(409, {
+				message:
+					"A workspace operation is already running for this chat. Try again when it finishes.",
+			});
+		workspaceMutations.add(sessionId);
+		return () => workspaceMutations.delete(sessionId);
+	}
 	async function ensureWorkspaceNotBusy(projectId: string, root: string) {
 		if (
 			[...providerSessions.values()].some(
@@ -1613,10 +1628,12 @@ export function createChatRoutes(options: {
 		} catch (error) {
 			return workspaceConflictResponse(c, error);
 		}
+		let createdSessionId: string | undefined;
 		try {
 			const created = await request<Session>("/session", workspace.path, {
 				title: input.title,
 			});
+			createdSessionId = created.id;
 			const record = {
 				sessionId: created.id,
 				projectId: input.projectId,
@@ -1632,7 +1649,16 @@ export function createChatRoutes(options: {
 			await options.worktrees.prepareDependencies?.(workspace).catch(() => {});
 			return c.json({ ...created, workspace: publicWorkspace(record) }, 201);
 		} catch (error) {
-			// Never leave an orphaned worktree behind when the session is not created.
+			if (createdSessionId) {
+				await request(
+					`/session/${createdSessionId}`,
+					workspace.path,
+					{},
+					"DELETE",
+				).catch(() => {});
+				await options.providerHistory?.delete(createdSessionId).catch(() => {});
+				await options.chatWorkspaces?.delete(createdSessionId).catch(() => {});
+			}
 			await options.worktrees.discard(workspace).catch(() => {});
 			throw error;
 		}
@@ -1656,18 +1682,23 @@ export function createChatRoutes(options: {
 		const input = z
 			.object({ message: z.string().max(500).optional() })
 			.parse(await c.req.json().catch(() => ({})));
-		const projectPath = await directory(current.projectId);
+		const releaseMutation = beginWorkspaceMutation(current.id);
 		try {
-			const sha = await options.worktrees.checkpoint(
-				toWorktreeWorkspace(current.workspace, projectPath),
-				input.message?.trim() || `Loom chat \u00b7 ${current.title}`,
-			);
-			return c.json({
-				sha,
-				...(await workspaceView(current.workspace, projectPath)),
-			});
-		} catch (error) {
-			return workspaceConflictResponse(c, error);
+			const projectPath = await directory(current.projectId);
+			try {
+				const sha = await options.worktrees.checkpoint(
+					toWorktreeWorkspace(current.workspace, projectPath),
+					input.message?.trim() || `Loom chat \u00b7 ${current.title}`,
+				);
+				return c.json({
+					sha,
+					...(await workspaceView(current.workspace, projectPath)),
+				});
+			} catch (error) {
+				return workspaceConflictResponse(c, error);
+			}
+		} finally {
+			releaseMutation();
 		}
 	});
 	app.post("/sessions/:id/workspace/merge", async (c) => {
@@ -1676,10 +1707,12 @@ export function createChatRoutes(options: {
 			throw new HTTPException(409, {
 				message: "This chat is not running in an isolated workspace",
 			});
-		const projectPath = await directory(current.projectId);
-		const workspace = toWorktreeWorkspace(current.workspace, projectPath);
+		const releaseMutation = beginWorkspaceMutation(current.id);
 		try {
-			const head = await options.worktrees.inspectHead(workspace);
+			const projectPath = await directory(current.projectId);
+			const workspace = toWorktreeWorkspace(current.workspace, projectPath);
+			try {
+				const head = await options.worktrees.inspectHead(workspace);
 			if (!head.clean)
 				throw new WorktreeError(
 					"SAFETY_ERROR",
@@ -1703,6 +1736,9 @@ export function createChatRoutes(options: {
 		} catch (error) {
 			return workspaceConflictResponse(c, error);
 		}
+		} finally {
+			releaseMutation();
+		}
 	});
 	app.post("/sessions/:id/workspace/sync", async (c) => {
 		const current = await session(c.req.param("id"));
@@ -1713,18 +1749,23 @@ export function createChatRoutes(options: {
 		const input = z
 			.object({ sourceRef: z.string().max(200).optional() })
 			.parse(await c.req.json().catch(() => ({})));
-		const projectPath = await directory(current.projectId);
+		const releaseMutation = beginWorkspaceMutation(current.id);
 		try {
-			const head = await options.worktrees.sync(
-				toWorktreeWorkspace(current.workspace, projectPath),
-				input.sourceRef,
-			);
-			return c.json({
-				...head,
-				...(await workspaceView(current.workspace, projectPath)),
-			});
-		} catch (error) {
-			return workspaceConflictResponse(c, error);
+			const projectPath = await directory(current.projectId);
+			try {
+				const head = await options.worktrees.sync(
+					toWorktreeWorkspace(current.workspace, projectPath),
+					input.sourceRef,
+				);
+				return c.json({
+					...head,
+					...(await workspaceView(current.workspace, projectPath)),
+				});
+			} catch (error) {
+				return workspaceConflictResponse(c, error);
+			}
+		} finally {
+			releaseMutation();
 		}
 	});
 	app.post("/sessions/:id/workspace/discard", async (c) => {
@@ -1733,18 +1774,23 @@ export function createChatRoutes(options: {
 			throw new HTTPException(409, {
 				message: "This chat is not running in an isolated workspace",
 			});
-		const projectPath = await directory(current.projectId);
+		const releaseMutation = beginWorkspaceMutation(current.id);
 		try {
-			// The tab is being thrown away, so its branch goes with it; keeping it
-			// would leave commits no session points at any more.
-			await options.worktrees.discard(
-				toWorktreeWorkspace(current.workspace, projectPath),
-				{ deleteBranch: true },
-			);
-			await options.chatWorkspaces?.delete(current.id);
-			return c.json({ discarded: true });
-		} catch (error) {
-			return workspaceConflictResponse(c, error);
+			const projectPath = await directory(current.projectId);
+			try {
+				// The tab is being thrown away, so its branch goes with it; keeping it
+				// would leave commits no session points at any more.
+				await options.worktrees.discard(
+					toWorktreeWorkspace(current.workspace, projectPath),
+					{ deleteBranch: true },
+				);
+				await options.chatWorkspaces?.delete(current.id);
+				return c.json({ discarded: true });
+			} catch (error) {
+				return workspaceConflictResponse(c, error);
+			}
+		} finally {
+			releaseMutation();
 		}
 	});
 	app.get("/catalog", async (c) => {
@@ -2088,6 +2134,11 @@ export function createChatRoutes(options: {
 			if (!existing.finished)
 				throw new HTTPException(409, { message: "Session is already running" });
 		}
+		if (workspaceMutations.has(current.id))
+			throw new HTTPException(409, {
+				message:
+					"A workspace operation is in progress. Wait for it to finish before starting another response.",
+			});
 		// Two agents must not edit the same checkout at once. A shared session is
 		// gated against any other live run in its directory; an isolated session
 		// owns a private worktree and starts regardless.
@@ -2315,6 +2366,11 @@ export function createChatRoutes(options: {
 						}
 					: undefined;
 			turn.permissionToken = permissionToken;
+			if (workspaceMutations.has(current.id))
+				throw new HTTPException(409, {
+					message:
+						"A workspace operation is in progress. Wait for it to finish before starting another response.",
+				});
 			providerSessions.set(current.id, turn);
 			// CLI runtimes start a new process each turn; carry forward the conversation.
 			const prompt = [
@@ -2757,6 +2813,10 @@ export function createChatRoutes(options: {
 			throw new HTTPException(409, {
 				message: "Stop the running response before deleting this chat",
 			});
+		const releaseMutation = current.workspace
+			? beginWorkspaceMutation(current.id)
+			: undefined;
+		try {
 		// An isolated conversation owns a worktree. Check its state before anything
 		// is torn down, so uncheckpointed agent output is never destroyed silently.
 		const workspace =
@@ -2803,23 +2863,25 @@ export function createChatRoutes(options: {
 		options.permissions?.denySession(current.id);
 		if (providerSession?.permissionToken)
 			options.permissions?.unregisterRun(providerSession.permissionToken);
-		await request(`/session/${current.id}`, current.directory, {}, "DELETE");
-		providerSessions.delete(current.id);
-		// Keep compaction bookkeeping from outliving the chat they describe.
-		await options.providerHistory?.delete(current.id);
-		try {
-			await options.chatCompactions?.delete?.(current.id);
-		} catch {}
-		forcedCompactionSessions.delete(current.id);
 		if (workspace) {
 			try {
 				await options.worktrees!.remove(workspace);
 			} catch (error) {
 				return workspaceConflictResponse(c, error);
 			}
-			await options.chatWorkspaces?.delete(current.id);
 		}
+		await request(`/session/${current.id}`, current.directory, {}, "DELETE");
+		providerSessions.delete(current.id);
+		await options.providerHistory?.delete(current.id);
+		try {
+			await options.chatCompactions?.delete?.(current.id);
+		} catch {}
+		forcedCompactionSessions.delete(current.id);
+		if (workspace) await options.chatWorkspaces?.delete(current.id);
 		return c.body(null, 204);
+		} finally {
+			releaseMutation?.();
+		}
 	});
 	app.post("/sessions/:id/rename", async (c) => {
 		const current = await session(c.req.param("id"));

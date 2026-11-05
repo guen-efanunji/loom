@@ -480,6 +480,12 @@
 	let editorOpenRequest = $state(0);
 	let editorRequestedPath = $state("");
 	let sendingChatTabIds = $state<string[]>([]);
+	let pendingIsolatedSend = $state<{
+		tabId: string;
+		projectId: string;
+		input: Parameters<typeof chat.send>[1];
+	} | null>(null);
+	let continuingIsolatedTabId = $state("");
 	const sending = $derived(sendingChatTabIds.includes(activeChatTabId));
 	let permissionReplying = $state<string | null>(null);
 	const selectedProject = $derived(
@@ -2644,9 +2650,16 @@
 			);
 	});
 	async function send(input: Parameters<typeof chat.send>[1]) {
-		if (!selectedProjectId || sending) return false;
 		const tabId = activeChatTabId;
+		if (
+			!selectedProjectId ||
+			sendingChatTabIds.includes(tabId) ||
+			continuingIsolatedTabId === tabId
+		)
+			return false;
 		const projectId = selectedProjectId;
+		const existingSessionId = sessionId;
+		if (pendingIsolatedSend?.tabId === tabId) pendingIsolatedSend = null;
 		sendingChatTabIds = [...sendingChatTabIds, tabId];
 		if (activeChatTabId === tabId) error = "";
 		let createdHere = "";
@@ -2708,8 +2721,6 @@
 			await chat.send(id, input);
 			return true;
 		} catch (reason) {
-			// The project folder already has a writer: a chat that has just started can
-			// be re-created inside its own worktree, so parallel work still begins.
 			if (
 				isProjectBusy(reason) &&
 				createdHere &&
@@ -2731,18 +2742,41 @@
 					updateChatUrl();
 				}
 				retryIsolated = true;
+			} else if (
+				isProjectBusy(reason) &&
+				existingSessionId &&
+				chatTabs.find((item) => item.id === tabId)?.isolated !== true
+			) {
+				if (activeChatTabId === tabId) optimistic = null;
+				pendingIsolatedSend = { tabId, projectId, input };
 			} else if (activeChatTabId === tabId) {
 				optimistic = null;
 				if (isContextOverflowError(reason))
 					void startContextHandoff(reason, input.text);
 				else report(reason);
 			}
-			return false;
 		} finally {
 			sendingChatTabIds = sendingChatTabIds.filter((id) => id !== tabId);
 		}
 		if (retryIsolated) return send(input);
 		return false;
+	}
+	async function continuePendingInIsolation() {
+		const pending = pendingIsolatedSend;
+		if (
+			!pending ||
+			pending.tabId !== activeChatTabId ||
+			continuingIsolatedTabId
+		)
+			return;
+		continuingIsolatedTabId = pending.tabId;
+		pendingIsolatedSend = null;
+		try {
+			newChatTab(pending.projectId, true);
+			await send(pending.input);
+		} finally {
+			continuingIsolatedTabId = "";
+		}
 	}
 	async function stop() {
 		try {
@@ -3736,6 +3770,15 @@
 											{workspaceConflict.slice(0, 8).join(", ")}
 											{#if workspaceConflict.length > 8}…{/if}
 											— resolve them in this workspace, then merge again.
+										</div>
+									{/if}
+									{#if pendingIsolatedSend?.tabId === activeChatTabId}
+										<div class="flex shrink-0 items-center gap-3 border-b border-amber-400/20 bg-amber-400/[0.06] px-4 py-3 text-sm">
+											<p class="min-w-0 flex-1 text-muted-foreground">Another chat is editing this project. Continue this request in an isolated workspace?</p>
+											<Button size="sm" disabled={continuingIsolatedTabId === activeChatTabId} onclick={() => void continuePendingInIsolation()}>
+												{#if continuingIsolatedTabId === activeChatTabId}<LoaderCircle size={13} class="animate-spin" />{/if}
+												Continue in isolated
+											</Button>
 										</div>
 									{/if}
 								{/if}
