@@ -337,17 +337,25 @@ export class OpenCodeServerManager implements OpenCodeManager {
 export class OpenCodeHttpRuntime implements AgentRuntime {
 	private readonly baseUrl: string;
 	private readonly fetcher: Fetcher;
+	private readonly ensureServer?: () => Promise<void>;
 	private readonly directories = new Map<string, string>();
 	private readonly cancelled = new Set<string>();
 	private readonly lastErrors = new Map<string, string>();
 	private readonly idleSince = new Map<string, number>();
 	private readonly idleTimeoutMs: number;
+	private lastServerEnsureAt = 0;
 
 	constructor(
 		options: {
 			baseUrl?: string;
 			fetcher?: Fetcher;
 			idleTimeoutMs?: number;
+			/**
+			 * Bring the OpenCode server back when the HTTP gateway becomes
+			 * unreachable (for example after a crash). Called at most once per
+			 * failure burst; requests are retried once afterwards.
+			 */
+			ensureServer?: () => Promise<void>;
 		} = {},
 	) {
 		this.baseUrl = (options.baseUrl ?? "http://127.0.0.1:4096").replace(
@@ -355,13 +363,43 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 			"",
 		);
 		this.fetcher = options.fetcher ?? fetch;
+		this.ensureServer = options.ensureServer;
 		this.idleTimeoutMs = options.idleTimeoutMs ?? 15_000;
+	}
+
+	private describeFetchFailure(error: unknown, timeoutMs: number): string {
+		if (!(error instanceof Error)) return String(error);
+		const cause =
+			error instanceof Error && "cause" in error && error.cause instanceof Error
+				? error.cause
+				: error;
+		const text = `${error.message} ${cause.message ?? ""}`;
+		if (
+			error.name === "TimeoutError" ||
+			/aborted due to timeout|timed?\s*out/i.test(text)
+		)
+			return `OpenCode did not answer within ${timeoutMs}ms`;
+		return error.message;
+	}
+
+	private isServerUnreachable(error: unknown): boolean {
+		if (!(error instanceof Error)) return false;
+		const cause =
+			"cause" in error && error.cause instanceof Error ? error.cause : error;
+		const text = `${error.message} ${(cause as Error).message ?? ""}`;
+		// Timeout aborts mean the server answered slowly; restarting it would
+		// duplicate side effects such as a queued prompt.
+		if (error.name === "TimeoutError") return false;
+		return /fetch failed|unable to connect|failed to connect|connection (refused|reset|closed)|econnrefused|econnreset|enotfound|ehostunreach|enetunreach|epipe|socket hang ?up|network error|server terminated/i.test(
+			text,
+		);
 	}
 
 	async request<T = unknown>(
 		path: string,
 		init: RequestInit = {},
 		directory?: string,
+		requestOptions?: { timeoutMs?: number },
 	): Promise<T> {
 		const headers = authHeaders(init.headers);
 		const sessionId = path.match(/^\/session\/([^/?]+)/)?.[1];
@@ -372,20 +410,47 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 				: undefined);
 		if (cwd) headers.set("x-opencode-directory", encodeURIComponent(cwd));
 		if (init.body) headers.set("content-type", "application/json");
+		const timeoutMs = requestOptions?.timeoutMs ?? 5_000;
 		let response: Response;
-		try {
-			response = await this.fetcher(`${this.baseUrl}${path}`, {
+		const send = () =>
+			this.fetcher(`${this.baseUrl}${path}`, {
 				...init,
 				headers,
 				// Never let an unavailable OpenCode process block the Loom UI. Long
 				// running agent work is asynchronous; HTTP control calls should fail
 				// quickly and let the client remain usable.
-				signal: init.signal ?? AbortSignal.timeout(5_000),
+				signal: init.signal ?? AbortSignal.timeout(timeoutMs),
 			});
+		try {
+			response = await send();
 		} catch (error) {
-			throw new OpenCodeError("HTTP_ERROR", "Unable to reach OpenCode server", {
-				reason: error instanceof Error ? error.message : String(error),
-			});
+			if (
+				this.isServerUnreachable(error) &&
+				this.ensureServer &&
+				Date.now() - this.lastServerEnsureAt > 1_500
+			) {
+				this.lastServerEnsureAt = Date.now();
+				try {
+					await this.ensureServer();
+					response = await send();
+				} catch (retryError) {
+					throw new OpenCodeError(
+						"HTTP_ERROR",
+						"Unable to reach OpenCode server",
+						{
+							reason: this.describeFetchFailure(retryError, timeoutMs),
+						},
+					);
+				}
+			} else {
+				throw new OpenCodeError(
+					"HTTP_ERROR",
+					"Unable to reach OpenCode server",
+					{
+						reason: this.describeFetchFailure(error, timeoutMs),
+					},
+				);
+			}
 		}
 		if (!response.ok) {
 			const responseBody = await response.text().catch(() => "");

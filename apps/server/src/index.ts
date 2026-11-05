@@ -604,7 +604,11 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			config.uiLockHash = encoded ?? null;
 		},
 	});
-	const openCodeRuntime = new OpenCodeHttpRuntime();
+	const openCodeRuntime = new OpenCodeHttpRuntime({
+		// Revive the managed serve process when the gateway stops answering
+		// instead of leaving every chat broken until the daemon restarts.
+		ensureServer: () => openCodeManager.start(),
+	});
 	const providerModelCachePath = join(
 		dataDirectory(),
 		"cache",
@@ -1731,6 +1735,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 				...(options.body ? { body: JSON.stringify(options.body) } : {}),
 			},
 			options.directory,
+			options.timeoutMs ? { timeoutMs: options.timeoutMs } : undefined,
 		);
 	const designRuntimes = new Map(
 		providerManager.registry.list().flatMap((adapter) => {

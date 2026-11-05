@@ -205,6 +205,7 @@ type CompactGateway = <T>(
 	directory?: string,
 	body?: unknown,
 	method?: string,
+	timeoutMs?: number,
 ) => Promise<T>;
 
 /**
@@ -225,7 +226,9 @@ async function requestNativeCompact(
 	let attempted = false;
 	for (const path of paths) {
 		try {
-			await runtime(path, directory, {});
+			// Compaction includes a provider-side summary generation and can far
+			// exceed the default 5s control timeout.
+			await runtime(path, directory, {}, undefined, 600_000);
 			return "admitted";
 		} catch (error) {
 			attempted = true;
@@ -409,6 +412,8 @@ export type ChatRequestOptions = {
 	directory?: string;
 	body?: unknown;
 	method?: string;
+	/** Override the gateway fail-fast timeout for slow endpoints (ms). */
+	timeoutMs?: number;
 };
 
 export type ChatRequestGateway = <T>(
@@ -801,8 +806,7 @@ export function createChatRoutes(options: {
 							name: string;
 							limit?: { context?: number; output?: number };
 							variants?:
-								| Array<string | { id?: string }>
-								| Record<string, unknown>;
+								Array<string | { id?: string }> | Record<string, unknown>;
 						}
 					>;
 				}>;
@@ -863,11 +867,13 @@ export function createChatRoutes(options: {
 		directory?: string,
 		body?: unknown,
 		method = body ? "POST" : "GET",
+		timeoutMs?: number,
 	) =>
 		options.request<T>(path, {
 			directory,
 			body,
 			method,
+			...(timeoutMs ? { timeoutMs } : {}),
 		});
 	async function directory(projectId?: string) {
 		const project = projectId
@@ -908,7 +914,7 @@ export function createChatRoutes(options: {
 							: error.code === "WORKSPACE_BUSY"
 								? 423
 								: error.code === "FORBIDDEN" ||
-										error.code === "READ_ONLY_CONTEXT"
+									  error.code === "READ_ONLY_CONTEXT"
 									? 403
 									: error.code === "STALE_CONTEXT"
 										? 409
@@ -2432,7 +2438,7 @@ export function createChatRoutes(options: {
 					: compactResult === "unsupported"
 						? false
 						: previousCompactionState?.nativeSupported === false ||
-								previousCompactionState?.nativeSupported === 0
+							  previousCompactionState?.nativeSupported === 0
 							? false
 							: undefined;
 			await options.chatCompactions?.save?.({
@@ -2511,6 +2517,8 @@ export function createChatRoutes(options: {
 				`/session/${current.id}/prompt_async`,
 				current.directory,
 				sendPromptPayload,
+				undefined,
+				120_000,
 			);
 		const overflowHistory: ProviderMessage[] = [];
 		try {
@@ -2525,6 +2533,9 @@ export function createChatRoutes(options: {
 			const latestHistory = await request<ProviderMessage[]>(
 				`/session/${current.id}/message`,
 				current.directory,
+				undefined,
+				"GET",
+				30_000,
 			).catch(() => []);
 			const retryHistory = mergeMessages(
 				mergeMessages(priorHistory, nativeHistory),

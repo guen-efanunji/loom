@@ -139,6 +139,85 @@ describe("OpenCode HTTP runtime", () => {
 			runtime.request("/config", { method: "PATCH", body: "{}" }),
 		).rejects.toThrow("[redacted]");
 	});
+
+	test("revives the server and retries once when the gateway is unreachable", async () => {
+		let attempts = 0;
+		let started = 0;
+		const runtime = new OpenCodeHttpRuntime({
+			ensureServer: async () => {
+				started += 1;
+			},
+			fetcher: async () => {
+				attempts += 1;
+				if (attempts === 1) throw new Error("fetch failed: Connection refused");
+				return new Response(JSON.stringify({ ok: true }), { status: 200 });
+			},
+		});
+		await expect(runtime.request("/global/event")).resolves.toEqual({
+			ok: true,
+		});
+		expect(started).toBe(1);
+		expect(attempts).toBe(2);
+	});
+
+	test("never retries timeouts, only genuine connection failures", async () => {
+		let attempts = 0;
+		let started = 0;
+		const runtime = new OpenCodeHttpRuntime({
+			ensureServer: async () => {
+				started += 1;
+			},
+			fetcher: async () => {
+				attempts += 1;
+				const timeout = AbortSignal.timeout(10);
+				await new Promise((resolve) => setTimeout(resolve, 50));
+				if (timeout.aborted) {
+					const error = new Error("The operation was aborted due to timeout");
+					error.name = "TimeoutError";
+					throw error;
+				}
+				return new Response(null, { status: 204 });
+			},
+		});
+		await expect(runtime.request("/global/event")).rejects.toThrow(
+			"Unable to reach OpenCode server",
+		);
+		expect(started).toBe(0);
+		expect(attempts).toBe(1);
+	});
+
+	test("honors a per-request timeout and reports when OpenCode is slow", async () => {
+		const runtime = new OpenCodeHttpRuntime({
+			fetcher: async (_input, init) => {
+				const signal = init?.signal;
+				if (!signal) return new Response(null, { status: 204 });
+				await new Promise((resolve, reject) => {
+					const timer = setTimeout(resolve, 60);
+					signal.addEventListener(
+						"abort",
+						() => {
+							clearTimeout(timer);
+							const error = new Error(
+								"The operation was aborted due to timeout",
+							);
+							error.name = "TimeoutError";
+							reject(error);
+						},
+						{ once: true },
+					);
+				});
+				return new Response(null, { status: 204 });
+			},
+		});
+		const slow = await runtime
+			.request("/global/event", {}, undefined, { timeoutMs: 10 })
+			.catch((error) => error as OpenCodeError);
+		expect(slow.message).toBe("Unable to reach OpenCode server");
+		expect(slow.details.reason).toBe("OpenCode did not answer within 10ms");
+		await expect(
+			runtime.request("/global/event", {}, undefined, { timeoutMs: 2_000 }),
+		).resolves.toBeUndefined();
+	});
 });
 
 describe("mock runtime", () => {
