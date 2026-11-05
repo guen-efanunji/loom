@@ -49,9 +49,11 @@
 		canonicalModelSelection,
 		chat,
 		type FileDiff,
+		friendlyProviderStatus,
 		groupTurns,
 		isContextOverflowError,
 		type Question,
+		providerDisplayName,
 		supersededIds,
 		userMessageText,
 	} from "$lib/chat";
@@ -735,11 +737,28 @@
 		);
 		model = canonical ? `${providerID}/${canonical.modelID}` : "";
 	});
+	const activeProviderID = $derived.by(() => {
+		if (customAgentId) {
+			const customAgent = customAgents.find(
+				(item) => item.id === customAgentId,
+			);
+			if (customAgent?.provider) return customAgent.provider;
+		}
+		return (
+			catalog.models.find(
+				(item) => `${item.providerID}/${item.modelID}` === model,
+			)?.providerID ??
+			(model.split("/")[0] || "opencode")
+		);
+	});
+	const providerLabel = $derived(
+		providerDisplayName(catalog, activeProviderID),
+	);
 	const busy = $derived(
 		sending ||
 			!!optimistic ||
-			conversation?.status.type === "busy" ||
-			conversation?.status.type === "retry",
+			conversation?.status?.type === "busy" ||
+			conversation?.status?.type === "retry",
 	);
 	const filteredSessions = $derived(
 		sessions
@@ -3963,7 +3982,13 @@
 																? "Waiting for permission"
 																: conversation?.questions.length
 																	? "Waiting for your answer"
-																	: "Loom is working…"}</Marker.Content
+																	: friendlyProviderStatus(
+																			catalog,
+																			conversation?.status?.message,
+																			activeProviderID,
+																			model.split("/").slice(1).join("/"),
+																		) ||
+																		`${providerLabel} is working…`}</Marker.Content
 														></Marker.Root
 													>{/if}
 												{#each conversation?.permissions ?? [] as request}<div

@@ -1,4 +1,4 @@
-import { test, type Browser } from "@e2e-dev/web";
+import { type Browser, test } from "@e2e-dev/web";
 import { expect } from "e2e";
 
 const projectId = "e2e-project";
@@ -132,7 +132,7 @@ async function stubWorkspace(browser: Browser, catalogModels: unknown[] = []) {
 					id: childId,
 					title: "Explore child",
 					parentID: parentId,
-					time: { updated: 1_800_000_000_300 },
+					time: { created: 1_800_000_000_300, updated: 1_800_000_000_300 },
 					status: { type: "idle" },
 				},
 			];
@@ -177,20 +177,18 @@ test("shows runtime todos and lets a user focus a child then return to its paren
 	await expect(screen.getByText("completed")).toBeVisible();
 	await expect(screen.getByText("Implement the feature")).toBeVisible();
 	await expect(screen.getByText("in progress")).toBeVisible();
-	await expect(screen.getByText("Child sessions (1)")).toBeVisible();
+	await expect(screen.getByText("Explore child")).toBeVisible();
 	await app.screenshot("adaptive-todos-parent");
 	const composer = screen.getByRole("textbox", "Message agent");
 	await composer.fill("Keep this parent draft while I inspect the child");
-	await screen.getByText("Child sessions (1)").tap();
-
-	await screen.getByRole("button", "Focus").tap();
+	await screen.getByRole("button", "Open").tap();
 	await expect(screen.getByText("Focused child session")).toBeVisible();
 	await expect(screen.getByRole("button", "Back to parent chat")).toBeVisible();
 	await app.screenshot("adaptive-child-focused");
 
 	await screen.getByRole("button", "Back to parent chat").tap();
 	await expect(screen.getByText("Todo progress")).toBeVisible();
-	await expect(screen.getByText("Child sessions (1)")).toBeVisible();
+	await expect(screen.getByRole("button", "Open")).toBeVisible();
 	await expect(composer).toHaveValue(
 		"Keep this parent draft while I inspect the child",
 	);
@@ -351,5 +349,6 @@ test("does not show a child-session loading message for an ordinary chat", async
 		screen.getByText("Checking for child sessions…"),
 	).not.toBeVisible();
 	await expect(screen.getByText("Child sessions (1)")).not.toBeVisible();
+	await expect(screen.getByText("Explore child")).not.toBeVisible();
 	await app.screenshot("adaptive-chat-without-child-session-indicator");
 });
