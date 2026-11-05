@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/guen-efanunji/loom/compare/v0.3.1...v0.3.2) (2026-11-05)
+
+
+### Bug Fixes
+
+* **providers:** persist update checks and detect CLI releases ([8ada082](https://github.com/guen-efanunji/loom/commit/8ada082ba4654e64868a8afb6b93c72cc4714d52))
+
 ## [0.3.0](https://github.com/guen-efanunji/loom/compare/v0.2.0...v0.3.0) (2026-11-04)
 
 
