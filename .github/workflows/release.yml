@@ -6,10 +6,17 @@ on:
         description: Existing version tag (for example v0.1.1)
         required: true
         type: string
+      source_ref:
+        description: Optional source ref for rebuilding a tag with a verified fix
+        required: false
+        type: string
   workflow_call:
     inputs:
       tag:
         required: true
+        type: string
+      source_ref:
+        required: false
         type: string
 permissions:
   contents: read
@@ -39,12 +46,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref_name }}
+          ref: ${{ inputs.source_ref || inputs.tag || github.ref_name }}
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.1
       - name: Validate version
-        run: bun scripts/validate-release.ts
+        run: |
+          if [ -n "${{ inputs.source_ref }}" ]; then
+            LOOM_VERSION="${RELEASE_TAG#v}" bun -e 'const expected = process.env.LOOM_VERSION; const actual = (await Bun.file("version.json").json()).version; if (actual !== expected) throw new Error(`Source version ${actual} does not match release ${expected}`); console.log(`Validated rebuild of v${expected}`);'
+          else
+            bun scripts/validate-release.ts
+          fi
       - run: bun install --frozen-lockfile
       - run: bun scripts/test.ts
       - run: bun run --cwd apps/cli check-types
@@ -103,5 +115,5 @@ jobs:
           pattern: binary-*
           path: dist
           merge-multiple: true
-      - run: bun scripts/release-manifest.ts
+      - run: LOOM_VERSION="${RELEASE_TAG#v}" bun scripts/release-manifest.ts
       - run: bun scripts/publish-release.ts

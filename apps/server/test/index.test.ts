@@ -682,63 +682,34 @@ describe("server API", () => {
 					}),
 				),
 			);
-			// `completed` is also the intermediate state while automatic review is
-			// checkpointing. Wait until the task is reviewable or fully integrated;
-			// checkpointing during that interval can race the automatic merge.
-			const settled = await Promise.all(
+			// Automatic policy owns checkpointing, review, repair, and integration.
+			// Avoid issuing a second checkpoint while that pipeline is working: a
+			// duplicate checkpoint can move a merged task back to ready_to_merge.
+			const completed = await Promise.all(
 				taskIds.map(async (id) => {
 					let task: { status: string; workspaceId?: string | null } = {
 						status: "queued",
 					};
-					const deadline = Date.now() + 30_000;
-					const isSettled = () =>
-						task.status === "ready_to_merge" ||
-						(task.status === "completed" && !task.workspaceId);
-					while (Date.now() < deadline && !isSettled()) {
+					const deadline = Date.now() + 60_000;
+					while (
+						Date.now() < deadline &&
+						(task.status !== "completed" || task.workspaceId)
+					) {
 						const response = await setup.daemon.app.request(
 							`/api/tasks/${id}`,
 							{ headers },
 						);
 						task = (await response.json()) as typeof task;
-						if (!isSettled()) await Bun.sleep(50);
+						if (task.status !== "completed" || task.workspaceId)
+							await Bun.sleep(50);
 					}
-					return { id, ...task, settled: isSettled() };
+					return {
+						id,
+						completed: task.status === "completed" && !task.workspaceId,
+					};
 				}),
 			);
-			for (const { id, status, settled: isSettled } of settled) {
-				expect(isSettled).toBe(true);
-				if (status === "completed") continue;
-				const checkpoint = await setup.daemon.app.request(
-					`/api/tasks/${id}/checkpoint`,
-					{
-						method: "POST",
-						headers,
-					},
-				);
-				expect(checkpoint.status).toBe(200);
-				expect(
-					((await checkpoint.json()) as { review?: { status: string } }).review
-						?.status,
-				).toBe("approved");
-			}
-
-			for (const id of taskIds) {
-				// Automatic integration merges on its own schedule after the review is
-				// approved, so the task can still be ready_to_merge right after the
-				// checkpoint returns. Wait for the settled state instead of assuming
-				// it, which slower CI hosts exposed as a flake.
-				let status = "";
-				const mergedBy = Date.now() + 20_000;
-				while (Date.now() < mergedBy && status !== "completed") {
-					const reviewedTask = await setup.daemon.app.request(
-						`/api/tasks/${id}`,
-						{ headers },
-					);
-					status = ((await reviewedTask.json()) as { status: string }).status;
-					if (status !== "completed") await Bun.sleep(50);
-				}
-				expect(status).toBe("completed");
-			}
+			for (const task of completed) expect(task.completed).toBe(true);
 			expect(await readFile(join(setup.root, "backend-race.txt"), "utf8")).toBe(
 				"FIXED_RACE\n",
 			);
