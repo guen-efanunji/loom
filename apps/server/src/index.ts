@@ -87,6 +87,8 @@ import {
 	CustomProviderAdapter,
 	createDefaultProviderRegistry,
 	discoverCustomModels,
+	findExecutable,
+	readVersion,
 	ProviderManager,
 	readPrompt,
 	testCustomModel,
@@ -3295,6 +3297,16 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		void refreshConnectedProviderModels(connections);
 		return c.json(serializeProviders());
 	});
+	app.get("/api/providers/update-settings", async (c) => {
+		const settings = await readSettings();
+		return c.json({ enabled: settings.providerUpdateChecks });
+	});
+	app.put("/api/providers/update-settings", async (c) => {
+		const input = z.object({ enabled: z.boolean() }).parse(await jsonBody(c));
+		const settings = await readSettings();
+		await saveSettings({ ...settings, providerUpdateChecks: input.enabled });
+		return c.json(input);
+	});
 	app.post("/api/providers/check-updates", async (c) => {
 		await discoverProviders();
 		const updates = await Promise.all(
@@ -3302,7 +3314,21 @@ export async function createApp(options: DaemonAppOptions = {}) {
 				.list()
 				.filter((adapter) => !adapter.definition.id.startsWith("loom_custom_"))
 				.map(async (adapter) => {
-					const connection = providerManager.get(adapter.definition.id);
+					let connection = providerManager.get(adapter.definition.id);
+					// The embedded OpenCode server may keep reporting its old version
+					// after the standalone CLI has been updated.
+					if (adapter.definition.id === "opencode" && connection?.installed) {
+						const executablePath = await findExecutable("opencode");
+						const version = executablePath
+							? await readVersion(executablePath)
+							: undefined;
+						if (version)
+							connection = {
+								...connection,
+								executablePath,
+								version,
+							};
+					}
 					return checkProviderUpdate({
 						providerId: adapter.definition.id,
 						name: adapter.definition.name,

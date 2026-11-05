@@ -72,6 +72,14 @@ let providerSearch = $state("");
 let updateChecks = $state<
 	Awaited<ReturnType<typeof daemon.checkProviderUpdates>>["updates"]
 >([]);
+const visibleUpdateChecks = $derived(
+	updateChecks.filter(
+		(item) =>
+			item.installed &&
+			(item.updateAvailable || item.error) &&
+			item.name.toLowerCase().includes(providerSearch.toLowerCase()),
+	),
+);
 let updateDialogOpen = $state(false);
 let selectedUpdate = $state<(typeof updateChecks)[number] | null>(null);
 let updateState = $state<"idle" | "updating" | "success" | "error">("idle");
@@ -92,17 +100,25 @@ const lastCheckedLabel = $derived(
 			: "never",
 );
 
-onMount(() => void loadProviders());
+onMount(() => {
+	const timer = window.setInterval(() => {
+		if (autoCheck) void checkProviders();
+	}, 30 * 60_000);
+	void loadProviders();
+	return () => window.clearInterval(timer);
+});
 
 async function loadProviders() {
 	loading = true;
 	try {
-		const [listed, custom, models] = await Promise.all([
+		const [listed, custom, models, updateSettings] = await Promise.all([
 			daemon.listProviders(),
 			daemon.listCustomProviders(),
 			daemon.listAvailableProviderModels(),
+			daemon.getProviderUpdateSettings(),
 		]);
 		providers = listed;
+		autoCheck = updateSettings.enabled;
 		customProviders = custom;
 		providerModelCatalog = models;
 	} catch (reason) {
@@ -111,6 +127,7 @@ async function loadProviders() {
 		);
 	} finally {
 		loading = false;
+		if (autoCheck && !lastChecked) void checkProviders();
 	}
 }
 
@@ -345,6 +362,20 @@ async function deleteProviderNow(event: MouseEvent) {
 		);
 	} finally {
 		deletingProvider = false;
+	}
+}
+
+async function toggleAutoCheck() {
+	const next = !autoCheck;
+	autoCheck = next;
+	try {
+		await daemon.saveProviderUpdateSettings(next);
+		if (next && !lastChecked) await checkProviders();
+	} catch (reason) {
+		autoCheck = !next;
+		toast.error(
+			reason instanceof Error ? reason.message : "Could not save update preference",
+		);
 	}
 }
 
@@ -642,7 +673,8 @@ async function copyCommand(command: string) {
 								role="switch"
 								aria-checked={autoCheck}
 								class={`relative h-6 w-11 rounded-full ${autoCheck ? "bg-emerald-500" : "bg-white/15"}`}
-								onclick={() => (autoCheck = !autoCheck)}
+								onclick={() => void toggleAutoCheck()}
+								disabled={loading}
 								><span
 									class={`absolute top-1 size-4 rounded-full bg-white transition ${autoCheck ? "left-6" : "left-1"}`}
 								></span><span class="sr-only">Toggle automatic CLI checks</span
@@ -673,9 +705,10 @@ async function copyCommand(command: string) {
 						</div>{:else}<div
 							class="overflow-hidden rounded-2xl border border-white/10 bg-white/[0.035]"
 						>
-							{#each updateChecks.filter((item) => item.name
-									.toLowerCase()
-									.includes(providerSearch.toLowerCase())) as update}<div
+							{#if visibleUpdateChecks.length === 0}<p class="p-5 text-sm text-neutral-500">
+								No provider updates available.
+							</p>{/if}
+							{#each visibleUpdateChecks as update}<div
 									class="flex flex-wrap items-center gap-4 border-b border-white/[0.08] p-4 last:border-0"
 								>
 									<div class="min-w-0 flex-1">
@@ -713,8 +746,8 @@ async function copyCommand(command: string) {
 												onclick={() => void copyCommand(update.updateCommand!)}
 												><Copy class="size-4" /></Button
 											>
-										</div>{:else if update.installed && !update.error}<span
-											class="text-xs text-neutral-500">No update available</span
+										</div>{:else if update.updateAvailable && update.providerId === "agy"}<span
+											class="text-xs text-neutral-500">{update.currentVersion} → {update.latestVersion} · Antigravity updates in the background; relaunch Agy to apply.</span
 										>{/if}
 								</div>{/each}
 						</div>{/if}

@@ -1,4 +1,5 @@
 import { OpenCodeHttpRuntime, type OpenCodeManager } from "@loom/opencode";
+import { findExecutable, readVersion } from "./cli";
 import {
 	type AgentEvent,
 	type AgentModel,
@@ -55,11 +56,17 @@ export class OpenCodeProviderAdapter implements CliProviderAdapter {
 	async detect(): Promise<ProviderDetectionResult> {
 		const installed = await this.manager.discover();
 		if (!installed) return { installed: false };
-		const version = await this.runtime
-			.request<{ version: string }>("/global/health")
-			.then((body) => body.version)
-			.catch(() => undefined);
-		return { installed: true, executablePath: undefined, version };
+		const [serverVersion, executablePath] = await Promise.all([
+			this.runtime
+				.request<{ version: string }>("/global/health")
+				.then((body) => body.version)
+				.catch(() => undefined),
+			findExecutable("opencode"),
+		]);
+		const version = executablePath
+			? (await readVersion(executablePath)) ?? serverVersion
+			: serverVersion;
+		return { installed: true, executablePath: executablePath ?? undefined, version };
 	}
 
 	async getVersion(): Promise<string | null> {

@@ -15,12 +15,13 @@ export type ProviderUpdateCheck = {
 };
 
 type UpdateDefinition = {
-	packageName: string;
+	packageName?: string;
+	latestVersion?: () => Promise<string | null>;
 	command: (
 		version: string,
 		executablePath: string | null,
 	) => { executable: string; args: string[] };
-	updateCommand: (executablePath: string | null) => string;
+	updateCommand: (executablePath: string | null) => string | null;
 	availableFor: (executablePath: string | null) => Promise<boolean>;
 };
 
@@ -38,6 +39,21 @@ const npmGlobalPath = async (executablePath: string | null) => {
 	);
 };
 
+function agyManifestPlatform() {
+	const architecture =
+		process.arch === "x64"
+			? "amd64"
+			: process.arch === "arm64"
+				? "arm64"
+				: null;
+	if (!architecture)
+		throw new Error("Unsupported Antigravity CLI architecture");
+	if (process.platform === "darwin") return `darwin_${architecture}`;
+	if (process.platform === "win32") return `windows_${architecture}`;
+	if (process.platform === "linux") return `linux_${architecture}`;
+	throw new Error("Unsupported Antigravity CLI platform");
+}
+
 const homebrewManagedPath = async (executablePath: string | null) => {
 	if (!executablePath) return false;
 	const actualPath = await realpath(executablePath).catch(() => executablePath);
@@ -49,6 +65,21 @@ const homebrewManagedPath = async (executablePath: string | null) => {
 };
 
 const definitions: Record<string, UpdateDefinition> = {
+	agy: {
+		latestVersion: async () => {
+			const response = await fetch(
+				`https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/${agyManifestPlatform()}.json`,
+				{ signal: AbortSignal.timeout(12_000) },
+			);
+			if (!response.ok)
+				throw new Error(`Antigravity update server returned ${response.status}`);
+			const manifest = (await response.json()) as { version?: unknown };
+			return typeof manifest.version === "string" ? manifest.version : null;
+		},
+		command: () => ({ executable: "agy", args: [] }),
+		updateCommand: () => null,
+		availableFor: async () => false,
+	},
 	claude: {
 		packageName: "@anthropic-ai/claude-code",
 		command: () => ({ executable: "claude", args: ["update"] }),
@@ -73,7 +104,21 @@ const definitions: Record<string, UpdateDefinition> = {
 			(await homebrewManagedPath(executablePath)),
 	},
 	opencode: {
-		packageName: "opencode-ai",
+		latestVersion: async () => {
+			const response = await fetch(
+				"https://api.github.com/repos/anomalyco/opencode/releases/latest",
+				{
+					headers: { Accept: "application/vnd.github+json" },
+					signal: AbortSignal.timeout(12_000),
+				},
+			);
+			if (!response.ok)
+				throw new Error(`OpenCode release API returned ${response.status}`);
+			const release = (await response.json()) as { tag_name?: unknown };
+			return typeof release.tag_name === "string"
+				? release.tag_name
+				: null;
+		},
 		command: (version) => ({
 			executable: "opencode",
 			args: ["upgrade", version],
@@ -83,9 +128,14 @@ const definitions: Record<string, UpdateDefinition> = {
 	},
 };
 
+function versionParts(value: string): number[] {
+	const version = value.match(/(?:^|[^\d])v?(\d+(?:\.\d+){1,3})\b/)?.[1];
+	return version ? version.split(".").map(Number) : [];
+}
+
 function compareVersions(left: string, right: string): number {
-	const a = left.replace(/^v/, "").split(/[.+-]/).map(Number);
-	const b = right.replace(/^v/, "").split(/[.+-]/).map(Number);
+	const a = versionParts(left);
+	const b = versionParts(right);
 	for (let index = 0; index < Math.max(a.length, b.length); index++) {
 		const delta = (a[index] || 0) - (b[index] || 0);
 		if (delta) return delta;
@@ -93,7 +143,7 @@ function compareVersions(left: string, right: string): number {
 	return 0;
 }
 
-async function getLatestVersion(packageName: string, currentVersion: string) {
+async function getLatestVersion(packageName: string) {
 	const response = await fetch(
 		`https://registry.npmjs.org/${encodeURIComponent(packageName)}`,
 		{ signal: AbortSignal.timeout(12_000) },
@@ -103,17 +153,6 @@ async function getLatestVersion(packageName: string, currentVersion: string) {
 		"dist-tags"?: Record<string, string>;
 		versions?: Record<string, unknown>;
 	};
-	const currentMajor = Number(currentVersion.replace(/^v/, "").split(".")[0]);
-	const versions = Object.keys(metadata.versions ?? {}).filter((version) =>
-		/^\d+\.\d+\.\d+(?:[-+].*)?$/.test(version),
-	);
-	// OpenCode keeps ordinary updates on the same major line. Other CLIs use npm's latest tag.
-	if (packageName === "opencode-ai" && Number.isFinite(currentMajor)) {
-		const compatible = versions.filter(
-			(version) => Number(version.split(".")[0]) === currentMajor,
-		);
-		return compatible.sort(compareVersions).at(-1) ?? null;
-	}
 	return metadata["dist-tags"]?.latest ?? null;
 }
 
@@ -145,14 +184,15 @@ export async function checkProviderUpdate(input: {
 			error: "Update checks are not configured for this CLI yet.",
 		};
 	try {
-		const latestVersion = await getLatestVersion(
-			definition.packageName,
-			input.currentVersion,
-		);
+		const latestVersion = definition.latestVersion
+			? await definition.latestVersion()
+			: definition.packageName
+				? await getLatestVersion(definition.packageName)
+				: null;
 		if (!latestVersion)
 			return {
 				...base,
-				error: "The package registry did not return a release version.",
+				error: "The release source did not return a version.",
 			};
 		const updateAvailable =
 			!!latestVersion &&
@@ -167,7 +207,7 @@ export async function checkProviderUpdate(input: {
 				updateAvailable && !updateSupported
 					? input.providerId === "opencode"
 						? `opencode upgrade ${latestVersion}`
-						: definition.updateCommand(input.executablePath)
+						: definition.updateCommand(input.executablePath) || null
 					: null,
 		};
 	} catch (error) {
@@ -194,10 +234,15 @@ export async function updateProviderCli(input: {
 		throw new Error(`Could not verify latest version: ${check.error}`);
 	if (!check.latestVersion || !check.updateAvailable)
 		throw new Error(`${check.name} has no newer version available`);
-	if (!check.updateSupported)
+	if (!check.updateSupported) {
+		if (!check.updateCommand)
+			throw new Error(
+				`${check.name} updates itself in the background; relaunch it to apply the update.`,
+			);
 		throw new Error(
-			`Update this installation from its package manager: ${check.updateCommand ?? ""}`,
+			`Update this installation from its package manager: ${check.updateCommand}`,
 		);
+	}
 	const definition = definitions[input.providerId];
 	if (!definition)
 		throw new Error(`In-app updates are not supported for ${check.name}`);

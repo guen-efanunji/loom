@@ -828,6 +828,13 @@ export const daemon = {
 				capabilities: string[];
 			}>
 		>("/api/providers/refresh-all", { method: "POST" }),
+	getProviderUpdateSettings: () =>
+		request<{ enabled: boolean }>("/api/providers/update-settings"),
+	saveProviderUpdateSettings: (enabled: boolean) =>
+		request<{ enabled: boolean }>("/api/providers/update-settings", {
+			method: "PUT",
+			body: JSON.stringify({ enabled }),
+		}),
 	checkProviderUpdates: () =>
 		request<{
 			checkedAt: string;
