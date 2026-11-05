@@ -1,4 +1,4 @@
-import { test, type Browser } from "@e2e-dev/web";
+import { type Browser, test } from "@e2e-dev/web";
 import { expect } from "e2e";
 
 const projectId = "e2e-kanban-project";
@@ -83,6 +83,9 @@ async function stubKanbanWorkspace(browser: Browser) {
 		} catch {
 			// The runner may evaluate this script before the app origin exists.
 		}
+		window.addEventListener("error", (event) => {
+			console.error(`uncaught-debug: ${event.error?.stack ?? event.message}`);
+		});
 	});
 
 	await browser.route("**/api/**", async (route) => {
@@ -147,6 +150,20 @@ async function stubKanbanWorkspace(browser: Browser) {
 				{
 					id: reviewerAgentId,
 					label: "BACKEND",
+					role: "backend",
+					status: "active",
+					allowChat: true,
+					allowCanvas: false,
+					allowKanban: true,
+					approvalPolicy: "manual",
+					projectId,
+					provider: "opencode",
+					modelId: "opencode/glm-5.3-flash-free",
+					lastUsedAt: null,
+				},
+				{
+					id: "backend-agent",
+					label: "Backend Runner",
 					role: "backend",
 					status: "active",
 					allowChat: true,
@@ -328,7 +345,7 @@ test("opens a live task run in a Chat tab and preserves the user's chat draft", 
 	await stubKanbanWorkspace(browser);
 	await app.open(`/?project=${projectId}`);
 	const composer = screen.getByPlaceholder(
-		"Ask anything… @ for files and agents",
+		"Ask anything… @ for files, agents, and SSH servers",
 	);
 	await composer.fill("Keep this draft while I check the task run.");
 	await screen.getByRole("tab", "Kanban").tap();
@@ -351,16 +368,22 @@ test("opens a live task run in a Chat tab and preserves the user's chat draft", 
 	const toolActivity = screen.getByRole("list", "Agent tool activity");
 	await expect(toolActivity).toBeVisible();
 	await expect(
-		screen.getByText("/tmp/loom-kanban-e2e-project/login.html").first(),
+		screen
+			.getByText("/tmp/loom-kanban-e2e-project/login.html", { exact: false })
+			.first(),
 	).toBeVisible();
 	await expect(screen.getByText("+12")).toBeVisible();
 	await expect(screen.getByText("−3")).toBeVisible();
-	await expect(screen.getByText("bun test").first()).toBeVisible();
+	await expect(
+		screen.getByText("bun test", { exact: false }).first(),
+	).toBeVisible();
 	await app.screenshot("kanban-task-run-chat-progress");
 
 	await screen.getByRole("tab", "New chat").tap();
 	await expect(
-		screen.getByPlaceholder("Ask anything… @ for files and agents"),
+		screen.getByPlaceholder(
+			"Ask anything… @ for files, agents, and SSH servers",
+		),
 	).toHaveValue("Keep this draft while I check the task run.");
 	await app.screenshot("kanban-task-run-parent-chat-draft-preserved");
 });
@@ -379,11 +402,20 @@ test("shows live tool activity on the task detail page without orchestration jar
 	await expect(screen.getByRole("heading", "Agent progress")).toBeVisible();
 	await expect(screen.getByRole("list", "Agent tool activity")).toBeVisible();
 	await expect(
-		screen.getByText("/tmp/loom-kanban-e2e-project/login.html").first(),
+		screen
+			.getByText("/tmp/loom-kanban-e2e-project/login.html", { exact: false })
+			.first(),
 	).toBeVisible();
 	await expect(screen.getByText("+12")).toBeVisible();
 	await expect(screen.getByText("−3")).toBeVisible();
-	await expect(screen.getByText("bun test").first()).toBeVisible();
+	await expect(
+		screen.getByText("bun test", { exact: false }).first(),
+	).toBeVisible();
+	await expect(screen.getByText("+12")).toBeVisible();
+	await expect(screen.getByText("−3")).toBeVisible();
+	await expect(
+		screen.getByText("bun test", { exact: false }).first(),
+	).toBeVisible();
 	await expect(screen.getByText("Task dependencies")).toBeHidden();
 	await expect(screen.getByText("Published artifacts")).toBeHidden();
 	await app.screenshot("task-detail-live-agent-progress");
@@ -414,9 +446,7 @@ test("opens the Kanban view and live task progress from the Agents & tasks panel
 	await expect(screen.getByRole("heading", "Agent progress")).toBeVisible();
 	if ((await agentsPanel.getAttribute("aria-pressed")) !== "true")
 		await agentsPanel.tap();
-	await screen
-		.getByRole("button", "Open Backend · fix race condition progress in chat")
-		.tap();
+	await screen.getByRole("button", "View live progress in chat").tap();
 	await expect(
 		screen.getByRole("heading", "Backend · fix race condition"),
 	).toBeVisible();

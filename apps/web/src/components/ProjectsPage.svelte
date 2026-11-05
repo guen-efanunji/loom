@@ -1635,7 +1635,9 @@
 			monitorRuns = runs;
 			legacyTasks = tasks;
 			monitorPermissions = permissions;
-			monitorMcpConnections = mcpConnections.connections;
+			monitorMcpConnections = Array.isArray(mcpConnections?.connections)
+				? mcpConnections.connections
+				: [];
 			const activeTasks = tasks.filter(
 				(task) =>
 					(!projectId || task.projectId === projectId) &&

@@ -620,7 +620,7 @@ test("sends reviewer findings back to the Backend agent as a repair prompt for t
 	await expect(screen.getByText(/Repair round 1 of 2/).first()).toBeVisible();
 	await expect(screen.getByText(/BUG_RACE/).first()).toBeVisible();
 	await expect(
-		screen.getByText("Agent is running this task").first(),
+		screen.getByText(/Tool activity and the response will appear here/).first(),
 	).toBeVisible();
 	await app.screenshot("kanban-repair-prompt-round-1");
 });
@@ -655,6 +655,18 @@ test("surfaces a stalled provider run as failed with the watchdog reason instead
 				status: 200,
 				contentType: "application/json",
 				body: JSON.stringify(stalledTask),
+			});
+			return;
+		}
+		if (path === "/api/tasks/task-backend-stalled/output") {
+			await route.fulfill({
+				status: 200,
+				contentType: "application/json",
+				body: JSON.stringify({
+					output: "",
+					truncated: false,
+					activities: [],
+				}),
 			});
 			return;
 		}
@@ -753,6 +765,8 @@ test("surfaces a stalled provider run as failed with the watchdog reason instead
 	await expect(
 		screen.getByText(/OpenCode stopped reporting status/).first(),
 	).toBeVisible({ timeout: 10_000 });
-	await expect(screen.getByRole("button", "Retry").first()).toBeVisible();
+	await expect(
+		screen.getByRole("button", "Retry task").first(),
+	).toBeVisible();
 	await app.screenshot("kanban-stalled-run-failed-with-watchdog-reason");
 });

@@ -305,8 +305,9 @@ async function refreshOutput(taskId = task.id) {
 	try {
 		const result = await daemon.getOutput(taskId);
 		if (task.id !== taskId) return;
-		if (result.output.length >= output.length) {
-			output = result.output.slice(-12000);
+		const outputText = typeof result?.output === "string" ? result.output : "";
+		if (outputText.length >= output.length) {
+			output = outputText.slice(-12000);
 			outputError = "";
 		}
 		if (result.activities?.length) snapshotActivities = result.activities;
