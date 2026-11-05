@@ -14,6 +14,12 @@ function setup(
 		action?: { reason?: string; title?: string; message?: string };
 	} = { type: "busy" },
 	openCodeSessionActive = true,
+	/** Intercept a gateway path before the default fake handlers run. */
+	hooks?: (path: string) => Response | undefined,
+	extra?: {
+		providerHistory?: Parameters<typeof createChatRoutes>[0]["providerHistory"];
+		chatCompactions?: Parameters<typeof createChatRoutes>[0]["chatCompactions"];
+	},
 ) {
 	let gatewayStatus = initialGatewayStatus;
 	const requests: Request[] = [];
@@ -48,6 +54,8 @@ function setup(
 			const req = new Request(url, init);
 			requests.push(req);
 			const path = new URL(req.url).pathname;
+			const injected = hooks?.(path);
+			if (injected) return injected;
 			if (path === "/session/ses_test")
 				return Response.json({
 					id: "ses_test",
@@ -119,7 +127,7 @@ function setup(
 			},
 			options.directory,
 		);
-	const app = createChatRoutes({ projects, request });
+	const app = createChatRoutes({ projects, request, ...(extra ?? {}) });
 	return { app, requests, gatewayMessages };
 }
 describe("chat gateway", () => {
@@ -386,5 +394,123 @@ describe("chat gateway", () => {
 		expect(
 			(await app.request("/file?projectId=project&path=/etc/passwd")).status,
 		).toBe(400);
+	});
+
+	test("continues an overflowing OpenCode session after admitting native compaction", async () => {
+		let promptAttempts = 0;
+		const { app, requests } = setup({ type: "idle" }, true, (path) => {
+			if (!path.endsWith("/prompt_async")) return undefined;
+			promptAttempts += 1;
+			if (promptAttempts === 1)
+				return Response.json(
+					{ error: "context window exceeded: prompt too long" },
+					{ status: 413 },
+				);
+			return undefined;
+		});
+		const response = await app.request("/sessions/ses_test/messages", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				text: "Keep going after the overflow",
+				model: { providerID: "provider", modelID: "model" },
+				files: [],
+				agents: [],
+			}),
+		});
+		expect(response.status).toBe(204);
+		const prompts = requests.filter((request) =>
+			request.url.endsWith("/prompt_async"),
+		);
+		expect(prompts).toHaveLength(2);
+		expect(requests.some((request) => request.url.endsWith("/compact"))).toBe(
+			true,
+		);
+		const retried = await prompts[1]?.json();
+		expect(retried).toMatchObject({
+			parts: [{ text: "Keep going after the overflow" }],
+		});
+	});
+
+	test("falls back to an explicit handoff when native compaction is unavailable", async () => {
+		let promptAttempts = 0;
+		const { app, requests } = setup({ type: "idle" }, true, (path) => {
+			if (path.endsWith("/compact")) return new Response(null, { status: 404 });
+			if (path.endsWith("/api/session/ses_test/compact"))
+				return new Response(null, { status: 404 });
+			if (path.endsWith("/prompt_async")) {
+				promptAttempts += 1;
+				return Response.json(
+					{ error: "context window exceeded: prompt too long" },
+					{ status: 413 },
+				);
+			}
+			return undefined;
+		});
+		const response = await app.request("/sessions/ses_test/messages", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				text: "Keep going after the overflow",
+				model: { providerID: "provider", modelID: "model" },
+				files: [],
+				agents: [],
+			}),
+		});
+		expect(response.status).toBe(413);
+		const body = (await response.json()) as {
+			error: { code: string; message: string; handoff: string };
+		};
+		expect(body.error.code).toBe("CONTEXT_WINDOW_EXCEEDED");
+		expect(body.error.handoff.length).toBeGreaterThan(0);
+		expect(promptAttempts).toBe(1);
+		expect(
+			requests.filter((request) => request.url.endsWith("/compact")),
+		).toHaveLength(2);
+	});
+
+	test("manual compaction triggers native compaction for gateway sessions", async () => {
+		const { app } = setup();
+		const response = await app.request("/sessions/ses_test/compact", {
+			method: "POST",
+		});
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({
+			native: true,
+			compacted: true,
+		});
+	});
+
+	test("manual compaction schedules the next request when native compaction is unavailable", async () => {
+		const { app } = setup(
+			{ type: "idle" },
+			true,
+			(path) =>
+				path.endsWith("/compact")
+					? new Response(null, { status: 404 })
+					: undefined,
+			{
+				providerHistory: {
+					get: async <T>() =>
+						[
+							{
+								info: { id: "m1", role: "user", time: { created: 1 } },
+								parts: [{ type: "text", text: "earlier" }],
+							},
+						] as unknown as T,
+					save: async () => {},
+					delete: async () => {},
+				},
+			},
+		);
+		const response = await app.request("/sessions/ses_test/compact", {
+			method: "POST",
+		});
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({
+			native: false,
+			compacted: false,
+			scheduled: true,
+		});
 	});
 });

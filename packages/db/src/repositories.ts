@@ -5,6 +5,7 @@ import { and, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import type { Database } from "./index";
 import {
 	agentRuns,
+	chatContextCompactions,
 	chatWorkspaces,
 	integrationBatchChecks,
 	integrationBatches,
@@ -641,6 +642,61 @@ export function providerChatHistoryRepository(db: Database) {
 	};
 }
 
+export function chatContextCompactionRepository(db: Database) {
+	return {
+		get(sessionId: string) {
+			return db.query.chatContextCompactions.findFirst({
+				where: eq(chatContextCompactions.sessionId, sessionId),
+			});
+		},
+		save(input: {
+			sessionId: string;
+			messageCount: number;
+			lastMessageId?: string | null;
+			nativeSupported?: boolean;
+			triggerSource?: string;
+		}) {
+			return db
+				.insert(chatContextCompactions)
+				.values({
+					sessionId: input.sessionId,
+					messageCount: input.messageCount,
+					...(input.lastMessageId ? { lastMessageId: input.lastMessageId } : {}),
+					...(typeof input.nativeSupported === "boolean"
+						? { nativeSupported: input.nativeSupported ? 1 : 0 }
+						: {}),
+					...(input.triggerSource
+						? { triggerSource: input.triggerSource }
+						: {}),
+					updatedAt: new Date(),
+					lastCompactAt: new Date(),
+				})
+				.onConflictDoUpdate({
+					target: chatContextCompactions.sessionId,
+					set: {
+						messageCount: input.messageCount,
+						...(input.lastMessageId !== undefined
+							? { lastMessageId: input.lastMessageId ?? null }
+							: {}),
+						...(typeof input.nativeSupported === "boolean"
+							? { nativeSupported: input.nativeSupported ? 1 : 0 }
+							: {}),
+						...(input.triggerSource
+							? { triggerSource: input.triggerSource }
+							: {}),
+						updatedAt: new Date(),
+						lastCompactAt: new Date(),
+					},
+				});
+		},
+		delete(sessionId: string) {
+			return db
+				.delete(chatContextCompactions)
+				.where(eq(chatContextCompactions.sessionId, sessionId));
+		},
+	};
+}
+
 export function chatWorkspaceRepository(db: Database) {
 	return {
 		getBySessionId(sessionId: string) {
@@ -729,5 +785,6 @@ export function repositories(db: Database) {
 		reviewPolicies: reviewPolicyRepository(db),
 		providerChatHistory: providerChatHistoryRepository(db),
 		chatWorkspaces: chatWorkspaceRepository(db),
+		chatContextCompactions: chatContextCompactionRepository(db),
 	};
 }

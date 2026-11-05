@@ -2392,6 +2392,7 @@
 	 */
 	let chatWorkspace = $state<ChatWorkspace | null>(null);
 	let workspaceAction = $state<"" | "merge" | "sync" | "discard">("");
+	let compactAction = $state(false);
 	let workspaceConflict = $state<string[]>([]);
 	async function loadChatWorkspace(id = sessionId) {
 		if (!id) {
@@ -2442,6 +2443,28 @@
 		return Array.isArray(problem?.files) ? (problem.files as string[]) : [];
 	}
 	/** Checkpoint the tab's output on its branch, then integrate it into the project. */
+	async function compactChatContext() {
+		if (!sessionId) return;
+		compactAction = true;
+		try {
+			const result = await chat.compactContext(sessionId);
+			toast.success(
+				result.compacted
+					? "Provider context compacted; the same conversation continues."
+					: "Loom will compact the context on the next request in this chat.",
+				{ description: result.message },
+			);
+			await refreshSessionSnapshot(sessionId).catch(() => {});
+		} catch (reason) {
+			toast.error(
+				reason instanceof Error
+					? reason.message
+					: "Unable to compact this chat's context.",
+			);
+		} finally {
+			compactAction = false;
+		}
+	}
 	async function mergeChatWorkspace() {
 		if (!sessionId || workspaceAction) return;
 		workspaceAction = "merge";
@@ -4615,6 +4638,26 @@
 																? `${latestUsageMessage.info.providerID}/${latestUsageMessage.info.modelID}`
 																: `${currentContextModel?.provider ?? currentContextModel?.providerID ?? contextManagement?.providerId ?? "Selected"}/${currentContextModel?.name ?? model}`}
 														</p>{/if}
+													{#if sessionId}
+														<p
+															class="mt-3 text-[11px] leading-5 text-muted-foreground"
+														>
+															When the context budget gets tight, Loom compacts
+															the conversation (summary + preserved recent
+															turns) so it can continue instead of failing.
+														</p>
+														<Button
+															variant="outline"
+															size="sm"
+															class="mt-2"
+															disabled={compactAction}
+															onclick={() => void compactChatContext()}
+														>
+															{compactAction
+																? "Compacting…"
+																: "Compact context now"}
+														</Button>
+													{/if}
 												</section>
 												<div class="grid grid-cols-2 gap-2">
 													<div class="rounded-lg border bg-card/50 p-3">

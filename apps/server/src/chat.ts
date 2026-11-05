@@ -17,8 +17,14 @@ import {
 	buildContextPacket,
 	buildHandoff,
 	ContextBudgetError,
-	resolveModelLimits,
 	type ContextMessage,
+	estimateHistoryTokens,
+	type NativeCompactionState,
+	proactiveTriggerTokens,
+	resolveActiveContextBudget,
+	resolveModelLimits,
+	shouldTriggerNativeCompaction,
+	UNKNOWN_WINDOW_PROACTIVE_TRIGGER_TOKENS,
 } from "./context-compaction";
 import type { AgyPermissionStore } from "./permissions";
 import {
@@ -188,6 +194,104 @@ function isContextOverflow(message: string): boolean {
 	);
 }
 
+/**
+ * Chat sessions whose next request must compact first (manual "compact now").
+ * In-memory by design: forcing is best-effort and harmless when stale.
+ */
+const forcedCompactionSessions = new Set<string>();
+
+type CompactGateway = <T>(
+	path: string,
+	directory?: string,
+	body?: unknown,
+	method?: string,
+) => Promise<T>;
+
+/**
+ * Ask OpenCode to compact its own session (native compaction). Older OpenCode
+ * versions do not ship the endpoint; the compact request is therefore directed
+ * at the documented route and treated as unsupported when the server rejects
+ * it, so Loom never pretends a native checkpoint exists.
+ */
+async function requestNativeCompact(
+	runtime: CompactGateway,
+	sessionId: string,
+	directory?: string,
+): Promise<"admitted" | "unsupported" | "failed"> {
+	const paths = [
+		`/session/${sessionId}/compact`,
+		`/api/session/${sessionId}/compact`,
+	];
+	let attempted = false;
+	for (const path of paths) {
+		try {
+			await runtime(path, directory, {});
+			return "admitted";
+		} catch (error) {
+			attempted = true;
+			const message = error instanceof Error ? error.message : String(error);
+			if (/HTTP 40[45]|HTTP 50[1-5]|not found|unknown route/i.test(message))
+				continue;
+			// A genuine rejection from a real endpoint (for example "session busy")
+			// still proves the endpoint exists, but the compact itself did not
+			// apply for this request.
+			return "failed";
+		}
+	}
+	return attempted ? "unsupported" : "unsupported";
+}
+
+/** Map a persisted compaction row onto the pure cooldown decision input. */
+function compactionStateToNative(
+	row:
+		| {
+				messageCount: number;
+				lastCompactAt: Date | number;
+				nativeSupported?: number | boolean | null;
+				lastMessageId?: string | null;
+		  }
+		| undefined,
+): NativeCompactionState | undefined {
+	if (!row) return undefined;
+	const lastCompactedAt =
+		typeof row.lastCompactAt === "number"
+			? row.lastCompactAt
+			: row.lastCompactAt instanceof Date
+				? row.lastCompactAt.getTime()
+				: 0;
+	let nativeUnsupported: boolean | undefined;
+	let nativeSupported: boolean | undefined;
+	if (row.nativeSupported === false || row.nativeSupported === 0)
+		nativeUnsupported = true;
+	else if (row.nativeSupported === true || row.nativeSupported === 1)
+		nativeSupported = true;
+	return {
+		messageCount: row.messageCount,
+		lastCompactedAt,
+		...(nativeUnsupported ? { nativeUnsupported } : {}),
+		...(nativeSupported ? { nativeSupported } : {}),
+	};
+}
+
+/**
+ * Decide whether the conversation is close enough to the active context budget
+ * that compaction should run before the request is sent. Unknown model limits
+ * only trigger compaction on a clearly large conversation so a conservative
+ * estimate does not summarize every few turns.
+ */
+export function isContextPressureForNativeCompaction(input: {
+	historyTokens: number;
+	contextWindowTokens?: number | null;
+}): boolean {
+	const { budgetTokens, windowKnown } = resolveActiveContextBudget(
+		input.contextWindowTokens,
+	);
+	const trigger = windowKnown
+		? proactiveTriggerTokens(budgetTokens)
+		: UNKNOWN_WINDOW_PROACTIVE_TRIGGER_TOKENS;
+	return input.historyTokens > trigger;
+}
+
 function terminalRetryFailure(message: string): string | null {
 	const normalized = message.trim();
 	if (
@@ -343,6 +447,25 @@ export function createChatRoutes(options: {
 		get<T>(sessionId: string): Promise<T | undefined>;
 		save(sessionId: string, messages: unknown[]): Promise<unknown>;
 		delete(sessionId: string): Promise<unknown>;
+	};
+	chatCompactions?: {
+		get?(sessionId: string): Promise<
+			| {
+					messageCount: number;
+					lastCompactAt: Date | number;
+					nativeSupported?: number | boolean | null;
+					lastMessageId?: string | null;
+			  }
+			| undefined
+		>;
+		save?(input: {
+			sessionId: string;
+			messageCount: number;
+			lastMessageId?: string | null;
+			nativeSupported?: boolean;
+			triggerSource?: string;
+		}): Promise<unknown>;
+		delete?(sessionId: string): Promise<unknown>;
 	};
 	agents?: {
 		get(id: string): Promise<
@@ -678,7 +801,8 @@ export function createChatRoutes(options: {
 							name: string;
 							limit?: { context?: number; output?: number };
 							variants?:
-								Array<string | { id?: string }> | Record<string, unknown>;
+								| Array<string | { id?: string }>
+								| Record<string, unknown>;
 						}
 					>;
 				}>;
@@ -784,7 +908,7 @@ export function createChatRoutes(options: {
 							: error.code === "WORKSPACE_BUSY"
 								? 423
 								: error.code === "FORBIDDEN" ||
-									  error.code === "READ_ONLY_CONTEXT"
+										error.code === "READ_ONLY_CONTEXT"
 									? 403
 									: error.code === "STALE_CONTEXT"
 										? 409
@@ -1035,7 +1159,9 @@ export function createChatRoutes(options: {
 			throw new HTTPException(400, {
 				message: "Session references require a project chat",
 			});
-		const selected = await Promise.all(sessionRefs.map((sessionId) => session(sessionId)));
+		const selected = await Promise.all(
+			sessionRefs.map((sessionId) => session(sessionId)),
+		);
 		if (selected.some((item) => item.projectId !== currentProjectId))
 			throw new HTTPException(403, {
 				message: "Referenced sessions must belong to the current project",
@@ -1049,14 +1175,16 @@ export function createChatRoutes(options: {
 					).catch(() => []),
 				) as ContextMessage[];
 				const excerpt = messages
-					.filter((message) => ["user", "assistant"].includes(message.info.role))
+					.filter((message) =>
+						["user", "assistant"].includes(message.info.role),
+					)
 					.slice(-8)
 					.map((message) => {
 						const parts = message.parts
 							.map((part) => {
 								if (part.type === "text") return part.text ?? "";
-							if (part.type !== "tool") return "";
-							return `Tool ${part.tool ?? "activity"} (${part.state?.status ?? "unknown"}): ${part.state?.output ?? part.state?.error ?? ""}`;
+								if (part.type !== "tool") return "";
+								return `Tool ${part.tool ?? "activity"} (${part.state?.status ?? "unknown"}): ${part.state?.output ?? part.state?.error ?? ""}`;
 							})
 							.filter(Boolean)
 							.join("\\n");
@@ -1766,15 +1894,16 @@ export function createChatRoutes(options: {
 			throw new HTTPException(400, {
 				message: "A selected SSH connection was not found",
 			});
-		const sshContext =
-			sshConnections?.length
-				? `Selected SSH servers (connection metadata only; no SSH session has been opened and no credentials are available to you):\n${sshConnections
-						.map(
-							(connection) =>
-								`- ${connection.label}: ${connection.username}@${connection.host}:${connection.port}${connection.notes ? `\n  Notes: ${connection.notes}` : ""}`,
-						)
-						.join("\n")}\nUse this information to tailor guidance. Do not claim to have connected to or inspected these servers.`
-				: "";
+		const sshContext = sshConnections?.length
+			? `Selected SSH servers (connection metadata only; no SSH session has been opened and no credentials are available to you):\n${sshConnections
+					.map(
+						(connection) =>
+							`- ${connection.label}: ${connection.username}@${connection.host}:${connection.port}${connection.notes ? `\n  Notes: ${connection.notes}` : ""}`,
+					)
+					.join(
+						"\n",
+					)}\nUse this information to tailor guidance. Do not claim to have connected to or inspected these servers.`
+			: "";
 		const customAgentCanWriteFiles =
 			customAgent?.approvalPolicy === "ask_before_write" &&
 			customAgent.skills.some(
@@ -1881,7 +2010,7 @@ export function createChatRoutes(options: {
 				? options.providerManager?.catalog
 						.listByProvider?.(providerId)
 						.find((candidate) => {
-									const requestedIds = [
+							const requestedIds = [
 								requestedModel.modelID,
 								requestedModel.modelID.split("/").at(-1),
 							]
@@ -1890,7 +2019,7 @@ export function createChatRoutes(options: {
 							const candidateIds = [
 								candidate.name,
 								candidate.displayName,
-									candidate.metadata?.modelId,
+								candidate.metadata?.modelId,
 							];
 							return candidateIds.some(
 								(value) =>
@@ -2000,6 +2129,9 @@ export function createChatRoutes(options: {
 				.join("\n");
 			let contextPacket: ReturnType<typeof buildContextPacket>;
 			try {
+				// Compaction starts before the request fails: at 70% of the active
+				// budget (or immediately for a manual "compact now") instead of only
+				// after the request would exceed the whole budget.
 				contextPacket = buildContextPacket({
 					providerId,
 					modelId: runtimeModel?.modelID ?? requestedModel?.modelID,
@@ -2019,6 +2151,12 @@ export function createChatRoutes(options: {
 						.join("\n\n"),
 					contextWindowTokens: modelLimits.contextWindow,
 					contextWindowSource: modelLimits.source,
+					compactionTriggerTokens: forcedCompactionSessions.has(current.id)
+						? 0
+						: proactiveTriggerTokens(
+								resolveActiveContextBudget(modelLimits.contextWindow)
+									.budgetTokens,
+							),
 				});
 			} catch (error) {
 				if (error instanceof ContextBudgetError)
@@ -2034,6 +2172,7 @@ export function createChatRoutes(options: {
 					);
 				throw error;
 			}
+			forcedCompactionSessions.delete(current.id);
 			const created = await runtime.createSession({
 				cwd: current.directory,
 				title: current.title,
@@ -2248,6 +2387,65 @@ export function createChatRoutes(options: {
 			`/session/${current.id}/message`,
 			current.directory,
 		);
+		const mergedHistory = mergeMessages(priorHistory, nativeHistory);
+		// Native compaction guardrails: the OpenCode session context is opaque to
+		// Loom, so only a conversation estimate and verified checks decide when
+		// Loom asks the runtime to compact before the next prompt.
+		const openCodeModelLimits = resolveModelLimits({
+			providerId: openCodeModel?.providerID ?? providerId ?? "",
+			modelId: openCodeModel?.modelID,
+			runtimeContextWindow: matchedRuntimeModel?.contextWindow,
+			runtimeOutputLimit: matchedRuntimeModel?.outputLimit,
+			catalogModels: cachedCatalog?.models,
+		});
+		const visibleOpenCodeHistory = visibleMessages(mergedHistory);
+		const historyTokenEstimate = estimateHistoryTokens(
+			visibleOpenCodeHistory as ContextMessage[],
+			[openCodeSystemPrompt, promptText, referencedSessionContext]
+				.filter(Boolean)
+				.join("\n\n"),
+		);
+		const previousCompactionState = await options.chatCompactions?.get?.(
+			current.id,
+		);
+		const forcedNow = forcedCompactionSessions.has(current.id);
+		const shouldCompactNow =
+			forcedNow ||
+			(isContextPressureForNativeCompaction({
+				historyTokens: historyTokenEstimate,
+				contextWindowTokens: openCodeModelLimits.contextWindow,
+			}) &&
+				shouldTriggerNativeCompaction(
+					compactionStateToNative(previousCompactionState),
+					visibleOpenCodeHistory.length,
+					Date.now(),
+				));
+		if (shouldCompactNow) {
+			const compactResult = await requestNativeCompact(
+				request,
+				current.id,
+				current.directory,
+			);
+			const nextNativeSupported =
+				compactResult === "admitted"
+					? true
+					: compactResult === "unsupported"
+						? false
+						: previousCompactionState?.nativeSupported === false ||
+								previousCompactionState?.nativeSupported === 0
+							? false
+							: undefined;
+			await options.chatCompactions?.save?.({
+				sessionId: current.id,
+				messageCount: visibleOpenCodeHistory.length,
+				lastMessageId: visibleOpenCodeHistory.at(-1)?.info.id,
+				nativeSupported: nextNativeSupported,
+				triggerSource: forcedNow ? "manual" : "auto",
+			});
+			if (forcedNow) forcedCompactionSessions.delete(current.id);
+			// An admitted compact runs at OpenCode's next step boundary, which is
+			// the prompt below; revisit compaction only after the history grows.
+		}
 		const files = await Promise.all(
 			input.files.map(async (path) => {
 				const local = await filePath(current.directory, path);
@@ -2261,8 +2459,7 @@ export function createChatRoutes(options: {
 				};
 			}),
 		);
-		try {
-			await request(`/session/${current.id}/prompt_async`, current.directory, {
+		const sendPromptPayload = {
 			// A Loom custom agent already supplies its own system instructions and
 			// runtime. Do not layer an unrelated OpenCode agent (for example build)
 			// on top of it, which duplicates/conflicts with the selected role.
@@ -2285,7 +2482,12 @@ export function createChatRoutes(options: {
 					? [{ type: "text", text: thinkingGuidance(input.thinkingMode) }]
 					: []),
 				...(referencedSessionContext
-					? [{ type: "text", text: `Referenced session context:\n${referencedSessionContext}` }]
+					? [
+							{
+								type: "text",
+								text: `Referenced session context:\n${referencedSessionContext}`,
+							},
+						]
 					: []),
 				...(input.text ? [{ type: "text", text: input.text }] : []),
 				...designNodes.map((node) => ({
@@ -2303,20 +2505,51 @@ export function createChatRoutes(options: {
 				})),
 				...input.agents.map((name) => ({ type: "agent", name })),
 			],
-			});
+		};
+		const sendPrompt = () =>
+			request(
+				`/session/${current.id}/prompt_async`,
+				current.directory,
+				sendPromptPayload,
+			);
+		const overflowHistory: ProviderMessage[] = [];
+		try {
+			await sendPrompt();
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			if (isContextOverflow(message)) {
-				const latestHistory = await request<ProviderMessage[]>(
-					`/session/${current.id}/message`,
-					current.directory,
-				).catch(() => []);
-				const handoff = buildHandoff(
-					mergeMessages(
-						mergeMessages(priorHistory, nativeHistory),
-						latestHistory,
-					) as ContextMessage[],
-				);
+			if (!isContextOverflow(message)) throw error;
+			// The conversation overflowed the provider context window. Unlike the
+			// original failure path, Loom now admits a native compaction and
+			// retries once so the same session can continue instead of dying with
+			// a copy-paste handoff.
+			const latestHistory = await request<ProviderMessage[]>(
+				`/session/${current.id}/message`,
+				current.directory,
+			).catch(() => []);
+			const retryHistory = mergeMessages(
+				mergeMessages(priorHistory, nativeHistory),
+				latestHistory,
+			);
+			overflowHistory.push(...visibleMessages(retryHistory));
+			const compactResult = await requestNativeCompact(
+				request,
+				current.id,
+				current.directory,
+			);
+			await options.chatCompactions?.save?.({
+				sessionId: current.id,
+				messageCount: overflowHistory.length,
+				lastMessageId: overflowHistory.at(-1)?.info.id,
+				nativeSupported:
+					compactResult === "admitted"
+						? true
+						: compactResult === "unsupported"
+							? false
+							: undefined,
+				triggerSource: "overflow",
+			});
+			if (compactResult !== "admitted") {
+				const handoff = buildHandoff(overflowHistory as ContextMessage[]);
 				return c.json(
 					{
 						error: {
@@ -2328,10 +2561,93 @@ export function createChatRoutes(options: {
 					413,
 				);
 			}
-			throw error;
+			try {
+				await sendPrompt();
+			} catch (retryError) {
+				const retryMessage =
+					retryError instanceof Error ? retryError.message : String(retryError);
+				if (!isContextOverflow(retryMessage)) throw retryError;
+				// Even after compaction the provider refused; degrade to the
+				// explicit handoff so the user keeps a bounded continuation path.
+				const latestRetryHistory = await request<ProviderMessage[]>(
+					`/session/${current.id}/message`,
+					current.directory,
+				).catch(() => []);
+				const finalHistory = mergeMessages(retryHistory, latestRetryHistory);
+				const handoff = buildHandoff(
+					visibleMessages(finalHistory) as ContextMessage[],
+				);
+				return c.json(
+					{
+						error: {
+							code: "CONTEXT_WINDOW_EXCEEDED",
+							message: retryMessage,
+							handoff,
+						},
+					},
+					413,
+				);
+			}
+			if (existing) existing.openCodeActive = true;
+			return c.body(null, 204);
 		}
 		if (existing) existing.openCodeActive = true;
 		return c.body(null, 204);
+	});
+	app.post("/sessions/:id/compact", async (c) => {
+		const current = await session(c.req.param("id"));
+		const providerSession = providerSessions.get(current.id);
+		if (providerSession && !providerSession.finished)
+			throw new HTTPException(409, {
+				message: "Stop the running response before compacting this chat",
+			});
+		// Gateway-backed sessions (OpenCode) keep a single internal context whose
+		// id matches this chat, so compaction can run natively in place. Other
+		// runtimes rebuild the request context per turn; there the flag forces
+		// the next request to compact instead of waiting for threshold.
+		const nativeResult = await requestNativeCompact(
+			request,
+			current.id,
+			current.directory,
+		);
+		const stored =
+			(await options.providerHistory?.get<ProviderMessage[]>(current.id)) ?? [];
+		const visibleStored = visibleMessages(stored);
+		if (nativeResult === "admitted") {
+			await options.chatCompactions?.save?.({
+				sessionId: current.id,
+				messageCount: visibleStored.length,
+				lastMessageId: visibleStored.at(-1)?.info.id,
+				nativeSupported: true,
+				triggerSource: "manual",
+			});
+			forcedCompactionSessions.delete(current.id);
+			return c.json({ native: true, compacted: true });
+		}
+		if (nativeResult === "unsupported")
+			await options.chatCompactions?.save?.({
+				sessionId: current.id,
+				messageCount: visibleStored.length,
+				lastMessageId: visibleStored.at(-1)?.info.id,
+				nativeSupported: false,
+				triggerSource: "manual",
+			});
+		if (providerSession || visibleStored.length) {
+			// A Loom-owned runtime: the next request rebuilds its packet and
+			// compaction is forced there.
+			forcedCompactionSessions.add(current.id);
+			return c.json({
+				native: false,
+				compacted: false,
+				scheduled: true,
+			});
+		}
+		return c.json({
+			native: false,
+			compacted: false,
+			message:
+				"This chat has no compactable provider context. Start a new chat or send another message first.",
+		});
 	});
 	app.post("/sessions/:id/abort", async (c) => {
 		const current = await session(c.req.param("id"));
@@ -2406,7 +2722,12 @@ export function createChatRoutes(options: {
 			options.permissions?.unregisterRun(providerSession.permissionToken);
 		await request(`/session/${current.id}`, current.directory, {}, "DELETE");
 		providerSessions.delete(current.id);
+		// Keep compaction bookkeeping from outliving the chat they describe.
 		await options.providerHistory?.delete(current.id);
+		try {
+			await options.chatCompactions?.delete?.(current.id);
+		} catch {}
+		forcedCompactionSessions.delete(current.id);
 		if (workspace) {
 			try {
 				await options.worktrees!.remove(workspace);

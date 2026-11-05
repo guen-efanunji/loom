@@ -66,6 +66,17 @@ export class ContextBudgetError extends Error {
 const OUTPUT_RESERVE_RATIO = 0.18;
 const SAFETY_MARGIN_RATIO = 0.12;
 const RECENT_MESSAGE_COUNT = 4;
+/** Compaction starts before the request would fail, not only after overflow. */
+export const PROACTIVE_COMPACTION_RATIO = 0.7;
+/**
+ * Without a verified context window, compaction stays conservative: only fire
+ * when the estimate is already large enough that continuation is at real risk
+ * for models without a known limit.
+ */
+export const UNKNOWN_WINDOW_PROACTIVE_TRIGGER_TOKENS = 100_000;
+/** Re-compact an OpenCode session only after fresh conversation has accumulated. */
+const NATIVE_COMPACT_MIN_MESSAGE_DELTA = 12;
+const NATIVE_COMPACT_COOLDOWN_MS = 10 * 60_000;
 const OLD_ASSISTANT_EXCERPT_CHARS = 700;
 const OLD_TOOL_EXCERPT_CHARS = 360;
 const OLD_USER_EXCERPT_CHARS = 1_400;
@@ -75,6 +86,65 @@ const CHECKPOINT_HEADER =
 
 export function estimateTokens(text: string): number {
 	return Math.ceil(text.length / 4);
+}
+
+export function resolveActiveContextBudget(
+	contextWindowTokens?: number | null,
+): {
+	budgetTokens: number;
+	windowKnown: boolean;
+} {
+	const window =
+		Number.isSafeInteger(contextWindowTokens) && (contextWindowTokens ?? 0) > 0
+			? (contextWindowTokens as number)
+			: null;
+	if (!window)
+		return { budgetTokens: UNKNOWN_WINDOW_BUDGET_TOKENS, windowKnown: false };
+	return {
+		budgetTokens: Math.floor(
+			window * (1 - OUTPUT_RESERVE_RATIO - SAFETY_MARGIN_RATIO),
+		),
+		windowKnown: true,
+	};
+}
+
+export function proactiveTriggerTokens(budgetTokens: number): number {
+	return Math.max(1, Math.floor(budgetTokens * PROACTIVE_COMPACTION_RATIO));
+}
+
+/** Rough active-context size for a stored conversation, used before sending. */
+export function estimateHistoryTokens(
+	history: readonly ContextMessage[],
+	extraText = "",
+): number {
+	return estimateTokens(
+		`${extraText ? `${extraText}\n\n` : ""}${history.map(renderMessage).join("\n\n")}`,
+	);
+}
+
+export type NativeCompactionState = {
+	messageCount: number;
+	lastCompactedAt: number;
+	nativeSupported?: boolean;
+	nativeUnsupported?: boolean;
+};
+
+/**
+ * Native compaction is expensive (an extra summary generation) so it is gated
+ * on fresh conversation volume since the last trigger, with a cooldown.
+ */
+export function shouldTriggerNativeCompaction(
+	previous: NativeCompactionState | undefined,
+	historyLength: number,
+	now: number,
+): boolean {
+	if (previous?.nativeUnsupported) return false;
+	if (!previous) return true;
+	if (historyLength <= previous.messageCount) return false;
+	return (
+		historyLength - previous.messageCount >= NATIVE_COMPACT_MIN_MESSAGE_DELTA ||
+		now - previous.lastCompactedAt >= NATIVE_COMPACT_COOLDOWN_MS
+	);
 }
 
 export function resolveModelLimits(input: {
@@ -277,10 +347,7 @@ function compactedFailure(message: ContextMessage): string {
 }
 
 export function buildHandoff(history: ContextMessage[]): string {
-	const sections = history
-		.map(compactOldMessage)
-		.filter(Boolean)
-		.slice(-40);
+	const sections = history.map(compactOldMessage).filter(Boolean).slice(-40);
 	const handoff = [
 		"Continue the previous task in a new chat. This is a compact, lossy handoff; verify current files and source events before acting.",
 		...sections,
@@ -299,6 +366,12 @@ export function buildContextPacket(input: {
 	fixedPrompt?: string;
 	contextWindowTokens?: number | null;
 	contextWindowSource?: "runtime_catalog" | "open_code_alias" | "unknown";
+	/**
+	 * Estimated input size at which compaction starts. Defaults to the full
+	 * budget (reactive, current behavior). A smaller value compacts
+	 * proactively; `0` forces compaction on this request (manual trigger).
+	 */
+	compactionTriggerTokens?: number | null;
 }): ContextPacket {
 	const windowFromCatalog =
 		Number.isSafeInteger(input.contextWindowTokens) &&
@@ -314,6 +387,14 @@ export function buildContextPacket(input: {
 	const budgetTokens = windowFromCatalog
 		? configuredBudget
 		: UNKNOWN_WINDOW_BUDGET_TOKENS;
+	const triggerInput = input.compactionTriggerTokens;
+	const triggerTokens =
+		typeof triggerInput === "number" &&
+		Number.isSafeInteger(triggerInput) &&
+		triggerInput >= 0
+			? triggerInput
+			: budgetTokens;
+	const proactiveTrim = triggerTokens < budgetTokens;
 	const fixedPrompt = input.fixedPrompt ?? "";
 	const recentStart = Math.max(0, input.history.length - RECENT_MESSAGE_COUNT);
 	const recentMessages = input.history.slice(recentStart);
@@ -324,7 +405,7 @@ export function buildContextPacket(input: {
 	let context = fullContext;
 	let compacted = false;
 	let checkpointBoundary: ContextManagementInfo["checkpointBoundary"];
-	if (totalTokens > budgetTokens) {
+	if (totalTokens > triggerTokens) {
 		const olderMessages = input.history.slice(0, recentStart);
 		const checkpoint = olderMessages
 			.map(compactOldMessage)
@@ -442,7 +523,9 @@ export function buildContextPacket(input: {
 			compacted,
 			...(compacted
 				? {
-						compactionReason: `Estimated input exceeded the ${budgetTokens.toLocaleString()} token active context budget.`,
+						compactionReason: proactiveTrim
+							? `Estimated input is approaching the ${budgetTokens.toLocaleString()} token active context budget; Loom compacted early to keep the conversation going.`
+							: `Estimated input exceeded the ${budgetTokens.toLocaleString()} token active context budget.`,
 					}
 				: {}),
 			...(checkpointBoundary ? { checkpointBoundary } : {}),

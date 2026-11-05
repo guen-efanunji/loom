@@ -1801,6 +1801,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			agyPermissionUrl: agyPermissionError ? undefined : agyPermissionBase,
 			agyPermissionError,
 			providerHistory: repos.providerChatHistory,
+			chatCompactions: repos.chatContextCompactions,
 			onEvent: (event) => {
 				eventPublisher.publish({
 					type: "chat.updated",
@@ -3219,7 +3220,11 @@ export async function createApp(options: DaemonAppOptions = {}) {
 					name?: string;
 					models: Record<
 						string,
-						{ id?: string; name?: string; limit?: { context?: number; output?: number } }
+						{
+							id?: string;
+							name?: string;
+							limit?: { context?: number; output?: number };
+						}
 					>;
 				}>;
 			}>("/config/providers")
@@ -3255,7 +3260,6 @@ export async function createApp(options: DaemonAppOptions = {}) {
 						contextWindow: model.limit?.context,
 						outputLimit: model.limit?.output,
 					})),
-
 		);
 		return c.json([...openCodeModels, ...managedModels]);
 	});

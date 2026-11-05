@@ -703,6 +703,11 @@
 								?.coveredMessageCount ?? 0} earlier messages. Original chat history
 							is retained.
 						</p>
+						{#if contextInfo.compactionReason}
+							<p class="mt-1 text-[11px] text-muted-foreground">
+								{contextInfo.compactionReason}
+							</p>
+						{/if}
 					{/if}
 					<p class="mt-1 text-[11px] text-muted-foreground">
 						{contextInfo.limitations[0]}

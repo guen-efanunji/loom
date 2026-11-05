@@ -18,6 +18,27 @@ export const providerChatHistory = sqliteTable("provider_chat_history", {
 });
 
 /**
+ * Compaction bookkeeping for one chat session: when Loom last requested a
+ * native or extractive context compaction so repeated triggers honor a
+ * cooldown, and whether the runtime was observed to support native compaction.
+ */
+export const chatContextCompactions = sqliteTable("chat_context_compactions", {
+	sessionId: text("session_id").primaryKey(),
+	/** Visible-message count at the moment compaction was last triggered. */
+	messageCount: integer("message_count").notNull().default(0),
+	lastMessageId: text("last_message_id"),
+	/** `1` after a successful native compact request, `0` when unsupported. */
+	nativeSupported: integer("native_supported"),
+	lastCompactAt: integer("last_compact_at", { mode: "timestamp_ms" })
+		.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+		.notNull(),
+	triggerSource: text("trigger_source").notNull().default("auto"),
+	updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+		.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+		.notNull(),
+});
+
+/**
  * Git worktree bound to a single chat session so several tabs can run agents on
  * the same project without sharing one checkout. `branch`/`path` are Loom
  * managed, and the row is removed once the session is deleted.

@@ -421,6 +421,14 @@ export const chat = {
 			pendingQuestions: number;
 		}>(`${root}/sessions/${encodeURIComponent(id)}/status`),
 	abort: (id: string) => post(`/sessions/${encodeURIComponent(id)}/abort`),
+	/** Ask Loom to compact the conversation context (native or next request). */
+	compactContext: (id: string) =>
+		post<{
+			native: boolean;
+			compacted: boolean;
+			scheduled?: boolean;
+			message?: string;
+		}>(`/sessions/${encodeURIComponent(id)}/compact`),
 	rename: (id: string, title: string) =>
 		post(`/sessions/${encodeURIComponent(id)}/rename`, { title }),
 	remove: (id: string) =>

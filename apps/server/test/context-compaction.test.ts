@@ -3,8 +3,169 @@ import {
 	buildContextPacket,
 	buildHandoff,
 	ContextBudgetError,
+	estimateHistoryTokens,
+	proactiveTriggerTokens,
+	resolveActiveContextBudget,
 	resolveModelLimits,
+	shouldTriggerNativeCompaction,
 } from "../src/context-compaction";
+
+describe("proactive compaction triggers", () => {
+	test("derives the active budget from a verified window and marks unknown windows", () => {
+		const known = resolveActiveContextBudget(1_048_576);
+		expect(known.windowKnown).toBe(true);
+		expect(known.budgetTokens).toBe(734_003);
+		const unknown = resolveActiveContextBudget(undefined);
+		expect(unknown).toEqual({
+			budgetTokens: 12_288,
+			windowKnown: false,
+		});
+		expect(resolveActiveContextBudget(-4).windowKnown).toBe(false);
+	});
+
+	test("proactive trigger sits at 70 percent of the active budget", () => {
+		expect(proactiveTriggerTokens(734_003)).toBe(513_802);
+		expect(proactiveTriggerTokens(1_000_000)).toBe(700_000);
+	});
+
+	test("compacts before the full budget when the proactive trigger passes", () => {
+		// 6 older messages ~80 tokens each plus 4 small recent messages: above
+		// the 490-token proactive trigger for a 1000-token window (full budget
+		// is 700), but below the point where the whole history is unusable.
+		const oldMessage = (index: number) => ({
+			info: { id: `u-old-${index}`, role: "user" as const },
+			parts: [
+				{
+					id: `p-old-${index}`,
+					type: "text",
+					text: "Old instruction. ".repeat(20),
+				},
+			],
+		});
+		const history = [
+			oldMessage(0),
+			oldMessage(1),
+			oldMessage(2),
+			oldMessage(3),
+			oldMessage(4),
+			oldMessage(5),
+			{
+				info: { id: "u-new-1", role: "user" as const },
+				parts: [{ id: "p-new-1", type: "text", text: "Recent note." }],
+			},
+			{
+				info: { id: "a-new-1", role: "assistant" as const },
+				parts: [{ id: "pa-new-1", type: "text", text: "Noted." }],
+			},
+			{
+				info: { id: "u-new-2", role: "user" as const },
+				parts: [{ id: "p-new-2", type: "text", text: "Second note." }],
+			},
+			{
+				info: { id: "a-new-2", role: "assistant" as const },
+				parts: [{ id: "pa-new-2", type: "text", text: "Done." }],
+			},
+		];
+		const triggerTokens = proactiveTriggerTokens(
+			resolveActiveContextBudget(1_000).budgetTokens,
+		);
+		// Without a proactive trigger the packet stays uncompacted (reactive
+		// behavior only compacts once the full budget is exceeded).
+		expect(
+			buildContextPacket({
+				providerId: "custom",
+				mode: "loom_owned",
+				contextWindowTokens: 1_000,
+				history: [...history],
+				currentPrompt: "Continue.",
+			}).info.compacted,
+		).toBe(false);
+		const proactive = buildContextPacket({
+			providerId: "custom",
+			mode: "loom_owned",
+			contextWindowTokens: 1_000,
+			history: [...history],
+			currentPrompt: "Continue.",
+			compactionTriggerTokens: triggerTokens,
+		});
+		expect(proactive.info.compacted).toBe(true);
+		expect(proactive.info.compactionReason).toContain("compacted early");
+		expect(proactive.info.checkpointBoundary?.coveredMessageCount).toBe(6);
+		expect(proactive.info.checkpointBoundary?.lastMessageId).toBe("u-old-5");
+		expect(proactive.context).toContain("Old instruction");
+		expect(proactive.context).toContain("Recent note.");
+	});
+
+	test("a trigger token value of zero forces compaction for a manual request", () => {
+		const history = [
+			...Array.from({ length: 5 }, (_, index) => ({
+				info: { id: `u-old-${index}`, role: "user" as const },
+				parts: [{ id: `p-old-${index}`, type: "text", text: "Context note." }],
+			})),
+			{
+				info: { id: "u-new", role: "user" as const },
+				parts: [{ id: "p-new", type: "text", text: "Recent note." }],
+			},
+		];
+		const packet = buildContextPacket({
+			providerId: "custom",
+			mode: "loom_owned",
+			contextWindowTokens: 1_000_000,
+			history,
+			currentPrompt: "Continue.",
+			compactionTriggerTokens: 0,
+		});
+		expect(packet.info.compacted).toBe(true);
+		expect(packet.info.checkpointBoundary?.coveredMessageCount).toBe(2);
+		expect(packet.context).toContain("Context note.");
+		expect(packet.context).toContain("Recent note.");
+	});
+
+	test("native compaction respects message growth and cooldown", () => {
+		const now = 1_700_000_000_000;
+		// First trigger: nothing recorded yet.
+		expect(shouldTriggerNativeCompaction(undefined, 40, now)).toBe(true);
+		const recently = {
+			messageCount: 40,
+			lastCompactedAt: now - 60_000,
+		};
+		// No growth since the last compact: never re-trigger.
+		expect(shouldTriggerNativeCompaction(recently, 40, now)).toBe(false);
+		// Fresh turns below the delta and inside the cooldown: wait.
+		expect(shouldTriggerNativeCompaction(recently, 45, now)).toBe(false);
+		// Enough new conversation since the last compact: trigger.
+		expect(shouldTriggerNativeCompaction(recently, 55, now)).toBe(true);
+		// Cooldown elapsed with any growth: trigger.
+		expect(shouldTriggerNativeCompaction(recently, 41, now + 11 * 60_000)).toBe(
+			true,
+		);
+		// Shrinking history (a native compaction already ran): wait.
+		expect(shouldTriggerNativeCompaction(recently, 10, now)).toBe(false);
+		// A provider that rejected native compaction before: never retry it.
+		expect(
+			shouldTriggerNativeCompaction(
+				{ messageCount: 40, lastCompactedAt: now, nativeUnsupported: true },
+				999,
+				now,
+			),
+		).toBe(false);
+	});
+
+	test("estimates stored conversation size from the same rendering used by packets", () => {
+		const history = [
+			{
+				info: { id: "u-1", role: "user" },
+				parts: [{ id: "p-1", type: "text", text: "x".repeat(400) }],
+			},
+		];
+		const base = estimateHistoryTokens(history);
+		expect(base).toBeGreaterThan(90);
+		expect(base).toBeLessThan(120);
+		expect(estimateHistoryTokens(history, "y".repeat(40))).toBeGreaterThan(
+			base,
+		);
+	});
+});
 
 describe("provider-agnostic context budget", () => {
 	test("accepts the catalog 1M limit for the matching Agy CLI model alias", () => {
@@ -168,7 +329,13 @@ describe("provider-agnostic context budget", () => {
 				},
 				{
 					info: { id: "a-new", role: "assistant" },
-					parts: [{ id: "p-assistant", type: "text", text: "Recent reply. ".repeat(5_000) }],
+					parts: [
+						{
+							id: "p-assistant",
+							type: "text",
+							text: "Recent reply. ".repeat(5_000),
+						},
+					],
 				},
 				{
 					info: { id: "u-new", role: "user" },
@@ -192,7 +359,9 @@ describe("provider-agnostic context budget", () => {
 		const handoff = buildHandoff([
 			{
 				info: { id: "user-1", role: "user" },
-				parts: [{ id: "p1", type: "text", text: "Implement adaptive compaction" }],
+				parts: [
+					{ id: "p1", type: "text", text: "Implement adaptive compaction" },
+				],
 			},
 			{
 				info: { id: "assistant-1", role: "assistant" },
@@ -209,7 +378,10 @@ describe("provider-agnostic context budget", () => {
 				info: {
 					id: "assistant-failed",
 					role: "assistant",
-					error: { name: "ProviderError", data: { message: "Input exceeds context window" } },
+					error: {
+						name: "ProviderError",
+						data: { message: "Input exceeds context window" },
+					},
 				},
 				parts: [],
 			},
