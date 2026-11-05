@@ -682,27 +682,32 @@ describe("server API", () => {
 					}),
 				),
 			);
-			// Four tasks share the provider's two slots, so the last one only settles
-			// after the others merge. They are polled together, each with a generous
-			// deadline, because a loaded CI host needs more than one pass.
-			const terminalForCheckpoint = new Set(["completed", "ready_to_merge"]);
+			// `completed` is also the intermediate state while automatic review is
+			// checkpointing. Wait until the task is reviewable or fully integrated;
+			// checkpointing during that interval can race the automatic merge.
 			const settled = await Promise.all(
 				taskIds.map(async (id) => {
-					let status = "queued";
+					let task: { status: string; workspaceId?: string | null } = {
+						status: "queued",
+					};
 					const deadline = Date.now() + 30_000;
-					while (Date.now() < deadline && !terminalForCheckpoint.has(status)) {
+					const isSettled = () =>
+						task.status === "ready_to_merge" ||
+						(task.status === "completed" && !task.workspaceId);
+					while (Date.now() < deadline && !isSettled()) {
 						const response = await setup.daemon.app.request(
 							`/api/tasks/${id}`,
 							{ headers },
 						);
-						status = ((await response.json()) as { status: string }).status;
-						if (!terminalForCheckpoint.has(status)) await Bun.sleep(50);
+						task = (await response.json()) as typeof task;
+						if (!isSettled()) await Bun.sleep(50);
 					}
-					return { id, status };
+					return { id, ...task, settled: isSettled() };
 				}),
 			);
-			for (const { id, status } of settled) {
-				expect([...terminalForCheckpoint]).toContain(status);
+			for (const { id, status, settled: isSettled } of settled) {
+				expect(isSettled).toBe(true);
+				if (status === "completed") continue;
 				const checkpoint = await setup.daemon.app.request(
 					`/api/tasks/${id}/checkpoint`,
 					{
