@@ -416,6 +416,14 @@ export type ChatRequestOptions = {
 	timeoutMs?: number;
 };
 
+/** Structured daemon logger, typically backed by @loom/distribution `log`. */
+export type ChatLogger = (
+	component: string,
+	event: string,
+	details?: Record<string, unknown>,
+	level?: "info" | "warn" | "error",
+) => void;
+
 export type ChatRequestGateway = <T>(
 	path: string,
 	options?: ChatRequestOptions,
@@ -441,6 +449,7 @@ export function createChatRoutes(options: {
 		>;
 	};
 	request: ChatRequestGateway;
+	logger?: ChatLogger;
 	providerManager?: ProviderManager;
 	runtimes?:
 		| Map<string, AgentRuntime>
@@ -806,7 +815,8 @@ export function createChatRoutes(options: {
 							name: string;
 							limit?: { context?: number; output?: number };
 							variants?:
-								Array<string | { id?: string }> | Record<string, unknown>;
+								| Array<string | { id?: string }>
+								| Record<string, unknown>;
 						}
 					>;
 				}>;
@@ -875,6 +885,30 @@ export function createChatRoutes(options: {
 			method,
 			...(timeoutMs ? { timeoutMs } : {}),
 		});
+	// User-visible gateway failures never carried a daemon-log trace; this is
+	// the hook that records them next to the rest of the structured output.
+	const logChatEvent = options.logger ?? (() => {});
+	const logGatewayFailure = (
+		event: string,
+		sessionId: string,
+		error: unknown,
+		level: "error" | "warn" = "error",
+	) => {
+		const code = (error as { code?: string } | null)?.code;
+		logChatEvent(
+			"chat",
+			event,
+			{
+				sessionId,
+				...(code ? { code } : {}),
+				message: (error instanceof Error ? error.message : String(error)).slice(
+					0,
+					300,
+				),
+			},
+			level,
+		);
+	};
 	async function directory(projectId?: string) {
 		const project = projectId
 			? await options.projects.getById(projectId)
@@ -914,7 +948,7 @@ export function createChatRoutes(options: {
 							: error.code === "WORKSPACE_BUSY"
 								? 423
 								: error.code === "FORBIDDEN" ||
-									  error.code === "READ_ONLY_CONTEXT"
+										error.code === "READ_ONLY_CONTEXT"
 									? 403
 									: error.code === "STALE_CONTEXT"
 										? 409
@@ -2438,7 +2472,7 @@ export function createChatRoutes(options: {
 					: compactResult === "unsupported"
 						? false
 						: previousCompactionState?.nativeSupported === false ||
-							  previousCompactionState?.nativeSupported === 0
+								previousCompactionState?.nativeSupported === 0
 							? false
 							: undefined;
 			await options.chatCompactions?.save?.({
@@ -2525,7 +2559,12 @@ export function createChatRoutes(options: {
 			await sendPrompt();
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			if (!isContextOverflow(message)) throw error;
+			if (!isContextOverflow(message)) {
+				// Gateway unreachable, invalid model, etc. Surface the same error to
+				// the client but also keep a structured trace in the daemon log.
+				logGatewayFailure("chat.sendFailed", current.id, error);
+				throw error;
+			}
 			// The conversation overflowed the provider context window. Unlike the
 			// original failure path, Loom now admits a native compaction and
 			// retries once so the same session can continue instead of dying with
@@ -2560,6 +2599,16 @@ export function createChatRoutes(options: {
 				triggerSource: "overflow",
 			});
 			if (compactResult !== "admitted") {
+				logChatEvent(
+					"chat",
+					"chat.handoff",
+					{
+						sessionId: current.id,
+						native: compactResult,
+						message: message.slice(0, 300),
+					},
+					"warn",
+				);
 				const handoff = buildHandoff(overflowHistory as ContextMessage[]);
 				return c.json(
 					{
@@ -2577,9 +2626,22 @@ export function createChatRoutes(options: {
 			} catch (retryError) {
 				const retryMessage =
 					retryError instanceof Error ? retryError.message : String(retryError);
-				if (!isContextOverflow(retryMessage)) throw retryError;
+				if (!isContextOverflow(retryMessage)) {
+					logGatewayFailure("chat.retryFailed", current.id, retryError);
+					throw retryError;
+				}
 				// Even after compaction the provider refused; degrade to the
 				// explicit handoff so the user keeps a bounded continuation path.
+				logChatEvent(
+					"chat",
+					"chat.handoff",
+					{
+						sessionId: current.id,
+						native: "post_compact",
+						message: retryMessage.slice(0, 300),
+					},
+					"warn",
+				);
 				const latestRetryHistory = await request<ProviderMessage[]>(
 					`/session/${current.id}/message`,
 					current.directory,
@@ -2621,6 +2683,16 @@ export function createChatRoutes(options: {
 			current.id,
 			current.directory,
 		);
+		if (nativeResult !== "admitted")
+			logChatEvent(
+				"chat",
+				"chat.manualCompactPending",
+				{
+					sessionId: current.id,
+					native: nativeResult,
+				},
+				"warn",
+			);
 		const stored =
 			(await options.providerHistory?.get<ProviderMessage[]>(current.id)) ?? [];
 		const visibleStored = visibleMessages(stored);

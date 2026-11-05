@@ -607,7 +607,26 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	const openCodeRuntime = new OpenCodeHttpRuntime({
 		// Revive the managed serve process when the gateway stops answering
 		// instead of leaving every chat broken until the daemon restarts.
-		ensureServer: () => openCodeManager.start(),
+		ensureServer: async () => {
+			const startedAt = Date.now();
+			try {
+				await openCodeManager.start();
+				log("opencode", "revived", {
+					elapsedMs: Date.now() - startedAt,
+				});
+			} catch (error) {
+				log(
+					"opencode",
+					"reviveFailed",
+					{
+						elapsedMs: Date.now() - startedAt,
+						error: error instanceof Error ? error.message : String(error),
+					},
+					"error",
+				);
+				throw error;
+			}
+		},
 	});
 	const providerModelCachePath = join(
 		dataDirectory(),
@@ -1796,6 +1815,9 @@ export async function createApp(options: DaemonAppOptions = {}) {
 				},
 			},
 			request: openCodeChatRequest,
+			// Route the same structured logger the daemon pipes into
+			// ~/.loom/logs/daemon.log so gateway failures leave traces here.
+			logger: log,
 			sessionScope: (id) => orchestrator.sessionScope(id),
 			// Parallel chat tabs: an isolated session edits its own git worktree and a
 			// shared checkout only ever hosts one agent run at a time.

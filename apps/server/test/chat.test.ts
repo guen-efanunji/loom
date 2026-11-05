@@ -19,6 +19,7 @@ function setup(
 	extra?: {
 		providerHistory?: Parameters<typeof createChatRoutes>[0]["providerHistory"];
 		chatCompactions?: Parameters<typeof createChatRoutes>[0]["chatCompactions"];
+		logger?: Parameters<typeof createChatRoutes>[0]["logger"];
 	},
 ) {
 	let gatewayStatus = initialGatewayStatus;
@@ -512,5 +513,54 @@ describe("chat gateway", () => {
 			compacted: false,
 			scheduled: true,
 		});
+	});
+
+	test("logs unrecoverable send failures to the daemon logger", async () => {
+		const logs: Array<{
+			component: string;
+			event: string;
+			details: Record<string, unknown>;
+			level: string;
+		}> = [];
+		const { app } = setup(
+			{ type: "idle" },
+			true,
+			(path) => {
+				if (path.endsWith("/prompt_async"))
+					throw new Error("fetch failed: connection refused");
+				return undefined;
+			},
+			{
+				logger: (component, event, details, level) => {
+					logs.push({
+						component,
+						event,
+						details: details ?? {},
+						level: level ?? "info",
+					});
+				},
+			},
+		);
+		const response = await app.request("/sessions/ses_test/messages", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				text: "Message that never reaches the gateway",
+				model: { providerID: "provider", modelID: "model" },
+				files: [],
+				agents: [],
+			}),
+		});
+		expect([500, 502]).toContain(response.status);
+		const failure = logs.find((entry) => entry.event === "chat.sendFailed");
+		expect(failure).toMatchObject({
+			component: "chat",
+			level: "error",
+			details: {
+				sessionId: "ses_test",
+				code: "HTTP_ERROR",
+			},
+		});
+		expect(String(failure?.details.message)).toContain("Unable to reach");
 	});
 });
