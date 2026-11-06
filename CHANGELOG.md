@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.3](https://github.com/guen-efanunji/loom/compare/v0.3.2...v0.3.3) (2026-11-06)
+
+
+### Bug Fixes
+
+* connect Loom to current OpenCode API ([765f6d8](https://github.com/guen-efanunji/loom/commit/765f6d8b67cea933c1f857f613382bb8b7e3dad5))
+* stabilize automatic Kanban release test ([7545d7e](https://github.com/guen-efanunji/loom/commit/7545d7e68121e9e3f88c57a15f5c8a40a2f114c8))
+
 ## [0.3.2](https://github.com/guen-efanunji/loom/compare/v0.3.1...v0.3.2) (2026-11-05)
 
 
