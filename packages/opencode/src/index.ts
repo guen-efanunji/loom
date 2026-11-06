@@ -1,9 +1,23 @@
-import { spawn } from "node:child_process";
-import { access } from "node:fs/promises";
+import { execFile as execFileCallback, spawn } from "node:child_process";
+import { access, readFile, stat } from "node:fs/promises";
+import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
+import { promisify } from "node:util";
 import { z } from "zod";
 
 type Fetcher = (input: string, init?: RequestInit) => Promise<Response>;
+const execFile = promisify(execFileCallback);
+
+const registeredServiceSchema = z.object({
+	url: z
+		.string()
+		.url()
+		.refine((value) => {
+			const hostname = new URL(value).hostname;
+			return ["localhost", "127.0.0.1", "[::1]", "::1"].includes(hostname);
+		}),
+	password: z.string().optional(),
+});
 
 type GatewaySessionStatus = {
 	type: string;
@@ -39,9 +53,13 @@ function formatRetryDelay(delay: number): string {
 	return remaining ? `${hours}h ${remaining}m` : `${hours}h`;
 }
 
-function authHeaders(headers?: RequestInit["headers"]): Headers {
+function authHeaders(
+	headers?: RequestInit["headers"],
+	servicePassword?: string,
+): Headers {
 	const result = new Headers(headers);
-	const password = process.env.OPENCODE_SERVER_PASSWORD?.trim();
+	const password =
+		process.env.OPENCODE_SERVER_PASSWORD?.trim() || servicePassword?.trim();
 	if (password && !result.has("authorization")) {
 		const username = process.env.OPENCODE_SERVER_USERNAME?.trim() || "opencode";
 		result.set(
@@ -170,9 +188,59 @@ export class OpenCodeError extends Error {
 }
 
 const healthSchema = z.object({
-	healthy: z.literal(true),
-	version: z.string(),
+	version: z.string().optional(),
 });
+
+const defaultOpenCodePort = 4096;
+
+function openCodeBaseUrl(port = defaultOpenCodePort): string {
+	return `http://127.0.0.1:${port}`;
+}
+
+function openCodeServerUrl(info: unknown): string | null {
+	if (!info || typeof info !== "object") return null;
+	const urls = (info as { urls?: unknown }).urls;
+	if (!Array.isArray(urls)) return null;
+	return (
+		urls.find(
+			(value): value is string =>
+				typeof value === "string" && /^https?:\/\//i.test(value),
+		) ?? null
+	);
+}
+
+type OpenCodeService = z.infer<typeof registeredServiceSchema>;
+
+export async function discoverService(
+	executable?: string | null,
+	stateHome = process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"),
+): Promise<OpenCodeService | null> {
+	const registrationPath = join(stateHome, "opencode", "service.json");
+	try {
+		const permissions = await stat(registrationPath);
+		if ((permissions.mode & 0o077) !== 0) return null;
+		const registration = registeredServiceSchema.safeParse(
+			JSON.parse(await readFile(registrationPath, "utf8")),
+		);
+		if (registration.success) return registration.data;
+	} catch {}
+
+	const command = executable ?? (await discoverExecutable());
+	if (!command) return null;
+	try {
+		const result = await execFile(command, ["service", "status"], {
+			env: process.env,
+			timeout: 2_000,
+		});
+		const url = result.stdout
+			.trim()
+			.split(/\s+/)
+			.find((value) => /^https?:\/\//i.test(value));
+		return url ? { url: url.replace(/\/$/, "") } : null;
+	} catch {
+		return null;
+	}
+}
 const sessionSchema = z.object({ id: z.string().min(1) });
 
 function parseJson<T>(
@@ -231,13 +299,16 @@ export async function discoverExecutable(
 
 export class OpenCodeServerManager implements OpenCodeManager {
 	private readonly executable: string | null;
-	private readonly baseUrl: string;
+	private baseUrl: string;
 	private readonly healthTimeoutMs: number;
 	private readonly pollIntervalMs: number;
 	private readonly fetcher: Fetcher;
 	private readonly processRunner: ProcessRunner;
 	private readonly discoverer: () => Promise<string | null>;
 	private process: ProcessHandle | null = null;
+	private baseUrlResolution: Promise<void> | null = null;
+	private readonly discoverService: boolean;
+	private servicePassword: string | undefined;
 
 	constructor(
 		options: {
@@ -251,30 +322,58 @@ export class OpenCodeServerManager implements OpenCodeManager {
 		} = {},
 	) {
 		this.executable = options.executable ?? null;
-		this.baseUrl = (options.baseUrl ?? "http://127.0.0.1:4096").replace(
-			/\/$/,
-			"",
-		);
+		this.baseUrl = (options.baseUrl ?? openCodeBaseUrl()).replace(/\/$/, "");
 		this.healthTimeoutMs = options.healthTimeoutMs ?? 10_000;
 		this.pollIntervalMs = options.pollIntervalMs ?? 100;
 		this.fetcher = options.fetcher ?? fetch;
 		this.processRunner = options.processRunner ?? createProcessRunner();
 		this.discoverer = options.discoverer ?? (() => discoverExecutable());
+		this.discoverService =
+			options.baseUrl === undefined && options.fetcher === undefined;
 	}
 
 	async discover(): Promise<boolean> {
 		return (this.executable ?? (await this.discoverer())) !== null;
 	}
 
+	private resolveBaseUrl(): Promise<void> {
+		if (this.baseUrlResolution) return this.baseUrlResolution;
+		this.baseUrlResolution = (async () => {
+			if (!this.discoverService || this.baseUrl !== openCodeBaseUrl()) return;
+			const service = await discoverService(this.executable);
+			if (service) {
+				this.baseUrl = service.url.replace(/\/$/, "");
+				this.servicePassword = service.password;
+				return;
+			}
+			for (let port = 4096; port <= 4105; port += 1) {
+				const candidate = openCodeBaseUrl(port);
+				try {
+					const response = await this.fetcher(`${candidate}/api/info`, {
+						headers: authHeaders(undefined, this.servicePassword),
+						signal: AbortSignal.timeout(750),
+					});
+					if (!response.ok) continue;
+					if (openCodeServerUrl(await response.json())) {
+						this.baseUrl = candidate;
+						return;
+					}
+				} catch {}
+			}
+		})();
+		return this.baseUrlResolution;
+	}
+
 	async health(): Promise<boolean> {
+		await this.resolveBaseUrl();
 		try {
-			const response = await this.fetcher(`${this.baseUrl}/global/health`, {
-				headers: authHeaders(),
+			const response = await this.fetcher(`${this.baseUrl}/api/info`, {
+				headers: authHeaders(undefined, this.servicePassword),
 				signal: AbortSignal.timeout(3_000),
 			});
 			if (!response.ok) return false;
-			parseJson(healthSchema, await response.json(), "health");
-			return true;
+			const info = await response.json();
+			return openCodeServerUrl(info) !== null;
 		} catch {
 			return false;
 		}
@@ -335,9 +434,12 @@ export class OpenCodeServerManager implements OpenCodeManager {
 }
 
 export class OpenCodeHttpRuntime implements AgentRuntime {
-	private readonly baseUrl: string;
+	private baseUrl: string;
 	private readonly fetcher: Fetcher;
 	private readonly ensureServer?: () => Promise<void>;
+	private readonly discoverService: boolean;
+	private servicePassword: string | undefined;
+	private baseUrlResolution: Promise<void> | null = null;
 	private readonly directories = new Map<string, string>();
 	private readonly cancelled = new Set<string>();
 	private readonly lastErrors = new Map<string, string>();
@@ -358,13 +460,39 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 			ensureServer?: () => Promise<void>;
 		} = {},
 	) {
-		this.baseUrl = (options.baseUrl ?? "http://127.0.0.1:4096").replace(
-			/\/$/,
-			"",
-		);
+		this.baseUrl = (options.baseUrl ?? openCodeBaseUrl()).replace(/\/$/, "");
 		this.fetcher = options.fetcher ?? fetch;
 		this.ensureServer = options.ensureServer;
+		this.discoverService =
+			options.baseUrl === undefined && options.fetcher === undefined;
 		this.idleTimeoutMs = options.idleTimeoutMs ?? 15_000;
+	}
+
+	private resolveBaseUrl(): Promise<void> {
+		if (this.baseUrlResolution) return this.baseUrlResolution;
+		this.baseUrlResolution = (async () => {
+			if (!this.discoverService || this.baseUrl !== openCodeBaseUrl()) return;
+			const service = await discoverService();
+			if (service) {
+				this.baseUrl = service.url.replace(/\/$/, "");
+				this.servicePassword = service.password;
+				return;
+			}
+			for (let port = 4096; port <= 4105; port += 1) {
+				const candidate = openCodeBaseUrl(port);
+				try {
+					const response = await this.fetcher(`${candidate}/api/info`, {
+						headers: authHeaders(undefined, this.servicePassword),
+						signal: AbortSignal.timeout(750),
+					});
+					if (response.ok && openCodeServerUrl(await response.json())) {
+						this.baseUrl = candidate;
+						return;
+					}
+				} catch {}
+			}
+		})();
+		return this.baseUrlResolution;
 	}
 
 	private describeFetchFailure(error: unknown, timeoutMs: number): string {
@@ -401,8 +529,9 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 		directory?: string,
 		requestOptions?: { timeoutMs?: number },
 	): Promise<T> {
-		const headers = authHeaders(init.headers);
-		const sessionId = path.match(/^\/session\/([^/?]+)/)?.[1];
+		const apiPath = path.startsWith("/api/") ? path : `/api${path}`;
+		const headers = authHeaders(init.headers, this.servicePassword);
+		const sessionId = apiPath.match(/^\/api\/session\/([^/?]+)/)?.[1];
 		const cwd =
 			directory ??
 			(sessionId
@@ -413,7 +542,7 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 		const timeoutMs = requestOptions?.timeoutMs ?? 5_000;
 		let response: Response;
 		const send = () =>
-			this.fetcher(`${this.baseUrl}${path}`, {
+			this.fetcher(`${this.baseUrl}${apiPath}`, {
 				...init,
 				headers,
 				// Never let an unavailable OpenCode process block the Loom UI. Long
@@ -422,6 +551,7 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 				signal: init.signal ?? AbortSignal.timeout(timeoutMs),
 			});
 		try {
+			await this.resolveBaseUrl();
 			response = await send();
 		} catch (error) {
 			if (
@@ -458,14 +588,14 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 			throw new OpenCodeError(
 				"HTTP_ERROR",
 				[
-					`OpenCode request failed with HTTP ${response.status} (${init.method ?? "GET"} ${path})`,
+					`OpenCode request failed with HTTP ${response.status} (${init.method ?? "GET"} ${apiPath})`,
 					detail,
 				]
 					.filter(Boolean)
 					.join(": "),
 				{
 					status: String(response.status),
-					path,
+					path: apiPath,
 					...(detail ? { response: detail } : {}),
 				},
 			);

@@ -1,5 +1,4 @@
 import { OpenCodeHttpRuntime, type OpenCodeManager } from "@loom/opencode";
-import { findExecutable, readVersion } from "./cli";
 import {
 	type AgentEvent,
 	type AgentModel,
@@ -16,6 +15,7 @@ import {
 	type ProviderDetectionResult,
 	type SendMessageInput,
 } from "../core";
+import { findExecutable, readVersion } from "./cli";
 
 export const openCodeDefinition: ProviderDefinition = {
 	id: "opencode",
@@ -58,15 +58,19 @@ export class OpenCodeProviderAdapter implements CliProviderAdapter {
 		if (!installed) return { installed: false };
 		const [serverVersion, executablePath] = await Promise.all([
 			this.runtime
-				.request<{ version: string }>("/global/health")
+				.request<{ version?: string }>("/api/info")
 				.then((body) => body.version)
 				.catch(() => undefined),
 			findExecutable("opencode"),
 		]);
 		const version = executablePath
-			? (await readVersion(executablePath)) ?? serverVersion
+			? ((await readVersion(executablePath)) ?? serverVersion)
 			: serverVersion;
-		return { installed: true, executablePath: executablePath ?? undefined, version };
+		return {
+			installed: true,
+			executablePath: executablePath ?? undefined,
+			version,
+		};
 	}
 
 	async getVersion(): Promise<string | null> {
@@ -95,45 +99,44 @@ export class OpenCodeProviderAdapter implements CliProviderAdapter {
 
 	async listModels(): Promise<AgentModel[]> {
 		const connection = connectionId(this.definition.id);
-		const response = await this.runtime.request<{
-			providers?: Array<{
-				id: string;
-				name?: string;
-				models?: Record<
-					string,
-					{
-						id?: string;
-						name?: string;
-						limit?: { context?: number; output?: number };
-						capabilities?: Record<string, boolean>;
-					}
-				>;
-			}>;
-		}>("/config/providers");
-		return (response.providers ?? []).flatMap((provider) =>
-			Object.entries(provider.models ?? {}).map(([modelId, model]) =>
+		const models =
+			await this.runtime.request<
+				Array<{
+					id?: string;
+					modelID?: string;
+					providerID?: string;
+					name?: string;
+					limit?: { context?: number; output?: number };
+					capabilities?: { tools?: boolean; input?: string[] };
+				}>
+			>("/api/model");
+		return models.flatMap((model) => {
+			const modelId = model.modelID ?? model.id;
+			const upstreamProviderId = model.providerID;
+			if (!modelId || !upstreamProviderId) return [];
+			return [
 				normalizeModel({
 					providerId: this.definition.id,
 					connectionId: connection,
-					modelId: `${provider.id}/${modelId}`,
-					name: model.name ?? model.id ?? modelId,
-					displayName: model.name ?? model.id ?? modelId,
+					modelId: `${upstreamProviderId}/${modelId}`,
+					name: model.name ?? modelId,
+					displayName: model.name ?? modelId,
 					contextWindow: model.limit?.context,
 					outputLimit: model.limit?.output,
 					capabilities: [
 						"text",
 						"coding",
-						...(model.capabilities?.tool_call ? ["tools" as const] : []),
+						...(model.capabilities?.tools ? ["tools" as const] : []),
 					],
 					isAvailable: true,
 					metadata: {
-						providerName: provider.name,
-						upstreamProviderId: provider.id,
-						providerModelId: model.id ?? modelId,
+						upstreamProviderId,
+						providerModelId: modelId,
+						modelId: `${upstreamProviderId}/${modelId}`,
 					},
 				}),
-			),
-		);
+			];
+		});
 	}
 
 	async createSession(input: CreateSessionInput): Promise<AgentSession> {

@@ -54,7 +54,7 @@ function setup(
 		fetcher: async (url, init) => {
 			const req = new Request(url, init);
 			requests.push(req);
-			const path = new URL(req.url).pathname;
+			const path = new URL(req.url).pathname.replace(/^\/api/, "");
 			const injected = hooks?.(path);
 			if (injected) return injected;
 			if (path === "/session/ses_test")
@@ -244,9 +244,13 @@ describe("chat gateway", () => {
 					id === "project" ? { path: "/tmp" } : null,
 			},
 			request: async <T>(path: string) => {
-				if (path === "/config/providers")
-					return { providers: [], default: {} } as T;
-				return [] as T;
+				if (
+					path === "/api/model" ||
+					path === "/api/agent" ||
+					path === "/api/command"
+				)
+					return [] as T;
+				throw new Error(`Unexpected OpenCode request: ${path}`);
 			},
 			providerManager: {
 				subscribe: () => () => {},

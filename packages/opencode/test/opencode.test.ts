@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
 	discoverExecutable,
+	discoverService,
 	MockAgentRuntime,
 	OpenCodeError,
 	OpenCodeHttpRuntime,
@@ -9,6 +13,30 @@ import {
 } from "../src";
 
 describe("OpenCode discovery", () => {
+	test("loads the URL and password from a private service registration", async () => {
+		const stateHome = await mkdtemp(join(tmpdir(), "loom-opencode-state-"));
+		const serviceDir = join(stateHome, "opencode");
+		await mkdir(serviceDir);
+		const registrationPath = join(serviceDir, "service.json");
+		await writeFile(
+			registrationPath,
+			JSON.stringify({
+				url: "http://127.0.0.1:49374",
+				password: "private-test-password",
+			}),
+		);
+		await chmod(registrationPath, 0o600);
+		try {
+			await expect(discoverService(null, stateHome)).resolves.toEqual({
+				url: "http://127.0.0.1:49374",
+				password: "private-test-password",
+			});
+			await chmod(registrationPath, 0o644);
+			await expect(discoverService(null, stateHome)).resolves.toBeNull();
+		} finally {
+			await rm(stateHome, { recursive: true, force: true });
+		}
+	});
 	test("uses the configured executable", async () => {
 		await expect(
 			discoverExecutable(
@@ -28,12 +56,16 @@ describe("OpenCode discovery", () => {
 });
 
 describe("OpenCode server manager", () => {
-	test("reports health from the documented endpoint", async () => {
+	test("checks server info at the configured OpenCode service URL", async () => {
 		const manager = new OpenCodeServerManager({
-			fetcher: async () =>
-				new Response(JSON.stringify({ healthy: true, version: "1.0.0" }), {
-					status: 200,
-				}),
+			baseUrl: "http://127.0.0.1:49374",
+			fetcher: async (input) => {
+				expect(String(input)).toBe("http://127.0.0.1:49374/api/info");
+				return Response.json({
+					version: "2.2.5",
+					urls: ["http://127.0.0.1:49374"],
+				});
+			},
 		});
 		await expect(manager.health()).resolves.toBe(true);
 	});
@@ -56,7 +88,7 @@ describe("OpenCode HTTP runtime", () => {
 		const runtime = new OpenCodeHttpRuntime({
 			fetcher: async (input, init) => {
 				requests.push(new Request(input, init));
-				if (String(input).endsWith("/session")) {
+				if (String(input).endsWith("/api/session")) {
 					return new Response(JSON.stringify({ id: "session-1" }), {
 						status: 200,
 					});
@@ -252,8 +284,9 @@ describe("documented session lifecycle", () => {
 	test("waits through busy and pending user messages before accepting a completed assistant", async () => {
 		let phase = 0;
 		const runtime = new OpenCodeHttpRuntime({
+			baseUrl: "http://127.0.0.1:4096",
 			fetcher: async (url) => {
-				const path = new URL(String(url)).pathname;
+				const path = new URL(String(url)).pathname.replace(/^\/api/, "");
 				if (path === "/session/status")
 					return Response.json(
 						phase === 0 ? { ses_test: { type: "busy" } } : {},

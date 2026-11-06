@@ -123,49 +123,32 @@ async function setup(
 		providerManager,
 		designs: { listNodes: async () => designNodes },
 		runtimes: (id) => runtimes.get(id),
-		request: async <T>(path: string, options?: { body?: unknown }) => {
+		request: async <T>(rawPath: string, options?: { body?: unknown }) => {
+			const path = rawPath.replace(/^\/api/, "");
 			calls.push(path);
 			if (path.endsWith("/prompt_async") && openCodeFailure)
 				throw new Error(openCodeFailure);
-			if (path === "/config/providers")
-				return {
-					providers: [
-						{
-							id: "custom-provider",
-							name: "Custom provider",
-							models: {
-								"ag/gemini-3.8-flash-high": {
-									id: "ag/gemini-3.8-flash-high",
-									name: "Gemini Flash High",
-									limit: { context: 1_048_576, output: 65_536 },
-								},
-							},
-						},
-						{
-							id: "opencode",
-							name: "OpenCode",
-							models: {
-								"ag/gemini-3.8-flash-high": {
-									id: "ag/gemini-3.8-flash-high",
-									name: "Gemini Flash High",
-									limit: { context: 1_048_576, output: 65_536 },
-								},
-							},
-						},
-						{
-							id: "agy",
-							name: "Agy",
-							models: {
-								"gemini-3.8-flash-high": {
-									id: "gemini-3.8-flash-high",
-									name: "Gemini Flash High",
-									limit: { context: 1_048_576, output: 65_536 },
-								},
-							},
-						},
-					],
-					default: {},
-				} as T;
+			if (path === "/model")
+				return [
+					{
+						providerID: "custom-provider",
+						modelID: "ag/gemini-3.8-flash-high",
+						name: "Gemini Flash High",
+						limit: { context: 1_048_576, output: 65_536 },
+					},
+					{
+						providerID: "opencode",
+						modelID: "ag/gemini-3.8-flash-high",
+						name: "Gemini Flash High",
+						limit: { context: 1_048_576, output: 65_536 },
+					},
+					{
+						providerID: "agy",
+						modelID: "gemini-3.8-flash-high",
+						name: "Gemini Flash High",
+						limit: { context: 1_048_576, output: 65_536 },
+					},
+				] as T;
 			if (path === "/agent" || path === "/command") return [] as T;
 			if (path.endsWith("/prompt_async")) openCodePrompts.push(options?.body);
 			if (path === "/session/ses_test/message")

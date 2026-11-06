@@ -803,25 +803,17 @@ export function createChatRoutes(options: {
 	});
 	async function buildCatalog(projectId: string) {
 		const root = await directory(projectId);
-		const [providers, agents, commands] = await Promise.all([
-			request<{
-				providers: Array<{
-					id: string;
-					name: string;
-					models: Record<
-						string,
-						{
-							id: string;
-							name: string;
-							limit?: { context?: number; output?: number };
-							variants?:
-								| Array<string | { id?: string }>
-								| Record<string, unknown>;
-						}
-					>;
-				}>;
-				default: Record<string, string>;
-			}>("/config/providers", root),
+		const [providerModels, agents, commands] = await Promise.all([
+			request<
+				Array<{
+					id?: string;
+					modelID?: string;
+					providerID?: string;
+					name?: string;
+					limit?: { context?: number; output?: number };
+					variants?: Array<string | { id?: string }> | Record<string, unknown>;
+				}>
+			>("/api/model", root),
 			request<
 				Array<{
 					name: string;
@@ -829,11 +821,12 @@ export function createChatRoutes(options: {
 					mode: string;
 					hidden?: boolean;
 				}>
-			>("/agent", root),
-			request<Array<{ name: string; description?: string }>>("/command", root),
+			>("/api/agent", root),
+			request<Array<{ name: string; description?: string }>>("/api/command", root),
 		]);
-		const normalizedModels =
-			options.providerManager?.catalog.listAvailable().map((model) => ({
+		const availableManagedModels =
+			options.providerManager?.catalog.listAvailable() ?? [];
+		const normalizedModels = availableManagedModels.map((model) => ({
 				providerID: model.providerId,
 				modelID: String(model.metadata?.modelId ?? model.name),
 				name: model.displayName,
@@ -846,28 +839,32 @@ export function createChatRoutes(options: {
 				capabilities: model.capabilities,
 				contextWindow: model.contextWindow,
 				outputLimit: model.outputLimit,
-			})) ?? [];
-		const managedProviderIds = new Set(
-			normalizedModels.map((model) => model.providerID),
+			}));
+		const managedModelKeys = new Set(
+			normalizedModels.map(
+				(model) => `${model.providerID}/${model.modelID}`,
+			),
 		);
+		const apiModels = providerModels.flatMap((model) => {
+			const providerID = model.providerID;
+			const modelID = model.modelID ?? model.id;
+			if (!providerID || !modelID || managedModelKeys.has(`${providerID}/${modelID}`))
+				return [];
+			return [
+				{
+					providerID,
+					modelID,
+					name: model.name || modelID,
+					provider: providerID,
+					contextWindow: model.limit?.context,
+					outputLimit: model.limit?.output,
+					variants: variantIds(model.variants),
+				},
+			];
+		});
 		return {
-			models: [
-				...providers.providers.flatMap((provider) =>
-					managedProviderIds.has(provider.id)
-						? []
-						: Object.entries(provider.models).map(([modelId, model]) => ({
-								providerID: provider.id,
-								modelID: modelId,
-								name: model.name || modelId,
-								provider: provider.name,
-								contextWindow: model.limit?.context,
-								outputLimit: model.limit?.output,
-								variants: variantIds(model.variants),
-							})),
-				),
-				...normalizedModels,
-			],
-			defaults: providers.default,
+			models: [...apiModels, ...normalizedModels],
+			defaults: {},
 			agents: agents.filter((agent) => !agent.hidden),
 			commands,
 		};

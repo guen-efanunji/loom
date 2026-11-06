@@ -3061,28 +3061,23 @@ export async function createApp(options: DaemonAppOptions = {}) {
 					modelID: typeof actualModelId === "string" ? actualModelId : modelId,
 				};
 			} else {
-				const openCodeCatalog = await openCodeRuntime.request<{
-					providers?: Array<{
-						id: string;
-						models: Record<string, { id?: string }>;
-					}>;
-				}>("/config/providers");
-				const provider = openCodeCatalog.providers?.find(
-					(item) => item.id === providerId,
+				const openCodeModels = await openCodeRuntime.request<
+					Array<{ id?: string; modelID?: string; providerID?: string }>
+				>("/api/model");
+				const model = openCodeModels.find(
+					(item) =>
+						item.providerID === providerId &&
+						(item.modelID === modelId || item.id === modelId),
 				);
-				const matchedModel = Object.entries(provider?.models ?? {}).find(
-					([key, model]) => key === modelId || model.id === modelId,
-				);
-				if (!matchedModel)
+				if (!model)
 					return c.json(
 						{ error: "Model is not available from this provider" },
 						404,
 					);
-				const [modelKey, model] = matchedModel;
 				runtime = openCodeRuntime;
 				runtimeModel = {
 					providerID: providerId,
-					modelID: model.id ?? modelKey,
+					modelID: model.modelID ?? model.id ?? modelId,
 				};
 			}
 			if (!runtime || !runtimeModel)
@@ -3242,22 +3237,15 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	});
 	app.get("/api/providers/models", async (c) => {
 		await loadProviderModels();
-		const config = await openCodeRuntime
-			.request<{
-				providers?: Array<{
-					id: string;
-					name?: string;
-					models: Record<
-						string,
-						{
-							id?: string;
-							name?: string;
-							limit?: { context?: number; output?: number };
-						}
-					>;
-				}>;
-			}>("/config/providers")
-			.catch(() => ({ providers: [] }));
+		const openCodeCatalog = await openCodeRuntime
+			.request<Array<{
+				id?: string;
+				modelID?: string;
+				providerID?: string;
+				name?: string;
+				limit?: { context?: number; output?: number };
+			}>>("/api/model")
+			.catch(() => []);
 		const managedModels = providerManager.catalog
 			.listAvailable()
 			.map((model) => ({
@@ -3275,21 +3263,23 @@ export async function createApp(options: DaemonAppOptions = {}) {
 				contextWindow: model.contextWindow,
 				outputLimit: model.outputLimit,
 			}));
-		const managedProviderIds = new Set(
-			managedModels.map((model) => model.providerID),
+		const managedModelKeys = new Set(
+			managedModels.map((model) => `${model.providerID}/${model.modelID}`),
 		);
-		const openCodeModels = (config.providers ?? []).flatMap((provider) =>
-			managedProviderIds.has(provider.id)
-				? []
-				: Object.entries(provider.models).map(([modelID, model]) => ({
-						providerID: provider.id,
-						modelID: model.id ?? modelID,
-						name: model.name || modelID,
-						provider: provider.name || provider.id,
-						contextWindow: model.limit?.context,
-						outputLimit: model.limit?.output,
-					})),
-		);
+		const openCodeModels = openCodeCatalog.flatMap((model) => {
+			const providerID = model.providerID;
+			const modelID = model.modelID ?? model.id;
+			if (!providerID || !modelID || managedModelKeys.has(`${providerID}/${modelID}`))
+				return [];
+			return [{
+				providerID,
+				modelID,
+				name: model.name || modelID,
+				provider: providerID,
+				contextWindow: model.limit?.context,
+				outputLimit: model.limit?.output,
+			}];
+		});
 		return c.json([...openCodeModels, ...managedModels]);
 	});
 	app.post("/api/providers/refresh-all", async (c) => {
