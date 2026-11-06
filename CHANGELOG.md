@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.5](https://github.com/guen-efanunji/loom/compare/v0.3.4...v0.3.5) (2026-11-06)
+
+
+### Bug Fixes
+
+* **opencode:** send auth headers after service discovery ([00ad0ff](https://github.com/guen-efanunji/loom/commit/00ad0ff867e902c3647fa9add66063b88152f8c3))
+
 ## [0.3.4](https://github.com/guen-efanunji/loom/compare/v0.3.3...v0.3.4) (2026-11-06)
 
 
