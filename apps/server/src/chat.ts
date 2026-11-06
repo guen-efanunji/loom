@@ -822,33 +822,38 @@ export function createChatRoutes(options: {
 					hidden?: boolean;
 				}>
 			>("/api/agent", root),
-			request<Array<{ name: string; description?: string }>>("/api/command", root),
+			request<Array<{ name: string; description?: string }>>(
+				"/api/command",
+				root,
+			),
 		]);
 		const availableManagedModels =
 			options.providerManager?.catalog.listAvailable() ?? [];
 		const normalizedModels = availableManagedModels.map((model) => ({
-				providerID: model.providerId,
-				modelID: String(model.metadata?.modelId ?? model.name),
-				name: model.displayName,
-				provider:
-					typeof model.metadata?.providerName === "string"
-						? model.metadata.providerName
-						: model.providerId,
-				providerId: model.providerId,
-				connectionId: model.connectionId,
-				capabilities: model.capabilities,
-				contextWindow: model.contextWindow,
-				outputLimit: model.outputLimit,
-			}));
+			providerID: model.providerId,
+			modelID: String(model.metadata?.modelId ?? model.name),
+			name: model.displayName,
+			provider:
+				typeof model.metadata?.providerName === "string"
+					? model.metadata.providerName
+					: model.providerId,
+			providerId: model.providerId,
+			connectionId: model.connectionId,
+			capabilities: model.capabilities,
+			contextWindow: model.contextWindow,
+			outputLimit: model.outputLimit,
+		}));
 		const managedModelKeys = new Set(
-			normalizedModels.map(
-				(model) => `${model.providerID}/${model.modelID}`,
-			),
+			normalizedModels.map((model) => `${model.providerID}/${model.modelID}`),
 		);
 		const apiModels = providerModels.flatMap((model) => {
 			const providerID = model.providerID;
 			const modelID = model.modelID ?? model.id;
-			if (!providerID || !modelID || managedModelKeys.has(`${providerID}/${modelID}`))
+			if (
+				!providerID ||
+				!modelID ||
+				managedModelKeys.has(`${providerID}/${modelID}`)
+			)
 				return [];
 			return [
 				{
@@ -1710,29 +1715,29 @@ export function createChatRoutes(options: {
 			const workspace = toWorktreeWorkspace(current.workspace, projectPath);
 			try {
 				const head = await options.worktrees.inspectHead(workspace);
-			if (!head.clean)
-				throw new WorktreeError(
-					"SAFETY_ERROR",
-					"Checkpoint the workspace changes before merging",
-				);
-			// The main checkout must be free, or the merge would land mid-run.
-			const busy = await sharedCheckoutBusy(projectPath, current.id);
-			if (busy)
-				throw new HTTPException(409, {
-					message: `Another chat is editing the project folder (${busy.title ?? busy.sessionId}). Stop it before merging.`,
+				if (!head.clean)
+					throw new WorktreeError(
+						"SAFETY_ERROR",
+						"Checkpoint the workspace changes before merging",
+					);
+				// The main checkout must be free, or the merge would land mid-run.
+				const busy = await sharedCheckoutBusy(projectPath, current.id);
+				if (busy)
+					throw new HTTPException(409, {
+						message: `Another chat is editing the project folder (${busy.title ?? busy.sessionId}). Stop it before merging.`,
+					});
+				// keepWorkspace: the session keeps talking to this worktree after intake.
+				const sha = await options.worktrees.merge(workspace, undefined, {
+					keepWorkspace: true,
 				});
-			// keepWorkspace: the session keeps talking to this worktree after intake.
-			const sha = await options.worktrees.merge(workspace, undefined, {
-				keepWorkspace: true,
-			});
-			await options.chatWorkspaces?.update(current.id, { status: "active" });
-			return c.json({
-				sha,
-				...(await workspaceView(current.workspace, projectPath)),
-			});
-		} catch (error) {
-			return workspaceConflictResponse(c, error);
-		}
+				await options.chatWorkspaces?.update(current.id, { status: "active" });
+				return c.json({
+					sha,
+					...(await workspaceView(current.workspace, projectPath)),
+				});
+			} catch (error) {
+				return workspaceConflictResponse(c, error);
+			}
 		} finally {
 			releaseMutation();
 		}
@@ -2814,68 +2819,68 @@ export function createChatRoutes(options: {
 			? beginWorkspaceMutation(current.id)
 			: undefined;
 		try {
-		// An isolated conversation owns a worktree. Check its state before anything
-		// is torn down, so uncheckpointed agent output is never destroyed silently.
-		const workspace =
-			current.workspace && options.worktrees
-				? toWorktreeWorkspace(
-						current.workspace,
-						await directory(current.projectId),
-					)
-				: undefined;
-		if (workspace) {
-			try {
-				const head = await options.worktrees!.inspectHead(workspace);
-				if (!head.clean)
-					return c.json(
-						{
-							error: {
-								code: "WORKSPACE_DIRTY",
-								message:
-									"This isolated chat has uncheckpointed changes. Checkpoint and merge them, or discard the workspace, before deleting the chat.",
+			// An isolated conversation owns a worktree. Check its state before anything
+			// is torn down, so uncheckpointed agent output is never destroyed silently.
+			const workspace =
+				current.workspace && options.worktrees
+					? toWorktreeWorkspace(
+							current.workspace,
+							await directory(current.projectId),
+						)
+					: undefined;
+			if (workspace) {
+				try {
+					const head = await options.worktrees!.inspectHead(workspace);
+					if (!head.clean)
+						return c.json(
+							{
+								error: {
+									code: "WORKSPACE_DIRTY",
+									message:
+										"This isolated chat has uncheckpointed changes. Checkpoint and merge them, or discard the workspace, before deleting the chat.",
+								},
 							},
-						},
-						409,
-					);
-				// Committing is not the same as integrating: deleting here would strand
-				// the branch, so unmerged output must go through merge or discard first.
-				const integrated = options.worktrees!.isCommitIntegrated
-					? await options.worktrees!.isCommitIntegrated(workspace, head.head)
-					: true;
-				if (!integrated)
-					return c.json(
-						{
-							error: {
-								code: "WORKSPACE_UNMERGED",
-								message:
-									"This isolated chat has output that is not in the project branch yet. Merge it into the project, or discard the workspace, before deleting the chat.",
+							409,
+						);
+					// Committing is not the same as integrating: deleting here would strand
+					// the branch, so unmerged output must go through merge or discard first.
+					const integrated = options.worktrees!.isCommitIntegrated
+						? await options.worktrees!.isCommitIntegrated(workspace, head.head)
+						: true;
+					if (!integrated)
+						return c.json(
+							{
+								error: {
+									code: "WORKSPACE_UNMERGED",
+									message:
+										"This isolated chat has output that is not in the project branch yet. Merge it into the project, or discard the workspace, before deleting the chat.",
+								},
 							},
-						},
-						409,
-					);
-			} catch (error) {
-				return workspaceConflictResponse(c, error);
+							409,
+						);
+				} catch (error) {
+					return workspaceConflictResponse(c, error);
+				}
 			}
-		}
-		options.permissions?.denySession(current.id);
-		if (providerSession?.permissionToken)
-			options.permissions?.unregisterRun(providerSession.permissionToken);
-		if (workspace) {
+			options.permissions?.denySession(current.id);
+			if (providerSession?.permissionToken)
+				options.permissions?.unregisterRun(providerSession.permissionToken);
+			if (workspace) {
+				try {
+					await options.worktrees!.remove(workspace);
+				} catch (error) {
+					return workspaceConflictResponse(c, error);
+				}
+			}
+			await request(`/session/${current.id}`, current.directory, {}, "DELETE");
+			providerSessions.delete(current.id);
+			await options.providerHistory?.delete(current.id);
 			try {
-				await options.worktrees!.remove(workspace);
-			} catch (error) {
-				return workspaceConflictResponse(c, error);
-			}
-		}
-		await request(`/session/${current.id}`, current.directory, {}, "DELETE");
-		providerSessions.delete(current.id);
-		await options.providerHistory?.delete(current.id);
-		try {
-			await options.chatCompactions?.delete?.(current.id);
-		} catch {}
-		forcedCompactionSessions.delete(current.id);
-		if (workspace) await options.chatWorkspaces?.delete(current.id);
-		return c.body(null, 204);
+				await options.chatCompactions?.delete?.(current.id);
+			} catch {}
+			forcedCompactionSessions.delete(current.id);
+			if (workspace) await options.chatWorkspaces?.delete(current.id);
+			return c.body(null, 204);
 		} finally {
 			releaseMutation?.();
 		}
