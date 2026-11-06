@@ -563,19 +563,22 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 		requestOptions?: { timeoutMs?: number },
 	): Promise<T> {
 		const apiPath = path.startsWith("/api/") ? path : `/api${path}`;
-		const headers = authHeaders(init.headers, this.servicePassword);
 		const sessionId = apiPath.match(/^\/api\/session\/([^/?]+)/)?.[1];
 		const cwd =
 			directory ??
 			(sessionId
 				? this.directories.get(decodeURIComponent(sessionId))
 				: undefined);
-		if (cwd) headers.set("x-opencode-directory", encodeURIComponent(cwd));
-		if (init.body) headers.set("content-type", "application/json");
 		const timeoutMs = requestOptions?.timeoutMs ?? 5_000;
 		let response: Response;
-		const send = () =>
-			this.fetcher(`${this.baseUrl}${apiPath}`, {
+		// Service-discovery resolves the gateway URL and its password lazily on
+		// the first call; build the headers inside `send` so every attempt
+		// carries credentials even when discovery filled them in just now.
+		const send = () => {
+			const headers = authHeaders(init.headers, this.servicePassword);
+			if (cwd) headers.set("x-opencode-directory", encodeURIComponent(cwd));
+			if (init.body) headers.set("content-type", "application/json");
+			return this.fetcher(`${this.baseUrl}${apiPath}`, {
 				...init,
 				headers,
 				// Never let an unavailable OpenCode process block the Loom UI. Long
@@ -583,6 +586,7 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 				// quickly and let the client remain usable.
 				signal: init.signal ?? AbortSignal.timeout(timeoutMs),
 			});
+		};
 		try {
 			await this.resolveBaseUrl();
 			response = await send();
