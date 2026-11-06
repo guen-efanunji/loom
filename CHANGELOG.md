@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.4](https://github.com/guen-efanunji/loom/compare/v0.3.3...v0.3.4) (2026-11-06)
+
+
+### Bug Fixes
+
+* **opencode:** unwrap 2.2+ data envelopes and guard list endpoints ([cf1079f](https://github.com/guen-efanunji/loom/commit/cf1079f3c11519eb3c81af1e9180808f151a1103))
+
 ## [0.3.3](https://github.com/guen-efanunji/loom/compare/v0.3.2...v0.3.3) (2026-11-06)
 
 
