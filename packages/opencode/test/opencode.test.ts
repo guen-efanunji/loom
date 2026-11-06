@@ -10,6 +10,8 @@ import {
 	OpenCodeError,
 	OpenCodeHttpRuntime,
 	OpenCodeServerManager,
+	requireOpenCodeArray,
+	unwrapOpenCodeEnvelope,
 } from "../src";
 
 describe("OpenCode discovery", () => {
@@ -88,8 +90,9 @@ describe("OpenCode HTTP runtime", () => {
 		const runtime = new OpenCodeHttpRuntime({
 			fetcher: async (input, init) => {
 				requests.push(new Request(input, init));
+				// OpenCode 2.2+ wraps every payload in a `{ data: ... }` envelope.
 				if (String(input).endsWith("/api/session")) {
-					return new Response(JSON.stringify({ id: "session-1" }), {
+					return new Response(JSON.stringify({ data: { id: "session-1" } }), {
 						status: 200,
 					});
 				}
@@ -135,6 +138,48 @@ describe("OpenCode HTTP runtime", () => {
 		await expect(
 			runtime.createSession({ cwd: "/tmp", title: "Task" }),
 		).rejects.toBeInstanceOf(OpenCodeError);
+	});
+
+	test("unwraps the 2.2+ data envelope but keeps bare payloads", async () => {
+		const runtime = new OpenCodeHttpRuntime({
+			fetcher: async (input) =>
+				String(input).includes("/api/info")
+					? new Response(
+							JSON.stringify({ version: "2.2.5", hostname: "local" }),
+							{ status: 200 },
+						)
+					: new Response(
+							JSON.stringify({
+								data: [{ id: "m1", modelID: "m1", providerID: "prov" }],
+							}),
+							{ status: 200 },
+						),
+		});
+		await expect(runtime.request("/model")).resolves.toEqual([
+			{ id: "m1", modelID: "m1", providerID: "prov" },
+		]);
+		await expect(runtime.request("/info")).resolves.toEqual({
+			version: "2.2.5",
+			hostname: "local",
+		});
+	});
+
+	test("requireOpenCodeArray fails loudly for non-array list endpoints", () => {
+		expect(() =>
+			requireOpenCodeArray(
+				{ _tag: "UnauthorizedError", message: "Authentication required" },
+				"/api/model",
+			),
+		).toThrow("/api/model");
+		expect(requireOpenCodeArray([1, 2], "/api/model")).toEqual([1, 2]);
+	});
+
+	test("unwrapOpenCodeEnvelope only strips objects with a data key", () => {
+		expect(unwrapOpenCodeEnvelope({ data: [1, 2] })).toEqual([1, 2]);
+		expect(unwrapOpenCodeEnvelope({ data: null })).toBeNull();
+		expect(unwrapOpenCodeEnvelope([1, 2])).toEqual([1, 2]);
+		expect(unwrapOpenCodeEnvelope(null)).toBeNull();
+		expect(unwrapOpenCodeEnvelope({ id: "x" })).toEqual({ id: "x" });
 	});
 
 	test("includes OpenCode validation details for rejected config updates", async () => {

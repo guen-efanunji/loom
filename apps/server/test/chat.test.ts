@@ -269,6 +269,37 @@ describe("chat gateway", () => {
 		});
 	});
 
+	test("fails the composer catalog with a named error for non-array list responses", async () => {
+		const app = createChatRoutes({
+			projects: {
+				list: async () => [],
+				getById: async (id: string) =>
+					id === "project" ? { path: "/tmp" } : null,
+			},
+			request: async <T>(path: string) => {
+				if (path === "/api/model")
+					// A stripped/OpenCode 401 body used to surface here and crash the
+					// composer with `X.flatMap is not a function`.
+					return {
+						_tag: "UnauthorizedError",
+						message: "Authentication required",
+					} as T;
+				return [] as T;
+			},
+			providerManager: {
+				subscribe: () => () => {},
+				refreshAll: async () => {},
+				catalog: { listAvailable: () => [] },
+			} as never,
+		});
+		app.onError((error, c) => c.json({ error: error.message }, 502));
+		const response = await app.request("/catalog?projectId=project");
+		expect(response.status).toBe(502);
+		expect(await response.json()).toMatchObject({
+			error: "OpenCode returned an unexpected response shape from /api/model",
+		});
+	});
+
 	test("reads recorded edit patches when session snapshots are disabled", async () => {
 		const { app } = setup();
 		const response = await app.request("/sessions/ses_test/diff");

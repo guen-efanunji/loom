@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdir, readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { atomicJson, dataDirectory } from "@loom/distribution";
+import { requireOpenCodeArray } from "@loom/opencode";
 import type {
 	AgentRunStatus,
 	AgentRuntime,
@@ -357,6 +358,24 @@ function variantIds(
 		);
 	return value && typeof value === "object" ? Object.keys(value) : [];
 }
+
+type CatalogApiModel = {
+	id?: string;
+	modelID?: string;
+	providerID?: string;
+	name?: string;
+	limit?: { context?: number; output?: number };
+	variants?: Array<string | { id?: string }> | Record<string, unknown>;
+};
+
+type CatalogAgent = {
+	name: string;
+	description?: string;
+	mode: string;
+	hidden?: boolean;
+};
+
+type CatalogCommand = { name: string; description?: string };
 
 function thinkingGuidance(mode: string) {
 	const detail: Record<string, string> = {
@@ -803,30 +822,26 @@ export function createChatRoutes(options: {
 	});
 	async function buildCatalog(projectId: string) {
 		const root = await directory(projectId);
-		const [providerModels, agents, commands] = await Promise.all([
-			request<
-				Array<{
-					id?: string;
-					modelID?: string;
-					providerID?: string;
-					name?: string;
-					limit?: { context?: number; output?: number };
-					variants?: Array<string | { id?: string }> | Record<string, unknown>;
-				}>
-			>("/api/model", root),
-			request<
-				Array<{
-					name: string;
-					description?: string;
-					mode: string;
-					hidden?: boolean;
-				}>
-			>("/api/agent", root),
-			request<Array<{ name: string; description?: string }>>(
-				"/api/command",
-				root,
-			),
+		const [modelResponse, agentResponse, commandResponse] = await Promise.all([
+			// The OpenCode gateway unwraps the 2.2+ `{ data: ... }` envelope; the
+			// shape guard below keeps odd/partial gateways from crashing the
+			// composer with a bare `.flatMap` TypeError.
+			request<unknown>("/api/model", root),
+			request<unknown>("/api/agent", root),
+			request<unknown>("/api/command", root),
 		]);
+		const providerModels = requireOpenCodeArray<CatalogApiModel>(
+			modelResponse,
+			"/api/model",
+		);
+		const agents = requireOpenCodeArray<CatalogAgent>(
+			agentResponse,
+			"/api/agent",
+		);
+		const commands = requireOpenCodeArray<CatalogCommand>(
+			commandResponse,
+			"/api/command",
+		);
 		const availableManagedModels =
 			options.providerManager?.catalog.listAvailable() ?? [];
 		const normalizedModels = availableManagedModels.map((model) => ({

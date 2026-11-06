@@ -70,6 +70,39 @@ function authHeaders(
 	return result;
 }
 
+/**
+ * OpenCode 2.2+ wraps almost every JSON payload in a `{ data: ... }` envelope —
+ * lists and single entities alike, often next to a sibling `location`. A few
+ * diagnostic endpoints (for example `/api/info`) still return bare payloads.
+ * Normalizing the envelope away here keeps every caller reading the declared
+ * schema shapes instead of leaking object bodies into `.flatMap`/`.find`.
+ */
+export function unwrapOpenCodeEnvelope<T>(body: unknown): T {
+	if (
+		body !== null &&
+		typeof body === "object" &&
+		!Array.isArray(body) &&
+		"data" in (body as Record<PropertyKey, unknown>)
+	) {
+		return (body as Record<PropertyKey, unknown>).data as T;
+	}
+	return body as T;
+}
+
+/**
+ * Guard for endpoints that must answer with a list. Old gateway versions
+ * surfaced non-array bodies through generic array methods and crashed with a
+ * cryptic `X.flatMap is not a function`; fail loudly with the endpoint instead.
+ */
+export function requireOpenCodeArray<T>(body: unknown, endpoint: string): T[] {
+	if (Array.isArray(body)) return body as T[];
+	throw new OpenCodeError(
+		"INVALID_RESPONSE",
+		`OpenCode returned an unexpected response shape from ${endpoint}`,
+		{ endpoint },
+	);
+}
+
 export type OpenCodeManager = {
 	discover(): Promise<boolean>;
 	start(): Promise<void>;
@@ -600,7 +633,8 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 				},
 			);
 		}
-		return (response.status === 204 ? undefined : await response.json()) as T;
+		if (response.status === 204) return undefined as T;
+		return unwrapOpenCodeEnvelope<T>(await response.json());
 	}
 
 	async createSession(input: {

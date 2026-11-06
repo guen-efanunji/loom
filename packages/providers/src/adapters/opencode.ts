@@ -1,4 +1,8 @@
-import { OpenCodeHttpRuntime, type OpenCodeManager } from "@loom/opencode";
+import {
+	OpenCodeHttpRuntime,
+	type OpenCodeManager,
+	requireOpenCodeArray,
+} from "@loom/opencode";
 import {
 	type AgentEvent,
 	type AgentModel,
@@ -99,17 +103,14 @@ export class OpenCodeProviderAdapter implements CliProviderAdapter {
 
 	async listModels(): Promise<AgentModel[]> {
 		const connection = connectionId(this.definition.id);
-		const models =
-			await this.runtime.request<
-				Array<{
-					id?: string;
-					modelID?: string;
-					providerID?: string;
-					name?: string;
-					limit?: { context?: number; output?: number };
-					capabilities?: { tools?: boolean; input?: string[] };
-				}>
-			>("/api/model");
+		const models = requireOpenCodeArray<{
+			id?: string;
+			modelID?: string;
+			providerID?: string;
+			name?: string;
+			limit?: { context?: number; output?: number };
+			capabilities?: { tools?: boolean; input?: string[] };
+		}>(await this.runtime.request<unknown>("/api/model"), "/api/model");
 		return models.flatMap((model) => {
 			const modelId = model.modelID ?? model.id;
 			const upstreamProviderId = model.providerID;
