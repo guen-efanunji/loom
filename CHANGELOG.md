@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.6](https://github.com/guen-efanunji/loom/compare/v0.3.5...v0.3.6) (2026-11-08)
+
+
+### Bug Fixes
+
+* **opencode:** preserve modern gateway on model selection errors ([9066a21](https://github.com/guen-efanunji/loom/commit/9066a21c8756a0fb1a37cc9f42a559e259f8b4c3))
+
 ## [0.3.5](https://github.com/guen-efanunji/loom/compare/v0.3.4...v0.3.5) (2026-11-08)
 
 
