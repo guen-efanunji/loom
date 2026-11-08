@@ -644,6 +644,8 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 	 * endpoints); the gateway then keeps serving pre-2.2 endpoints only.
 	 */
 	private legacyGateway = false;
+	/** Whether the gateway version has been probed via /session/active. */
+	private legacyGatewayProbed = false;
 
 	constructor(
 		options: {
@@ -721,6 +723,27 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 		);
 	}
 
+	/**
+	 * Classifies the gateway exactly once: legacy gateways (pre-2.2) have no
+	 * `/session/active`, so any 404/400 on it means "old gateway". A modern
+	 * gateway answers 404/400 for other reasons too — e.g. an unknown model on
+	 * `/model` — and must never be demoted to the legacy vocabulary.
+	 */
+	private async isLegacyGateway(): Promise<boolean> {
+		if (this.legacyGateway) return true;
+		if (this.legacyGatewayProbed) return false;
+		try {
+			await this.request("/session/active");
+			this.legacyGatewayProbed = true;
+			return false;
+		} catch (error) {
+			if (!missingOpenCodeEndpoint(error)) throw error;
+			this.legacyGateway = true;
+			this.legacyGatewayProbed = true;
+			return true;
+		}
+	}
+
 	async request<T = unknown>(
 		path: string,
 		init: RequestInit = {},
@@ -735,9 +758,13 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 		// older gateways (which answer 404/400) keep the legacy endpoint.
 		if (!this.legacyGateway && apiPath.endsWith("/session/status")) {
 			try {
-				return await this.request<T>("/session/active", init, directory, {
-					timeoutMs: requestOptions?.timeoutMs,
-				}).then((statuses) => withStatusVocabulary<T>(statuses));
+				if (await this.isLegacyGateway()) {
+					// Legacy caller paths continue below untouched.
+				} else {
+					return await this.request<T>("/session/active", init, directory, {
+						timeoutMs: requestOptions?.timeoutMs,
+					}).then((statuses) => withStatusVocabulary<T>(statuses));
+				}
 			} catch (error) {
 				if (!missingOpenCodeEndpoint(error)) throw error;
 				this.legacyGateway = true;
@@ -893,11 +920,14 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 					})()
 				: input.model
 			: undefined;
-		if (!this.legacyGateway) {
-			try {
-				// OpenCode 2.2 split model selection out of the prompt payload and
-				// dropped synchronous prompt submission (`prompt_async`).
-				if (model) {
+		if (!(await this.isLegacyGateway())) {
+			// OpenCode 2.2 split model selection out of the prompt payload and
+			// dropped synchronous prompt submission (`prompt_async`).
+			if (model) {
+				// A modern gateway rejects unknown models with 404/400. That is a
+				// model problem, not a gateway-version signal, so it rejects the
+				// turn cleanly instead of demoting every route to legacy.
+				try {
 					await this.request(
 						`/session/${encodeURIComponent(input.sessionId)}/model`,
 						{
@@ -911,34 +941,36 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 							}),
 						},
 					);
+				} catch (error) {
+					// A stale/custom model id is not evidence of a legacy server.
+					// Keep the chat usable by submitting with OpenCode's configured
+					// default instead of falling back to the removed prompt_async API.
+					if (!missingOpenCodeEndpoint(error)) throw error;
 				}
-				// The prompt payload no longer carries `system`/`parts`; the system
-				// instruction rides in `text` and attachments move into `files`.
-				const text = input.system
-					? `${input.system}\n\n${input.prompt}`
-					: input.prompt;
-				await this.request(
-					`/session/${encodeURIComponent(input.sessionId)}/prompt`,
-					{
-						method: "POST",
-						headers: { "content-type": "application/json" },
-						body: JSON.stringify({
-							text,
-							...(input.images?.length
-								? {
-										files: input.images.map((image) => ({
-											uri: `data:${image.mime};base64,${image.data}`,
-										})),
-									}
-								: {}),
-						}),
-					},
-				);
-				return;
-			} catch (error) {
-				if (!missingOpenCodeEndpoint(error)) throw error;
-				this.legacyGateway = true;
 			}
+			// The prompt payload no longer carries `system`/`parts`; the system
+			// instruction rides in `text` and attachments move into `files`.
+			const text = input.system
+				? `${input.system}\n\n${input.prompt}`
+				: input.prompt;
+			await this.request(
+				`/session/${encodeURIComponent(input.sessionId)}/prompt`,
+				{
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						text,
+						...(input.images?.length
+							? {
+									files: input.images.map((image) => ({
+										uri: `data:${image.mime};base64,${image.data}`,
+									})),
+								}
+							: {}),
+					}),
+				},
+			);
+			return;
 		}
 		await this.request(
 			`/session/${encodeURIComponent(input.sessionId)}/prompt_async`,
@@ -1077,7 +1109,7 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 	async abort(sessionId: string): Promise<void> {
 		// OpenCode 2.2 renamed aborts to `/interrupt`; keep the legacy
 		// endpoint for older gateways.
-		if (!this.legacyGateway) {
+		if (!(await this.isLegacyGateway())) {
 			try {
 				await this.request(
 					`/session/${encodeURIComponent(sessionId)}/interrupt`,

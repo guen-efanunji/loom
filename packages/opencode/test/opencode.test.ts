@@ -103,25 +103,28 @@ describe("OpenCode HTTP runtime", () => {
 			runtime.createSession({ cwd: "/tmp/worktree", title: "Task" }),
 		).resolves.toEqual({ id: "session-1" });
 		await runtime.prompt({ sessionId: "session-1", prompt: "Implement it" });
-		expect(requests[1]?.url).toContain("/session/session-1/prompt");
-		expect(await requests[1]?.json()).toEqual({ text: "Implement it" });
+		// request[0]=create, [1]=the one-time /session/active gateway probe,
+		// [2]=the prompt itself.
+		expect(requests[2]?.url).toContain("/session/session-1/prompt");
+		expect(await requests[2]?.json()).toEqual({ text: "Implement it" });
 	});
 
-	test("falls back to prompt_async when the modern gateway is missing", async () => {
+	test("uses prompt_async when the active endpoint identifies a legacy gateway", async () => {
 		const requests: Request[] = [];
 		const runtime = new OpenCodeHttpRuntime({
 			fetcher: async (input, init) => {
 				requests.push(new Request(input, init));
 				const path = new URL(String(input)).pathname;
-				if (path.endsWith("/session/session-1/prompt"))
+				if (path.endsWith("/session/active"))
 					return new Response("{}", { status: 404 });
 				return new Response(null, { status: 204 });
 			},
 		});
 		await runtime.prompt({ sessionId: "session-1", prompt: "Implement it" });
-		expect(requests[0]?.url).toContain("/prompt");
+		// Probe classifies the gateway; modern endpoint is never attempted.
+		expect(requests[0]?.url).toContain("/session/active");
 		expect(requests[1]?.url).toContain("/prompt_async");
-		// Subsequent prompts should skip the failing endpoint entirely.
+		// Subsequent prompts continue using the legacy endpoint.
 		await runtime.prompt({ sessionId: "session-1", prompt: "Again" });
 		expect(requests[2]?.url).toContain("/prompt_async");
 	});
@@ -142,12 +145,40 @@ describe("OpenCode HTTP runtime", () => {
 				modelID: "opencode/glm-5.3-flash-free",
 			},
 		});
-		// 2.2 selects the model on a dedicated endpoint before prompting.
-		expect(requests[0]?.url).toContain("/session/session-1/model");
-		expect(await requests[0]?.json()).toEqual({
+		// Probe first, then 2.2 selects the model on a dedicated endpoint.
+		expect(requests[0]?.url).toContain("/session/active");
+		expect(requests[1]?.url).toContain("/session/session-1/model");
+		expect(await requests[1]?.json()).toEqual({
 			model: { providerID: "opencode", id: "glm-5.3-flash-free" },
 		});
-		expect(requests[1]?.url).toContain("/session/session-1/prompt");
+		expect(requests[2]?.url).toContain("/session/session-1/prompt");
+	});
+
+	test("fails a modern prompt with an unknown model instead of demoting the gateway", async () => {
+		const requests: Request[] = [];
+		const runtime = new OpenCodeHttpRuntime({
+			fetcher: async (input, init) => {
+				requests.push(new Request(input, init));
+				const path = new URL(String(input)).pathname;
+				if (path.endsWith("/session/session-1/model"))
+					return new Response('{"message":"unknown model"}', { status: 404 });
+				return new Response(null, { status: 204 });
+			},
+		});
+		await runtime.prompt({
+			sessionId: "session-1",
+			prompt: "Implement it",
+			model: { providerID: "opencode", modelID: "unknown-model" },
+		});
+		// Probe + rejected model selection, then submit using the configured
+		// default. Never fall back to removed prompt_async on a modern server.
+		expect(requests[0]?.url).toContain("/session/active");
+		expect(requests[1]?.url).toContain("/session/session-1/model");
+		expect(requests[2]?.url).toContain("/session/session-1/prompt");
+		expect(requests).toHaveLength(3);
+		// The gateway stays modern on subsequent prompts too.
+		await runtime.prompt({ sessionId: "session-1", prompt: "Again" });
+		expect(requests[3]?.url).toContain("/session/session-1/prompt");
 	});
 
 	test("rejects malformed session responses", async () => {
@@ -334,8 +365,9 @@ describe("OpenCode HTTP runtime", () => {
 			},
 		});
 		await runtime.abort("session-1");
-		expect(requests[0]?.url).toContain("/session/session-1/interrupt");
-		expect(requests[0]?.method).toBe("POST");
+		expect(requests[0]?.url).toContain("/session/active");
+		expect(requests[1]?.url).toContain("/session/session-1/interrupt");
+		expect(requests[1]?.method).toBe("POST");
 	});
 
 	test("falls back to /abort when interrupt is unavailable", async () => {
@@ -349,8 +381,9 @@ describe("OpenCode HTTP runtime", () => {
 			},
 		});
 		await runtime.abort("session-1");
-		expect(requests[0]?.url).toContain("/interrupt");
-		expect(requests[1]?.url).toContain("/session/session-1/abort");
+		expect(requests[0]?.url).toContain("/session/active");
+		expect(requests[1]?.url).toContain("/interrupt");
+		expect(requests[2]?.url).toContain("/session/session-1/abort");
 	});
 
 	test("degrades removed permission/question endpoints to empty lists", async () => {
@@ -620,7 +653,8 @@ describe("documented session lifecycle", () => {
 		});
 
 		expect(await runtime.status("ses_gone")).toBe("failed");
-		expect(statusPollCount.value).toBe(1);
+		// One status() call: the probe plus the bridged active snapshot.
+		expect(statusPollCount.value).toBe(2);
 		await expect(runtime.lastError("ses_gone")).resolves.toContain(
 			"stopped reporting status",
 		);
