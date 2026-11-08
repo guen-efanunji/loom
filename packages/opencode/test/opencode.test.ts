@@ -356,6 +356,66 @@ describe("OpenCode HTTP runtime", () => {
 		});
 	});
 
+	test("submits modern prompts with OpenCode attachment and agent fields", async () => {
+		const requests: Request[] = [];
+		const runtime = new OpenCodeHttpRuntime({
+			fetcher: async (input, init) => {
+				const request = new Request(input, init);
+				requests.push(request);
+				const path = new URL(String(input)).pathname;
+				if (path.endsWith("/session/active")) return Response.json({});
+				return new Response(null, { status: 204 });
+			},
+		});
+		await runtime.prompt({
+			sessionId: "session-1",
+			prompt: "Implement the attached design",
+			model: { providerID: "anthropic", modelID: "claude-test" },
+			variant: "high",
+			files: [
+				{
+					uri: "file:///tmp/design.html",
+					name: "design.html",
+					mime: "text/html",
+				},
+				{
+					uri: "data:text/plain;base64,SGVsbG8=",
+					name: "notes.txt",
+					mime: "text/plain",
+				},
+			],
+			agents: [{ name: "reviewer" }],
+		});
+		const promptRequest = requests.at(-1);
+		expect(promptRequest?.url).toContain("/session/session-1/prompt");
+		expect(promptRequest?.url).not.toContain("prompt_async");
+		expect(requests[1]?.url).toContain("/session/session-1/model");
+		expect(await requests[1]?.json()).toMatchObject({
+			model: {
+				providerID: "anthropic",
+				id: "claude-test",
+				variant: "high",
+			},
+		});
+		expect(await promptRequest?.json()).toEqual({
+			text: "Implement the attached design",
+			files: [
+				{
+					mime: "text/html",
+					name: "design.html",
+					source: { type: "uri", uri: "file:///tmp/design.html" },
+				},
+				{
+					data: "SGVsbG8=",
+					mime: "text/plain",
+					name: "notes.txt",
+					source: { type: "inline" },
+				},
+			],
+			agents: [{ name: "reviewer" }],
+		});
+	});
+
 	test("does not classify the whole gateway as legacy when scoped active status returns 404", async () => {
 		const requests: Request[] = [];
 		const runtime = new OpenCodeHttpRuntime({

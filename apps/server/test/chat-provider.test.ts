@@ -72,6 +72,10 @@ async function setup(
 		prompt: async (input) => {
 			prompts.push(input);
 			if (failure) throw new Error(failure);
+			if (providerId === "opencode") {
+				openCodePrompts.push(input);
+				if (openCodeFailure) throw new Error(openCodeFailure);
+			}
 			status = "running";
 			output = "";
 		},
@@ -126,8 +130,22 @@ async function setup(
 		request: async <T>(rawPath: string, options?: { body?: unknown }) => {
 			const path = rawPath.replace(/^\/api/, "");
 			calls.push(path);
-			if (path.endsWith("/prompt_async") && openCodeFailure)
-				throw new Error(openCodeFailure);
+			if (path === "/session/active" && providerId === "opencode")
+				return {} as T;
+			if (path.endsWith("/session/model")) return undefined as T;
+			if (path.endsWith("/prompt") || path.endsWith("/prompt_async")) {
+				if (providerId === "opencode") {
+					openCodePrompts.push(options?.body);
+					if (openCodeFailure) {
+						if (openCodeFailure.startsWith("{"))
+							throw Object.assign(new Error("OpenCode request failed"), {
+								cause: { message: openCodeFailure },
+							});
+						throw new Error(openCodeFailure);
+					}
+				}
+				return undefined as T;
+			}
 			if (path === "/model")
 				return [
 					{
@@ -150,28 +168,29 @@ async function setup(
 					},
 				] as T;
 			if (path === "/agent" || path === "/command") return [] as T;
-			if (path.endsWith("/prompt_async")) openCodePrompts.push(options?.body);
 			if (path === "/session/ses_test/message")
 				return (storedHistory.get("ses_test") ?? []).filter((message) => {
-					const parts = (
-						message as {
-							parts?: Array<{
-								type?: string;
-								state?: { metadata?: unknown };
-							}>;
-						}
-					).parts ?? [];
+					const parts =
+						(
+							message as {
+								parts?: Array<{
+									type?: string;
+									state?: { metadata?: unknown };
+								}>;
+							}
+						).parts ?? [];
 					return !parts.some(
 						(part) => part.type === "tool" && part.state?.metadata,
 					);
 				}) as T;
-			if (path === "/session/ses_other/message") return foreignSessionHistory as T;
+			if (path === "/session/ses_other/message")
+				return foreignSessionHistory as T;
 			if (path === "/session/ses_other")
 				return {
 					id: "ses_other",
 					directory: "/tmp",
 					title: "Earlier project session",
-				time: { updated: 2 },
+					time: { updated: 2 },
 				} as T;
 			if (path === "/session/ses_test")
 				return {
@@ -267,9 +286,9 @@ async function setup(
 		send: (
 			text = "Hello",
 			provider = providerId,
-		designNodeIds: string[] = [],
-		modelId = "custom-model",
-		sessionRefs: string[] = [],
+			designNodeIds: string[] = [],
+			modelId = "custom-model",
+			sessionRefs: string[] = [],
 		) =>
 			app.request("/sessions/ses_test/messages", {
 				method: "POST",
@@ -417,6 +436,40 @@ describe("provider chat", () => {
 		);
 	});
 
+	test("sends OpenCode chat through the modern runtime prompt API", async () => {
+		const fixture = await setup("opencode");
+		const response = await fixture.send(
+			"Hello OpenCode",
+			"opencode",
+			[],
+			"opencode/ag/gemini-3.8-flash-high",
+		);
+		expect(response.status).toBe(204);
+		expect(fixture.prompts).toHaveLength(1);
+		expect(fixture.prompts[0]?.prompt).toContain("Hello OpenCode");
+		expect(fixture.prompts[0]?.model).toEqual({
+			providerID: "opencode",
+			modelID: "ag/gemini-3.8-flash-high",
+		});
+		expect(fixture.openCodePrompts).toHaveLength(1);
+		expect(fixture.openCodePrompts[0]).toMatchObject({
+			prompt: expect.stringContaining("Hello OpenCode"),
+		});
+		expect(fixture.calls.some((path) => path.endsWith("/prompt_async"))).toBe(
+			false,
+		);
+	});
+
+	test("returns runtime OpenCode errors instead of calling the legacy prompt endpoint", async () => {
+		const fixture = await setup("opencode");
+		fixture.setOpenCodeFailure("OpenCode model is unavailable");
+		const response = await fixture.send("Hello OpenCode", "opencode");
+		expect(response.status).toBe(502);
+		expect(fixture.calls.some((path) => path.endsWith("/prompt_async"))).toBe(
+			false,
+		);
+	});
+
 	test("lists only same-project direct child sessions for focus navigation", async () => {
 		const fixture = await setup("opencode");
 		fixture.setNativeSessions([
@@ -479,12 +532,26 @@ describe("provider chat", () => {
 			},
 			{
 				info: { id: "ref-assistant", role: "assistant", time: { created: 2 } },
-				parts: [{ id: "ref-p2", type: "text", text: "I inspected the Svelte routes and found /settings." }],
+				parts: [
+					{
+						id: "ref-p2",
+						type: "text",
+						text: "I inspected the Svelte routes and found /settings.",
+					},
+				],
 			},
 		]);
-		const response = await fixture.send("Continue from this session", "agy", [], "custom-model", ["ses_other"]);
+		const response = await fixture.send(
+			"Continue from this session",
+			"agy",
+			[],
+			"custom-model",
+			["ses_other"],
+		);
 		expect(response.status).toBe(204);
-		expect(fixture.prompts[0]?.prompt).toContain("Untrusted, compact references");
+		expect(fixture.prompts[0]?.prompt).toContain(
+			"Untrusted, compact references",
+		);
 		expect(fixture.prompts[0]?.prompt).toContain("Build a settings page");
 		expect(fixture.prompts[0]?.prompt).toContain("Continue from this session");
 	});
@@ -492,7 +559,9 @@ describe("provider chat", () => {
 	test("rejects cross-project session references", async () => {
 		const fixture = await setup("agy");
 		fixture.setForeignSessionHistory([]);
-		const response = await fixture.send("Continue", "agy", [], "custom-model", ["bad_session"]);
+		const response = await fixture.send("Continue", "agy", [], "custom-model", [
+			"bad_session",
+		]);
 		expect(response.status).toBe(400);
 	});
 
@@ -590,40 +659,38 @@ describe("provider chat", () => {
 		expect(JSON.stringify(await state)).toContain("Login desktop");
 	});
 
-	test("sends Canvas HTML as a named attachment to OpenCode", async () => {
-		const { openCodePrompts, send } = await setup("agy", new Map(), [
-			{
-				id: "design-open-code",
-				projectId: "project",
-				title: "Checkout",
-				brief: "Minimal checkout flow",
-				viewport: "desktop",
-				status: "ready",
-				html: "<main>Checkout</main>",
-			},
-		]);
+	test("sends Canvas design context to OpenCode through its runtime", async () => {
+		const { openCodePrompts, prompts, send } = await setup(
+			"opencode",
+			new Map(),
+			[
+				{
+					id: "design-open-code",
+					projectId: "project",
+					title: "Checkout",
+					brief: "Minimal checkout flow",
+					viewport: "desktop",
+					status: "ready",
+					html: "<main>Checkout</main>",
+				},
+			],
+		);
 		const response = await send("Slice this screen", "opencode", [
 			"design-open-code",
 		]);
 		expect(response.status).toBe(204);
-		const payload = openCodePrompts[0] as {
-			system?: string;
-			parts: Array<{
-				type: string;
-				text?: string;
-				filename?: string;
-				url?: string;
-			}>;
-		};
-		expect(payload.system).toContain("authoritative visual specification");
-		expect(payload.system).toContain(
-			"For simple requests, answer or work directly",
-		);
-		const attachment = payload.parts.find((part) =>
-			part.filename?.startsWith("canvas-design:"),
-		);
-		expect(attachment?.filename).toBe("canvas-design:design-open-code.html");
-		expect(attachment?.url).toContain("PG1haW4+");
+		expect(openCodePrompts).toHaveLength(1);
+		expect(prompts[0]?.prompt).toContain("authoritative visual specification");
+		expect(openCodePrompts[0]).toMatchObject({
+			files: [
+				expect.objectContaining({
+					name: "canvas-design:design-open-code.html",
+					uri: expect.stringContaining("data:text/html;base64,"),
+				}),
+			],
+		});
+		expect(prompts[0]?.prompt).toContain("Minimal checkout flow");
+		expect(prompts[0]?.prompt).toContain("<main>Checkout</main>");
 	});
 
 	test("rejects Canvas designs outside the active project", async () => {

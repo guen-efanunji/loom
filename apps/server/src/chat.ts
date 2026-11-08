@@ -2,7 +2,10 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdir, readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { atomicJson, dataDirectory } from "@loom/distribution";
-import { requireOpenCodeArray } from "@loom/opencode";
+import {
+	type AgentRuntime as OpenCodeAgentRuntime,
+	requireOpenCodeArray,
+} from "@loom/opencode";
 import type {
 	AgentRunStatus,
 	AgentRuntime,
@@ -2089,7 +2092,7 @@ export function createChatRoutes(options: {
 							requestedModel.modelID.split("/");
 						return upstreamModelParts.length
 							? {
-									providerID: upstreamProviderId,
+									providerID: upstreamProviderId || requestedModel.providerID,
 									modelID: upstreamModelParts.join("/"),
 								}
 							: requestedModel;
@@ -2168,7 +2171,6 @@ export function createChatRoutes(options: {
 		}
 		if (
 			providerId &&
-			providerId !== "opencode" &&
 			options.providerManager?.registry.get(providerId) &&
 			!runtime
 		)
@@ -2181,7 +2183,10 @@ export function createChatRoutes(options: {
 				throw new HTTPException(409, {
 					message: `Provider is not connected: ${providerId}`,
 				});
-			if (input.attachments.length || input.agents.length)
+			if (
+				providerId !== "opencode" &&
+				(input.attachments.length || input.agents.length)
+			)
 				if (
 					input.agents.length ||
 					input.attachments.some((item) => !item.mime.startsWith("image/"))
@@ -2619,14 +2624,61 @@ export function createChatRoutes(options: {
 				...input.agents.map((name) => ({ type: "agent", name })),
 			],
 		};
+		const openCodeReferencedPaths = files.length
+			? `Referenced project paths (files or folders):\n${files.map((file) => file.filename).join("\n")}`
+			: "";
+		const openCodePromptText = [
+			openCodeSystemPrompt,
+			input.thinkingMode &&
+			input.thinkingMode !== "default" &&
+			!useOpenCodeVariant
+				? thinkingGuidance(input.thinkingMode)
+				: "",
+			promptText,
+			openCodeReferencedPaths,
+			referencedSessionContext,
+		]
+			.filter(Boolean)
+			.join("\n\n");
+		const openCodeFiles = [
+			...files.map((file) => ({
+				uri: file.url,
+				name: file.filename,
+				mime: file.mime,
+			})),
+			...input.attachments.map((attachment) => ({
+				uri: `data:${attachment.mime};base64,${attachment.data}`,
+				name: attachment.filename,
+				mime: attachment.mime,
+			})),
+		];
+		const openCodeDesignFiles = [
+			...designNodes.map((node) => ({
+				uri: `data:text/html;base64,${Buffer.from(node.html).toString("base64")}`,
+				name: `canvas-design:${node.id}.html`,
+				mime: "text/html",
+			})),
+		];
 		const sendPrompt = () =>
-			request(
-				`/session/${current.id}/prompt_async`,
-				current.directory,
-				sendPromptPayload,
-				undefined,
-				120_000,
-			);
+			providerId === "opencode" && runtime
+				? (runtime as OpenCodeAgentRuntime).prompt({
+						sessionId: current.id,
+						prompt: openCodePromptText,
+						model: openCodeModel,
+						files: [...openCodeFiles, ...openCodeDesignFiles],
+						agents: input.agents.map((name) => ({ name })),
+						variant:
+							useOpenCodeVariant && input.thinkingMode
+								? input.thinkingMode
+								: undefined,
+					})
+				: request(
+						`/session/${current.id}/prompt_async`,
+						current.directory,
+						sendPromptPayload,
+						undefined,
+						120_000,
+					);
 		const overflowHistory: ProviderMessage[] = [];
 		try {
 			await sendPrompt();

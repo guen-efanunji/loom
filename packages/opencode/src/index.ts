@@ -324,7 +324,10 @@ export type AgentRuntime = {
 		prompt: string;
 		system?: string;
 		model?: AgentModel;
+		variant?: string;
 		images?: Array<{ mime: string; data: string }>;
+		files?: Array<{ uri: string; name?: string; mime?: string }>;
+		agents?: Array<{ name: string }>;
 	}): Promise<void>;
 	status(sessionId: string): Promise<AgentRunStatus>;
 	lastError?(sessionId: string): Promise<string | null>;
@@ -898,6 +901,9 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 		system?: string;
 		model?: AgentModel;
 		images?: Array<{ mime: string; data: string }>;
+		files?: Array<{ uri: string; name?: string; mime?: string }>;
+		agents?: Array<{ name: string }>;
+		variant?: string;
 	}): Promise<void> {
 		this.cancelled.delete(input.sessionId);
 		// Catalog ids for this adapter's own models arrive already prefixed with
@@ -935,6 +941,7 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 								model: {
 									providerID: model.providerID,
 									id: model.modelID,
+									...(input.variant ? { variant: input.variant } : {}),
 								},
 							}),
 						},
@@ -958,13 +965,33 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 					headers: { "content-type": "application/json" },
 					body: JSON.stringify({
 						text,
-						...(input.images?.length
+						...(input.files?.length || input.images?.length
 							? {
-									files: input.images.map((image) => ({
-										uri: `data:${image.mime};base64,${image.data}`,
-									})),
+									files: [
+										...(input.files ?? []).map(({ uri, name, mime }) => {
+											const inline = uri.match(/^data:([^;,]+);base64,(.+)$/);
+											return inline
+												? {
+														data: inline[2],
+														mime: mime ?? inline[1],
+														name,
+														source: { type: "inline" as const },
+													}
+												: {
+														mime: mime ?? "application/octet-stream",
+														name,
+														source: { type: "uri" as const, uri },
+													};
+										}),
+										...(input.images ?? []).map((image) => ({
+											mime: image.mime,
+											data: image.data,
+											source: { type: "inline" as const },
+										})),
+									],
 								}
 							: {}),
+						...(input.agents?.length ? { agents: input.agents } : {}),
 					}),
 				},
 			);
@@ -982,6 +1009,7 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 								model: {
 									providerID: model.providerID,
 									modelID: model.modelID,
+									...(input.variant ? { variant: input.variant } : {}),
 								},
 							}
 						: {}),

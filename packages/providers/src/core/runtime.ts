@@ -80,6 +80,10 @@ export type AgentRuntime = {
 		thinkingMode?: string;
 		/** Base64 images (pasted photos, mockups) sent alongside the text. */
 		images?: Array<{ mime: string; data: string }>;
+		/** URI attachments supported by runtimes such as OpenCode. */
+		files?: Array<{ uri: string }>;
+		/** Subagent mentions supported by runtimes such as OpenCode. */
+		agents?: Array<{ name: string }>;
 		/** Tool-permission policy for this run. */
 		permission?: RuntimePermission;
 		/** Host authorization hook for runtimes that execute model-requested tools. */
