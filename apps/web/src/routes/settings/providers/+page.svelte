@@ -26,7 +26,13 @@ import * as AlertDialog from "$lib/components/ui/alert-dialog";
 import { Badge } from "$lib/components/ui/badge";
 import { Button } from "$lib/components/ui/button";
 import { Input } from "$lib/components/ui/input";
-import { daemon } from "$lib/daemon";
+import {
+	daemon,
+	parseDaemonEvent,
+	provisionDaemonToken,
+	websocketProtocols,
+	websocketUrl,
+} from "$lib/daemon";
 import { settingsHref } from "$lib/settings-navigation";
 
 type Provider = Awaited<ReturnType<typeof daemon.listProviders>>[number];
@@ -105,7 +111,39 @@ onMount(() => {
 		if (autoCheck) void checkProviders();
 	}, 30 * 60_000);
 	void loadProviders();
-	return () => window.clearInterval(timer);
+	// Provider discovery runs server-side and can finish (or re-run after a
+	// daemon restart) after this page renders. Live provider events re-load the
+	// list so the page is current by default instead of waiting for "Check now".
+	let socket: WebSocket | undefined;
+	let reconnect: ReturnType<typeof setTimeout> | undefined;
+	let disposed = false;
+	const connectEvents = () => {
+		if (disposed) return;
+		provisionDaemonToken()
+			.then(() => {
+				if (disposed) return;
+				socket = new WebSocket(websocketUrl(), websocketProtocols());
+				socket.onmessage = (message) => {
+					try {
+						const event = parseDaemonEvent(JSON.parse(String(message.data)));
+						if (event.type.startsWith("provider.")) void loadProviders();
+					} catch {}
+				};
+				socket.onclose = () => {
+					if (!disposed) reconnect = setTimeout(connectEvents, 2000);
+				};
+			})
+			.catch(() => {
+				if (!disposed) reconnect = setTimeout(connectEvents, 2000);
+			});
+	};
+	connectEvents();
+	return () => {
+		disposed = true;
+		window.clearInterval(timer);
+		if (reconnect) clearTimeout(reconnect);
+		socket?.close();
+	};
 });
 
 async function loadProviders() {
@@ -374,7 +412,9 @@ async function toggleAutoCheck() {
 	} catch (reason) {
 		autoCheck = !next;
 		toast.error(
-			reason instanceof Error ? reason.message : "Could not save update preference",
+			reason instanceof Error
+				? reason.message
+				: "Could not save update preference",
 		);
 	}
 }

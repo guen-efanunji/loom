@@ -391,7 +391,7 @@ function thinkingGuidance(mode: string) {
 	return instruction ? `Reasoning preference (${mode}): ${instruction}` : "";
 }
 
-const adaptiveExecutionGuidance = `Adapt execution to the user's request and the capabilities actually exposed in this run.
+export const adaptiveExecutionGuidance = `Adapt execution to the user's request and the capabilities actually exposed in this run.
 For simple requests, answer or work directly without a forced checklist or planning call. For meaningful multi-step work, use the runtime's structured todo support only when it is available; keep pending, in-progress, blocked, and completed work distinct, and do not treat a plan as proof of completion. Delegate bounded read-only exploration only through an exposed and authorized runtime capability, with a clear brief and verifiable evidence. Never claim a todo or child was created unless the runtime confirms it. Do not duplicate native todos or child runs, bypass permissions, share concurrent write workspaces, or create/start Kanban work without the existing approval flow. For a large durable deliverable, let the user explicitly create a plan from chat and review it before conversion. If a capability is unavailable or opaque, state that limitation and continue safely without simulating it.`;
 
 function mergeMessages(
@@ -659,6 +659,39 @@ export function createChatRoutes(options: {
 				!message.info.hidden &&
 				!hide.has(message.info.id),
 		);
+	}
+	/**
+	 * The modern OpenCode prompt API no longer accepts a separate `system`
+	 * field, so Loom prepends agent guidance to the prompt text itself. That
+	 * bookkeeping belongs to the transport, not the conversation: trim it from
+	 * the user bubble shown in the UI (and only from display — the full text
+	 * still goes to the provider so guidance keeps applying).
+	 */
+	function stripInjectedGuidance(
+		messages: ProviderMessage[],
+	): ProviderMessage[] {
+		// The guidance block is the exact text Loom prepends before the user's
+		// message; match and remove it wherever it starts the first text part.
+		const prefixes = [adaptiveExecutionGuidance];
+		return messages.map((message) => {
+			if (message.info.role !== "user") return message;
+			let changed = false;
+			const parts = message.parts.map((part) => {
+				if (part.type !== "text" || typeof part.text !== "string") return part;
+				let text = part.text;
+				for (;;) {
+					const trimmed = text.trimStart();
+					const hit = prefixes.find((candidate) =>
+						trimmed.startsWith(candidate),
+					);
+					if (!hit) break;
+					text = trimmed.slice(hit.length).trimStart();
+					changed = true;
+				}
+				return changed ? { ...part, text: text.trimStart() } : part;
+			});
+			return changed ? { ...message, parts } : message;
+		});
 	}
 	async function supersedeTurn(sessionId: string, messageIds: string[]) {
 		if (!messageIds.length) return;
@@ -1896,7 +1929,9 @@ export function createChatRoutes(options: {
 				})) ?? [];
 			return c.json({
 				session: current,
-				messages: visibleMessages(providerSession.messages),
+				messages: stripInjectedGuidance(
+					visibleMessages(providerSession.messages),
+				),
 				status: pending.length
 					? { type: "busy", message: "Waiting for permission" }
 					: providerSession.status,
@@ -1927,7 +1962,9 @@ export function createChatRoutes(options: {
 			statuses[current.id] ?? { type: "idle" },
 		);
 		const visible = messagesWithStatusError(
-			visibleMessages(mergeMessages(providerMessages, messages)),
+			stripInjectedGuidance(
+				visibleMessages(mergeMessages(providerMessages, messages)),
+			),
 			normalizedStatus,
 		);
 		const newestCompleted = visible.findLast(
@@ -3016,7 +3053,7 @@ export function createChatRoutes(options: {
 			pendingPermissions: number,
 			pendingQuestions: number,
 		) => {
-			const visible = visibleMessages(messages);
+			const visible = stripInjectedGuidance(visibleMessages(messages));
 			const lastAssistant = visible.findLast(
 				(message) => message.info.role === "assistant",
 			);
@@ -3071,7 +3108,9 @@ export function createChatRoutes(options: {
 			statuses[current.id] ?? { type: "idle" },
 		);
 		const visible = messagesWithStatusError(
-			visibleMessages(mergeMessages(providerMessages, messages)),
+			stripInjectedGuidance(
+				visibleMessages(mergeMessages(providerMessages, messages)),
+			),
 			normalizedStatus,
 		);
 		return c.json(

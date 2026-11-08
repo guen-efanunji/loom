@@ -374,6 +374,44 @@ describe("chat gateway", () => {
 		).toContain("Continue with another model");
 	});
 
+	test("hides the injected guidance block from the displayed user bubble", async () => {
+		const { app, requests } = setup();
+		const response = await app.request("/sessions/ses_test/messages", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				text: "haii",
+				model: { providerID: "opencode", modelID: "omniroute/BACKEND" },
+				files: [],
+				agents: [],
+			}),
+		});
+		expect(response.status).toBe(204);
+		// The gateway receives guidance + prompt together (modern API has no
+		// separate system field on the legacy route either).
+		const prompt = requests.findLast((request) =>
+			request.url.endsWith("/prompt_async"),
+		);
+		const body = (await prompt?.json()) as {
+			system?: string;
+			parts?: Array<{ type: string; text?: string }>;
+		};
+		expect(body.system).toContain("Adapt execution to the user's request");
+		// But the displayed history shows only what the user typed.
+		const state = (await (await app.request("/sessions/ses_test")).json()) as {
+			messages: Array<{
+				info: { role: string };
+				parts: Array<{ type: string; text?: string }>;
+			}>;
+		};
+		const userMessage = state.messages.findLast(
+			(message) => message.info.role === "user",
+		);
+		expect(userMessage?.parts.find((part) => part.type === "text")?.text).toBe(
+			"haii",
+		);
+	});
+
 	test("sends model, agent and subsequent prompts to the same OpenCode session", async () => {
 		const { app, requests } = setup();
 		for (const text of ["Hello", "Follow up"]) {
