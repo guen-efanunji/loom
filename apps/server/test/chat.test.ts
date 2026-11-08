@@ -99,7 +99,7 @@ function setup(
 							]
 						: [],
 				);
-			if (path === "/session/status")
+			if (path === "/session/active" || path === "/session/status")
 				return Response.json({ ses_test: gatewayStatus });
 			if (path === "/permission")
 				return Response.json([

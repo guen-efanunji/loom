@@ -85,7 +85,7 @@ describe("OpenCode server manager", () => {
 });
 
 describe("OpenCode HTTP runtime", () => {
-	test("creates sessions and sends async prompts", async () => {
+	test("creates sessions and sends prompts through the modern gateway", async () => {
 		const requests: Request[] = [];
 		const runtime = new OpenCodeHttpRuntime({
 			fetcher: async (input, init) => {
@@ -103,7 +103,27 @@ describe("OpenCode HTTP runtime", () => {
 			runtime.createSession({ cwd: "/tmp/worktree", title: "Task" }),
 		).resolves.toEqual({ id: "session-1" });
 		await runtime.prompt({ sessionId: "session-1", prompt: "Implement it" });
+		expect(requests[1]?.url).toContain("/session/session-1/prompt");
+		expect(await requests[1]?.json()).toEqual({ text: "Implement it" });
+	});
+
+	test("falls back to prompt_async when the modern gateway is missing", async () => {
+		const requests: Request[] = [];
+		const runtime = new OpenCodeHttpRuntime({
+			fetcher: async (input, init) => {
+				requests.push(new Request(input, init));
+				const path = new URL(String(input)).pathname;
+				if (path.endsWith("/session/session-1/prompt"))
+					return new Response("{}", { status: 404 });
+				return new Response(null, { status: 204 });
+			},
+		});
+		await runtime.prompt({ sessionId: "session-1", prompt: "Implement it" });
+		expect(requests[0]?.url).toContain("/prompt");
 		expect(requests[1]?.url).toContain("/prompt_async");
+		// Subsequent prompts should skip the failing endpoint entirely.
+		await runtime.prompt({ sessionId: "session-1", prompt: "Again" });
+		expect(requests[2]?.url).toContain("/prompt_async");
 	});
 
 	test("splits a prefixed modelID for the opencode provider", async () => {
@@ -122,13 +142,12 @@ describe("OpenCode HTTP runtime", () => {
 				modelID: "opencode/glm-5.3-flash-free",
 			},
 		});
-		const body = (await requests[0]?.json()) as {
-			model?: { providerID: string; modelID: string };
-		};
-		expect(body.model).toEqual({
-			providerID: "opencode",
-			modelID: "glm-5.3-flash-free",
+		// 2.2 selects the model on a dedicated endpoint before prompting.
+		expect(requests[0]?.url).toContain("/session/session-1/model");
+		expect(await requests[0]?.json()).toEqual({
+			model: { providerID: "opencode", id: "glm-5.3-flash-free" },
 		});
+		expect(requests[1]?.url).toContain("/session/session-1/prompt");
 	});
 
 	test("rejects malformed session responses", async () => {
@@ -180,6 +199,172 @@ describe("OpenCode HTTP runtime", () => {
 		expect(unwrapOpenCodeEnvelope([1, 2])).toEqual([1, 2]);
 		expect(unwrapOpenCodeEnvelope(null)).toBeNull();
 		expect(unwrapOpenCodeEnvelope({ id: "x" })).toEqual({ id: "x" });
+	});
+
+	test("re-exposes location.directory as directory on payloads and list items", async () => {
+		const runtime = new OpenCodeHttpRuntime({
+			baseUrl: "http://127.0.0.1:4096",
+			fetcher: async (input) => {
+				if (String(input).endsWith("/session")) {
+					return Response.json({
+						data: { id: "ses_1", location: { directory: "/tmp/proj" } },
+					});
+				}
+				return Response.json({
+					data: [
+						{
+							id: "ses_2",
+							location: { directory: "/tmp/other" },
+							title: "T",
+						},
+					],
+				});
+			},
+		});
+		await expect(runtime.request("/session")).resolves.toEqual({
+			id: "ses_1",
+			location: { directory: "/tmp/proj" },
+			directory: "/tmp/proj",
+		});
+		await expect(runtime.request("/sessions")).resolves.toEqual([
+			{
+				id: "ses_2",
+				title: "T",
+				location: { directory: "/tmp/other" },
+				directory: "/tmp/other",
+			},
+		]);
+	});
+
+	test("shims flattened 2.2 messages into the legacy info/parts shape", async () => {
+		const runtime = new OpenCodeHttpRuntime({
+			baseUrl: "http://127.0.0.1:4096",
+			fetcher: async () =>
+				Response.json({
+					data: [
+						{
+							id: "m_user",
+							type: "user",
+							text: "hello",
+							files: [{ uri: "data:image/png;base64,AAAA", name: "shot.png" }],
+							time: { created: 5 },
+						},
+						{
+							id: "meta",
+							type: "idle",
+							outcome: "succeeded",
+							time: { created: 9 },
+						},
+						{
+							id: "m_bg",
+							type: "assistant",
+							agent: "build",
+							model: { id: "glm", providerID: "opencode" },
+							content: [{ type: "text", text: "hi" }],
+							error: { type: "ProviderError", message: "quota blown" },
+							time: { created: 7, completed: 42 },
+							cost: 0.5,
+						},
+					],
+				}),
+		});
+		await expect(runtime.request("/session/ses_1/message")).resolves.toEqual([
+			{
+				info: { id: "m_user", role: "user", time: { created: 5 } },
+				parts: [
+					{ id: "m_user-part-0", type: "text", text: "hello" },
+					{
+						id: "m_user-part-1",
+						type: "file",
+						url: "data:image/png;base64,AAAA",
+						name: "shot.png",
+					},
+				],
+			},
+			{
+				info: {
+					id: "meta",
+					role: "idle",
+					time: { created: 9 },
+					hidden: true,
+				},
+				parts: [],
+			},
+			{
+				info: {
+					id: "m_bg",
+					role: "assistant",
+					time: { created: 7, completed: 42 },
+					modelID: "glm",
+					providerID: "opencode",
+					cost: 0.5,
+					error: { name: "ProviderError", data: { message: "quota blown" } },
+				},
+				parts: [{ id: "m_bg-part-0", type: "text", text: "hi" }],
+			},
+		]);
+	});
+
+	test("bridges /session/status onto the 2.2 active-run snapshot", async () => {
+		const runtime = new OpenCodeHttpRuntime({
+			baseUrl: "http://127.0.0.1:4096",
+			fetcher: async (url) => {
+				const path = new URL(String(url)).pathname;
+				if (path.endsWith("/session/status"))
+					return new Response("{}", { status: 404 });
+				return Response.json({ ses_1: { type: "running" } });
+			},
+		});
+		// First call discovers the modern vocabulary through the bridge…
+		await expect(runtime.request("/session/status")).resolves.toEqual({
+			ses_1: { type: "busy" },
+		});
+		// …and the legacy endpoint is never consulted again.
+		await expect(runtime.request("/session/status")).resolves.toEqual({
+			ses_1: { type: "busy" },
+		});
+	});
+
+	test("aborts runs through the 2.2 interrupt endpoint", async () => {
+		const requests: Request[] = [];
+		const runtime = new OpenCodeHttpRuntime({
+			fetcher: async (input, init) => {
+				requests.push(new Request(input, init));
+				return new Response(null, { status: 204 });
+			},
+		});
+		await runtime.abort("session-1");
+		expect(requests[0]?.url).toContain("/session/session-1/interrupt");
+		expect(requests[0]?.method).toBe("POST");
+	});
+
+	test("falls back to /abort when interrupt is unavailable", async () => {
+		const requests: Request[] = [];
+		const runtime = new OpenCodeHttpRuntime({
+			fetcher: async (input, init) => {
+				requests.push(new Request(input, init));
+				if (String(input).endsWith("/session/session-1/interrupt"))
+					return new Response("{}", { status: 404 });
+				return new Response(null, { status: 204 });
+			},
+		});
+		await runtime.abort("session-1");
+		expect(requests[0]?.url).toContain("/interrupt");
+		expect(requests[1]?.url).toContain("/session/session-1/abort");
+	});
+
+	test("degrades removed permission/question endpoints to empty lists", async () => {
+		const runtime = new OpenCodeHttpRuntime({
+			baseUrl: "http://127.0.0.1:4096",
+			fetcher: async (input) => {
+				const path = new URL(String(input)).pathname;
+				if (path.endsWith("/permission") || path.endsWith("/question"))
+					return new Response("{}", { status: 404 });
+				throw new Error(`Unexpected endpoint: ${path}`);
+			},
+		});
+		await expect(runtime.request("/permission")).resolves.toEqual([]);
+		await expect(runtime.request("/question")).resolves.toEqual([]);
 	});
 
 	test("includes OpenCode validation details for rejected config updates", async () => {
@@ -326,26 +511,36 @@ describe("mock runtime", () => {
 });
 
 describe("documented session lifecycle", () => {
-	test("waits through busy and pending user messages before accepting a completed assistant", async () => {
+	test("waits through the active run and a pending user turn before accepting a completed assistant", async () => {
 		let phase = 0;
 		const runtime = new OpenCodeHttpRuntime({
 			baseUrl: "http://127.0.0.1:4096",
 			fetcher: async (url) => {
 				const path = new URL(String(url)).pathname.replace(/^\/api/, "");
-				if (path === "/session/status")
+				if (path === "/session/active")
 					return Response.json(
-						phase === 0 ? { ses_test: { type: "busy" } } : {},
+						phase === 0 ? { ses_test: { type: "running" } } : {},
 					);
 				if (path.endsWith("/message"))
-					return Response.json([
-						{
-							info:
-								phase === 1
-									? { role: "user", time: {} }
-									: { role: "assistant", time: { completed: 123 } },
-							parts: [],
-						},
-					]);
+					return Response.json(
+						phase === 1
+							? [
+									{
+										id: "u1",
+										type: "user",
+										text: "go",
+										time: { created: 10 },
+									},
+								]
+							: [
+									{
+										id: "a1",
+										type: "assistant",
+										content: [{ type: "text", text: "done" }],
+										time: { created: 11, streamed: 12, completed: 123 },
+									},
+								],
+					);
 				throw new Error(`Unexpected endpoint: ${path}`);
 			},
 		});
@@ -358,7 +553,7 @@ describe("documented session lifecycle", () => {
 	test("returns assistant text from message parts and detects provider errors", async () => {
 		const runtime = new OpenCodeHttpRuntime({
 			fetcher: async (url) => {
-				if (String(url).endsWith("/session/status")) return Response.json({});
+				if (String(url).endsWith("/session/active")) return Response.json({});
 				return Response.json([
 					{
 						info: { role: "user", time: {} },
@@ -400,7 +595,7 @@ describe("documented session lifecycle", () => {
 		const runtime = new OpenCodeHttpRuntime({
 			idleTimeoutMs: 0,
 			fetcher: async (url) => {
-				if (String(url).endsWith("/session/status"))
+				if (String(url).endsWith("/session/active"))
 					return Response.json({ ses_idle: { type: "idle" } });
 				return Response.json([{ info: { role: "user", time: {} }, parts: [] }]);
 			},
@@ -416,7 +611,7 @@ describe("documented session lifecycle", () => {
 		const runtime = new OpenCodeHttpRuntime({
 			idleTimeoutMs: 0,
 			fetcher: async (url) => {
-				if (String(url).endsWith("/session/status")) {
+				if (String(url).endsWith("/session/active")) {
 					statusPollCount.value += 1;
 					return Response.json({});
 				}
@@ -434,6 +629,9 @@ describe("documented session lifecycle", () => {
 		const next = Date.now() + 12 * 60 * 60_000 + 25 * 60_000;
 		const runtime = new OpenCodeHttpRuntime({
 			fetcher: async (url) => {
+				if (String(url).endsWith("/session/active"))
+					// Older gateways only know the legacy status map.
+					return new Response("{}", { status: 404 });
 				if (String(url).endsWith("/session/status"))
 					return Response.json({
 						ses_quota: {
@@ -463,6 +661,8 @@ describe("documented session lifecycle", () => {
 		const runtime = new OpenCodeHttpRuntime({
 			idleTimeoutMs: 0,
 			fetcher: async (url) => {
+				if (String(url).endsWith("/session/active"))
+					return new Response("{}", { status: 404 });
 				if (String(url).endsWith("/session/status"))
 					return Response.json({ ses_retry: { type: "retry" } });
 				return Response.json([{ info: { role: "user", time: {} }, parts: [] }]);

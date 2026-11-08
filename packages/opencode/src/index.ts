@@ -103,6 +103,166 @@ export function requireOpenCodeArray<T>(body: unknown, endpoint: string): T[] {
 	);
 }
 
+/**
+ * OpenCode 2.2 moved a session's working directory into a nested
+ * `location: { directory }` field; the daemon reads `directory` straight off
+ * session payloads everywhere (scope matching, file references, run cwd).
+ * Re-expose the alias at the top level of entities and list items without
+ * dropping the original field.
+ */
+function withDirectoryAlias<T>(body: unknown): T {
+	const alias = (item: unknown) => {
+		if (!item || typeof item !== "object" || Array.isArray(item)) return item;
+		const record = item as Record<string, unknown>;
+		const location = record.location as Record<string, unknown> | undefined;
+		if (
+			record.directory !== undefined ||
+			!location ||
+			typeof location.directory !== "string"
+		)
+			return item;
+		return { ...record, directory: location.directory };
+	};
+	if (Array.isArray(body)) return body.map(alias) as T;
+	return alias(body) as T;
+}
+
+/**
+ * Detects the "this endpoint no longer exists or is shadowed" outcomes a
+ * modern OpenCode gives for legacy routes (404) and route-shadowed rewrites
+ * of them (400), which is the cue to fall back to the old gateway vocabulary.
+ */
+function missingOpenCodeEndpoint(error: unknown): boolean {
+	return (
+		error instanceof OpenCodeError &&
+		(error.details.status === "400" || error.details.status === "404")
+	);
+}
+
+/**
+ * Translates the active-run snapshot vocabulary (`running`) back into the
+ * per-session status map vocabulary (`busy`) that every consumer reads.
+ */
+function withStatusVocabulary<T>(statuses: unknown): T {
+	if (!statuses || typeof statuses !== "object") return statuses as T;
+	return Object.fromEntries(
+		Object.entries(statuses as Record<string, { type?: string }>).map(
+			([sessionId, entry]) => [
+				sessionId,
+				entry?.type === "running" ? { ...entry, type: "busy" } : entry,
+			],
+		),
+	) as T;
+}
+
+/**
+ * OpenCode 2.2 flattened stream messages into `{ type, text | content, ... }`
+ * while Loom reads the old `{ info: { role, error, time }, parts }` shape
+ * everywhere. Rebuild that shape for messages that arrive unflattened;
+ * messages that already carry `info` pass through untouched.
+ */
+function withMessageShim<T>(body: unknown): T {
+	if (!Array.isArray(body)) return body as T;
+	let changed = false;
+	const mapped = body.map((message) => {
+		const rebuilt = shimOpenCodeMessage(message);
+		if (rebuilt !== message) changed = true;
+		return rebuilt;
+	});
+	return (changed ? mapped : body) as T;
+}
+
+function shimOpenCodeMessage(message: unknown): unknown {
+	if (!message || typeof message !== "object" || Array.isArray(message))
+		return message;
+	const envelope = message as {
+		id?: unknown;
+		type?: unknown;
+		text?: unknown;
+		files?: unknown;
+		content?: unknown;
+		error?: { type?: unknown; message?: unknown };
+		time?: { created?: unknown; completed?: unknown };
+		tokens?: unknown;
+		cost?: unknown;
+		model?: { id?: unknown; providerID?: unknown };
+		info?: unknown;
+	};
+	if (envelope.info && typeof envelope.info === "object") return message;
+	const type = typeof envelope.type === "string" ? envelope.type : "";
+	if (!type) return message;
+	const isTurn = type === "user" || type === "assistant";
+	const info: Record<string, unknown> = {
+		id: typeof envelope.id === "string" ? envelope.id : `shim-${type}`,
+		role: type,
+		time: {
+			created:
+				typeof envelope.time?.created === "number"
+					? envelope.time.created
+					: Date.now(),
+			...(typeof envelope.time?.completed === "number"
+				? { completed: envelope.time.completed }
+				: {}),
+		},
+		// Service-level messages (idle/compaction/synthetic/...) have no legacy
+		// counterpart and no dialogue payload; keep them as bookkeeping so
+		// display filters that drop hidden messages still normalize.
+		...(!isTurn ? { hidden: true } : {}),
+	};
+	if (
+		typeof envelope.model?.id === "string" &&
+		typeof envelope.model?.providerID === "string"
+	)
+		// Assistant models arrive as `{ id, providerID }` in 2.2; the flat
+		// shape surfaced them as `modelID`/`providerID` on `info`.
+		Object.assign(info, {
+			modelID: envelope.model.id,
+			providerID: envelope.model.providerID,
+		});
+	if (typeof envelope.cost === "number") info.cost = envelope.cost;
+	if (envelope.tokens && typeof envelope.tokens === "object")
+		info.tokens = envelope.tokens;
+	if (
+		envelope.error &&
+		typeof envelope.error === "object" &&
+		typeof envelope.error.message === "string"
+	)
+		info.error = {
+			name:
+				typeof envelope.error.type === "string" ? envelope.error.type : "Error",
+			data: { message: envelope.error.message },
+		};
+	const parts: Array<Record<string, unknown>> = [];
+	const addPart = (index: number, part: Record<string, unknown>) =>
+		parts.push({ id: `${info.id}-part-${index}`, ...part });
+	if (isTurn && Array.isArray(envelope.content)) {
+		for (const [index, raw] of envelope.content.entries()) {
+			if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+			const item = raw as Record<string, unknown>;
+			if (item.type === "text" && typeof item.text === "string")
+				addPart(index, { type: "text", text: item.text });
+			// Tool calls stream as their own entries; carry unknown shapes
+			// through so run traces keep as much detail as possible.
+			else addPart(index, { type: item.type ?? "tool", ...item });
+		}
+	}
+	if (type === "user" && typeof envelope.text === "string")
+		addPart(0, { type: "text", text: envelope.text });
+	if (Array.isArray(envelope.files)) {
+		for (const raw of envelope.files) {
+			if (!raw || typeof raw !== "object") continue;
+			const item = raw as Record<string, unknown>;
+			if (typeof item.uri !== "string") continue;
+			addPart(parts.length, {
+				type: "file",
+				url: item.uri,
+				...(typeof item.name === "string" ? { name: item.name } : {}),
+			});
+		}
+	}
+	return { info, parts };
+}
+
 export type OpenCodeManager = {
 	discover(): Promise<boolean>;
 	start(): Promise<void>;
@@ -479,6 +639,11 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 	private readonly idleSince = new Map<string, number>();
 	private readonly idleTimeoutMs: number;
 	private lastServerEnsureAt = 0;
+	/**
+	 * Set once a legacy-route fallback is discovered (404/400 from the modern
+	 * endpoints); the gateway then keeps serving pre-2.2 endpoints only.
+	 */
+	private legacyGateway = false;
 
 	constructor(
 		options: {
@@ -564,6 +729,20 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 	): Promise<T> {
 		const apiPath = path.startsWith("/api/") ? path : `/api${path}`;
 		const sessionId = apiPath.match(/^\/api\/session\/([^/?]+)/)?.[1];
+		// OpenCode 2.2 deleted the per-session status map in favor of a sparse
+		// active-run snapshot. Rewrite the legacy path into `active` and map the
+		// vocabulary back so every `/session/status` caller keeps working;
+		// older gateways (which answer 404/400) keep the legacy endpoint.
+		if (!this.legacyGateway && apiPath.endsWith("/session/status")) {
+			try {
+				return await this.request<T>("/session/active", init, directory, {
+					timeoutMs: requestOptions?.timeoutMs,
+				}).then((statuses) => withStatusVocabulary<T>(statuses));
+			} catch (error) {
+				if (!missingOpenCodeEndpoint(error)) throw error;
+				this.legacyGateway = true;
+			}
+		}
 		const cwd =
 			directory ??
 			(sessionId
@@ -622,6 +801,15 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 		if (!response.ok) {
 			const responseBody = await response.text().catch(() => "");
 			const detail = openCodeResponseErrorDetail(responseBody);
+			if (
+				(response.status === 404 || response.status === 400) &&
+				(apiPath === "/api/permission" || apiPath === "/api/question")
+			) {
+				// OpenCode 2.2 removed the flat permission/question endpoints and
+				// Loom has no counterpart wired up yet; degrade to "nothing
+				// pending" so chat reads keep working instead of failing.
+				return [] as T;
+			}
 			throw new OpenCodeError(
 				"HTTP_ERROR",
 				[
@@ -638,7 +826,11 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 			);
 		}
 		if (response.status === 204) return undefined as T;
-		return unwrapOpenCodeEnvelope<T>(await response.json());
+		const rawBody = unwrapOpenCodeEnvelope<T>(await response.json());
+		const body = withDirectoryAlias<T>(rawBody);
+		return /^\/api\/session\/[^/?#]+\/message$/.test(apiPath)
+			? withMessageShim<T>(body)
+			: body;
 	}
 
 	async createSession(input: {
@@ -701,6 +893,53 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 					})()
 				: input.model
 			: undefined;
+		if (!this.legacyGateway) {
+			try {
+				// OpenCode 2.2 split model selection out of the prompt payload and
+				// dropped synchronous prompt submission (`prompt_async`).
+				if (model) {
+					await this.request(
+						`/session/${encodeURIComponent(input.sessionId)}/model`,
+						{
+							method: "POST",
+							headers: { "content-type": "application/json" },
+							body: JSON.stringify({
+								model: {
+									providerID: model.providerID,
+									id: model.modelID,
+								},
+							}),
+						},
+					);
+				}
+				// The prompt payload no longer carries `system`/`parts`; the system
+				// instruction rides in `text` and attachments move into `files`.
+				const text = input.system
+					? `${input.system}\n\n${input.prompt}`
+					: input.prompt;
+				await this.request(
+					`/session/${encodeURIComponent(input.sessionId)}/prompt`,
+					{
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({
+							text,
+							...(input.images?.length
+								? {
+										files: input.images.map((image) => ({
+											uri: `data:${image.mime};base64,${image.data}`,
+										})),
+									}
+								: {}),
+						}),
+					},
+				);
+				return;
+			} catch (error) {
+				if (!missingOpenCodeEndpoint(error)) throw error;
+				this.legacyGateway = true;
+			}
+		}
 		await this.request(
 			`/session/${encodeURIComponent(input.sessionId)}/prompt_async`,
 			{
@@ -754,11 +993,15 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 				info: {
 					role: string;
 					error?: { name?: string; data?: { message?: string } };
-					time: { completed?: number };
+					time: { created?: number; completed?: number };
 				};
 			}>
 		>(`/session/${encodeURIComponent(sessionId)}/message`);
-		const last = messages.at(-1)?.info;
+		// 2.2 streams the message list newest-first; never trust array order.
+		const last = messages
+			.filter((message) => message.info.role === "assistant")
+			.sort((a, b) => (a.info.time.created ?? 0) - (b.info.time.created ?? 0))
+			.at(-1)?.info;
 		if (last?.error) {
 			const detail = last.error.data?.message || last.error.name || "";
 			this.lastErrors.set(sessionId, detail || "the agent reported an error");
@@ -832,6 +1075,21 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 	}
 
 	async abort(sessionId: string): Promise<void> {
+		// OpenCode 2.2 renamed aborts to `/interrupt`; keep the legacy
+		// endpoint for older gateways.
+		if (!this.legacyGateway) {
+			try {
+				await this.request(
+					`/session/${encodeURIComponent(sessionId)}/interrupt`,
+					{ method: "POST" },
+				);
+				this.cancelled.add(sessionId);
+				return;
+			} catch (error) {
+				if (!missingOpenCodeEndpoint(error)) throw error;
+				this.legacyGateway = true;
+			}
+		}
 		await this.request(`/session/${encodeURIComponent(sessionId)}/abort`, {
 			method: "POST",
 		});
