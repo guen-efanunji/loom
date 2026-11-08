@@ -757,17 +757,15 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 		// vocabulary back so every `/session/status` caller keeps working;
 		// older gateways (which answer 404/400) keep the legacy endpoint.
 		if (!this.legacyGateway && apiPath.endsWith("/session/status")) {
-			try {
-				if (await this.isLegacyGateway()) {
-					// Legacy caller paths continue below untouched.
-				} else {
-					return await this.request<T>("/session/active", init, directory, {
-						timeoutMs: requestOptions?.timeoutMs,
-					}).then((statuses) => withStatusVocabulary<T>(statuses));
-				}
-			} catch (error) {
-				if (!missingOpenCodeEndpoint(error)) throw error;
-				this.legacyGateway = true;
+			if (await this.isLegacyGateway()) {
+				// Legacy caller paths continue below untouched.
+			} else {
+				// Keep the context-free probe as the only gateway classifier. A
+				// session-scoped /active failure may be about that session or its
+				// directory and must not flip the gateway-wide API vocabulary.
+				return await this.request<T>("/session/active", init, directory, {
+					timeoutMs: requestOptions?.timeoutMs,
+				}).then((statuses) => withStatusVocabulary<T>(statuses));
 			}
 		}
 		const cwd =

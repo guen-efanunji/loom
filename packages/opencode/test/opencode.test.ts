@@ -356,6 +356,35 @@ describe("OpenCode HTTP runtime", () => {
 		});
 	});
 
+	test("does not classify the whole gateway as legacy when scoped active status returns 404", async () => {
+		const requests: Request[] = [];
+		const runtime = new OpenCodeHttpRuntime({
+			fetcher: async (input, init) => {
+				const request = new Request(input, init);
+				requests.push(request);
+				const path = new URL(String(input)).pathname;
+				if (
+					path.endsWith("/session/active") &&
+					request.headers.has("x-opencode-directory")
+				)
+					return new Response("{}", { status: 404 });
+				return new Response(JSON.stringify({ ses_1: { type: "running" } }));
+			},
+		});
+
+		await expect(
+			runtime.request("/session/status", {}, "/tmp/project"),
+		).rejects.toThrow("HTTP 404 (GET /api/session/active)");
+		await runtime.prompt({ sessionId: "session-1", prompt: "Still modern" });
+
+		expect(
+			requests.some((request) =>
+				new URL(request.url).pathname.endsWith("/prompt_async"),
+			),
+		).toBe(false);
+		expect(requests.at(-1)?.url).toContain("/session/session-1/prompt");
+	});
+
 	test("aborts runs through the 2.2 interrupt endpoint", async () => {
 		const requests: Request[] = [];
 		const runtime = new OpenCodeHttpRuntime({
