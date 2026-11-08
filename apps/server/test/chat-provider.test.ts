@@ -460,6 +460,26 @@ describe("provider chat", () => {
 		);
 	});
 
+	test("sends OpenCode upstream model chat through the modern runtime prompt API", async () => {
+		const fixture = await setup("opencode");
+		const response = await fixture.send(
+			"Hello upstream",
+			"omniroute",
+			[],
+			"omniroute/BACKEND",
+		);
+		expect(response.status).toBe(204);
+		expect(fixture.prompts).toHaveLength(1);
+		expect(fixture.prompts[0]?.prompt).toContain("Hello upstream");
+		expect(fixture.prompts[0]?.model).toEqual({
+			providerID: "omniroute",
+			modelID: "BACKEND",
+		});
+		expect(fixture.calls.some((path) => path.endsWith("/prompt_async"))).toBe(
+			false,
+		);
+	});
+
 	test("returns runtime OpenCode errors instead of calling the legacy prompt endpoint", async () => {
 		const fixture = await setup("opencode");
 		fixture.setOpenCodeFailure("OpenCode model is unavailable");

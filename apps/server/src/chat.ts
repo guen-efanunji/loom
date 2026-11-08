@@ -476,6 +476,7 @@ export function createChatRoutes(options: {
 	runtimes?:
 		| Map<string, AgentRuntime>
 		| ((providerId: string) => AgentRuntime | undefined);
+	openCodeRuntime?: OpenCodeAgentRuntime;
 	permissions?: AgyPermissionStore;
 	agyPermissionUrl?: string;
 	agyPermissionError?: string;
@@ -907,6 +908,16 @@ export function createChatRoutes(options: {
 		});
 	// User-visible gateway failures never carried a daemon-log trace; this is
 	// the hook that records them next to the rest of the structured output.
+	const defaultOpenCodeRuntime =
+		options.openCodeRuntime ??
+		(typeof options.runtimes === "function"
+			? (options.runtimes("opencode") as OpenCodeAgentRuntime | undefined)
+			: (options.runtimes?.get("opencode") as
+					| OpenCodeAgentRuntime
+					| undefined)) ??
+		(options.providerManager?.registry?.get?.("opencode")?.getRuntime?.() as
+			| OpenCodeAgentRuntime
+			| undefined);
 	const logChatEvent = options.logger ?? (() => {});
 	const logGatewayFailure = (
 		event: string,
@@ -2086,29 +2097,31 @@ export function createChatRoutes(options: {
 				: undefined
 			: input.model;
 		const openCodeModel = requestedModel
-			? providerId === "opencode"
-				? (() => {
+			? (() => {
+					if (requestedModel.modelID.includes("/")) {
 						const [upstreamProviderId, ...upstreamModelParts] =
 							requestedModel.modelID.split("/");
-						return upstreamModelParts.length
-							? {
-									providerID: upstreamProviderId || requestedModel.providerID,
-									modelID: upstreamModelParts.join("/"),
-								}
-							: requestedModel;
-					})()
-				: requestedModel
+						return {
+							providerID: upstreamProviderId || requestedModel.providerID,
+							modelID: upstreamModelParts.join("/"),
+						};
+					}
+					return requestedModel;
+				})()
 			: undefined;
-		const openCodeVariants =
-			providerId === "opencode" && requestedModel
-				? ((
-						cachedCatalog?.models.find(
-							(model) =>
-								model.providerID === "opencode" &&
-								model.modelID === requestedModel.modelID,
-						) as { variants?: string[] } | undefined
-					)?.variants ?? [])
-				: [];
+		const openCodeVariants = requestedModel
+			? ((
+					cachedCatalog?.models.find(
+						(model) =>
+							(model.providerID === providerId ||
+								model.providerID === requestedModel.providerID ||
+								model.providerID === "opencode" ||
+								model.providerID === openCodeModel?.providerID) &&
+							(model.modelID === requestedModel.modelID ||
+								model.modelID === openCodeModel?.modelID),
+					) as { variants?: string[] } | undefined
+				)?.variants ?? [])
+			: [];
 		const useOpenCodeVariant =
 			!!input.thinkingMode && openCodeVariants.includes(input.thinkingMode);
 		const matchedRuntimeModel =
@@ -2492,13 +2505,18 @@ export function createChatRoutes(options: {
 		if (
 			currentGatewayStatus?.type === "retry" &&
 			normalizeRetryStatus(currentGatewayStatus).type === "error"
-		)
-			await request(
-				`/session/${current.id}/abort`,
-				current.directory,
-				{},
-				"POST",
-			);
+		) {
+			if (defaultOpenCodeRuntime) {
+				await defaultOpenCodeRuntime.abort(current.id).catch(() => {});
+			} else {
+				await request(
+					`/session/${current.id}/abort`,
+					current.directory,
+					{},
+					"POST",
+				);
+			}
+		}
 		const priorHistory =
 			(await options.providerHistory?.get<ProviderMessage[]>(current.id)) ?? [];
 		const nativeHistory = await request<ProviderMessage[]>(
@@ -2659,9 +2677,13 @@ export function createChatRoutes(options: {
 				mime: "text/html",
 			})),
 		];
+		const activeOpenCodeRuntime =
+			(providerId === "opencode"
+				? (runtime as OpenCodeAgentRuntime | undefined)
+				: undefined) ?? defaultOpenCodeRuntime;
 		const sendPrompt = () =>
-			providerId === "opencode" && runtime
-				? (runtime as OpenCodeAgentRuntime).prompt({
+			activeOpenCodeRuntime
+				? activeOpenCodeRuntime.prompt({
 						sessionId: current.id,
 						prompt: openCodePromptText,
 						model: openCodeModel,
@@ -2865,6 +2887,10 @@ export function createChatRoutes(options: {
 			if (providerSession.permissionToken)
 				options.permissions?.unregisterRun(providerSession.permissionToken);
 			await providerSession.runtime.abort(providerSession.id);
+			return c.json({ aborted: true });
+		}
+		if (defaultOpenCodeRuntime) {
+			await defaultOpenCodeRuntime.abort(current.id).catch(() => {});
 			return c.json({ aborted: true });
 		}
 		await request(

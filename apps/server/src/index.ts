@@ -88,9 +88,9 @@ import {
 	createDefaultProviderRegistry,
 	discoverCustomModels,
 	findExecutable,
-	readVersion,
 	ProviderManager,
 	readPrompt,
+	readVersion,
 	testCustomModel,
 } from "@loom/providers";
 import type {
@@ -1799,6 +1799,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	app.route(
 		"/api/chat",
 		createChatRoutes({
+			openCodeRuntime,
 			projects: repos.projects,
 			sshConnections: {
 				async getByIds(ids) {
@@ -2224,9 +2225,17 @@ export async function createApp(options: DaemonAppOptions = {}) {
 					.listByProvider(providerId)
 					.find((item) => {
 						const requested = input.model.modelId.toLowerCase();
-						return [item.metadata?.modelId, item.name, item.displayName].some(
+						return [
+							item.id,
+							item.metadata?.modelId,
+							item.metadata?.providerModelId,
+							item.name,
+							item.displayName,
+						].some(
 							(value) =>
-								typeof value === "string" && value.toLowerCase() === requested,
+								typeof value === "string" &&
+								(value.toLowerCase() === requested ||
+									value.toLowerCase() === `opencode/${requested}`),
 						);
 					});
 				if (!candidate)
@@ -2671,12 +2680,16 @@ export async function createApp(options: DaemonAppOptions = {}) {
 					.find((model) => {
 						const requested = input.model.modelId.toLowerCase();
 						return [
+							model.id,
 							model.metadata?.modelId,
+							model.metadata?.providerModelId,
 							model.name,
 							model.displayName,
 						].some(
 							(value) =>
-								typeof value === "string" && value.toLowerCase() === requested,
+								typeof value === "string" &&
+								(value.toLowerCase() === requested ||
+									value.toLowerCase() === `opencode/${requested}`),
 						);
 					});
 				if (!candidate)
@@ -3038,11 +3051,21 @@ export async function createApp(options: DaemonAppOptions = {}) {
 					.find((model) => {
 						const metadata = model.metadata ?? {};
 						return [
+							model.id,
 							model.name,
 							model.displayName,
+							(model as { modelId?: string }).modelId,
 							metadata.modelId,
+							metadata.providerModelId,
 							`${metadata.upstreamProviderId}/${metadata.providerModelId}`,
-						].some((candidate) => candidate === modelId);
+						].some(
+							(candidate) =>
+								typeof candidate === "string" &&
+								(candidate === modelId ||
+									candidate === `opencode/${modelId}` ||
+									candidate === `${providerId}/${modelId}` ||
+									candidate.toLowerCase() === modelId.toLowerCase()),
+						);
 					});
 				if (!selectedModel)
 					return c.json(
@@ -3061,9 +3084,10 @@ export async function createApp(options: DaemonAppOptions = {}) {
 					modelID: typeof actualModelId === "string" ? actualModelId : modelId,
 				};
 			} else {
-				const openCodeModels = await openCodeRuntime.request<
-					Array<{ id?: string; modelID?: string; providerID?: string }>
-				>("/api/model");
+				const openCodeModels =
+					await openCodeRuntime.request<
+						Array<{ id?: string; modelID?: string; providerID?: string }>
+					>("/api/model");
 				const model = openCodeModels.find(
 					(item) =>
 						item.providerID === providerId &&
@@ -3238,13 +3262,15 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	app.get("/api/providers/models", async (c) => {
 		await loadProviderModels();
 		const openCodeCatalog = await openCodeRuntime
-			.request<Array<{
-				id?: string;
-				modelID?: string;
-				providerID?: string;
-				name?: string;
-				limit?: { context?: number; output?: number };
-			}>>("/api/model")
+			.request<
+				Array<{
+					id?: string;
+					modelID?: string;
+					providerID?: string;
+					name?: string;
+					limit?: { context?: number; output?: number };
+				}>
+			>("/api/model")
 			.catch(() => []);
 		const managedModels = providerManager.catalog
 			.listAvailable()
@@ -3269,16 +3295,22 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		const openCodeModels = openCodeCatalog.flatMap((model) => {
 			const providerID = model.providerID;
 			const modelID = model.modelID ?? model.id;
-			if (!providerID || !modelID || managedModelKeys.has(`${providerID}/${modelID}`))
+			if (
+				!providerID ||
+				!modelID ||
+				managedModelKeys.has(`${providerID}/${modelID}`)
+			)
 				return [];
-			return [{
-				providerID,
-				modelID,
-				name: model.name || modelID,
-				provider: providerID,
-				contextWindow: model.limit?.context,
-				outputLimit: model.limit?.output,
-			}];
+			return [
+				{
+					providerID,
+					modelID,
+					name: model.name || modelID,
+					provider: providerID,
+					contextWindow: model.limit?.context,
+					outputLimit: model.limit?.output,
+				},
+			];
 		});
 		return c.json([...openCodeModels, ...managedModels]);
 	});

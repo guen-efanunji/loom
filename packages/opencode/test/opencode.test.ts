@@ -181,6 +181,30 @@ describe("OpenCode HTTP runtime", () => {
 		expect(requests[3]?.url).toContain("/session/session-1/prompt");
 	});
 
+	test("does not demote the gateway when abort/interrupt returns 404 on an inactive session", async () => {
+		const requests: Request[] = [];
+		const runtime = new OpenCodeHttpRuntime({
+			fetcher: async (input, init) => {
+				requests.push(new Request(input, init));
+				const path = new URL(String(input)).pathname;
+				if (path.endsWith("/session/active"))
+					return new Response(JSON.stringify({}), { status: 200 });
+				if (path.endsWith("/interrupt"))
+					return new Response('{"message":"Session not found"}', {
+						status: 404,
+					});
+				return new Response(null, { status: 204 });
+			},
+		});
+		await runtime.abort("ses_inactive");
+		// Subsequent prompt must still use modern endpoint /prompt, NOT /prompt_async
+		await runtime.prompt({ sessionId: "ses_new", prompt: "Hello" });
+		expect(requests.some((r) => r.url.endsWith("/prompt_async"))).toBe(false);
+		expect(
+			requests.some((r) => r.url.endsWith("/session/ses_new/prompt")),
+		).toBe(true);
+	});
+
 	test("rejects malformed session responses", async () => {
 		const runtime = new OpenCodeHttpRuntime({
 			fetcher: async () => new Response(JSON.stringify({}), { status: 200 }),

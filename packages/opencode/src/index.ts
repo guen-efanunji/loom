@@ -1144,14 +1144,20 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 				this.cancelled.add(sessionId);
 				return;
 			} catch (error) {
+				// A 404/400 on a session interrupt may indicate the session is inactive
+				// or that the gateway is pre-2.2. Fall back to /abort for compatibility,
+				// but never demote this.legacyGateway = true on a session-scoped failure.
 				if (!missingOpenCodeEndpoint(error)) throw error;
-				this.legacyGateway = true;
 			}
 		}
-		await this.request(`/session/${encodeURIComponent(sessionId)}/abort`, {
-			method: "POST",
-		});
-		this.cancelled.add(sessionId);
+		try {
+			await this.request(`/session/${encodeURIComponent(sessionId)}/abort`, {
+				method: "POST",
+			});
+			this.cancelled.add(sessionId);
+		} catch (error) {
+			if (!missingOpenCodeEndpoint(error)) throw error;
+		}
 	}
 
 	async deleteSession(sessionId: string): Promise<void> {
