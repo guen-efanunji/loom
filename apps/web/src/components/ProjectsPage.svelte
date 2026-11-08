@@ -310,7 +310,9 @@
 	function persistChatTabs() {
 		if (!ready) return;
 		try {
-			sessionStorage.setItem(
+			// localStorage (not sessionStorage) so tabs survive a browser restart
+			// and new windows; only the single active session is pinned in the URL.
+			localStorage.setItem(
 				chatTabsStorageKey,
 				JSON.stringify({ tabs: chatTabs, activeId: activeChatTabId }),
 			);
@@ -318,9 +320,11 @@
 	}
 	function restoreChatTabs(routeSession: string) {
 		try {
-			const stored = JSON.parse(
-				sessionStorage.getItem(chatTabsStorageKey) ?? "null",
-			);
+			// Migrate tabs saved in sessionStorage by older builds.
+			const storedRaw =
+				localStorage.getItem(chatTabsStorageKey) ??
+				sessionStorage.getItem(chatTabsStorageKey);
+			const stored = JSON.parse(storedRaw ?? "null");
 			if (stored && Array.isArray(stored.tabs)) {
 				const valid = stored.tabs.filter(
 					(tab: WorkspaceChatTab) =>
@@ -744,18 +748,21 @@
 		model = canonical ? `${providerID}/${canonical.modelID}` : "";
 	});
 	const activeProviderID = $derived.by(() => {
+		// A model explicitly picked in the composer overrides the custom agent's
+		// provider; otherwise the agent's provider is authoritative.
+		const picked = catalog.models.find(
+			(item) => `${item.providerID}/${item.modelID}` === model,
+		)?.providerID;
+		if (picked) return picked;
+		if (model.includes("/")) return model.split("/")[0] || "opencode";
 		if (customAgentId) {
 			const customAgent = customAgents.find(
 				(item) => item.id === customAgentId,
 			);
 			if (customAgent?.provider) return customAgent.provider;
 		}
-		return (
-			catalog.models.find(
-				(item) => `${item.providerID}/${item.modelID}` === model,
-			)?.providerID ??
-			(model.split("/")[0] || "opencode")
-		);
+		if (customAgentId && model) return model.split("/")[0] || "opencode";
+		return "opencode";
 	});
 	const providerLabel = $derived(
 		providerDisplayName(catalog, activeProviderID),
@@ -2734,6 +2741,11 @@
 					tab.isolated = true;
 					persistChatTabs();
 				}
+				// The new tab was requested shared; make the silent switch to an
+				// isolated worktree (another chat is editing the same folder) visible.
+				toast.info(
+					"Another chat is editing this project — new messages continue in an isolated worktree.",
+				);
 				if (activeChatTabId === tabId) {
 					sessionId = "";
 					conversation = null;

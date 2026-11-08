@@ -403,6 +403,16 @@ function renderMessage(message: ContextMessage): string {
 	return `${message.info.role}: ${messageText(message)}`;
 }
 
+/**
+ * Render a stored transcript verbatim (`user: …`, `assistant: …`) for
+ * cross-provider handoff: when the conversation moves between runtimes, the
+ * receiving runtime only sees this text, so short turns — the facts the user
+ * asked to remember — must survive intact.
+ */
+export function renderTranscript(history: ContextMessage[]): string {
+	return history.map(renderMessage).join("\n\n");
+}
+
 function compactedFailure(message: ContextMessage): string {
 	const failure = message.info.error?.data?.message?.trim();
 	if (!failure) return "";

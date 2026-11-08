@@ -1452,23 +1452,24 @@
 					if (!open) modelSearch = "";
 				}}
 				><Popover.Trigger
-					class="flex max-w-36 sm:max-w-56 items-center gap-1 rounded-lg px-2 py-1.5 text-xs text-white/65 transition hover:bg-white/[0.06] hover:text-white disabled:opacity-50"
-					aria-label={selectedCustomAgent
-						? `Custom agent model: ${customAgentModelLabel(selectedCustomAgent)}`
-						: selectedModel
-							? `Selected model: ${selectedModel.name} from ${modelLabel(selectedModel)}`
+					class="flex max-w-36 sm:max-w-56 items-center gap-1 rounded-lg px-2 py-1.5 text-xs text-white/65 transition hover:bg-white/[0.06] hover:text-white"
+					aria-label={selectedModel
+						? `Selected model: ${selectedModel.name} from ${modelLabel(selectedModel)}`
+						: selectedCustomAgent
+							? `Custom agent model: ${customAgentModelLabel(selectedCustomAgent)}`
 							: "Select model"}
-					title={selectedCustomAgent
-						? customAgentModelLabel(selectedCustomAgent)
-						: selectedModel
-							? `${selectedModel.name} · ${modelLabel(selectedModel)} · ${selectedModel.modelID}`
-							: "Default model"}
-					disabled={!!selectedCustomAgent}
-					><span class="truncate"
-						>{selectedCustomAgent
+					title={selectedModel
+						? `${selectedModel.name} · ${modelLabel(selectedModel)} · ${selectedModel.modelID}`
+						: selectedCustomAgent
 							? customAgentModelLabel(selectedCustomAgent)
-							: (selectedModel?.name ?? "Default model")}</span
-					>{#if selectedModel && !selectedCustomAgent}<Badge
+							: "Default model"}
+					><span class="truncate"
+						>{selectedModel
+							? selectedModel.name
+							: selectedCustomAgent
+								? customAgentModelLabel(selectedCustomAgent)
+								: "Default model"}</span
+					>{#if selectedModel}<Badge
 							variant="outline"
 							class={`model-badge model-badge--${providerTone(selectedModel.providerID)} max-w-20 shrink-0 truncate px-1 text-[9px] uppercase tracking-wide`}
 							>{modelLabel(selectedModel)}</Badge

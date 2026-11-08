@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OpenCodeHttpRuntime } from "@loom/opencode";
-import { createChatRoutes } from "../src/chat";
+import { adaptiveExecutionGuidance, createChatRoutes } from "../src/chat";
 
 function setup(
 	initialGatewayStatus: {
@@ -396,6 +396,33 @@ describe("chat gateway", () => {
 				(message) => (message.parts as Array<{ text?: string }>)[0]?.text,
 			),
 		).toContain("Continue with another model");
+	});
+
+	test("hides custom-agent instructions in the displayed user bubble", async () => {
+		const { app, gatewayMessages } = setup();
+		gatewayMessages.push({
+			info: {
+				id: "user-custom",
+				role: "user",
+				time: { created: Date.now() },
+			},
+			parts: [
+				{
+					type: "text",
+					text: `You are the custom agent "BACKEND" (backend).\nBe a backend specialist.\n\n${adaptiveExecutionGuidance}\n\nkamu agent apa?`,
+				},
+			],
+		});
+		const state = (await (await app.request("/sessions/ses_test")).json()) as {
+			messages: Array<{
+				info: { role: string };
+				parts: Array<{ text?: string }>;
+			}>;
+		};
+		const userMessage = state.messages.find(
+			(message) => message.info.role === "user",
+		);
+		expect(userMessage?.parts[0]?.text).toBe("kamu agent apa?");
 	});
 
 	test("hides the injected guidance block from the displayed user bubble", async () => {

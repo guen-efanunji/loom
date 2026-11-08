@@ -26,6 +26,7 @@ import {
 	gatewayContextWindow,
 	type NativeCompactionState,
 	proactiveTriggerTokens,
+	renderTranscript,
 	resolveActiveContextBudget,
 	resolveModelLimits,
 	shouldTriggerNativeCompaction,
@@ -681,27 +682,62 @@ export function createChatRoutes(options: {
 	 * bookkeeping belongs to the transport, not the conversation: trim it from
 	 * the user bubble shown in the UI (and only from display — the full text
 	 * still goes to the provider so guidance keeps applying).
+	 *
+	 * The guidance block is NOT necessarily at the start: for a custom agent
+	 * the prompt begins with `You are the custom agent "…"` (plus optional
+	 * SSH/design context), and the adaptive-guidance block comes last in the
+	 * system prefix. Anything before that block — and an optional thinking
+	 * preference between it and the prompt — is bookkeeping too. Anchor on
+	 * the guidance block wherever it sits and keep what follows it.
 	 */
 	function stripInjectedGuidance(
 		messages: ProviderMessage[],
 	): ProviderMessage[] {
-		// The guidance block is the exact text Loom prepends before the user's
-		// message; match and remove it wherever it starts the first text part.
-		const prefixes = [adaptiveExecutionGuidance];
+		const thinkingMarkers = [
+			"Reasoning preference (low):",
+			"Reasoning preference (medium):",
+			"Reasoning preference (high):",
+		];
 		return messages.map((message) => {
 			if (message.info.role !== "user") return message;
 			let changed = false;
 			const parts = message.parts.map((part) => {
 				if (part.type !== "text" || typeof part.text !== "string") return part;
 				let text = part.text;
-				for (;;) {
-					const trimmed = text.trimStart();
-					const hit = prefixes.find((candidate) =>
-						trimmed.startsWith(candidate),
-					);
-					if (!hit) break;
-					text = trimmed.slice(hit.length).trimStart();
+				const guidanceIndex = text.indexOf(adaptiveExecutionGuidance);
+				if (guidanceIndex >= 0) {
+					// Trim the custom-agent instructions, SSH/design system context,
+					// anything prepended before the guidance block, and the suffix
+					// of an earlier duplicate prepend; keep the real prompt after it.
+					text = text
+						.slice(guidanceIndex + adaptiveExecutionGuidance.length)
+						.trimStart();
 					changed = true;
+					for (const marker of thinkingMarkers) {
+						if (text.startsWith(marker)) {
+							const markerEnd = text.indexOf("\n\n");
+							text = (
+								markerEnd >= 0 ? text.slice(markerEnd + 2) : ""
+							).trimStart();
+							break;
+						}
+					}
+					// A cross-provider transcript rides as a tagged block before the
+					// new request; drop it from the displayed bubble (the model
+					// already received it).
+					const carriedStart = text.indexOf("<previous-conversation>");
+					if (carriedStart >= 0) {
+						const carriedEnd = text.indexOf(
+							"</previous-conversation>",
+							carriedStart,
+						);
+						if (carriedEnd >= 0) {
+							text = `${text.slice(0, carriedStart)}${text.slice(
+								carriedEnd + "</previous-conversation>".length,
+							)}`.trimStart();
+							changed = true;
+						}
+					}
 				}
 				return changed ? { ...part, text: text.trimStart() } : part;
 			});
@@ -2030,25 +2066,32 @@ export function createChatRoutes(options: {
 				throw new HTTPException(403, {
 					message: "This custom agent is scoped to another project",
 				});
+			const effectiveProviderId =
+				input.model?.providerID ?? customAgent.provider;
 			if (
-				options.providerManager?.get(customAgent.provider)?.status !==
+				options.providerManager?.get(effectiveProviderId)?.status !==
 				"connected"
 			)
 				throw new HTTPException(409, {
-					message: `Custom agent provider is not connected: ${customAgent.provider}`,
+					message: `Custom agent provider is not connected: ${effectiveProviderId}`,
 				});
+			const effectiveModelId = input.model?.modelID ?? customAgent.modelId;
+			const effectiveLeaf =
+				effectiveModelId?.toLowerCase().split("/").at(-1) ?? "";
 			const supportsCustomModel = options.providerManager?.registry
-				.get(customAgent.provider)
+				.get(effectiveProviderId)
 				?.definition.capabilities.includes("custom-model");
 			if (
-				customAgent.modelId &&
+				effectiveModelId &&
 				!options.providerManager?.catalog
-					.listByProvider(customAgent.provider)
+					.listByProvider(effectiveProviderId)
 					.some((model) =>
 						[model.name, model.displayName, model.metadata?.modelId].some(
 							(id) =>
 								typeof id === "string" &&
-								id.toLowerCase() === customAgent.modelId?.toLowerCase(),
+								(id.toLowerCase() === effectiveLeaf ||
+									`${model.providerId}/${id}`.toLowerCase() ===
+										effectiveModelId.toLowerCase()),
 						),
 					) &&
 				!supportsCustomModel
@@ -2143,17 +2186,20 @@ export function createChatRoutes(options: {
 		]
 			.filter(Boolean)
 			.join("\n\n");
-		const providerId = customAgent?.provider ?? input.model?.providerID;
+		// A model explicitly picked in the composer wins over the custom agent's
+		// saved default. The agent supplies role/instructions; the chat-time
+		// choice is allowed to change (or clear) the model.
+		const providerId = input.model?.providerID ?? customAgent?.provider;
 		const runtime = providerId
 			? typeof options.runtimes === "function"
 				? options.runtimes(providerId)
 				: options.runtimes?.get(providerId)
 			: undefined;
-		const requestedModel = customAgent
-			? customAgent.modelId
+		const requestedModel =
+			input.model ??
+			(customAgent?.modelId
 				? { providerID: customAgent.provider, modelID: customAgent.modelId }
-				: undefined
-			: input.model;
+				: undefined);
 		const openCodeModel = requestedModel
 			? (() => {
 					if (requestedModel.modelID.includes("/")) {
@@ -2582,6 +2628,24 @@ export function createChatRoutes(options: {
 			current.directory,
 		);
 		const mergedHistory = mergeMessages(priorHistory, nativeHistory);
+		// Cross-provider continuity (e.g. agy -> opencode auto-fallback): the
+		// gateway only remembers turns it served itself. Loom-side turns the
+		// gateway never saw must be replayed into the prompt explicitly, or a
+		// provider switch makes the model forget the whole conversation.
+		const nativeMessageIds = new Set(nativeHistory.map((m) => m.info.id));
+		const foreignHistory = visibleMessages(priorHistory).filter(
+			(message) => !nativeMessageIds.has(message.info.id),
+		);
+		const newestForeign = foreignHistory.at(-1)?.info.time.created ?? 0;
+		const newestNative = nativeHistory.at(-1)?.info.time.created ?? 0;
+		// Skip re-injection once the gateway already served a newer turn —
+		// its user message already carries this transcript.
+		const crossProviderContext =
+			foreignHistory.length && newestForeign >= newestNative
+				? `Previous conversation (carried over from another provider):\n<previous-conversation>\n${renderTranscript(
+						foreignHistory as ContextMessage[],
+					)}\n</previous-conversation>`
+				: "";
 		// Native compaction guardrails: the OpenCode session context is opaque to
 		// Loom, so only a conversation estimate and verified checks decide when
 		// Loom asks the runtime to compact before the next prompt.
@@ -2670,6 +2734,9 @@ export function createChatRoutes(options: {
 					}
 				: {}),
 			parts: [
+				...(crossProviderContext
+					? [{ type: "text", text: crossProviderContext }]
+					: []),
 				...(input.thinkingMode &&
 				input.thinkingMode !== "default" &&
 				!useOpenCodeVariant
@@ -2710,6 +2777,7 @@ export function createChatRoutes(options: {
 			!useOpenCodeVariant
 				? thinkingGuidance(input.thinkingMode)
 				: "",
+			crossProviderContext,
 			promptText,
 			openCodeReferencedPaths,
 			referencedSessionContext,

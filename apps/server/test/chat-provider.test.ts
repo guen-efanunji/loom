@@ -480,6 +480,49 @@ describe("provider chat", () => {
 		);
 	});
 
+	test("carries CLI-provider memory into the OpenCode gateway on a provider switch", async () => {
+		const stored = new Map<string, unknown[]>([
+			[
+				"ses_test",
+				[
+					{
+						info: { id: "u1", role: "user", time: { created: 1 } },
+						parts: [{ id: "p1", type: "text", text: "ingat angka 56 09" }],
+					},
+					{
+						info: { id: "a1", role: "assistant", time: { created: 2 } },
+						parts: [
+							{
+								id: "p2",
+								type: "text",
+								text: "Siap, sudah saya ingat: 56 09.",
+							},
+							{
+								id: "p3",
+								type: "tool",
+								state: { status: "completed", metadata: { note: "cli turn" } },
+							},
+						],
+					},
+				],
+			],
+		]);
+		const fixture = await setup("opencode", stored);
+		const response = await fixture.send(
+			"kamu masih ingat angka berapa?",
+			"opencode",
+			[],
+			"omniroute/BACKEND",
+		);
+		expect(response.status).toBe(204);
+		expect(fixture.prompts).toHaveLength(1);
+		expect(fixture.prompts[0]?.prompt).toContain("<previous-conversation>");
+		expect(fixture.prompts[0]?.prompt).toContain("56 09");
+		expect(fixture.prompts[0]?.prompt).toContain(
+			"kamu masih ingat angka berapa?",
+		);
+	});
+
 	test("returns runtime OpenCode errors instead of calling the legacy prompt endpoint", async () => {
 		const fixture = await setup("opencode");
 		fixture.setOpenCodeFailure("OpenCode model is unavailable");
