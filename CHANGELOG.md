@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.7](https://github.com/guen-efanunji/loom/compare/v0.3.6...v0.3.7) (2026-11-08)
+
+
+### Bug Fixes
+
+* **opencode:** avoid legacy fallback on scoped status errors ([7e81ae7](https://github.com/guen-efanunji/loom/commit/7e81ae751b72c31bb4fb29e7d41c71254fe58005))
+
 ## [0.3.6](https://github.com/guen-efanunji/loom/compare/v0.3.5...v0.3.6) (2026-11-08)
 
 
