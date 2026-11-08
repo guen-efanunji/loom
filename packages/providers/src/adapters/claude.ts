@@ -57,14 +57,17 @@ export class ClaudeProviderAdapter extends CliProviderAdapter {
 }
 
 async function knownModels(): Promise<AgentModel[]> {
+	// Aliases resolve to the latest generation inside Claude Code; the windows
+	// below mirror the latest-generation limits in the OpenCode gateway
+	// catalog (Sonnet/Opus/Fable 1M, Haiku 200k for the 4.5 line).
 	const aliases = [
-		["sonnet", "Sonnet"],
-		["opus", "Opus"],
-		["haiku", "Haiku"],
-		["fable", "Fable"],
+		["sonnet", "Sonnet", 1_000_000],
+		["opus", "Opus", 1_000_000],
+		["haiku", "Haiku", 200_000],
+		["fable", "Fable", 1_000_000],
 	] as const;
-	return aliases.map(([id, name]) =>
-		modelFromId("claude", id, `Claude ${name}`),
+	return aliases.map(([id, name, contextWindow]) =>
+		modelFromId("claude", id, `Claude ${name}`, { contextWindow }),
 	);
 }
 

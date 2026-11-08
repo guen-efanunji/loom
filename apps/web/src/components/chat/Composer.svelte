@@ -1081,6 +1081,13 @@
 					item.connectionId !== item.providerID
 						? ` · ${item.connectionId}`
 						: ""}
+					{#if item.contextWindow}
+						· {item.contextWindow >= 1_000_000
+							? `${Math.round(item.contextWindow / 100_000) / 10}M`
+							: item.contextWindow >= 1_000
+								? `${Math.round(item.contextWindow / 1_000)}k`
+								: item.contextWindow}
+						ctx{/if}
 				</span>
 			</span>
 			{#if selected}<span

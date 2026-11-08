@@ -23,6 +23,7 @@ import {
 	ContextBudgetError,
 	type ContextMessage,
 	estimateHistoryTokens,
+	gatewayContextWindow,
 	type NativeCompactionState,
 	proactiveTriggerTokens,
 	resolveActiveContextBudget,
@@ -163,6 +164,23 @@ type RuntimeSessionStatus = {
 	action?: { reason?: string; title?: string; message?: string };
 };
 
+function isQuotaExhaustedDetail(detail: string, reason?: string): boolean {
+	// Upstream quota exhaustion arrives under several phrasings: "Free usage
+	// limit reached", "usage exceeded", "rate limit", "free tier limit", ….
+	// Missing any one of them previously left the run in `retry` forever — the
+	// spinner never stopped and the gateway re-issued the same prompt.
+	if (reason === "free_tier_limit") return true;
+	if (
+		reason &&
+		/limit|quota|rate.?limit|billing|capacity/i.test(reason) &&
+		!/context/i.test(reason)
+	)
+		return true;
+	return /quota|usage (?:exceeded|limit)|limit reached|free (?:tier|usage)|\b429\b|rate[ -]?limit|billing|subscribe|insufficient credits|resource exhausted|payment required|over quota|capacity|weekly limit|monthly limit/i.test(
+		detail ?? "",
+	);
+}
+
 function normalizeRetryStatus(
 	status: RuntimeSessionStatus,
 ): RuntimeSessionStatus {
@@ -172,9 +190,11 @@ function normalizeRetryStatus(
 		.filter((value, index, values) => values.indexOf(value) === index)
 		.join(". ");
 	const delay = typeof status.next === "number" ? status.next - Date.now() : 0;
+	// A retry scheduled far in the future is terminal for interactive chat
+	// even when the provider's phrasing is unknown to the matcher above.
 	const exhausted =
-		status.action?.reason === "free_tier_limit" ||
-		/quota|usage exceeded|billing|subscribe/i.test(detail ?? "");
+		isQuotaExhaustedDetail(detail ?? "", status.action?.reason) ||
+		delay > 10 * 60_000;
 	if (!exhausted) return status;
 	const retryIn =
 		delay > 0 ? ` Retry scheduled in ${formatRetryDelay(delay)}.` : "";
@@ -301,12 +321,7 @@ export function isContextPressureForNativeCompaction(input: {
 
 function terminalRetryFailure(message: string): string | null {
 	const normalized = message.trim();
-	if (
-		!/(?:\b429\b|rate[ -]?limit|quota|usage exceeded|resource exhausted|insufficient credits|billing|payment required|subscribe)/i.test(
-			normalized,
-		)
-	)
-		return null;
+	if (!isQuotaExhaustedDetail(normalized)) return null;
 	return normalized;
 }
 
@@ -881,20 +896,26 @@ export function createChatRoutes(options: {
 		);
 		const availableManagedModels =
 			options.providerManager?.catalog.listAvailable() ?? [];
-		const normalizedModels = availableManagedModels.map((model) => ({
-			providerID: model.providerId,
-			modelID: String(model.metadata?.modelId ?? model.name),
-			name: model.displayName,
-			provider:
-				typeof model.metadata?.providerName === "string"
-					? model.metadata.providerName
-					: model.providerId,
-			providerId: model.providerId,
-			connectionId: model.connectionId,
-			capabilities: model.capabilities,
-			contextWindow: model.contextWindow,
-			outputLimit: model.outputLimit,
-		}));
+		// CLI adapters may omit a model's window; enrich from the gateway
+		// catalog so the picker and context panel always show the real limit.
+		const normalizedModels = availableManagedModels.map((model) => {
+			const modelID = String(model.metadata?.modelId ?? model.name);
+			return {
+				providerID: model.providerId,
+				modelID,
+				name: model.displayName,
+				provider:
+					typeof model.metadata?.providerName === "string"
+						? model.metadata.providerName
+						: model.providerId,
+				providerId: model.providerId,
+				connectionId: model.connectionId,
+				capabilities: model.capabilities,
+				contextWindow:
+					model.contextWindow ?? gatewayContextWindow(modelID, providerModels),
+				outputLimit: model.outputLimit,
+			};
+		});
 		const managedModelKeys = new Set(
 			normalizedModels.map((model) => `${model.providerID}/${model.modelID}`),
 		);

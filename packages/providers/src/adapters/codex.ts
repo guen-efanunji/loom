@@ -36,6 +36,11 @@ export class CodexProviderAdapter extends CliProviderAdapter {
 					"--ask-for-approval",
 					permission?.mode === "auto" ? "never" : "on-request",
 					"exec",
+					// Codex refuses to run outside a trusted Git worktree ("Not inside
+					// a trusted directory and --skip-git-repo-check was not specified").
+					// Loom sessions can live in worktrees that are not Git repos, and
+					// the connectivity probe runs from the daemon cwd, so allow it.
+					"--skip-git-repo-check",
 					"--json",
 					"--sandbox",
 					permission?.mode === "read-only" ? "read-only" : "workspace-write",
@@ -72,13 +77,28 @@ async function knownModels(): Promise<AgentModel[]> {
 				slug?: string;
 				display_name?: string;
 				visibility?: string;
+				// `codex debug models` reports the real window per model (e.g. 272k
+				// for the 5.6 family, 500k for 6.1) — surface it so the context
+				// panel compacts against the model limit, not the default budget.
+				context_window?: number;
+				max_context_window?: number;
 			}>;
 		};
 		return (body.models ?? [])
 			.filter((model) => model.slug && model.visibility !== "hide")
 			.map((model) => ({
-				...modelFromId("codex", model.slug as string, model.display_name),
-				metadata: { experimental: true, visibility: model.visibility },
+				...modelFromId("codex", model.slug as string, model.display_name, {
+					...(typeof model.context_window === "number" &&
+					Number.isSafeInteger(model.context_window) &&
+					model.context_window > 0
+						? { contextWindow: model.context_window }
+						: {}),
+				}),
+				metadata: {
+					experimental: true,
+					visibility: model.visibility,
+					modelId: model.slug,
+				},
 			}));
 	} catch {
 		return [];

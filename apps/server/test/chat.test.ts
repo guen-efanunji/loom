@@ -189,6 +189,30 @@ describe("chat gateway", () => {
 		expect(state.status.message).toContain("Subscribe to OpenCode Go");
 	});
 
+	test("treats 'Free usage limit reached' without a subscribe hint as terminal too", async () => {
+		const next = Date.now() + 8 * 60 * 60_000;
+		const { app } = setup({
+			type: "retry",
+			attempt: 1,
+			next,
+			message: "Free usage limit reached",
+			action: {
+				reason: "free_usage_limit",
+				title: "Free usage limit reached",
+			},
+		});
+		const response = await app.request("/sessions/ses_test");
+		const state = (await response.json()) as {
+			status: { type: string; message?: string };
+		};
+		expect(state.status.type).toBe("error");
+		expect(state.status.message).toContain("Free usage limit reached");
+		const summary = await app.request("/sessions/ses_test/status");
+		expect(await summary.json()).toMatchObject({
+			busy: false,
+		});
+	});
+
 	test("keeps short transient OpenCode retries as active work", async () => {
 		const { app } = setup({
 			type: "retry",

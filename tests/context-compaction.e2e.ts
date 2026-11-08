@@ -1,4 +1,4 @@
-import { test, type Browser } from "@e2e-dev/web";
+import { type Browser, test } from "@e2e-dev/web";
 import { expect } from "e2e";
 
 const projectId = "e2e-context-project";
@@ -163,28 +163,22 @@ async function stubContextChat(browser: Browser) {
 	});
 }
 
-test("shows the Loom context checkpoint boundary, estimate source, and lossy-handoff limit", async ({
+test("does not show the Loom context banner in the turn", async ({
 	app,
 	browser,
 	screen,
 }) => {
 	await stubContextChat(browser);
 	await app.open(`/?project=${projectId}&session=${sessionId}`);
-	await expect(screen.getByRole("region", "Context management")).toBeVisible();
-	await expect(screen.getByText("Loom context · handoff only")).toBeVisible();
+	// The turn banner ("Loom context · handoff only … conservative default
+	// budget") was removed; context details live in the Context usage panel
+	// with the selected model's real window.
 	await expect(
-		screen.getByText("~9,420 / 22,937 estimated tokens"),
-	).toBeVisible();
+		screen.getByRole("region", "Context management"),
+	).not.toBeVisible();
 	await expect(
-		screen.getByText(
-			"Checkpoint covers 6 earlier messages. Original chat history is retained.",
-		),
-	).toBeVisible();
-	await expect(
-		screen.getByText(
-			"Token usage is estimated from characters divided by four, not an authoritative provider tokenizer.",
-		),
-	).toBeVisible();
+		screen.getByText("Loom context · handoff only"),
+	).not.toBeVisible();
 	await expect(
 		screen.getByText(
 			"I will continue using the validated context checkpoint and inspect current workspace evidence before acting.",

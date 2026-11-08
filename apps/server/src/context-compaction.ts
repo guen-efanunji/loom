@@ -209,13 +209,31 @@ export function resolveModelLimits(input: {
 			outputLimit: runtimeOutput,
 			source: "unknown",
 		};
-	const aliases = models.filter(
-		(model) =>
-			model.modelID.toLowerCase().startsWith("ag/") &&
-			model.modelID.toLowerCase().split("/").at(-1) === modelLeaf &&
-			validLimit(model.contextWindow),
-	);
-	if (aliases.length !== 1)
+	// Agy tiers ride on the base model the gateway catalogs
+	// (gemini-3.8-flash-high -> gemini-3.8-flash).
+	const baseLeaf = modelLeaf
+		.replace(/-(high|medium|low)$/, "")
+		.replace(/-thinking$/, "");
+	// The gateway catalogs the same base under several upstream providers
+	// (google/commandcode/github-copilot). Prefer the canonical upstream;
+	// ambiguous non-canonical matches stay unknown.
+	const CANONICAL = ["google", "anthropic", "openai", "commandcode"];
+	const aliases = models
+		.filter((model) => {
+			if (!validLimit(model.contextWindow)) return false;
+			const catalogLeaf = model.modelID.toLowerCase().split("/").at(-1);
+			const provider = model.modelID.toLowerCase().split("/")[0];
+			return (
+				(catalogLeaf === modelLeaf || catalogLeaf === baseLeaf) &&
+				(provider === "ag" || CANONICAL.includes(provider ?? ""))
+			);
+		})
+		.sort((a, b) => {
+			const rank = (m: { providerID: string }) =>
+				CANONICAL.indexOf(m.providerID.toLowerCase());
+			return rank(a) - rank(b);
+		});
+	if (!aliases.length)
 		return {
 			contextWindow: null,
 			outputLimit: runtimeOutput,
@@ -228,6 +246,52 @@ export function resolveModelLimits(input: {
 			(validLimit(aliases[0]?.outputLimit) ? aliases[0]!.outputLimit! : null),
 		source: "open_code_alias",
 	};
+}
+
+/**
+ * Fill a missing context window from the OpenCode gateway catalog by model
+ * leaf (exact or tier-stripped base). CLI adapters advertise model ids the
+ * gateway also catalogs upstream; when an adapter omits its window the
+ * gateway value keeps the model picker and context panel honest.
+ */
+export function gatewayContextWindow(
+	modelID: string,
+	gatewayModels: Array<{
+		providerID?: string;
+		modelID?: string;
+		id?: string;
+		contextWindow?: number;
+		limit?: { context?: number };
+	}>,
+): number | undefined {
+	const leaf = modelID.toLowerCase().split("/").at(-1);
+	if (!leaf) return undefined;
+	const baseLeaf = leaf
+		.replace(/-(high|medium|low)$/, "")
+		.replace(/-thinking$/, "");
+	const CANONICAL = ["google", "anthropic", "openai", "commandcode"];
+	const ranked = gatewayModels
+		.map((model) => ({
+			model,
+			leafOf: (model.modelID ?? model.id ?? "").toLowerCase().split("/").at(-1),
+			window: model.contextWindow ?? model.limit?.context,
+			provider: (model.providerID ?? "").toLowerCase(),
+		}))
+		.filter(
+			(item) =>
+				(item.leafOf === leaf || item.leafOf === baseLeaf) &&
+				typeof item.window === "number" &&
+				Number.isSafeInteger(item.window) &&
+				item.window > 0,
+		)
+		.sort((a, b) => {
+			const rank = (p: string) => {
+				const i = CANONICAL.indexOf(p);
+				return i < 0 ? CANONICAL.length : i;
+			};
+			return rank(a.provider) - rank(b.provider);
+		});
+	return ranked[0]?.window;
 }
 
 function messageText(message: ContextMessage): string {

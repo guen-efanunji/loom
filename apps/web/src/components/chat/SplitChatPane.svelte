@@ -270,11 +270,16 @@
 			status.pendingQuestions !== (conversation?.questions.length ?? 0);
 		if (changed || wasBusy || tab.loading) await refresh(tab);
 		// P2-9: flush a queued follow-up the moment the run goes idle.
+		// Never flush after a failed turn: auto-sending the queued prompt
+		// against the same exhausted quota only duplicates the failed bubble
+		// and re-enters the error loop. The queued draft stays in the composer
+		// for the user to resend after switching models.
 		const settled =
 			!status.busy &&
 			!sendingIds.includes(tab.id) &&
 			tab.conversation?.status.type !== "busy" &&
-			tab.conversation?.status.type !== "retry";
+			tab.conversation?.status.type !== "retry" &&
+			tab.conversation?.status.type !== "error";
 		if (wasBusy && settled && !tab.optimistic && queues[tab.id]) {
 			const queued = queues[tab.id];
 			queues[tab.id] = null;

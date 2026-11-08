@@ -82,6 +82,33 @@ export class AgyProviderAdapter extends CliProviderAdapter {
 	}
 }
 
+// Agy's `models` output carries no limits and there is no `agy config` /
+// `config providers` catalog on disk, so carry the gateway-verified windows
+// for the fixed model set Agy advertises. The catalog matcher below still
+// overrides these whenever a caller supplies OpenCode gateway limits.
+const KNOWN_AGY_WINDOWS: Record<
+	string,
+	{ contextWindow: number; outputLimit?: number }
+> = {
+	"gemini-3.8-flash-high": { contextWindow: 1_048_576, outputLimit: 65_536 },
+	"gemini-3.8-flash-medium": { contextWindow: 1_048_576, outputLimit: 65_536 },
+	"gemini-3.8-flash-low": { contextWindow: 1_048_576, outputLimit: 65_536 },
+	"claude-sonnet-4-6": { contextWindow: 1_000_000 },
+	"claude-opus-4-6-thinking": { contextWindow: 1_000_000 },
+	"gpt-oss-120b-medium": { contextWindow: 131_072 },
+};
+
+// Agy tier suffixes ride on the base model name the gateway catalogs
+// (gemini-3.8-flash-high -> gemini-3.8-flash, claude-opus-4-6-thinking ->
+// claude-opus-4-6). Strip them when looking the base up.
+function agyBaseLeaf(leaf: string): string {
+	return leaf.replace(/-(high|medium|low)$/, "").replace(/-thinking$/, "");
+}
+
+// Canonical upstream providers preferred when several catalog entries share a
+// leaf (e.g. google/commandcode/github-copilot all list gemini-3.8-flash).
+const CANONICAL_PROVIDERS = ["google", "anthropic", "openai", "commandcode"];
+
 export function agyModelFromCatalogLine(
 	line: string,
 	catalogModels: Array<{
@@ -91,28 +118,41 @@ export function agyModelFromCatalogLine(
 	}>,
 ): AgentModel {
 	const [modelId = line, ...label] = line.trim().split(/\s{2,}|\t/);
-	const leaf = modelId.toLowerCase().split("/").at(-1);
-	const aliases = catalogModels.filter((model) => {
-		const catalogLeaf = model.modelID.toLowerCase().split("/").at(-1);
-		return (
-			model.modelID.toLowerCase().startsWith("ag/") &&
-			catalogLeaf === leaf &&
-			(Number.isSafeInteger(model.contextWindow) ||
-				Number.isSafeInteger(model.outputLimit))
-		);
-	});
-	const limits = aliases.length === 1 ? aliases[0] : undefined;
+	const leaf = modelId.toLowerCase().split("/").at(-1) ?? modelId.toLowerCase();
+	const baseLeaf = agyBaseLeaf(leaf);
+	const candidates = catalogModels
+		.filter((model) => {
+			const catalogLeaf = model.modelID.toLowerCase().split("/").at(-1);
+			const provider = model.modelID.toLowerCase().split("/")[0];
+			return (
+				(catalogLeaf === leaf || catalogLeaf === baseLeaf) &&
+				(Number.isSafeInteger(model.contextWindow) ||
+					Number.isSafeInteger(model.outputLimit)) &&
+				// Legacy `ag/` aliases are still honors when present.
+				(provider === "ag" || CANONICAL_PROVIDERS.includes(provider ?? ""))
+			);
+		})
+		.sort((a, b) => {
+			const rank = (m: { modelID: string }) =>
+				CANONICAL_PROVIDERS.indexOf(
+					m.modelID.toLowerCase().split("/")[0] ?? "-1",
+				);
+			return rank(a) - rank(b);
+		});
+	const limits = candidates[0] ?? KNOWN_AGY_WINDOWS[leaf];
 	return modelFromId("agy", modelId, label.join(" ") || modelId, {
 		...(limits?.contextWindow ? { contextWindow: limits.contextWindow } : {}),
 		...(limits?.outputLimit ? { outputLimit: limits.outputLimit } : {}),
 	});
 }
 
-async function listAgyCatalogModels(): Promise<Array<{
-	modelID: string;
-	contextWindow?: number;
-	outputLimit?: number;
-}>> {
+async function listAgyCatalogModels(): Promise<
+	Array<{
+		modelID: string;
+		contextWindow?: number;
+		outputLimit?: number;
+	}>
+> {
 	const result = await runCli("config", ["providers"], { timeoutMs: 10_000 });
 	if (result?.exitCode !== 0 || !result.stdout.trim()) return [];
 	try {

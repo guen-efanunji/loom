@@ -27,6 +27,22 @@ type GatewaySessionStatus = {
 	action?: { reason?: string; title?: string; message?: string };
 };
 
+function isQuotaExhaustedDetail(detail: string, reason?: string): boolean {
+	// Mirror of the chat server's helper: upstream quota exhaustion arrives as
+	// "Free usage limit reached", "usage exceeded", "rate limit", … and must be
+	// terminal, never an endless `retry` that re-issues the same prompt.
+	if (reason === "free_tier_limit") return true;
+	if (
+		reason &&
+		/limit|quota|rate.?limit|billing|capacity/i.test(reason) &&
+		!/context/i.test(reason)
+	)
+		return true;
+	return /quota|usage (?:exceeded|limit)|limit reached|free (?:tier|usage)|\b429\b|rate[ -]?limit|billing|subscribe|insufficient credits|resource exhausted|payment required|over quota|capacity|weekly limit|monthly limit/i.test(
+		detail ?? "",
+	);
+}
+
 function retryFailure(status: GatewaySessionStatus): string | null {
 	if (status.type !== "retry") return null;
 	const detail = [status.message, status.action?.title, status.action?.message]
@@ -34,9 +50,11 @@ function retryFailure(status: GatewaySessionStatus): string | null {
 		.filter((value, index, values) => values.indexOf(value) === index)
 		.join(". ");
 	const delay = typeof status.next === "number" ? status.next - Date.now() : 0;
+	// A retry scheduled far in the future is terminal for interactive chat
+	// even when the provider's phrasing is unknown to the matcher above.
 	const exhausted =
-		status.action?.reason === "free_tier_limit" ||
-		/quota|usage exceeded|billing|subscribe/i.test(detail ?? "");
+		isQuotaExhaustedDetail(detail ?? "", status.action?.reason) ||
+		delay > 10 * 60_000;
 	if (!exhausted) return null;
 	const retryIn =
 		delay > 0

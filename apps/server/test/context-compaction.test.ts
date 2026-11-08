@@ -218,6 +218,31 @@ describe("provider-agnostic context budget", () => {
 		).toEqual({ contextWindow: null, outputLimit: null, source: "unknown" });
 	});
 
+	test("borrows the gateway catalog limit for an Agy tier by its base model", () => {
+		expect(
+			resolveModelLimits({
+				providerId: "agy",
+				modelId: "gemini-3.8-flash-high",
+				catalogModels: [
+					{
+						providerID: "commandcode",
+						modelID: "google/gemini-3.8-flash",
+						contextWindow: 1_000_000,
+					},
+					{
+						providerID: "google",
+						modelID: "google/gemini-3.8-flash",
+						contextWindow: 1_048_576,
+					},
+				],
+			}),
+		).toEqual({
+			contextWindow: 1_048_576,
+			outputLimit: null,
+			source: "open_code_alias",
+		});
+	});
+
 	test("uses explicit catalog limits and rejects invalid metadata", () => {
 		expect(
 			resolveModelLimits({

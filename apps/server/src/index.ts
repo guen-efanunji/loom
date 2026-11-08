@@ -123,6 +123,7 @@ import {
 	updateDaemonConfig,
 } from "./config";
 import { createContext } from "./context";
+import { gatewayContextWindow } from "./context-compaction";
 import { createContextHubRoutes } from "./context-hub";
 import { runtimeModelRef } from "./executor-model";
 import { createMcpManagerRoutes } from "./mcp-manager";
@@ -3274,21 +3275,26 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			.catch(() => []);
 		const managedModels = providerManager.catalog
 			.listAvailable()
-			.map((model) => ({
-				providerID: model.providerId,
-				modelID:
+			.map((model) => {
+				const modelID =
 					typeof model.metadata?.upstreamProviderId === "string" &&
 					typeof model.metadata?.providerModelId === "string"
 						? `${model.metadata.upstreamProviderId}/${model.metadata.providerModelId}`
-						: String(model.metadata?.modelId ?? model.name),
-				name: model.displayName,
-				provider:
-					typeof model.metadata?.providerName === "string"
-						? model.metadata.providerName
-						: model.providerId,
-				contextWindow: model.contextWindow,
-				outputLimit: model.outputLimit,
-			}));
+						: String(model.metadata?.modelId ?? model.name);
+				return {
+					providerID: model.providerId,
+					modelID,
+					name: model.displayName,
+					provider:
+						typeof model.metadata?.providerName === "string"
+							? model.metadata.providerName
+							: model.providerId,
+					contextWindow:
+						model.contextWindow ??
+						gatewayContextWindow(modelID, openCodeCatalog),
+					outputLimit: model.outputLimit,
+				};
+			});
 		const managedModelKeys = new Set(
 			managedModels.map((model) => `${model.providerID}/${model.modelID}`),
 		);
