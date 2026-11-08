@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.5](https://github.com/guen-efanunji/loom/compare/v0.3.4...v0.3.5) (2026-11-08)
+
+
+### Bug Fixes
+
+* **opencode:** adapt to OpenCode 2.2.5 prompt/status/message APIs ([8ef907c](https://github.com/guen-efanunji/loom/commit/8ef907c739ff5410780f814765d01d28cb52936d))
+* **opencode:** send auth headers after service discovery ([00ad0ff](https://github.com/guen-efanunji/loom/commit/00ad0ff867e902c3647fa9add66063b88152f8c3))
+
 ## [0.3.4](https://github.com/guen-efanunji/loom/compare/v0.3.3...v0.3.4) (2026-11-06)
 
 
