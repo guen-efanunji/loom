@@ -66,9 +66,9 @@ async function harness(
 			],
 			getById: async (id) =>
 				id === "p1"
-					? { path: projectPath }
+					? { id: "p1", path: projectPath }
 					: id === "p2"
-						? { path: join(base, "repo2") }
+						? { id: "p2", path: join(base, "repo2") }
 						: null,
 		},
 		request: async <T>(
@@ -122,8 +122,9 @@ async function harness(
 			const single = /^\/session\/(ses_[\w-]+)$/.exec(path);
 			if (single) {
 				const found = sessions.get(single[1]!);
-				if (!found || found.directory !== directory)
-					throw { details: { status: "404" }, message: "not found" };
+				// The real gateway does not scope single-session reads by
+				// directory either; it returns the session regardless.
+				if (!found) throw { details: { status: "404" }, message: "not found" };
 				if (opts.method === "PATCH") {
 					const title = (opts.body as { title?: unknown })?.title;
 					if (typeof title === "string") found.title = title;
@@ -465,6 +466,44 @@ describe("chat workspace isolation", () => {
 			const mine = await h.app.request("/sessions?projectId=p1");
 			const mineSessions = (await mine.json()) as Array<{ id: string }>;
 			expect(mineSessions.map((item) => item.id)).not.toContain(created.id);
+		} finally {
+			await rm(h.base, { recursive: true, force: true });
+		}
+	});
+
+	test("an isolated session resolves to its worktree, not the gateway cwd", async () => {
+		const h = await harness();
+		try {
+			const isolated = await h.createIsolated("Isolated cwd");
+			const stored = h.sessions.get(isolated.id);
+			if (!stored) throw new Error("session missing from gateway");
+			// The gateway records the session under its own process cwd,
+			// not the worktree — resolution must use Loom's binding instead.
+			stored.directory = "/home/gateway-cwd";
+			const state = await h.app.request(`/sessions/${isolated.id}`);
+			const body = (await state.json()) as {
+				session: { directory: string; workspace?: { path?: string } };
+			};
+			expect(body.session.directory).toBe(isolated.workspace?.path ?? "");
+			expect(body.session.workspace?.path).toBe(isolated.workspace?.path ?? "");
+		} finally {
+			await rm(h.base, { recursive: true, force: true });
+		}
+	});
+
+	test("an owned shared session resolves to the project checkout", async () => {
+		const h = await harness();
+		try {
+			const created = await h.createShared("Shared cwd");
+			const stored = h.sessions.get(created.id);
+			if (!stored) throw new Error("session missing from gateway");
+			stored.directory = "/home/gateway-cwd";
+			const state = await h.app.request(`/sessions/${created.id}`);
+			const body = (await state.json()) as {
+				session: { directory: string; projectId?: string };
+			};
+			expect(body.session.directory).toBe(h.projectPath);
+			expect(body.session.projectId).toBe("p1");
 		} finally {
 			await rm(h.base, { recursive: true, force: true });
 		}

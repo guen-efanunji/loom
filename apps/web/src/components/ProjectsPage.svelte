@@ -975,9 +975,11 @@
 		const seen = new Set<string>();
 		sessions = results
 			.flatMap((r) => (r.status === "fulfilled" ? r.value : []))
-			.filter((session) =>
-				seen.has(session.id) ? false : (seen.add(session.id), true),
-			);
+			.filter((session) => {
+				if (seen.has(session.id)) return false;
+				seen.add(session.id);
+				return true;
+			});
 		const failed = results.find((r) => r.status === "rejected");
 		if (failed?.status === "rejected") throw failed.reason;
 		connected = true;
@@ -995,9 +997,11 @@
 		const seen = new Set<string>();
 		const fresh = results
 			.flatMap((r) => (r.status === "fulfilled" ? r.value : []))
-			.filter((session) =>
-				seen.has(session.id) ? false : (seen.add(session.id), true),
-			);
+			.filter((session) => {
+				if (seen.has(session.id)) return false;
+				seen.add(session.id);
+				return true;
+			});
 		if (!fresh.length && !sessions.length) return;
 		sessions = fresh;
 		connected = true;
@@ -3720,7 +3724,7 @@
 													variant="ghost"
 													role="tab"
 													aria-selected={isActive}
-													class="h-7 min-w-0 justify-start gap-2 px-2 text-xs"
+													class="h-7 min-w-0 flex-1 justify-start gap-1.5 px-1.5 text-xs"
 													title={tab.label}
 													onclick={() => void switchChatTab(tab.id)}
 													>{#if tab.taskId}<Activity
@@ -3729,10 +3733,11 @@
 														/>{:else}<MessageSquare
 															size={13}
 															class="shrink-0"
-														/>{/if}<span class="max-w-40 truncate"
+														/>{/if}<span class="min-w-0 flex-1 truncate"
 														>{tab.sessionId || tab.taskId
 															? tab.label
 															: (agentLabel ?? tab.label)}</span
+														></Button
 													>{#if tab.isolated}<GitBranch
 															size={11}
 															class="shrink-0 text-emerald-300"
@@ -3747,8 +3752,7 @@
 															aria-label="Task queued"
 														></span>{:else if isActive && sending}<span
 															class="size-1.5 shrink-0 animate-pulse rounded-full bg-primary"
-														></span>{/if}</Button
-												>
+														></span>{/if}
 												<Button
 													variant="ghost"
 													size="icon"

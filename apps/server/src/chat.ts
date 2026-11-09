@@ -1637,9 +1637,47 @@ export function createChatRoutes(options: {
 	async function session(sessionId: string) {
 		id.parse(sessionId);
 		const workspace = await boundWorkspace(sessionId);
-		const scope = workspace
-			? { directory: workspace.path, projectId: workspace.projectId }
-			: await options.sessionScope?.(sessionId);
+		// Ownership recorded at creation is authoritative for the working
+		// directory: the gateway stores the session under its own process
+		// working directory (often unrelated to the project), so trusting the
+		// stored directory makes the agent run in the gateway's cwd instead
+		// of the checkout it should edit.
+		const owned = await options.chatSessionProjects
+			?.getBySessionId(sessionId)
+			.catch(() => undefined);
+		const ownedProject = owned
+			? await options.projects.getById(owned.projectId).catch(() => null)
+			: null;
+		// Sessions with a Loom-side binding or ownership record resolve
+		// straight to that directory — the gateway session body is returned
+		// as-is, but the working directory is Loom's, not the gateway's.
+		const authoritative = workspace
+			? { directory: workspace.path, workspace, projectId: workspace.projectId }
+			: ownedProject && owned
+				? {
+						directory: ownedProject.path,
+						workspace: undefined,
+						projectId: owned.projectId,
+					}
+				: null;
+		if (authoritative) {
+			try {
+				const found = await request<Session>(
+					`/session/${sessionId}`,
+					authoritative.directory,
+				);
+				return {
+					...found,
+					directory: authoritative.directory,
+					workspace: authoritative.workspace,
+					projectId: authoritative.projectId,
+				};
+			} catch {
+				// Stale record or a session the gateway no longer knows: fall
+				// through to candidate resolution instead of failing outright.
+			}
+		}
+		const scope = await options.sessionScope?.(sessionId);
 		const projects = await options.projects.list();
 		const workspaces = scope
 			? []
@@ -1693,6 +1731,10 @@ export function createChatRoutes(options: {
 			if (!isScopedWorkspace && !project && !candidate.workspace) continue;
 			return {
 				...found,
+				// Prefer the Loom-side directory whenever resolution matched a
+				// scope or project — the gateway's stored directory is the
+				// gateway process cwd, which is frequently unrelated.
+				directory: scope?.directory ?? project?.path ?? found.directory,
 				// An isolated session runs in its own worktree; the binding is carried
 				// so routes and the write gate can skip shared-checkout protection.
 				workspace: candidate.workspace,
