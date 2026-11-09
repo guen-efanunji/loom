@@ -4275,6 +4275,12 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			);
 			return c.json({ queued: true, ...result });
 		} catch (error) {
+			// A terminal task is a conflict ("retry to rerun"), not a server fault.
+			if (
+				error instanceof Error &&
+				/while (completed|failed|cancelled)/.test(error.message)
+			)
+				return c.json({ error: { message: error.message } }, 409);
 			return errorResponse(c, error);
 		}
 	});
