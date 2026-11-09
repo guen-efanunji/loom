@@ -480,15 +480,14 @@ describe("OpenCode HTTP runtime", () => {
 			text: "Implement the attached design",
 			files: [
 				{
-					mime: "text/html",
+					uri: "file:///tmp/design.html",
 					name: "design.html",
-					source: { type: "uri", uri: "file:///tmp/design.html" },
+					mime: "text/html",
 				},
 				{
-					data: "SGVsbG8=",
-					mime: "text/plain",
+					uri: "data:text/plain;base64,SGVsbG8=",
 					name: "notes.txt",
-					source: { type: "inline" },
+					mime: "text/plain",
 				},
 			],
 			agents: [{ name: "reviewer" }],

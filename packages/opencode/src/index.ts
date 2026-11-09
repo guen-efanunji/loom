@@ -1094,28 +1094,20 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 					headers: { "content-type": "application/json" },
 					body: JSON.stringify({
 						text,
+						// 2.2 prompt files are `{uri, name, mime}` at the top level;
+						// an old `source`-nested shape is rejected with
+						// `Missing key at ["files"][0]["uri"]`.
 						...(input.files?.length || input.images?.length
 							? {
 									files: [
-										...(input.files ?? []).map(({ uri, name, mime }) => {
-											const inline = uri.match(/^data:([^;,]+);base64,(.+)$/);
-											return inline
-												? {
-														data: inline[2],
-														mime: mime ?? inline[1],
-														name,
-														source: { type: "inline" as const },
-													}
-												: {
-														mime: mime ?? "application/octet-stream",
-														name,
-														source: { type: "uri" as const, uri },
-													};
-										}),
+										...(input.files ?? []).map(({ uri, name, mime }) => ({
+											uri,
+											...(name ? { name } : {}),
+											mime: mime ?? "application/octet-stream",
+										})),
 										...(input.images ?? []).map((image) => ({
+											uri: `data:${image.mime};base64,${image.data}`,
 											mime: image.mime,
-											data: image.data,
-											source: { type: "inline" as const },
 										})),
 									],
 								}
