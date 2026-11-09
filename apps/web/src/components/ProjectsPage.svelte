@@ -969,9 +969,15 @@
 				})),
 			),
 		);
-		sessions = results.flatMap((r) =>
-			r.status === "fulfilled" ? r.value : [],
-		);
+		// Belt-and-braces: the server scopes sessions to their project, but a
+		// session must never appear twice in the sidebar if a gateway ever
+		// returns it under two directories again.
+		const seen = new Set<string>();
+		sessions = results
+			.flatMap((r) => (r.status === "fulfilled" ? r.value : []))
+			.filter((session) =>
+				seen.has(session.id) ? false : (seen.add(session.id), true),
+			);
 		const failed = results.find((r) => r.status === "rejected");
 		if (failed?.status === "rejected") throw failed.reason;
 		connected = true;
@@ -986,9 +992,12 @@
 			),
 		);
 		if (disposed) return;
-		const fresh = results.flatMap((r) =>
-			r.status === "fulfilled" ? r.value : [],
-		);
+		const seen = new Set<string>();
+		const fresh = results
+			.flatMap((r) => (r.status === "fulfilled" ? r.value : []))
+			.filter((session) =>
+				seen.has(session.id) ? false : (seen.add(session.id), true),
+			);
 		if (!fresh.length && !sessions.length) return;
 		sessions = fresh;
 		connected = true;

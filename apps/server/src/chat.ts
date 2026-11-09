@@ -1885,6 +1885,25 @@ export function createChatRoutes(options: {
 			Promise.resolve([] as ChatWorkspaceRecord[]));
 		const bySession = new Map(bindings.map((item) => [item.sessionId, item]));
 		const directories = [root, ...bindings.map((item) => item.path)];
+		// The gateway's /session list is NOT scoped by the directory header —
+		// it returns every session for every query. Directory matching here is
+		// the only thing keeping one project's chats out of another's list.
+		// Compare symlink/trailing-slash normalized paths so an isolated
+		// worktree session still matches its binding path.
+		const pathCache = new Map<string, Promise<string>>();
+		const normalizePath = (target: string): Promise<string> => {
+			const cached = pathCache.get(target);
+			if (cached) return cached;
+			const promise = (async () => {
+				try {
+					return resolve(await realpath(target));
+				} catch {
+					return resolve(target);
+				}
+			})();
+			pathCache.set(target, promise);
+			return promise;
+		};
 		const lists = await Promise.all(
 			directories.map(async (directory) => {
 				const sessions = await request<Session[]>(
@@ -1909,11 +1928,18 @@ export function createChatRoutes(options: {
 					);
 					return [] as Session[];
 				});
-				// The gateway already scopes each request by the directory header;
-				// strict path equality here dropped sessions whenever the gateway
-				// reported a symlink-resolved or trailing-slash variant of the same
-				// worktree. Only exclude child/archived sessions.
-				return sessions.filter((s) => !s.parentID && !s.time.archived);
+				const target = await normalizePath(directory);
+				const candidates = sessions.filter(
+					(s) => !s.parentID && !s.time.archived,
+				);
+				const kept = await Promise.all(
+					candidates.map(async (session) =>
+						(await normalizePath(session.directory)) === target
+							? session
+							: null,
+					),
+				);
+				return kept.filter((session): session is Session => session !== null);
 			}),
 		);
 		const merged = new Map<string, Session>();

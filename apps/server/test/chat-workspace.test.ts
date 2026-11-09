@@ -59,8 +59,16 @@ async function harness(
 
 	const app = createChatRoutes({
 		projects: {
-			list: async () => [{ id: "p1", path: projectPath }],
-			getById: async (id) => (id === "p1" ? { path: projectPath } : null),
+			list: async () => [
+				{ id: "p1", path: projectPath },
+				{ id: "p2", path: join(base, "repo2") },
+			],
+			getById: async (id) =>
+				id === "p1"
+					? { path: projectPath }
+					: id === "p2"
+						? { path: join(base, "repo2") }
+						: null,
 		},
 		request: async <T>(
 			path: string,
@@ -69,9 +77,11 @@ async function harness(
 			calls.push(`${opts.method ?? "GET"} ${path}`);
 			const directory = opts.directory ?? "";
 			if (path.startsWith("/session?limit")) {
-				return [...sessions.values()].filter(
-					(item) => item.directory === directory,
-				) as T;
+				// The real gateway does NOT scope the list by directory: every
+				// query returns all sessions, and the server must filter by
+				// directory itself (one project's chats must not leak into
+				// another's sidebar).
+				return [...sessions.values()] as T;
 			}
 			// Creating a session carries a body, so the gateway marks it POST.
 			if (path === "/session") {
@@ -123,8 +133,10 @@ async function harness(
 		},
 		chatWorkspaces: {
 			getBySessionId: async (sessionId) => bindings.get(sessionId),
-			listByProject: async () =>
-				[...bindings.values()].filter((item) => item.status === "active"),
+			listByProject: async (projectId) =>
+				[...bindings.values()].filter(
+					(item) => item.projectId === projectId && item.status === "active",
+				),
 			create: async (input) => {
 				const record: ChatWorkspaceRecord = {
 					sessionId: input.sessionId,
@@ -371,8 +383,28 @@ describe("chat workspace isolation", () => {
 		}
 	});
 
-	test("creation sanitizes scaffolding titles", async () => {
+	test("session lists are scoped to their own project directory", async () => {
 		const h = await harness();
+		try {
+			// The gateway returns every session for every directory query; the
+			// server must keep one project's chats out of another's list.
+			const created = await h.createShared("Buatkan landing page");
+			const isolated = await h.createIsolated("Isolated chat");
+			const mine = await h.app.request("/sessions?projectId=p1");
+			const mineSessions = (await mine.json()) as Array<{ id: string }>;
+			expect(mineSessions.map((item) => item.id)).toContain(created.id);
+			expect(mineSessions.map((item) => item.id)).toContain(isolated.id);
+			const foreign = await h.app.request("/sessions?projectId=p2");
+			expect(foreign.status).toBe(200);
+			const foreignSessions = (await foreign.json()) as Array<{ id: string }>;
+			expect(foreignSessions.map((item) => item.id)).not.toContain(created.id);
+			expect(foreignSessions.map((item) => item.id)).not.toContain(isolated.id);
+		} finally {
+			await rm(h.base, { recursive: true, force: true });
+		}
+	});
+
+	test("creation sanitizes scaffolding titles", async () => {		const h = await harness();
 		try {
 			// Continuation prompts begin with internal context blocks; the title
 			// must not copy that scaffolding into the sidebar.
