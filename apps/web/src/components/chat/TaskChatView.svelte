@@ -355,6 +355,8 @@ $effect(() => () => {
 						projectId={task.projectId}
 						onfile={(path: string) => (onfile ?? onopenfile)?.(path)}
 						onopenfile={onopenfile}
+						busy={(turnBusy || active) &&
+							turn.key === turns.at(-1)?.key}
 					/>
 				{/each}
 				{#if turnBusy || (active && !conversation.messages.at(-1)?.info.time.completed)}

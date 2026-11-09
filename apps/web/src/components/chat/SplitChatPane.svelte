@@ -802,6 +802,9 @@
 							projectId={active.projectId}
 							{onfile}
 							{onopenfile}
+							busy={busy &&
+								turn.role === "assistant" &&
+								turn.key === lastAssistantTurnKey}
 							onbranch={startNewChatFromAnswer}
 							onregenerate={turn.role === "assistant" &&
 							turn.key === lastAssistantTurnKey &&

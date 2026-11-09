@@ -48,6 +48,9 @@
 		onregenerate,
 		onedit,
 		onaddplan,
+		/** True while this turn's run is still going: the action bar (elapsed,
+		 * timestamps, Regenerate/Copy) must stay hidden until it really ends. */
+		busy = false,
 	}: {
 		messages: ChatMessage[];
 		catalog: Catalog;
@@ -65,6 +68,7 @@
 		onedit?: (messageId: string, text: string) => Promise<void> | void;
 		/** Present to turn this message into Kanban tasks. */
 		onaddplan?: (messageId: string, text: string, role: string) => void;
+		busy?: boolean;
 	} = $props();
 
 	const role = $derived(messages[0]?.info.role ?? "assistant");
@@ -133,7 +137,8 @@
 	const canCopyResponse = $derived(
 		role === "assistant" &&
 			!!responseText.trim() &&
-			messages[messages.length - 1]?.info.time.completed !== undefined,
+			messages[messages.length - 1]?.info.time.completed !== undefined &&
+			!busy,
 	);
 	const canEdit = $derived(
 		role === "user" && !!onedit && !!first && first.info.id.startsWith("msg_"),
@@ -945,7 +950,7 @@
 					{error.data?.message || error.name}
 				</p>{/if}
 		</div>
-		{#if canCopyResponse || onregenerate || error || (onaddplan && responseText)}
+		{#if !busy && (canCopyResponse || onregenerate || error || (onaddplan && responseText))}
 			<div
 				class="mt-3 flex flex-wrap items-center gap-1 border-t border-white/[0.07] pt-2 text-xs text-muted-foreground"
 			>

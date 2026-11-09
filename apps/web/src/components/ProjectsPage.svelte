@@ -4198,6 +4198,9 @@
 															onfile={showFiles}
 															onopenfile={openProjectFile}
 															onbranch={startNewChatFromAnswer}
+														busy={busy &&
+															turn.role === "assistant" &&
+															turn.key === lastAssistantTurnKey}
 															onregenerate={turn.role === "assistant" &&
 															turn.key === lastAssistantTurnKey &&
 															!busy
