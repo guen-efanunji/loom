@@ -521,6 +521,12 @@ export function websocketProtocols() {
 }
 
 let tokenProvision: Promise<string> | undefined;
+export function clearDaemonToken() {
+	try {
+		localStorage.removeItem(tokenKey);
+	} catch {}
+	tokenProvision = undefined;
+}
 export async function provisionDaemonToken() {
 	const current = getDaemonToken();
 	if (current) return current;
@@ -583,18 +589,30 @@ export class UiLockedError extends Error {
 }
 
 export async function request<T>(path: string, init: RequestInit = {}) {
+	const send = async () => {
+		const headers = new Headers(init.headers);
+		const token = getDaemonToken();
+		if (token) headers.set("Authorization", `Bearer ${token}`);
+		if (init.body) headers.set("Content-Type", "application/json");
+		return fetch(`${serverUrl()}${path}`, {
+			...init,
+			headers,
+			// The server-side UI lock session is an HttpOnly cookie; cross-origin
+			// dev requests must send it explicitly.
+			credentials: "include",
+		});
+	};
 	await provisionDaemonToken();
-	const headers = new Headers(init.headers);
-	const token = getDaemonToken();
-	if (token) headers.set("Authorization", `Bearer ${token}`);
-	if (init.body) headers.set("Content-Type", "application/json");
-	const response = await fetch(`${serverUrl()}${path}`, {
-		...init,
-		headers,
-		// The server-side UI lock session is an HttpOnly cookie; cross-origin
-		// dev requests must send it explicitly.
-		credentials: "include",
-	});
+	let response = await send();
+	// A daemon restart/update can regenerate the token; a stale cached token
+	// would 401 forever. Re-provision once from /api/bootstrap and retry.
+	if (response.status === 401 && path !== "/api/bootstrap") {
+		clearDaemonToken();
+		try {
+			await provisionDaemonToken();
+			response = await send();
+		} catch {}
+	}
 	if (!response.ok) {
 		let message = `${response.status} ${response.statusText}`;
 		let code: string | undefined;

@@ -27,6 +27,7 @@ import { Badge } from "$lib/components/ui/badge";
 import { Button } from "$lib/components/ui/button";
 import { Input } from "$lib/components/ui/input";
 import {
+	clearDaemonToken,
 	daemon,
 	parseDaemonEvent,
 	provisionDaemonToken,
@@ -130,6 +131,10 @@ onMount(() => {
 					} catch {}
 				};
 				socket.onclose = () => {
+					// A daemon restart/update may have rotated the token; clear it
+					// so the reconnect re-provisions a fresh one instead of 401-ing
+					// forever with the stale cached token.
+					clearDaemonToken();
 					if (!disposed) reconnect = setTimeout(connectEvents, 2000);
 				};
 			})
@@ -148,25 +153,42 @@ onMount(() => {
 
 async function loadProviders() {
 	loading = true;
-	try {
-		const [listed, custom, models, updateSettings] = await Promise.all([
-			daemon.listProviders(),
-			daemon.listCustomProviders(),
-			daemon.listAvailableProviderModels(),
-			daemon.getProviderUpdateSettings(),
+	// Each request gets its own deadline so one stalled endpoint (the models
+	// catalog awaits OpenCode startup + full CLI discovery on cold start)
+	// cannot hold the whole page in "Loading providers..." forever. The fast
+	// calls render first; the catalog fills in when it is ready.
+	const withTimeout = <T>(promise: Promise<T>, ms: number) =>
+		Promise.race<T>([
+			promise,
+			new Promise<T>((_, reject) =>
+				window.setTimeout(
+					() => reject(new Error("Timed out waiting for the daemon")),
+					ms,
+				),
+			),
 		]);
-		providers = listed;
-		autoCheck = updateSettings.enabled;
-		customProviders = custom;
-		providerModelCatalog = models;
-	} catch (reason) {
-		toast.error(
-			reason instanceof Error ? reason.message : "Unable to load providers",
-		);
-	} finally {
-		loading = false;
-		if (autoCheck && !lastChecked) void checkProviders();
-	}
+	const [listed, custom, updateSettings] = await Promise.allSettled([
+		withTimeout(daemon.listProviders(), 20_000),
+		withTimeout(daemon.listCustomProviders(), 20_000),
+		withTimeout(daemon.getProviderUpdateSettings(), 20_000),
+	]);
+	if (listed.status === "fulfilled") providers = listed.value;
+	if (custom.status === "fulfilled") customProviders = custom.value;
+	if (updateSettings.status === "fulfilled")
+		autoCheck = updateSettings.value.enabled;
+	if (
+		listed.status === "rejected" ||
+		custom.status === "rejected" ||
+		updateSettings.status === "rejected"
+	)
+		toast.error("Unable to load providers");
+	loading = false;
+	void withTimeout(daemon.listAvailableProviderModels(), 60_000)
+		.then((models) => {
+			providerModelCatalog = models;
+		})
+		.catch(() => {});
+	if (autoCheck && !lastChecked) void checkProviders();
 }
 
 const URL_PRESETS = [

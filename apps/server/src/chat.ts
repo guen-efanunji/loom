@@ -2077,6 +2077,16 @@ export function createChatRoutes(options: {
 				});
 			const effectiveProviderId =
 				input.model?.providerID ?? customAgent.provider;
+			// Chat requests race daemon startup: connections start empty and a
+			// slow CLI (agy) needs seconds to flip to connected. Refresh on
+			// demand instead of rejecting right after a restart/update.
+			if (
+				options.providerManager?.get(effectiveProviderId)?.status !==
+				"connected"
+			)
+				await options.providerManager
+					?.refresh(effectiveProviderId, { refreshModels: true })
+					.catch(() => {});
 			if (
 				options.providerManager?.get(effectiveProviderId)?.status !==
 				"connected"
@@ -2304,6 +2314,15 @@ export function createChatRoutes(options: {
 				message: `Provider runtime is unavailable: ${providerId}`,
 			});
 		if (runtime && providerId && providerId !== "opencode") {
+			// Same cold-start race as the custom-agent check above: refresh on
+			// demand before rejecting a provider that simply hasn't been
+			// discovered since the daemon (re)started.
+			if (
+				options.providerManager?.get(providerId)?.status !== "connected"
+			)
+				await options.providerManager
+					?.refresh(providerId, { refreshModels: true })
+					.catch(() => {});
 			const connection = options.providerManager?.get(providerId);
 			if (connection?.status !== "connected")
 				throw new HTTPException(409, {
