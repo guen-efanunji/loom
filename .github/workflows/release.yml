@@ -36,6 +36,9 @@ jobs:
           - { runner: ubuntu-24.04-arm, platform: linux-arm64, native: true }
           - { runner: macos-15, platform: darwin-arm64, native: true }
           - { runner: macos-15-intel, platform: darwin-x64, native: true }
+          # Cross-built by bun on the Linux runner (no Windows runner needed);
+          # native=false skips the smoke steps that must execute the binary.
+          - { runner: ubuntu-24.04, platform: windows-x64, native: false }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 25
     defaults:
@@ -74,6 +77,7 @@ jobs:
           codesign --verify --strict --verbose=4 "$RUNNER_TEMP/loom-darwin-arm64-copy"
           "$RUNNER_TEMP/loom-darwin-arm64-copy" --version
       - name: Check the target executable starts
+        if: matrix.native
         run: |
           if [ "${{ matrix.platform }}" = "windows-x64" ]; then
             ./dist/loom-windows-x64.exe --version
