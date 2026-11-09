@@ -1826,6 +1826,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			// Parallel chat tabs: an isolated session edits its own git worktree and a
 			// shared checkout only ever hosts one agent run at a time.
 			chatWorkspaces: repos.chatWorkspaces,
+			chatSessionProjects: repos.chatSessionProjects,
 			worktrees: worktreeManager,
 			providerManager,
 			permissions: agyPermissions,

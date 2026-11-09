@@ -72,3 +72,29 @@ export const chatWorkspaces = sqliteTable(
 		uniqueIndex("chat_workspaces_task_id_uidx").on(table.taskId),
 	],
 );
+
+/**
+ * Which Loom project a chat session belongs to. Intentionally mirrors the
+ * chatWorkspaces binding but covers shared sessions too: the gateway does not
+ * scope its session list by directory, and the stored directory is the
+ * gateway process's working directory (often unrelated to the project), so
+ * directory matching alone cannot associate sessions to projects.
+ */
+export const chatSessionProjects = sqliteTable(
+	"chat_session_projects",
+	{
+		sessionId: text("session_id").primaryKey(),
+		projectId: text("project_id")
+			.notNull()
+			.references(() => projects.id, { onDelete: "cascade" }),
+		createdAt: integer("created_at", { mode: "timestamp_ms" })
+			.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+			.notNull(),
+		updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+			.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+			.notNull(),
+	},
+	(table) => [
+		index("chat_session_projects_project_id_idx").on(table.projectId),
+	],
+);

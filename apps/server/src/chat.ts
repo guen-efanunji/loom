@@ -594,6 +594,20 @@ export function createChatRoutes(options: {
 		): Promise<unknown>;
 		delete(sessionId: string): Promise<unknown>;
 	};
+	/**
+	 * Authoritative session → project ownership. The gateway does not scope
+	 * its session list by directory, and the stored directory is the gateway
+	 * process's working directory (often unrelated to the project), so
+	 * directory matching alone cannot scope the sidebar.
+	 */
+	chatSessionProjects?: {
+		record(sessionId: string, projectId: string): Promise<unknown>;
+		getBySessionId(
+			sessionId: string,
+		): Promise<{ projectId: string } | undefined>;
+		listByProject(projectId: string): Promise<Array<{ sessionId: string }>>;
+		delete(sessionId: string): Promise<unknown>;
+	};
 	/** Git worktree machinery reused from the Kanban integration pipeline. */
 	worktrees?: {
 		create(input: {
@@ -1409,6 +1423,26 @@ export function createChatRoutes(options: {
 		}
 		return undefined;
 	}
+	/** Persist ownership without failing the user-visible action it rides on. */
+	async function recordSessionProject(sessionId: string, projectId: string) {
+		try {
+			await options.chatSessionProjects?.record(sessionId, projectId);
+		} catch (error) {
+			logChatEvent(
+				"chat",
+				"session.projectRecordFailed",
+				{
+					sessionId,
+					projectId,
+					message: (error instanceof Error
+						? error.message
+						: String(error)
+					).slice(0, 300),
+				},
+				"warn",
+			);
+		}
+	}
 	function toWorktreeWorkspace(
 		record: ChatWorkspaceRecord,
 		projectPath: string,
@@ -1886,10 +1920,12 @@ export function createChatRoutes(options: {
 		const bySession = new Map(bindings.map((item) => [item.sessionId, item]));
 		const directories = [root, ...bindings.map((item) => item.path)];
 		// The gateway's /session list is NOT scoped by the directory header —
-		// it returns every session for every query. Directory matching here is
-		// the only thing keeping one project's chats out of another's list.
-		// Compare symlink/trailing-slash normalized paths so an isolated
-		// worktree session still matches its binding path.
+		// it returns every session for every query. Project scoping here comes
+		// from recorded ownership first (authoritative) and, for legacy
+		// sessions without a record, from directory matching against the
+		// project root and its worktrees. Compare symlink/trailing-slash
+		// normalized paths so an isolated worktree session still matches its
+		// binding path.
 		const pathCache = new Map<string, Promise<string>>();
 		const normalizePath = (target: string): Promise<string> => {
 			const cached = pathCache.get(target);
@@ -1939,11 +1975,41 @@ export function createChatRoutes(options: {
 							: null,
 					),
 				);
-				return kept.filter((session): session is Session => session !== null);
+				return {
+					raw: candidates,
+					kept: kept.filter((session): session is Session => session !== null),
+				};
 			}),
 		);
+		const allSessions = new Map<string, Session>();
+		for (const list of lists)
+			for (const s of list.raw) allSessions.set(s.id, s);
+		const directoryMatched = new Map<string, Session>();
+		for (const list of lists)
+			for (const s of list.kept) directoryMatched.set(s.id, s);
+		// Ownership wins over directory matching: recorded sessions belong to
+		// their project even when the gateway stored them under its process
+		// working directory. Sessions mapped to another project are excluded
+		// even if their stored directory happens to match here. Unmapped
+		// legacy sessions fall back to directory matching.
+		const ownedIds = new Set<string>(
+			((await options.chatSessionProjects?.listByProject(projectId)) ?? []).map(
+				(row) => row.sessionId,
+			),
+		);
 		const merged = new Map<string, Session>();
-		for (const session of lists.flat()) merged.set(session.id, session);
+		for (const [id, session] of allSessions)
+			if (ownedIds.has(id)) merged.set(id, session);
+		for (const session of await Promise.all(
+			[...directoryMatched.values()].map(async (candidate) => {
+				if (ownedIds.has(candidate.id)) return candidate;
+				const row = await options.chatSessionProjects
+					?.getBySessionId(candidate.id)
+					.catch(() => undefined);
+				return row ? null : candidate;
+			}),
+		))
+			if (session) merged.set(session.id, session);
 		// Self-healing title repair: sessions whose title starts with internal
 		// scaffolding (continuation/handoff seeded drafts) get a real title
 		// derived from their first user message, persisted to the gateway.
@@ -2028,11 +2094,13 @@ export function createChatRoutes(options: {
 		// which for continuation/handoff drafts is internal scaffolding —
 		// never let it become the sidebar title.
 		const createdTitle = cleanSessionTitle(input.title);
-		if (input.mode !== "isolated")
-			return c.json(
-				await request<Session>("/session", root, { title: createdTitle }),
-				201,
-			);
+		if (input.mode !== "isolated") {
+			const created = await request<Session>("/session", root, {
+				title: createdTitle,
+			});
+			await recordSessionProject(created.id, input.projectId);
+			return c.json(created, 201);
+		}
 		if (!options.worktrees || !options.chatWorkspaces)
 			throw new HTTPException(409, {
 				message:
@@ -2067,6 +2135,7 @@ export function createChatRoutes(options: {
 				status: "active",
 			};
 			await options.chatWorkspaces.create(record);
+			await recordSessionProject(created.id, input.projectId);
 			// Best effort: an agent that cannot build or run tests in its own
 			// checkout is barely useful, but a failed link must not block the chat.
 			await options.worktrees.prepareDependencies?.(workspace).catch(() => {});
@@ -2081,6 +2150,9 @@ export function createChatRoutes(options: {
 				).catch(() => {});
 				await options.providerHistory?.delete(createdSessionId).catch(() => {});
 				await options.chatWorkspaces?.delete(createdSessionId).catch(() => {});
+				await options.chatSessionProjects
+					?.delete(createdSessionId)
+					.catch(() => {});
 			}
 			await options.worktrees.discard(workspace).catch(() => {});
 			throw error;
@@ -3417,6 +3489,7 @@ export function createChatRoutes(options: {
 			await request(`/session/${current.id}`, current.directory, {}, "DELETE");
 			providerSessions.delete(current.id);
 			await options.providerHistory?.delete(current.id);
+			await options.chatSessionProjects?.delete(current.id).catch(() => {});
 			try {
 				await options.chatCompactions?.delete?.(current.id);
 			} catch {}
@@ -3440,6 +3513,31 @@ export function createChatRoutes(options: {
 				"PATCH",
 			),
 		);
+	});
+	/**
+	 * Backfill channel: the client knows which project each open tab belongs
+	 * to, so it can report ownership for sessions created before Loom
+	 * persisted it (or from another client). Authoritative going forward.
+	 */
+	app.post("/sessions/:id/ownership", async (c) => {
+		const sessionId = c.req.param("id");
+		const input = z
+			.object({ projectId: z.string().min(1) })
+			.parse(await c.req.json());
+		const project = await options.projects.getById(input.projectId);
+		if (!project)
+			throw new HTTPException(404, { message: "Project not found" });
+		// The gateway list is unscoped, so it doubles as an existence check
+		// that also works for sessions stored under the gateway's own
+		// working directory (whose path matches no project).
+		const root = await directory(input.projectId);
+		const sessions = await request<Session[]>("/session?limit=200", root).catch(
+			() => [] as Session[],
+		);
+		if (!sessions.some((item) => item.id === sessionId))
+			throw new HTTPException(404, { message: "Session not found" });
+		await recordSessionProject(sessionId, input.projectId);
+		return c.json({ ok: true });
 	});
 	// Regenerate/edit: hide the superseded turns from the conversation and model
 	// context without depending on provider-native message deletion. The client

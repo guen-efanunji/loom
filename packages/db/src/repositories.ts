@@ -6,6 +6,7 @@ import type { Database } from "./index";
 import {
 	agentRuns,
 	chatContextCompactions,
+	chatSessionProjects,
 	chatWorkspaces,
 	integrationBatchChecks,
 	integrationBatches,
@@ -23,6 +24,9 @@ import {
 
 export type ProjectRecord = InferSelectModel<typeof projects>;
 export type ChatWorkspaceRecord = InferSelectModel<typeof chatWorkspaces>;
+export type ChatSessionProjectRecord = InferSelectModel<
+	typeof chatSessionProjects
+>;
 export type TaskRecord = InferSelectModel<typeof tasks>;
 export type WorkspaceRecord = InferSelectModel<typeof workspaces>;
 export type AgentRunRecord = InferSelectModel<typeof agentRuns>;
@@ -661,7 +665,9 @@ export function chatContextCompactionRepository(db: Database) {
 				.values({
 					sessionId: input.sessionId,
 					messageCount: input.messageCount,
-					...(input.lastMessageId ? { lastMessageId: input.lastMessageId } : {}),
+					...(input.lastMessageId
+						? { lastMessageId: input.lastMessageId }
+						: {}),
 					...(typeof input.nativeSupported === "boolean"
 						? { nativeSupported: input.nativeSupported ? 1 : 0 }
 						: {}),
@@ -769,6 +775,37 @@ export function chatWorkspaceRepository(db: Database) {
 	};
 }
 
+export function chatSessionProjectRepository(db: Database) {
+	return {
+		getBySessionId(sessionId: string) {
+			return db.query.chatSessionProjects.findFirst({
+				where: eq(chatSessionProjects.sessionId, sessionId),
+			});
+		},
+		listByProject(projectId: string) {
+			return db
+				.select()
+				.from(chatSessionProjects)
+				.where(eq(chatSessionProjects.projectId, projectId));
+		},
+		async record(sessionId: string, projectId: string) {
+			const now = new Date();
+			await db
+				.insert(chatSessionProjects)
+				.values({ sessionId, projectId, createdAt: now, updatedAt: now })
+				.onConflictDoUpdate({
+					target: chatSessionProjects.sessionId,
+					set: { projectId, updatedAt: now },
+				});
+		},
+		delete(sessionId: string) {
+			return db
+				.delete(chatSessionProjects)
+				.where(eq(chatSessionProjects.sessionId, sessionId));
+		},
+	};
+}
+
 export function repositories(db: Database) {
 	return {
 		projects: projectRepository(db),
@@ -785,6 +822,7 @@ export function repositories(db: Database) {
 		reviewPolicies: reviewPolicyRepository(db),
 		providerChatHistory: providerChatHistoryRepository(db),
 		chatWorkspaces: chatWorkspaceRepository(db),
+		chatSessionProjects: chatSessionProjectRepository(db),
 		chatContextCompactions: chatContextCompactionRepository(db),
 	};
 }

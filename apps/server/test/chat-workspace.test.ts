@@ -45,6 +45,7 @@ async function harness(
 	const bindings = new Map<string, ChatWorkspaceRecord>();
 	/** Messages stored by the fake gateway when a prompt is submitted. */
 	const gatewayMessages = new Map<string, unknown[]>();
+	const ownership = new Map<string, string>();
 	const calls: string[] = [];
 	let nextId = 0;
 	if (options.busySessionInRoot) {
@@ -156,6 +157,22 @@ async function harness(
 			},
 			delete: async (sessionId) => {
 				bindings.delete(sessionId);
+			},
+		},
+		chatSessionProjects: {
+			record: async (sessionId, projectId) => {
+				ownership.set(sessionId, projectId);
+			},
+			getBySessionId: async (sessionId) => {
+				const projectId = ownership.get(sessionId);
+				return projectId ? { projectId } : undefined;
+			},
+			listByProject: async (projectId) =>
+				[...ownership.entries()]
+					.filter(([, owner]) => owner === projectId)
+					.map(([sessionId]) => ({ sessionId })),
+			delete: async (sessionId) => {
+				ownership.delete(sessionId);
 			},
 		},
 		worktrees: {
@@ -404,7 +421,57 @@ describe("chat workspace isolation", () => {
 		}
 	});
 
-	test("creation sanitizes scaffolding titles", async () => {		const h = await harness();
+	test("recorded ownership scopes sessions regardless of stored directory", async () => {
+		const h = await harness();
+		try {
+			// The gateway stores sessions under whichever directory its process
+			// runs from, so a session created for p1 can carry a foreign
+			// directory. Ownership recorded at creation still scopes it.
+			const created = await h.createShared("Buatkan landing page");
+			const stored = h.sessions.get(created.id);
+			if (!stored) throw new Error("session missing from gateway");
+			stored.directory = "/some/foreign/dir";
+			const mine = await h.app.request("/sessions?projectId=p1");
+			const mineSessions = (await mine.json()) as Array<{ id: string }>;
+			expect(mineSessions.map((item) => item.id)).toContain(created.id);
+			const foreign = await h.app.request("/sessions?projectId=p2");
+			const foreignSessions = (await foreign.json()) as Array<{ id: string }>;
+			expect(foreignSessions.map((item) => item.id)).not.toContain(created.id);
+		} finally {
+			await rm(h.base, { recursive: true, force: true });
+		}
+	});
+
+	test("tabs can upload ownership for legacy sessions", async () => {
+		const h = await harness();
+		try {
+			const created = await h.createShared("Legacy chat");
+			// Simulate a pre-mapping session: no ownership record, foreign dir.
+			const stored = h.sessions.get(created.id);
+			if (!stored) throw new Error("session missing from gateway");
+			stored.directory = "/some/foreign/dir";
+			const before = await h.app.request("/sessions?projectId=p2");
+			const beforeSessions = (await before.json()) as Array<{ id: string }>;
+			expect(beforeSessions.map((item) => item.id)).not.toContain(created.id);
+			const report = await h.app.request(`/sessions/${created.id}/ownership`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ projectId: "p2" }),
+			});
+			expect(report.status).toBe(200);
+			const after = await h.app.request("/sessions?projectId=p2");
+			const afterSessions = (await after.json()) as Array<{ id: string }>;
+			expect(afterSessions.map((item) => item.id)).toContain(created.id);
+			const mine = await h.app.request("/sessions?projectId=p1");
+			const mineSessions = (await mine.json()) as Array<{ id: string }>;
+			expect(mineSessions.map((item) => item.id)).not.toContain(created.id);
+		} finally {
+			await rm(h.base, { recursive: true, force: true });
+		}
+	});
+
+	test("creation sanitizes scaffolding titles", async () => {
+		const h = await harness();
 		try {
 			// Continuation prompts begin with internal context blocks; the title
 			// must not copy that scaffolding into the sidebar.

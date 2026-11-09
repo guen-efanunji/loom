@@ -1828,6 +1828,7 @@
 					agent = restored.agent;
 					customAgentId = restored.customAgentId;
 				}
+				for (const tab of chatTabs) reportTabOwnership(tab);
 				ready = true;
 				if (!designId)
 					await selectSession(
@@ -1903,7 +1904,25 @@
 		chatTabs = reordered;
 		persistChatTabs();
 	}
-	function saveActiveChatTab() {
+		const reportedOwnership = new Set<string>();
+		// The daemon persists session→project ownership at creation, but
+		// sessions predating that (or created elsewhere) can be attributed
+		// through the tabs the user has open — report them once per page load.
+		const reportTabOwnership = (tab: WorkspaceChatTab) => {
+			const key = `${tab.sessionId}:${tab.projectId}`;
+			if (
+				!tab.sessionId ||
+				!tab.projectId ||
+				reportedOwnership.has(key) ||
+				tab.id.startsWith("task-tab-")
+			)
+				return;
+			reportedOwnership.add(key);
+			void chat
+				.ownership(tab.sessionId, tab.projectId)
+				.catch(() => reportedOwnership.delete(key));
+		};
+		function saveActiveChatTab() {
 		const tab = chatTabs.find((item) => item.id === activeChatTabId);
 		if (!tab || tab.taskId) return;
 		tab.sessionId = sessionId;
@@ -1987,6 +2006,7 @@
 			return;
 		}
 		saveActiveChatTab();
+		reportTabOwnership(next);
 		activeChatTabId = next.id;
 		if (next.taskId) splitChat = false;
 		selectedProjectId = next.projectId;

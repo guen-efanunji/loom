@@ -389,6 +389,11 @@ export const chat = {
 		),
 	state: (id: string) =>
 		request<ChatState>(`${root}/sessions/${encodeURIComponent(id)}`),
+	/** Report which project a tab's session belongs to (backfills ownership). */
+	ownership: (id: string, projectId: string) =>
+		post<{ ok: boolean }>(`/sessions/${encodeURIComponent(id)}/ownership`, {
+			projectId,
+		}),
 	send: (
 		id: string,
 		input: {
