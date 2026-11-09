@@ -1750,6 +1750,58 @@ export function createChatRoutes(options: {
 				: "Session is not in a Loom project",
 		});
 	}
+	/**
+	 * OpenCode runs a session in the directory stored at creation; no
+	 * per-request header or prompt field overrides it. Sessions created
+	 * before location-aware creation are stored under the gateway process
+	 * cwd, so the agent reads (and edits) the wrong project even though
+	 * Loom resolves the session to its project. Relocate the session to the
+	 * Loom-resolved directory before prompting, keeping its history.
+	 */
+	async function ensureSessionLocation(
+		current: Awaited<ReturnType<typeof session>>,
+	) {
+		const target = resolve(current.directory);
+		let stored: Session;
+		try {
+			stored = await request<Session>(
+				`/session/${current.id}`,
+				undefined,
+				undefined,
+				"GET",
+				10_000,
+			);
+		} catch {
+			return; // A failed lookup must not block the send.
+		}
+		const storedDirectory = resolve(stored.directory ?? "");
+		if (!storedDirectory || storedDirectory === target) return;
+		try {
+			await request(
+				`/session/${current.id}/move`,
+				undefined,
+				{ directory: current.directory },
+				"POST",
+				30_000,
+			);
+			logChatEvent(
+				"chat",
+				"session.moveRelocated",
+				{
+					sessionId: current.id,
+					from: storedDirectory,
+					to: target,
+				},
+				"info",
+			);
+		} catch {
+			throw new HTTPException(409, {
+				message:
+					`This chat is stored in ${storedDirectory} instead of ${target}; ` +
+					"it could not be moved there while active. Retry when the session is idle.",
+			});
+		}
+	}
 	async function filePath(root: string, path: string) {
 		const [base, file] = await Promise.all([
 			realpath(root),
@@ -2142,6 +2194,9 @@ export function createChatRoutes(options: {
 		if (input.mode !== "isolated") {
 			const created = await request<Session>("/session", root, {
 				title: createdTitle,
+				// 2.2 stores the run directory from this body field; the header
+				// alone would leave the session in the gateway process cwd.
+				location: { directory: root },
 			});
 			await recordSessionProject(created.id, input.projectId);
 			return c.json(created, 201);
@@ -2168,6 +2223,7 @@ export function createChatRoutes(options: {
 		try {
 			const created = await request<Session>("/session", workspace.path, {
 				title: createdTitle,
+				location: { directory: workspace.path },
 			});
 			createdSessionId = created.id;
 			const record = {
@@ -2471,6 +2527,7 @@ export function createChatRoutes(options: {
 	app.post("/sessions/:id/messages", async (c) => {
 		const current = await session(c.req.param("id"));
 		const input = promptSchema.parse(await c.req.json());
+		await ensureSessionLocation(current);
 		const customAgent = input.customAgentId
 			? await options.agents?.get(input.customAgentId)
 			: undefined;

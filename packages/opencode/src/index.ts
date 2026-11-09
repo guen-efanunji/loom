@@ -874,6 +874,19 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 		if (response.status === 204) return undefined as T;
 		const rawBody = unwrapOpenCodeEnvelope<T>(await response.json());
 		const body = withDirectoryAlias<T>(rawBody);
+		// Sessions created through the generic request helper (chat creation)
+		// skip createSession, so seed the directory map here: later
+		// session-scoped calls fall back to it for their x-opencode-directory
+		// header instead of the gateway process cwd.
+		if (
+			cwd &&
+			/^\/api\/session\/?$/.test(apiPath) &&
+			body &&
+			typeof body === "object" &&
+			"id" in body &&
+			typeof (body as { id?: unknown }).id === "string"
+		)
+			this.directories.set((body as { id: string }).id, cwd);
 		return /^\/api\/session\/[^/?#]+\/message$/.test(apiPath)
 			? withMessageShim<T>(body)
 			: body;
@@ -892,6 +905,10 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 			},
 			body: JSON.stringify({
 				title: input.title,
+				// OpenCode 2.2 stores the session's run directory from this body
+				// field; the x-opencode-directory header alone is ignored on
+				// creation and the session would land in the gateway process cwd.
+				location: { directory: input.cwd },
 				// A read-only session must stop the agent from mutating the repo, but
 				// it cannot deny every permission: OpenCode's free-tier provider
 				// requires `bash` to stay available, and a blanket `{permission:"*"}`

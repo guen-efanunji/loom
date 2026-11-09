@@ -1887,6 +1887,10 @@
 		const url = new URL(window.location.href);
 		if (session) url.searchParams.set("session", session);
 		else url.searchParams.delete("session");
+		// Keep the URL's project in sync with the open chat; otherwise it
+		// keeps the project it loaded with while the tab already belongs to
+		// another one (e.g. a session opened from another project's sidebar).
+		if (selectedProjectId) url.searchParams.set("project", selectedProjectId);
 		url.searchParams.delete("design");
 		lastSyncedRouteSession = session;
 		try {
