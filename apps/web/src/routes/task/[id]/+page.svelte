@@ -20,7 +20,7 @@ import {
 	websocketProtocols,
 	websocketUrl,
 } from "$lib/daemon";
-import TaskRunChat from "../../../components/chat/TaskRunChat.svelte";
+import TaskChatView from "../../../components/chat/TaskChatView.svelte";
 
 let task = $state<Task | null>(null);
 let runs = $state<AgentRun[]>([]);
@@ -450,15 +450,13 @@ const decide = (requestId: string, decision: "allow_once" | "allow" | "deny") =>
 			class="mt-8 rounded-2xl border bg-card/20 p-3 sm:p-5"
 			aria-label="Task progress and agent activity"
 		>
-			<TaskRunChat
+			<TaskChatView
 				{task}
 				{output}
 				activities={runActivities}
+				permissions={permissions}
+				onpermission={(requestId, decision) => void runAction(() => daemon.decidePermission(requestId, decision))}
 				oncancel={() => cancel()}
-				showTaskHeader={false}
-				showTaskBrief={false}
-				wide
-				compact
 			/>
 		</section>
 

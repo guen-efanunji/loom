@@ -1677,13 +1677,30 @@ export function createChatRoutes(options: {
 				const sessions = await request<Session[]>(
 					"/session?limit=200",
 					directory,
-				).catch(() => [] as Session[]);
-				return sessions.filter(
-					(s) =>
-						resolve(s.directory) === resolve(directory) &&
-						!s.parentID &&
-						!s.time.archived,
-				);
+				).catch((error) => {
+					// A failed worktree fetch used to silently swallow every isolated
+					// chat in that worktree, making tabs "disappear" from the sidebar
+					// after a daemon restart. Surface the failure per directory while
+					// keeping the listing alive for the other worktrees.
+					logChatEvent(
+						"chat",
+						"session-list-fetch-failed",
+						{
+							directory,
+							message: (error instanceof Error
+								? error.message
+								: String(error)
+							).slice(0, 300),
+						},
+						"warn",
+					);
+					return [] as Session[];
+				});
+				// The gateway already scopes each request by the directory header;
+				// strict path equality here dropped sessions whenever the gateway
+				// reported a symlink-resolved or trailing-slash variant of the same
+				// worktree. Only exclude child/archived sessions.
+				return sessions.filter((s) => !s.parentID && !s.time.archived);
 			}),
 		);
 		const merged = new Map<string, Session>();
@@ -2317,9 +2334,7 @@ export function createChatRoutes(options: {
 			// Same cold-start race as the custom-agent check above: refresh on
 			// demand before rejecting a provider that simply hasn't been
 			// discovered since the daemon (re)started.
-			if (
-				options.providerManager?.get(providerId)?.status !== "connected"
-			)
+			if (options.providerManager?.get(providerId)?.status !== "connected")
 				await options.providerManager
 					?.refresh(providerId, { refreshModels: true })
 					.catch(() => {});

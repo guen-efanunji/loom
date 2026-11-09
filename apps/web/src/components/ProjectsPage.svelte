@@ -39,6 +39,7 @@
 	import { toast } from "svelte-sonner";
 	import { goto, replaceState } from "$app/navigation";
 	import { page } from "$app/state";
+	import { suggestAgentForMessage } from "$lib/agent-match";
 	import {
 		type Catalog,
 		type ChatChildSession,
@@ -52,8 +53,8 @@
 		friendlyProviderStatus,
 		groupTurns,
 		isContextOverflowError,
-		type Question,
 		providerDisplayName,
+		type Question,
 		supersededIds,
 		userMessageText,
 	} from "$lib/chat";
@@ -107,7 +108,7 @@
 	import Composer from "./chat/Composer.svelte";
 	import QuestionCard from "./chat/QuestionCard.svelte";
 	import SplitChatWorkspace from "./chat/SplitChatWorkspace.svelte";
-	import TaskRunChat from "./chat/TaskRunChat.svelte";
+	import TaskChatView from "./chat/TaskChatView.svelte";
 	import Turn from "./chat/Turn.svelte";
 	import KanbanBoard from "./KanbanBoard.svelte";
 	import SshPanel, { type SshConnection } from "./SshPanel.svelte";
@@ -388,6 +389,7 @@
 		Array<{
 			id: string;
 			label: string;
+			role: string;
 			allowChat: boolean;
 			status: string;
 			provider: string;
@@ -490,6 +492,14 @@
 		input: Parameters<typeof chat.send>[1];
 	} | null>(null);
 	let continuingIsolatedTabId = $state("");
+	// One-click "hand off to registered agent?" suggestion for the first
+	// message of a fresh tab (see lib/agent-match.ts).
+	let pendingAgentHandoff = $state<{
+		tabId: string;
+		agentId: string;
+		agentLabel: string;
+		input: Parameters<typeof chat.send>[1];
+	} | null>(null);
 	const sending = $derived(sendingChatTabIds.includes(activeChatTabId));
 	let permissionReplying = $state<string | null>(null);
 	const selectedProject = $derived(
@@ -964,6 +974,23 @@
 		);
 		const failed = results.find((r) => r.status === "rejected");
 		if (failed?.status === "rejected") throw failed.reason;
+		connected = true;
+	}
+	let lastSessionListRefreshAt = 0;
+	// Light-weight refresh of just the sidebar session list (used by the poll
+	// loop) so isolated chats created in another window appear without reload.
+	async function refreshSessionsList() {
+		const results = await Promise.allSettled(
+			projects.map(async (p) =>
+				(await chat.sessions(p.id)).map((s) => ({ ...s, projectId: p.id })),
+			),
+		);
+		if (disposed) return;
+		const fresh = results.flatMap((r) =>
+			r.status === "fulfilled" ? r.value : [],
+		);
+		if (!fresh.length && !sessions.length) return;
+		sessions = fresh;
 		connected = true;
 	}
 	function samePermissions(
@@ -1554,6 +1581,16 @@
 				}
 			}
 			if (viewMode !== "chat" && ready) await refreshBoard();
+			// Keep the sidebar session list fresh (isolated chats created in
+			// another window, renames) without hammering the gateway per poll.
+			if (
+				ready &&
+				projects.length &&
+				Date.now() - lastSessionListRefreshAt >= 30_000
+			) {
+				lastSessionListRefreshAt = Date.now();
+				void refreshSessionsList().catch(() => {});
+			}
 			if (
 				activePanel === "agents" &&
 				!monitorInFlight &&
@@ -2667,6 +2704,26 @@
 		const projectId = selectedProjectId;
 		const existingSessionId = sessionId;
 		if (pendingIsolatedSend?.tabId === tabId) pendingIsolatedSend = null;
+		// First message of a fresh tab: offer a one-click hand-off when exactly
+		// one registered agent clearly matches the request (frontend request +
+		// a registered FE agent, etc.). YES routes the whole turn to that agent;
+		// NO keeps the user-picked model exactly as requested.
+		if (!existingSessionId && !input.customAgentId && !input.agents.length) {
+			const suggestion = suggestAgentForMessage(
+				input.text,
+				customAgents,
+				projectId,
+			);
+			if (suggestion && pendingAgentHandoff?.tabId !== tabId) {
+				pendingAgentHandoff = {
+					tabId,
+					agentId: suggestion.agent.id,
+					agentLabel: suggestion.agent.label,
+					input,
+				};
+				return false;
+			}
+		}
 		sendingChatTabIds = [...sendingChatTabIds, tabId];
 		if (activeChatTabId === tabId) error = "";
 		let createdHere = "";
@@ -2789,6 +2846,21 @@
 		} finally {
 			continuingIsolatedTabId = "";
 		}
+	}
+	// YES on the hand-off suggestion: route the pending turn to the registered
+	// agent (its provider/model and role instructions take over), preserving
+	// attachments and mentions from the original input.
+	async function acceptAgentHandoff() {
+		const pending = pendingAgentHandoff;
+		if (!pending || pending.tabId !== activeChatTabId) return;
+		pendingAgentHandoff = null;
+		customAgentId = pending.agentId;
+		await send(pending.input);
+	}
+	function dismissAgentHandoff() {
+		const pending = pendingAgentHandoff;
+		pendingAgentHandoff = null;
+		if (pending && pending.tabId === activeChatTabId) void send(pending.input);
 	}
 	async function stop() {
 		try {
@@ -3217,9 +3289,14 @@
 								></span>{/if}
 							<Button
 								variant="ghost"
-								class="h-8 min-w-0 flex-1 justify-start bg-transparent px-2 text-xs hover:bg-transparent"
+								class="h-8 min-w-0 flex-1 justify-start gap-1.5 bg-transparent px-2 text-xs hover:bg-transparent"
 								onclick={() => openSession(session.id)}
-								><span class="truncate">{session.title}</span></Button
+								>{#if session.workspace?.mode === "isolated"}<GitBranch
+										size={11}
+										class="shrink-0 text-emerald-300"
+										aria-label="Isolated workspace chat"
+										title="Edits its own git worktree"
+									/>{/if}<span class="truncate">{session.title}</span></Button
 							>
 							<span class="hidden shrink-0 group-hover:flex">
 								<Button
@@ -3350,9 +3427,14 @@
 												></span>{/if}
 											<Button
 												variant="ghost"
-												class="h-8 min-w-0 flex-1 justify-start bg-transparent px-2 text-xs hover:bg-transparent"
+												class="h-8 min-w-0 flex-1 justify-start gap-1.5 bg-transparent px-2 text-xs hover:bg-transparent"
 												onclick={() => openSession(session.id)}
-												><span class="truncate">{session.title}</span></Button
+												>{#if session.workspace?.mode === "isolated"}<GitBranch
+														size={11}
+														class="shrink-0 text-emerald-300"
+														aria-label="Isolated workspace chat"
+														title="Edits its own git worktree"
+													/>{/if}<span class="truncate">{session.title}</span></Button
 											>
 											<span class="hidden shrink-0 group-hover:flex">
 												<Button
@@ -3793,6 +3875,32 @@
 											</Button>
 										</div>
 									{/if}
+									{#if pendingAgentHandoff?.tabId === activeChatTabId}
+										{@const handoffAgent = customAgents.find((item) => item.id === pendingAgentHandoff?.agentId)}
+										<div
+											role="alertdialog"
+											aria-label="Agent hand-off suggestion"
+											class="flex shrink-0 flex-wrap items-center gap-3 border-b border-cyan-400/25 bg-cyan-400/[0.07] px-4 py-3 text-sm"
+										>
+											<Bot size={15} class="shrink-0 text-cyan-200" />
+											<p class="min-w-0 flex-1 text-muted-foreground">
+												This looks like a
+												{handoffAgent?.role ? handoffAgent.role : "specialist"}
+												task. Hand it off to registered agent
+												<span class="font-medium text-foreground">{pendingAgentHandoff.agentLabel}</span>?
+											</p>
+											<Button size="sm" onclick={() => void acceptAgentHandoff()}>
+												Yes, use {pendingAgentHandoff.agentLabel}
+											</Button>
+											<Button
+												variant="outline"
+												size="sm"
+												onclick={dismissAgentHandoff}
+											>
+												No, use my model
+											</Button>
+										</div>
+									{/if}
 								{/if}
 								{#if designId && viewMode === "chat"}
 									<div
@@ -3886,7 +3994,7 @@
 									</div>
 								{:else if activeChatTab?.taskId}
 									{#if activeTaskRun}
-										<TaskRunChat
+										<TaskChatView
 											task={activeTaskRun}
 											output={monitorTaskOutput[activeTaskRun.id] ?? ""}
 											activities={monitorTaskActivities[activeTaskRun.id] ?? []}
