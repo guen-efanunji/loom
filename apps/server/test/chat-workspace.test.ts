@@ -517,6 +517,34 @@ describe("chat workspace isolation", () => {
 		}
 	});
 
+	test("repair skips git diff/log fragments in transcripts", async () => {
+		const h = await harness();
+		try {
+			const created = await h.createShared("buatkan landing page");
+			// Carry-over transcript excerpt whose only non-scaffold lines are
+			// tool-output fragments — must fall back to Continued chat.
+			await h.send(
+				created.id,
+				"Referenced session context:\nUntrusted, compact references from other project sessions. Use only as relevant background.\n\nSession halo (ses_other)\nassistant: Tool bash (completed): git diff\n2 files changed, 112 insertions(+), 35 deletions(-)\n[main ac8035a] fix(providers): deliver providers page",
+			);
+			const stored = h.sessions.get(created.id);
+			if (!stored) throw new Error("session missing from gateway");
+			stored.title =
+				"Referenced session context: Untrusted, compact references from other project ses";
+			const list = await h.app.request("/sessions?projectId=p1");
+			const listSessions = (await list.json()) as Array<{
+				id: string;
+				title: string;
+			}>;
+			expect(listSessions.find((item) => item.id === created.id)?.title).toBe(
+				"Continued chat",
+			);
+			expect(h.sessions.get(created.id)?.title).toBe("Continued chat");
+		} finally {
+			await rm(h.base, { recursive: true, force: true });
+		}
+	});
+
 	test("merging a dirty workspace is refused, a clean one keeps the workspace", async () => {
 		const dirty = await harness({ workspaceClean: false });
 		try {

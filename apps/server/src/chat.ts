@@ -784,6 +784,10 @@ export function createChatRoutes(options: {
 	const boilerplateLine =
 		/^(time|elapsed|duration|exit|stdout|stderr|code|status|output|error|warning|info|debug|trace|wall|real|user|sys)\s*:/i;
 	const measureOnlyLine = /^[0-9\s.,:%smhwd]+$/i;
+	/** `git diff --stat` / `git log` tails inside rendered transcripts. */
+	const diffStatLine =
+		/^\d+ files? changed,?\s*(?:\d+ insertions?\(\+\)[,\s]*)?(?:\d+ deletions?\(-\)[,\s]*)?$/;
+	const gitLogLine = /^\[[^\]]+ [0-9a-f]{7,}\]/;
 	/**
 	 * Scaffolding the user never types (server-injected context): a title that
 	 * begins with one of these is pure bookkeeping — never a usable title.
@@ -873,6 +877,8 @@ export function createChatRoutes(options: {
 				toolLine.test(line) ||
 				toolStatusLine.test(line) ||
 				boilerplateLine.test(line) ||
+				diffStatLine.test(line) ||
+				gitLogLine.test(line) ||
 				measureOnlyLine.test(line)
 			)
 				continue;
