@@ -495,7 +495,9 @@ export function createChatRoutes(options: {
 	runtimes?:
 		| Map<string, AgentRuntime>
 		| ((providerId: string) => AgentRuntime | undefined);
-	openCodeRuntime?: OpenCodeAgentRuntime;
+	openCodeRuntime?: OpenCodeAgentRuntime & {
+		isLegacyGateway?: () => Promise<boolean>;
+	};
 	permissions?: AgyPermissionStore;
 	agyPermissionUrl?: string;
 	agyPermissionError?: string;
@@ -2546,14 +2548,20 @@ export function createChatRoutes(options: {
 			(q) => q.sessionID === current.id,
 		).length;
 		const newestMessage = visible.at(-1);
-		// Stale busy after a completed run: the gateway may keep reporting
-		// busy once the snapshot never cleared. Only trust that when the
-		// newest message is the completed assistant turn itself — if the
-		// newest message is the user's unanswered prompt, a fresh run is in
-		// flight (its assistant row may not exist yet), not stale.
+		// Legacy gateways (pre-2.2) keep stale busy entries in their status
+		// map long after a run ends, so a completed newest row downgrades
+		// them. Modern 2.2+ gateways report a sparse active snapshot that is
+		// authoritative ("running" present ⇔ in flight) — overriding there
+		// would hide the spinner between step rows while the run continues
+		// (turns show Regenerate/timestamp mid-run).
+		const legacyGateway =
+			typeof options.openCodeRuntime?.isLegacyGateway === "function"
+				? await options.openCodeRuntime.isLegacyGateway().catch(() => false)
+				: false;
 		const runOver = newestMessage?.info.role === "assistant" &&
 			newestMessage.info.time?.completed !== undefined;
 		const sessionStatus =
+			legacyGateway &&
 			normalizedStatus.type === "busy" &&
 			!providerSession &&
 			runOver &&

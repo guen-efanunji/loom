@@ -333,7 +333,11 @@ describe("chat gateway", () => {
 		app.onError((error, c) => c.json({ error: error.message }, 502));
 		const response = await app.request("/catalog?projectId=project");
 		expect(response.status).toBe(200);
-		const body = await response.json();
+		const body = (await response.json()) as {
+			models: Array<{ providerID: string; modelID: string }>;
+			agents: unknown[];
+			commands: unknown[];
+		};
 		expect(body.models).toEqual([
 			expect.objectContaining({
 				providerID: "codex",
@@ -351,7 +355,7 @@ describe("chat gateway", () => {
 				getById: async (id: string) =>
 					id === "project" ? { path: "/tmp" } : null,
 			},
-			request: async <T>() => {
+			request: async () => {
 				throw new Error("Unable to reach OpenCode server");
 			},
 			providerManager: {
@@ -376,7 +380,13 @@ describe("chat gateway", () => {
 		app.onError((error, c) => c.json({ error: error.message }, 502));
 		const response = await app.request("/catalog?projectId=project");
 		expect(response.status).toBe(200);
-		const body = await response.json();
+		const body = (await response.json()) as {
+			models: Array<{
+				providerID: string;
+				modelID: string;
+				contextWindow?: number;
+			}>;
+		};
 		expect(body.models).toEqual([
 			expect.objectContaining({
 				providerID: "claude",

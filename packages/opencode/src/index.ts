@@ -755,7 +755,7 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 	 * gateway answers 404/400 for other reasons too — e.g. an unknown model on
 	 * `/model` — and must never be demoted to the legacy vocabulary.
 	 */
-	private async isLegacyGateway(): Promise<boolean> {
+	public async isLegacyGateway(): Promise<boolean> {
 		if (this.legacyGateway) return true;
 		if (this.legacyGatewayProbed) return false;
 		try {

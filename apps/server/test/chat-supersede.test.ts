@@ -120,10 +120,101 @@ describe("chat regenerate/edit supersede", () => {
 	});
 
 	test("downgrades a stale busy status when nothing is running (P2-11)", async () => {
-		const { app } = harness({ status: { ses_x: { type: "busy" } } });
+		// Legacy gateways keep stale busy entries long after a run ends; the
+		// modern active snapshot is authoritative, so the downgrade is gated
+		// on a legacy gateway probe.
+		const app = createChatRoutes({
+			projects: {
+				list: async () => [{ id: "project", path: "/tmp" }],
+				getById: async (id: string) =>
+					id === "project" ? { path: "/tmp" } : null,
+			},
+			request: async <T>(path: string): Promise<T> => {
+				if (path === "/session/ses_x")
+					return {
+						id: "ses_x",
+						directory: "/tmp",
+						title: "Chat",
+						time: { updated: 1 },
+					} as T;
+				if (path === "/session/ses_x/message")
+					return [
+						{
+							info: { id: "msg_u", role: "user", time: { created: 1 } },
+							parts: [{ id: "p1", type: "text", text: "hello" }],
+						},
+						{
+							info: {
+								id: "msg_a",
+								role: "assistant",
+								time: { created: 2, completed: 3 },
+							},
+							parts: [{ id: "p2", type: "text", text: "hi there" }],
+						},
+					] as T;
+				if (path === "/session/status")
+					return { ses_x: { type: "busy" } } as T;
+				if (path === "/permission" || path === "/question") return [] as T;
+				return true as T;
+			},
+			openCodeRuntime: {
+				isLegacyGateway: async () => true,
+			} as never,
+		});
 		const response = await app.request("/sessions/ses_x");
 		const body = (await response.json()) as { status: { type: string } };
 		expect(body.status.type).toBe("idle");
+	});
+
+	test("keeps busy on a modern gateway even with a completed newest row", async () => {
+		// On 2.2+ the active snapshot is authoritative: the newest row being
+		// completed (previous step) must not hide a live run between step
+		// rows — the spinner and button gating depend on it.
+		const app = createChatRoutes({
+			projects: {
+				list: async () => [{ id: "project", path: "/tmp" }],
+				getById: async (id: string) =>
+					id === "project" ? { path: "/tmp" } : null,
+			},
+			request: async <T>(path: string): Promise<T> => {
+				if (path === "/session/ses_x")
+					return {
+						id: "ses_x",
+						directory: "/tmp",
+						title: "Chat",
+						time: { updated: 1 },
+					} as T;
+				if (path === "/session/ses_x/message")
+					return [
+						{
+							info: { id: "msg_u", role: "user", time: { created: 1 } },
+							parts: [{ id: "p1", type: "text", text: "hello" }],
+						},
+						{
+							info: {
+								id: "msg_a",
+								role: "assistant",
+								time: { created: 2, completed: 3 },
+							},
+							parts: [{ id: "p2", type: "text", text: "previous step" }],
+						},
+						{
+							info: { id: "msg_u2", role: "user", time: { created: 4 } },
+							parts: [{ id: "p3", type: "text", text: "continue" }],
+						},
+					] as T;
+				if (path === "/session/status")
+					return { ses_x: { type: "busy" } } as T;
+				if (path === "/permission" || path === "/question") return [] as T;
+				return true as T;
+			},
+			openCodeRuntime: {
+				isLegacyGateway: async () => false,
+			} as never,
+		});
+		const response = await app.request("/sessions/ses_x");
+		const body = (await response.json()) as { status: { type: string } };
+		expect(body.status.type).toBe("busy");
 	});
 });
 
