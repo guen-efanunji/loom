@@ -154,6 +154,8 @@ type ProviderTurn = {
 	openCodeActive?: boolean;
 	/** Last status type broadcast to the UI, used to suppress duplicate events. */
 	emittedStatus?: string;
+	/** Last serialized message set broadcast, so streaming content also emits. */
+	emittedSerialized?: string;
 	permissionToken?: string;
 	agentRunId?: string;
 	persistedMessages?: string;
@@ -1121,8 +1123,14 @@ export function createChatRoutes(options: {
 			});
 		}
 		const serialized = JSON.stringify(turn.messages);
-		if (turn.emittedStatus !== turn.status.type) {
+		// Content changes (streaming steps/tool output) emit just like status
+		// flips, so the UI refreshes mid-run instead of only at the end.
+		if (
+			turn.emittedStatus !== turn.status.type ||
+			turn.emittedSerialized !== serialized
+		) {
 			turn.emittedStatus = turn.status.type;
+			turn.emittedSerialized = serialized;
 			options.onEvent?.({
 				sessionId: turn.loomSessionId,
 				status: turn.status.type,

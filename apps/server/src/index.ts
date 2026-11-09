@@ -630,6 +630,24 @@ export async function createApp(options: DaemonAppOptions = {}) {
 				throw error;
 			}
 		},
+		// Gateway activity (session.step.streamed, tool progress, text deltas)
+		// drives the UI's near-live refresh; status is informational only.
+		// The gateway emits bursts of events per run, so notify at most a few
+		// times per second per session (the UI throttles refreshes to 1s too,
+		// and every publish is persisted).
+		onSessionActivity: (() => {
+			const lastSentAt = new Map<string, number>();
+			return (sessionId: string) => {
+				const now = Date.now();
+				if (now - (lastSentAt.get(sessionId) ?? 0) < 750) return;
+				lastSentAt.set(sessionId, now);
+				eventPublisher.publish({
+					type: "chat.updated",
+					sessionId,
+					status: "busy",
+				});
+			};
+		})(),
 	});
 	const providerModelCachePath = join(
 		dataDirectory(),

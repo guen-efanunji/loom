@@ -106,6 +106,37 @@ describe("OpenCode server manager", () => {
 		await expect(manager.start()).resolves.toBeUndefined();
 		expect(spawns).toBe(0);
 	});
+
+	test("forwards gateway activity events to the session hook", async () => {
+		const activity: string[] = [];
+		const lines = [
+			`data: {"type":"server.connected","data":{}}`,
+			``,
+			`data: {"type":"session.text.delta","data":{"sessionID":"ses_a"}}`,
+			``,
+			`data: {"type":"session.step.streamed","data":{"sessionID":"ses_b"}}`,
+			``,
+			`data: {"type":"message.other","data":{"sessionID":"ses_a"}}`,
+			``,
+			`data: not-json`,
+			``,
+			`: heartbeat`,
+			``,
+		];
+		const runtime = new OpenCodeHttpRuntime({
+			baseUrl: "http://127.0.0.1:4096",
+			onSessionActivity: (sessionId) => activity.push(sessionId),
+			fetcher: async (input) => {
+				expect(String(input)).toBe("http://127.0.0.1:4096/api/event");
+				return new Response(lines.join("\n"), {
+					headers: { "content-type": "text/event-stream" },
+				});
+			},
+		});
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		runtime.stopEventStream();
+		expect(activity).toEqual(["ses_a", "ses_b", "ses_a"]);
+	});
 });
 
 describe("OpenCode HTTP runtime", () => {

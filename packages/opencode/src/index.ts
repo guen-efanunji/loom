@@ -672,6 +672,12 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 	private legacyGateway = false;
 	/** Whether the gateway version has been probed via /session/active. */
 	private legacyGatewayProbed = false;
+	/** Fires per gateway activity event so the daemon can stream updates to
+	 * the UI immediately instead of relying on snapshot polling. */
+	private readonly onSessionActivity?: (sessionId: string) => void;
+	private eventStreamStarted = false;
+	private eventStreamBackoffMs = 1_000;
+	private eventStreamController: AbortController | undefined;
 
 	constructor(
 		options: {
@@ -684,14 +690,18 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 			 * failure burst; requests are retried once afterwards.
 			 */
 			ensureServer?: () => Promise<void>;
+			/** Called with the gateway session id on every activity event. */
+			onSessionActivity?: (sessionId: string) => void;
 		} = {},
 	) {
 		this.baseUrl = (options.baseUrl ?? openCodeBaseUrl()).replace(/\/$/, "");
 		this.fetcher = options.fetcher ?? fetch;
 		this.ensureServer = options.ensureServer;
+		this.onSessionActivity = options.onSessionActivity;
 		this.discoverService =
 			options.baseUrl === undefined && options.fetcher === undefined;
 		this.idleTimeoutMs = options.idleTimeoutMs ?? 15_000;
+		if (this.onSessionActivity) this.ensureEventStream();
 	}
 
 	private resolveBaseUrl(): Promise<void> {
@@ -719,6 +729,85 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 			}
 		})();
 		return this.baseUrlResolution;
+	}
+
+	private ensureEventStream(): void {
+		if (this.eventStreamStarted || !this.onSessionActivity) return;
+		this.eventStreamStarted = true;
+		void this.streamGatewayEvents();
+	}
+
+	/**
+	 * Subscribe to the gateway's event stream (`/api/event` SSE). Every
+	 * `session.*`/`message.*` event carries the session id, which the daemon
+	 * forwards as a chat update so the UI streams without polling. The loop
+	 * reconnects with backoff if the server restarts; failures stay silent so
+	 * a down gateway never spams the log here.
+	 */
+	/** Stop the gateway event stream (used on runtime shutdown/tests). */
+	stopEventStream(): void {
+		this.eventStreamController?.abort();
+	}
+
+	private async streamGatewayEvents(): Promise<void> {
+		const controller = new AbortController();
+		this.eventStreamController = controller;
+		for (;;) {
+			try {
+				await this.resolveBaseUrl();
+				const headers = authHeaders(undefined, this.servicePassword);
+				headers.set("accept", "text/event-stream");
+				const response = await this.fetcher(`${this.baseUrl}/api/event`, {
+					headers,
+					signal: controller.signal,
+				});
+				if (!response.ok || !response.body)
+					throw new Error(`event stream: HTTP ${response.status}`);
+				this.eventStreamBackoffMs = 1_000;
+				const reader = response.body.getReader();
+				const decoder = new TextDecoder();
+				let buffer = "";
+				for (;;) {
+					const { done, value } = await reader.read();
+					if (done) break;
+					buffer += decoder.decode(value, { stream: true });
+					for (let boundary = buffer.indexOf("\n\n"); boundary !== -1;) {
+						this.dispatchGatewayEvent(buffer.slice(0, boundary));
+						buffer = buffer.slice(boundary + 2);
+						boundary = buffer.indexOf("\n\n");
+					}
+				}
+			} catch {
+				if (controller.signal.aborted) return;
+			}
+			await new Promise((resolve) =>
+				setTimeout(resolve, this.eventStreamBackoffMs),
+			);
+			if (controller.signal.aborted) return;
+			this.eventStreamBackoffMs = Math.min(this.eventStreamBackoffMs * 2, 10_000);
+		}
+	}
+
+	private dispatchGatewayEvent(rawEvent: string): void {
+		const dataLines = rawEvent
+			.split("\n")
+			.filter((line) => line.startsWith("data:"))
+			.map((line) => line.slice("data:".length).trim());
+		if (!dataLines.length || !this.onSessionActivity) return;
+		let payload: { type?: unknown; data?: { sessionID?: unknown } };
+		try {
+			payload = JSON.parse(dataLines.join("\n"));
+		} catch {
+			return;
+		}
+		const type = typeof payload.type === "string" ? payload.type : "";
+		if (!type.startsWith("session.") && !type.startsWith("message.")) return;
+		const sessionId = payload.data?.sessionID;
+		if (typeof sessionId === "string" && sessionId) {
+			try {
+				this.onSessionActivity(sessionId);
+			} catch {}
+		}
 	}
 
 	private describeFetchFailure(error: unknown, timeoutMs: number): string {
