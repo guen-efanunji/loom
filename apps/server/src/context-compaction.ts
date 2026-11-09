@@ -36,7 +36,8 @@ export type ContextMessage = {
 			status?: string;
 			input?: Record<string, unknown>;
 			output?: string;
-			error?: string;
+			/** Gateway returns either a message string or `{name, data}`. */
+			error?: string | { name?: string; data?: { message?: string } };
 		};
 	}>;
 };
@@ -347,6 +348,29 @@ function excerptUserText(text: string): string {
 	return excerpt;
 }
 
+/**
+ * Gateway tool state fields are typed as strings, but OpenCode 2.2 returns
+ * errors as `{name, data: {message}}` objects. Normalize to display text so
+ * excerpt building never crashes on a non-string value.
+ */
+function toolStateText(value: unknown): string {
+	if (typeof value === "string") return value;
+	if (!value) return "";
+	if (typeof value === "object") {
+		const record = value as {
+			name?: unknown;
+			data?: { message?: unknown };
+		};
+		if (typeof record.data?.message === "string") return record.data.message;
+		if (typeof record.name === "string") return record.name;
+	}
+	try {
+		return JSON.stringify(value);
+	} catch {
+		return String(value);
+	}
+}
+
 function compactOldMessage(message: ContextMessage): string {
 	const failure = compactedFailure(message);
 	const lines = [
@@ -375,12 +399,15 @@ function compactOldMessage(message: ContextMessage): string {
 			}
 			if (part.type === "tool") {
 				const input = part.state?.input ? JSON.stringify(part.state.input) : "";
-				const output = part.state?.output ?? "";
+				const output = toolStateText(part.state?.output);
 				const excerpt =
 					output.length > OLD_TOOL_EXCERPT_CHARS
 						? `${output.slice(0, OLD_TOOL_EXCERPT_CHARS)} … [excerpt]`
 						: output;
-				const error = part.state?.error?.slice(0, OLD_TOOL_EXCERPT_CHARS) ?? "";
+				const error = toolStateText(part.state?.error).slice(
+					0,
+					OLD_TOOL_EXCERPT_CHARS,
+				);
 				return [
 					[
 						`Untrusted tool event ${part.tool ?? "tool"} (${part.state?.status ?? "unknown"})`,

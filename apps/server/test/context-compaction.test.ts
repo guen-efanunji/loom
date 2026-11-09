@@ -446,3 +446,49 @@ describe("provider-agnostic context budget", () => {
 		}
 	});
 });
+
+	describe("tool state excerpting", () => {
+		test("renders object-shaped tool errors without crashing", () => {
+			// OpenCode 2.2 returns tool state errors as {name, data: {message}}
+			// rather than a plain string; the excerpt builder used to throw
+			// "error.slice is not a function" on these parts (crash in sends
+			// while the user's model is a CLI provider building handoff text).
+			const handoff = buildHandoff([
+				{
+					info: { id: "u1", role: "user" },
+					parts: [{ id: "u1-p", type: "text", text: "fix the bug" }],
+				},
+				{
+					info: { id: "a1", role: "assistant" },
+					parts: [
+						{
+							id: "a1-tool",
+							type: "tool",
+							tool: "bash",
+							state: {
+								status: "error",
+								input: { command: "ls" },
+								output: "boom",
+								error: {
+									name: "PermissionError",
+									data: { message: "permission denied" },
+								},
+							},
+						},
+						{
+							id: "a1-tool-2",
+							type: "tool",
+							tool: "read",
+							state: {
+								status: "error",
+								error: "file not found",
+							},
+						},
+					],
+				},
+			]);
+			expect(handoff).toContain("permission denied");
+			expect(handoff).toContain("file not found");
+			expect(handoff).toContain("Untrusted tool event bash");
+		});
+	});

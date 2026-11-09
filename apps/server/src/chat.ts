@@ -2499,19 +2499,24 @@ export function createChatRoutes(options: {
 			),
 			normalizedStatus,
 		);
-		const newestCompleted = visible.findLast(
-			(message) => message.info.role === "assistant",
-		)?.info.time?.completed;
 		const pendingPermissions = permissions.filter(
 			(p) => p.sessionID === current.id,
 		).length;
 		const pendingQuestions = questions.filter(
 			(q) => q.sessionID === current.id,
 		).length;
+		const newestMessage = visible.at(-1);
+		// Stale busy after a completed run: the gateway may keep reporting
+		// busy once the snapshot never cleared. Only trust that when the
+		// newest message is the completed assistant turn itself — if the
+		// newest message is the user's unanswered prompt, a fresh run is in
+		// flight (its assistant row may not exist yet), not stale.
+		const runOver = newestMessage?.info.role === "assistant" &&
+			newestMessage.info.time?.completed !== undefined;
 		const sessionStatus =
 			normalizedStatus.type === "busy" &&
 			!providerSession &&
-			newestCompleted &&
+			runOver &&
 			!pendingPermissions &&
 			!pendingQuestions
 				? { type: "idle" }

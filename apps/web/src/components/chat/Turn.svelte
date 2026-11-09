@@ -99,6 +99,29 @@
 			: null,
 	);
 	const error = $derived(messages.find((m) => m.info.error)?.info.error);
+	// The gateway returns tool state errors either as a string or as
+	// `{name, data: {message}}`; normalize to display text.
+	function toolStateError(part: ChatPart): string {
+		const value = (part as { state?: { error?: unknown } }).state?.error;
+		if (typeof value === "string") return value;
+		if (!value) return "";
+		if (typeof value === "object") {
+			const record = value as {
+				name?: unknown;
+				data?: { message?: unknown };
+			};
+			if (typeof record.data?.message === "string") return record.data.message;
+			if (typeof record.name === "string") return record.name;
+		}
+		if (typeof value === "object") {
+			try {
+				return JSON.stringify(value);
+			} catch {
+				return String(value);
+			}
+		}
+		return String(value);
+	}
 	const responseText = $derived(
 		messages
 			.flatMap((message) => message.parts)
@@ -828,11 +851,11 @@
 													><FileCode size={13} />Open in editor</Button
 												>
 											{/if}
-											{#if part.state.error}<p
+											{#if toolStateError(part)}<p
 													class="text-sm text-destructive"
 													role="alert"
 												>
-													{part.state.error}
+													{toolStateError(part)}
 												</p>{/if}
 										</Trace.CollapsibleContent>
 									</Trace.Collapsible>
@@ -884,11 +907,11 @@
 													code={part.state.output}
 													maxHeight="max-h-80"
 												/>{/if}
-											{#if part.state.error}<p
+											{#if toolStateError(part)}<p
 													class="text-sm text-destructive"
 													role="alert"
 												>
-													{part.state.error}
+													{toolStateError(part)}
 												</p>{/if}
 											{#if kind === "read" && file}<Button
 													variant="ghost"
