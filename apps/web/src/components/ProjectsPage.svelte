@@ -1593,7 +1593,10 @@
 
 					const changed = signature !== lastSessionStatusSignature;
 					lastSessionStatusSignature = signature;
-					if (changed || (busy && now - lastSessionSnapshotAt >= 5_000)) {
+					// While running, refresh the snapshot near-live (parts stream
+					// in second-granularity bursts otherwise); the cheap status
+					// signature still gates idle refreshes.
+					if (changed || (busy && now - lastSessionSnapshotAt >= 1_200)) {
 						lastSessionSnapshotAt = now;
 						await refreshSession(currentSession);
 					}
