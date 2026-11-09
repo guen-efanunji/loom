@@ -435,6 +435,35 @@ describe("chat workspace isolation", () => {
 		}
 	});
 
+	test("repair skips whole scaffolding lines and residues", async () => {
+		const h = await harness();
+		try {
+			const created = await h.createShared("buatkan landing page");
+			await h.send(
+				created.id,
+				"Referenced session context: Untrusted, compact references from other project sessions.\n\nbuatkan landing page produk",
+			);
+			const stored = h.sessions.get(created.id);
+			if (!stored) throw new Error("session missing from gateway");
+			// Residue left after an earlier partial strip must still repair.
+			stored.title =
+				"from other project sessions. Use only as relevant background; verify current fil";
+			const list = await h.app.request("/sessions?projectId=p1");
+			const listSessions = (await list.json()) as Array<{
+				id: string;
+				title: string;
+			}>;
+			expect(listSessions.find((item) => item.id === created.id)?.title).toBe(
+				"buatkan landing page produk",
+			);
+			expect(h.sessions.get(created.id)?.title).toBe(
+				"buatkan landing page produk",
+			);
+		} finally {
+			await rm(h.base, { recursive: true, force: true });
+		}
+	});
+
 	test("merging a dirty workspace is refused, a clean one keeps the workspace", async () => {
 		const dirty = await harness({ workspaceClean: false });
 		try {

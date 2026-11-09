@@ -765,6 +765,9 @@ export function createChatRoutes(options: {
 	const scaffoldingTitleLines = [
 		"referenced session context:",
 		"untrusted, compact references",
+		"compact references from other project sessions",
+		"from other project sessions",
+		"use only as relevant background",
 		"previous conversation (carried over",
 		"<previous-conversation>",
 		"continue from this answer:",
@@ -774,6 +777,9 @@ export function createChatRoutes(options: {
 		"failed request:",
 		"context overflow diagnostic:",
 	];
+	const excerptLine = /^session .+ \([^\s()]+\)$/i;
+	const transcriptLine = /^(user|assistant):\s+/i;
+	const toolLine = /^tool [^\n]*$/i;
 	/**
 	 * Scaffolding the user never types (server-injected context): a title that
 	 * begins with one of these is pure bookkeeping — never a usable title.
@@ -836,13 +842,17 @@ export function createChatRoutes(options: {
 			const transcript = /^(user|assistant) \[[^\]]+\]:\s*(.*)$/.exec(line);
 			if (transcript) line = (transcript[2] ?? "").trim();
 			if (!line) continue;
-			for (;;) {
-				const stripped = stripScaffoldingPrefix(line);
-				if (stripped === null) break;
-				line = stripped;
-				if (!line) break;
-			}
-			if (!line) continue;
+			// Scaffolding lines (injected context, handoff markers, rendered
+			// transcript excerpts) are never the user's intent: skip the whole
+			// line instead of keeping its trailing remainder.
+			const lower = line.toLowerCase();
+			if (
+				scaffoldingTitleLines.some((prefix) => lower.startsWith(prefix)) ||
+				excerptLine.test(line) ||
+				transcriptLine.test(line) ||
+				toolLine.test(line)
+			)
+				continue;
 			return line.slice(0, 80);
 		}
 		return null;
