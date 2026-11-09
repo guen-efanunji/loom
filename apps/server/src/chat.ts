@@ -843,7 +843,11 @@ export function createChatRoutes(options: {
 	}
 	/** Derive a title from one (already display-stripped) user text part. */
 	function deriveTitleFromUserText(text: string): string | null {
-		for (const rawLine of text.split("\n")) {
+		// The referenced-context builder joins with literal "\n" text, which
+		// collapses whole blocks into one line — normalize so scaffolding
+		// lines are visible to the skip filters below.
+		const normalized = text.replace(/\\n/g, "\n");
+		for (const rawLine of normalized.split("\n")) {
 			let line = rawLine.trim();
 			if (!line) continue;
 			// Handoff transcripts are rendered as `role [msg_id]: text`.

@@ -464,6 +464,32 @@ describe("chat workspace isolation", () => {
 		}
 	});
 
+	test("repair normalizes literal backslash-n in carry-over text", async () => {
+		const h = await harness();
+		try {
+			const created = await h.createShared("buatkan landing page");
+			// The referenced-context builder joins with literal "\\n" text, so
+			// the whole carry-over block is one line unless normalized.
+			await h.send(
+				created.id,
+				"Referenced session context:\\nUntrusted, compact references from other project sessions.\\n\\nuser: hai\\n\\nassistant: Tool bash (completed): Time: 1ms\\n\\nbuatkan landing page produk",
+			);
+			const stored = h.sessions.get(created.id);
+			if (!stored) throw new Error("session missing from gateway");
+			stored.title = "Time:    7.675s";
+			const list = await h.app.request("/sessions?projectId=p1");
+			const listSessions = (await list.json()) as Array<{
+				id: string;
+				title: string;
+			}>;
+			expect(listSessions.find((item) => item.id === created.id)?.title).toBe(
+				"buatkan landing page produk",
+			);
+		} finally {
+			await rm(h.base, { recursive: true, force: true });
+		}
+	});
+
 	test("repair falls back to Continued chat for pure carry-over messages", async () => {
 		const h = await harness();
 		try {
