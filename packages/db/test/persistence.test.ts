@@ -69,6 +69,7 @@ test("bootstraps an empty database and is idempotent", async () => {
 			"account",
 			"agent_runs",
 			"chat_context_compactions",
+			"chat_session_projects",
 			"chat_workspaces",
 			"context_entries",
 			"context_memory_decisions",
