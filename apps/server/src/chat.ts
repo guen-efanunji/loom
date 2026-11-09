@@ -789,6 +789,17 @@ export function createChatRoutes(options: {
 		/^\d+ files? changed,?\s*(?:\d+ insertions?\(\+\)[,\s]*)?(?:\d+ deletions?\(-\)[,\s]*)?$/;
 	const gitLogLine = /^\[[^\]]+ [0-9a-f]{7,}\]/;
 	/**
+	 * Injected context blocks the user never typed. They always trail the
+	 * request in the string compositions (or arrive as their own part), so
+	 * anything from their marker onward is carry-over text, never intent.
+	 */
+	const invisibleScaffoldMarkers = [
+		"Referenced session context:",
+		"Untrusted, compact references",
+		"<previous-conversation>",
+		"Previous conversation (carried over",
+	];
+	/**
 	 * Scaffolding the user never types (server-injected context): a title that
 	 * begins with one of these is pure bookkeeping — never a usable title.
 	 */
@@ -862,7 +873,14 @@ export function createChatRoutes(options: {
 		// collapses whole blocks into one line — normalize so scaffolding
 		// lines are visible to the skip filters below.
 		const normalized = text.replace(/\\n/g, "\n");
-		for (const rawLine of normalized.split("\n")) {
+		// Cut at the first injected-context marker: everything from there on
+		// is carry-over transcript/output debris, never the user's request.
+		let cut = normalized.length;
+		for (const marker of invisibleScaffoldMarkers) {
+			const index = normalized.indexOf(marker);
+			if (index >= 0) cut = Math.min(cut, index);
+		}
+		for (const rawLine of normalized.slice(0, cut).split("\n")) {
 			let line = rawLine.trim();
 			if (!line) continue;
 			// Handoff transcripts are rendered as `role [msg_id]: text`.

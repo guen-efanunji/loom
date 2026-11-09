@@ -439,9 +439,10 @@ describe("chat workspace isolation", () => {
 		const h = await harness();
 		try {
 			const created = await h.createShared("buatkan landing page");
+			// String-path order: request first, injected context after.
 			await h.send(
 				created.id,
-				"Referenced session context: Untrusted, compact references from other project sessions.\n\nbuatkan landing page produk",
+				"buatkan landing page produk\n\nReferenced session context: Untrusted, compact references from other project sessions.",
 			);
 			const stored = h.sessions.get(created.id);
 			if (!stored) throw new Error("session missing from gateway");
@@ -472,7 +473,7 @@ describe("chat workspace isolation", () => {
 			// the whole carry-over block is one line unless normalized.
 			await h.send(
 				created.id,
-				"Referenced session context:\\nUntrusted, compact references from other project sessions.\\n\\nuser: hai\\n\\nassistant: Tool bash (completed): Time: 1ms\\n\\nbuatkan landing page produk",
+				"buatkan landing page produk\\n\\nReferenced session context:\\nUntrusted, compact references from other project sessions.\\n\\nuser: hai\\n\\nassistant: Tool bash (completed): Time: 1ms",
 			);
 			const stored = h.sessions.get(created.id);
 			if (!stored) throw new Error("session missing from gateway");
