@@ -82,6 +82,30 @@ describe("OpenCode server manager", () => {
 			code: "NOT_INSTALLED",
 		});
 	});
+
+	test("treats a 401 server as alive instead of reviving forever", async () => {
+		// An unauthenticated OpenCode server answers 401 "Authentication
+		// required" forever; health must report it alive so start() does not
+		// spawn-more-and-timeout in a loop (reviveFailed spam).
+		let spawns = 0;
+		const manager = new OpenCodeServerManager({
+			baseUrl: "http://127.0.0.1:4096",
+			fetcher: async () =>
+				Response.json(
+					{ _tag: "UnauthorizedError", message: "Authentication required" },
+					{ status: 401 },
+				),
+			processRunner: () => {
+				spawns += 1;
+				throw new Error("spawn should not happen");
+			},
+			healthTimeoutMs: 200,
+			pollIntervalMs: 20,
+		});
+		await expect(manager.health()).resolves.toBe(true);
+		await expect(manager.start()).resolves.toBeUndefined();
+		expect(spawns).toBe(0);
+	});
 });
 
 describe("OpenCode HTTP runtime", () => {

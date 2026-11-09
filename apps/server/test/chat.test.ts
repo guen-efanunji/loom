@@ -293,7 +293,7 @@ describe("chat gateway", () => {
 		});
 	});
 
-	test("fails the composer catalog with a named error for non-array list responses", async () => {
+	test("degrades the composer catalog gracefully when the gateway answers an error shape", async () => {
 		const app = createChatRoutes({
 			projects: {
 				list: async () => [],
@@ -303,7 +303,9 @@ describe("chat gateway", () => {
 			request: async <T>(path: string) => {
 				if (path === "/api/model")
 					// A stripped/OpenCode 401 body used to surface here and crash the
-					// composer with `X.flatMap is not a function`.
+					// composer with `X.flatMap is not a function` — then fail the
+					// whole catalog. The catalog now degrades to an empty gateway
+					// list so CLI provider models still ship.
 					return {
 						_tag: "UnauthorizedError",
 						message: "Authentication required",
@@ -313,15 +315,75 @@ describe("chat gateway", () => {
 			providerManager: {
 				subscribe: () => () => {},
 				refreshAll: async () => {},
-				catalog: { listAvailable: () => [] },
+				catalog: {
+					listAvailable: () => [
+						{
+							providerId: "codex",
+							connectionId: "codex:local",
+							name: "GPT-5.6-Sol",
+							displayName: "GPT-5.6-Sol",
+							capabilities: ["text", "coding"],
+							isAvailable: true,
+							metadata: { modelId: "gpt-5.6-sol" },
+						},
+					],
+				},
 			} as never,
 		});
 		app.onError((error, c) => c.json({ error: error.message }, 502));
 		const response = await app.request("/catalog?projectId=project");
-		expect(response.status).toBe(502);
-		expect(await response.json()).toMatchObject({
-			error: "OpenCode returned an unexpected response shape from /api/model",
+		expect(response.status).toBe(200);
+		const body = await response.json();
+		expect(body.models).toEqual([
+			expect.objectContaining({
+				providerID: "codex",
+				modelID: "gpt-5.6-sol",
+			}),
+		]);
+		expect(body.agents).toEqual([]);
+		expect(body.commands).toEqual([]);
+	});
+
+	test("keeps CLI models when the gateway is unreachable", async () => {
+		const app = createChatRoutes({
+			projects: {
+				list: async () => [],
+				getById: async (id: string) =>
+					id === "project" ? { path: "/tmp" } : null,
+			},
+			request: async <T>() => {
+				throw new Error("Unable to reach OpenCode server");
+			},
+			providerManager: {
+				subscribe: () => () => {},
+				refreshAll: async () => {},
+				catalog: {
+					listAvailable: () => [
+						{
+							providerId: "claude",
+							connectionId: "claude:local",
+							name: "Claude Sonnet",
+							displayName: "Claude Sonnet",
+							capabilities: ["text", "coding"],
+							isAvailable: true,
+							metadata: { modelId: "sonnet" },
+							contextWindow: 1_000_000,
+						},
+					],
+				},
+			} as never,
 		});
+		app.onError((error, c) => c.json({ error: error.message }, 502));
+		const response = await app.request("/catalog?projectId=project");
+		expect(response.status).toBe(200);
+		const body = await response.json();
+		expect(body.models).toEqual([
+			expect.objectContaining({
+				providerID: "claude",
+				modelID: "sonnet",
+				contextWindow: 1_000_000,
+			}),
+		]);
 	});
 
 	test("reads recorded edit patches when session snapshots are disabled", async () => {

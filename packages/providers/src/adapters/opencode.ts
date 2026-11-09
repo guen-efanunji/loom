@@ -88,7 +88,26 @@ export class OpenCodeProviderAdapter implements CliProviderAdapter {
 				strategy: "provider-managed",
 				message: "OpenCode server is unavailable",
 			};
-		return { authenticated: true, strategy: "provider-managed" };
+		try {
+			await this.runtime.request("/api/info");
+			return { authenticated: true, strategy: "provider-managed" };
+		} catch (error) {
+			const status = (
+				error as { details?: { status?: string } } | null
+			)?.details?.status;
+			if (status === "401")
+				return {
+					authenticated: false,
+					strategy: "provider-managed",
+					message:
+						"OpenCode server requires login: run `opencode auth login` in a terminal, then restart OpenCode",
+				};
+			return {
+				authenticated: false,
+				strategy: "provider-managed",
+				message: "OpenCode server is unavailable",
+			};
+		}
 	}
 
 	async authenticate(_input?: AuthenticateInput): Promise<AuthResult> {

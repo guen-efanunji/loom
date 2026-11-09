@@ -1149,23 +1149,63 @@ export function createChatRoutes(options: {
 	});
 	async function buildCatalog(projectId: string) {
 		const root = await directory(projectId);
-		const [modelResponse, agentResponse, commandResponse] = await Promise.all([
-			// The OpenCode gateway unwraps the 2.2+ `{ data: ... }` envelope; the
-			// shape guard below keeps odd/partial gateways from crashing the
-			// composer with a bare `.flatMap` TypeError.
-			request<unknown>("/api/model", root),
-			request<unknown>("/api/agent", root),
-			request<unknown>("/api/command", root),
-		]);
-		const providerModels = requireOpenCodeArray<CatalogApiModel>(
+		// The OpenCode gateway is one catalog source among several. It must
+		// never take the whole picker down: when the server is unreachable or
+		// unauthenticated (e.g. `opencode` not logged in yet), the CLI
+		// providers' models below still ship — the composer keeps working
+		// instead of going empty while every chat silently fails.
+		const [modelResponse, agentResponse, commandResponse] =
+			await Promise.allSettled([
+				// The OpenCode gateway unwraps the 2.2+ `{ data: ... }` envelope; the
+				// shape guard below keeps odd/partial gateways from crashing the
+				// composer with a bare `.flatMap` TypeError.
+				request<unknown>("/api/model", root),
+				request<unknown>("/api/agent", root),
+				request<unknown>("/api/command", root),
+			]);
+		const gatewayArray = <T>(result: PromiseSettledResult<unknown>, endpoint: string): T[] => {
+			if (result.status === "rejected") {
+				logChatEvent(
+					"chat",
+					"catalog.gatewayUnavailable",
+					{
+						endpoint,
+						message: (result.reason instanceof Error
+							? result.reason.message
+							: String(result.reason)
+						).slice(0, 300),
+					},
+					"warn",
+				);
+				return [];
+			}
+			try {
+				return requireOpenCodeArray<T>(result.value, endpoint);
+			} catch (error) {
+				logChatEvent(
+					"chat",
+					"catalog.gatewayUnavailable",
+					{
+						endpoint,
+						message: (error instanceof Error
+							? error.message
+							: String(error)
+						).slice(0, 300),
+					},
+					"warn",
+				);
+				return [];
+			}
+		};
+		const providerModels = gatewayArray<CatalogApiModel>(
 			modelResponse,
 			"/api/model",
 		);
-		const agents = requireOpenCodeArray<CatalogAgent>(
+		const agents = gatewayArray<CatalogAgent>(
 			agentResponse,
 			"/api/agent",
 		);
-		const commands = requireOpenCodeArray<CatalogCommand>(
+		const commands = gatewayArray<CatalogCommand>(
 			commandResponse,
 			"/api/command",
 		);

@@ -585,6 +585,11 @@ export class OpenCodeServerManager implements OpenCodeManager {
 				headers: authHeaders(undefined, this.servicePassword),
 				signal: AbortSignal.timeout(3_000),
 			});
+			// A 401 means an OpenCode server is answering but demands auth
+			// (e.g. `opencode` not logged in yet). Alive: spawning more
+			// servers or waiting for "healthy" can never fix auth, so callers
+			// must stop reviving and surface the login requirement instead.
+			if (response.status === 401) return true;
 			if (!response.ok) return false;
 			const info = await response.json();
 			return openCodeServerUrl(info) !== null;
