@@ -822,7 +822,10 @@ export function createChatRoutes(options: {
 			transcriptLine.test(firstLine) ||
 			excerptLine.test(firstLine) ||
 			toolLine.test(firstLine) ||
+			toolStatusLine.test(firstLine) ||
 			boilerplateLine.test(firstLine) ||
+			diffStatLine.test(firstLine) ||
+			gitLogLine.test(firstLine) ||
 			measureOnlyLine.test(firstLine)
 		);
 	}
