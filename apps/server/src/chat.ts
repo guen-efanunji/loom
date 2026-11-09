@@ -780,6 +780,9 @@ export function createChatRoutes(options: {
 	const excerptLine = /^session .+ \([^\s()]+\)$/i;
 	const transcriptLine = /^(user|assistant):\s+/i;
 	const toolLine = /^tool [^\n]*$/i;
+	const boilerplateLine =
+		/^(time|elapsed|duration|exit|stdout|stderr|code|status|output|error|warning|info|debug|trace|wall|real|user|sys)\s*:/i;
+	const measureOnlyLine = /^[0-9\s.,:%smhwd]+$/i;
 	/**
 	 * Scaffolding the user never types (server-injected context): a title that
 	 * begins with one of these is pure bookkeeping — never a usable title.
@@ -803,8 +806,13 @@ export function createChatRoutes(options: {
 	}
 	/** True when the title itself is (or starts with) Loom scaffolding text. */
 	function isScaffoldingTitle(title: string): boolean {
-		const lower = title.trim().toLowerCase();
-		return scaffoldingTitleLines.some((prefix) => lower.startsWith(prefix));
+		const trimmed = title.trim();
+		const lower = trimmed.toLowerCase();
+		if (scaffoldingTitleLines.some((prefix) => lower.startsWith(prefix)))
+			return true;
+		// Titles mangled by a previous partial repair (tool-output fragments
+		// or scaffold residues) still count as scaffolding.
+		return boilerplateLine.test(trimmed) || measureOnlyLine.test(trimmed);
 	}
 	/**
 	 * Clean an incoming creation title: strip scaffolding prefixes the sender
@@ -833,7 +841,7 @@ export function createChatRoutes(options: {
 		if (!result) return "Continued chat";
 		return result.slice(0, 200);
 	}
-	/** Derive a title from a (already display-stripped) user message text. */
+	/** Derive a title from one (already display-stripped) user text part. */
 	function deriveTitleFromUserText(text: string): string | null {
 		for (const rawLine of text.split("\n")) {
 			let line = rawLine.trim();
@@ -850,7 +858,9 @@ export function createChatRoutes(options: {
 				scaffoldingTitleLines.some((prefix) => lower.startsWith(prefix)) ||
 				excerptLine.test(line) ||
 				transcriptLine.test(line) ||
-				toolLine.test(line)
+				toolLine.test(line) ||
+				boilerplateLine.test(line) ||
+				measureOnlyLine.test(line)
 			)
 				continue;
 			return line.slice(0, 80);
@@ -877,13 +887,19 @@ export function createChatRoutes(options: {
 		if (!isScaffoldingTitle(session.title)) return session;
 		if (!shouldAttemptTitleRepair(session.id)) return session;
 		const visible = stripInjectedGuidance(visibleMessages(messages));
-		const firstUserText =
+		// Derive per text part: injected blocks are their own parts in the
+		// parts payload, so skip whole parts that start with scaffolding and
+		// take the first real user part. In the single-string path there is
+		// one part and the line-level skipping inside deriveTitleFromUserText
+		// handles the trailing context blocks.
+		const textParts =
 			visible
 				.find((message) => message.info.role === "user")
-				?.parts.filter((part) => part.type === "text" && part.text)
-				.map((part) => part.text ?? "")
-				.join("\n") ?? "";
-		const derived = deriveTitleFromUserText(firstUserText) ?? "Continued chat";
+				?.parts.filter((part) => part.type === "text" && !!part.text) ?? [];
+		const derived =
+			textParts
+				.map((part) => deriveTitleFromUserText(part.text ?? ""))
+				.find((value) => value !== null) ?? "Continued chat";
 		if (derived === session.title) return session;
 		try {
 			const patched = await request<Session>(
