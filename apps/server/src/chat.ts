@@ -780,6 +780,7 @@ export function createChatRoutes(options: {
 	const excerptLine = /^session .+ \([^\s()]+\)$/i;
 	const transcriptLine = /^(user|assistant):\s+/i;
 	const toolLine = /^tool [^\n]*$/i;
+	const toolStatusLine = /\((?:completed|error|running|failed)\)/i;
 	const boilerplateLine =
 		/^(time|elapsed|duration|exit|stdout|stderr|code|status|output|error|warning|info|debug|trace|wall|real|user|sys)\s*:/i;
 	const measureOnlyLine = /^[0-9\s.,:%smhwd]+$/i;
@@ -806,13 +807,20 @@ export function createChatRoutes(options: {
 	}
 	/** True when the title itself is (or starts with) Loom scaffolding text. */
 	function isScaffoldingTitle(title: string): boolean {
-		const trimmed = title.trim();
-		const lower = trimmed.toLowerCase();
+		const normalized = title.replace(/\\n/g, "\n").trim();
+		const lower = normalized.toLowerCase();
 		if (scaffoldingTitleLines.some((prefix) => lower.startsWith(prefix)))
 			return true;
 		// Titles mangled by a previous partial repair (tool-output fragments
 		// or scaffold residues) still count as scaffolding.
-		return boilerplateLine.test(trimmed) || measureOnlyLine.test(trimmed);
+		const firstLine = normalized.split("\n")[0] ?? "";
+		return (
+			transcriptLine.test(firstLine) ||
+			excerptLine.test(firstLine) ||
+			toolLine.test(firstLine) ||
+			boilerplateLine.test(firstLine) ||
+			measureOnlyLine.test(firstLine)
+		);
 	}
 	/**
 	 * Clean an incoming creation title: strip scaffolding prefixes the sender
@@ -863,6 +871,7 @@ export function createChatRoutes(options: {
 				excerptLine.test(line) ||
 				transcriptLine.test(line) ||
 				toolLine.test(line) ||
+				toolStatusLine.test(line) ||
 				boilerplateLine.test(line) ||
 				measureOnlyLine.test(line)
 			)
