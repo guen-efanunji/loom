@@ -724,7 +724,16 @@ export function createChatRoutes(options: {
 					}
 					// A cross-provider transcript rides as a tagged block before the
 					// new request; drop it from the displayed bubble (the model
-					// already received it).
+					// already received it). Header may sit outside the tags in
+					// messages stored before the header moved inside.
+					for (const header of [
+						"Previous conversation (carried over from another provider):",
+					]) {
+						const headerIndex = text.indexOf(header);
+						if (headerIndex >= 0) {
+							text = `${text.slice(0, headerIndex)}${text.slice(headerIndex + header.length)}`;
+						}
+					}
 					const carriedStart = text.indexOf("<previous-conversation>");
 					if (carriedStart >= 0) {
 						const carriedEnd = text.indexOf(
@@ -2640,9 +2649,13 @@ export function createChatRoutes(options: {
 		const newestNative = nativeHistory.at(-1)?.info.time.created ?? 0;
 		// Skip re-injection once the gateway already served a newer turn —
 		// its user message already carries this transcript.
+		// The entire injected block (header included) sits inside the tags so
+		// display stripping removes it wholesale — otherwise the header line
+		// survives, the bubble no longer matches the optimistic copy, and the
+		// client thinks the turn is still running.
 		const crossProviderContext =
 			foreignHistory.length && newestForeign >= newestNative
-				? `Previous conversation (carried over from another provider):\n<previous-conversation>\n${renderTranscript(
+				? `<previous-conversation>\nPrevious conversation (carried over from another provider):\n${renderTranscript(
 						foreignHistory as ContextMessage[],
 					)}\n</previous-conversation>`
 				: "";

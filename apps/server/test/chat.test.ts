@@ -425,6 +425,35 @@ describe("chat gateway", () => {
 		expect(userMessage?.parts[0]?.text).toBe("kamu agent apa?");
 	});
 
+	test("hides the cross-provider carried transcript from the displayed bubble", async () => {
+		const { app, gatewayMessages } = setup();
+		gatewayMessages.push({
+			info: {
+				id: "user-carried",
+				role: "user",
+				time: { created: Date.now() },
+			},
+			parts: [
+				{
+					type: "text",
+					text: `You are the custom agent "BACKEND" (backend).\n\n${adaptiveExecutionGuidance}\n\nPrevious conversation (carried over from another provider):\n<previous-conversation>\nuser: ingat angka 77 04\nassistant: Siap, angkanya 77 04.\n</previous-conversation>\n\nkamu masih ingat angkanya?`,
+				},
+			],
+		});
+		const state = (await (
+			await app.request("/sessions/ses_test")
+		).json()) as {
+			messages: Array<{
+				info: { role: string };
+				parts: Array<{ text?: string }>;
+			}>;
+		};
+		const userMessage = state.messages.find(
+			(message) => message.info.role === "user",
+		);
+		expect(userMessage?.parts[0]?.text).toBe("kamu masih ingat angkanya?");
+	});
+
 	test("hides the injected guidance block from the displayed user bubble", async () => {
 		const { app, requests } = setup();
 		const response = await app.request("/sessions/ses_test/messages", {
