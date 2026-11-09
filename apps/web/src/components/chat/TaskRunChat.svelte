@@ -35,6 +35,8 @@ let {
 		tool: string;
 		status: "running" | "completed" | "error";
 		input?: Record<string, unknown>;
+		output?: string;
+		error?: string;
 		metadata?: Record<string, unknown>;
 	}>;
 	progress?: Array<{
@@ -203,7 +205,21 @@ function diffStats(item: ActivityItem) {
 	return !found ? null : { additions, deletions };
 }
 function command(item: ActivityItem) {
-	return inputString(item, ["command", "cmd", "script"]);
+	const direct = inputString(item, ["command", "cmd", "script", "prompt"]);
+	if (direct) return direct;
+	const attrs = item.input?.attributes;
+	if (attrs && typeof attrs === "object" && !Array.isArray(attrs)) {
+		const attrText = inputString(
+			{ input: attrs as Record<string, unknown> } as ActivityItem,
+			["command", "cmd", "script"],
+		);
+		if (attrText) return attrText;
+	}
+	const args = item.input?.args;
+	if (typeof args === "string" && args.trim()) return args.trim();
+	if (Array.isArray(args) && args.length)
+		return args.map((entry) => String(entry ?? "")).join(" ");
+	return "";
 }
 function patchText(item: ActivityItem, path: string) {
 	const raw = item.metadata?.filediff;
@@ -378,16 +394,15 @@ async function cancel() {
 					>{/if}
 			</header>{/if}
 
-		{#if showTaskBrief}<div class="flex justify-end">
-				<div
-					class="max-w-[90%] rounded-2xl rounded-br-md border border-amber-300/15 bg-amber-300/[0.08] px-4 py-3 text-sm leading-6"
+		{#if showTaskBrief}<div class="flex flex-col items-end gap-1">
+				<span
+					class="text-[11px] font-medium uppercase tracking-wide text-muted-foreground"
+					>You · Task brief</span
 				>
-					<p
-						class="mb-1 text-[11px] font-medium uppercase tracking-wide text-amber-100/50"
-					>
-						Task brief
-					</p>
-					<p class="whitespace-pre-wrap">{task.prompt}</p>
+				<div
+					class="max-w-[88%] rounded-2xl rounded-br-md border border-white/10 bg-accent px-4 py-3 text-sm leading-6 text-accent-foreground"
+				>
+					<p class="whitespace-pre-wrap text-[15px]">{task.prompt}</p>
 				</div>
 			</div>{/if}
 
@@ -514,7 +529,8 @@ async function cancel() {
 									</button>
 								{:else}
 									<Trace.Collapsible
-										open={openActivities[item.id] ?? false}
+										open={openActivities[item.id] ??
+											(item.status === "running" || item.status === "error")}
 										onOpenChange={(open) => (openActivities[item.id] = open)}
 									>
 										<Trace.CollapsibleTrigger class="w-full text-left">
@@ -555,9 +571,17 @@ async function cancel() {
 													class="max-h-72 overflow-auto rounded-md border bg-background/70 py-1 font-mono text-[11px] leading-5">{#each patch.split("\n") as line}<div
 															class={`min-h-5 px-3 ${line.startsWith("+") ? "bg-emerald-500/10 text-emerald-300" : line.startsWith("-") ? "bg-red-500/10 text-red-300" : line.startsWith("@@") ? "bg-blue-500/10 text-blue-300" : "text-muted-foreground"}`}>{line ||
 																" "}</div>{/each}</pre>{/if}
-											{#if item.metadata?.output && typeof item.metadata.output === "string"}<pre
+											{#if item.output}<pre
+													class="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-md border bg-background/70 p-2 font-mono text-[11px]">{item.output}</pre>{/if}
+											{#if item.metadata?.output && typeof item.metadata.output === "string" && item.output !== item.metadata.output}<pre
 													class="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-md border bg-background/70 p-2 font-mono text-[11px]">{item
 														.metadata.output}</pre>{/if}
+											{#if item.error}<p
+													class="text-xs text-destructive"
+													role="alert"
+												>
+													{item.error}
+												</p>{/if}
 											{#if item.metadata?.error}<p
 													class="text-xs text-destructive"
 													role="alert"
@@ -632,12 +656,12 @@ async function cancel() {
 
 		<section
 			class="overflow-hidden rounded-xl border bg-card/40"
-			aria-label="Agent response"
+			aria-label="Assistant response"
 		>
 			<div
 				class="flex items-center gap-2 border-b px-3 py-2 text-xs text-muted-foreground"
 			>
-				<Bot size={14} />Agent response<span class="ml-auto"
+				<Bot size={14} />Assistant<span class="ml-auto"
 					>{active ? "Live" : statusLabel}</span
 				>
 			</div>

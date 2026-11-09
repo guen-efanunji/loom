@@ -695,3 +695,79 @@ test("reorders project tasks and rejects mismatched lists", async () => {
 		setup.orchestrator.reorderTasks("project-1", ["task-a", "task-b", "nope"]),
 	).rejects.toThrow("must match");
 });
+
+test("folds pre-start follow-ups into the first prompt", async () => {
+	const setup = dependencies();
+	const task = await setup.orchestrator.create({
+		projectId: "project-1",
+		title: "Build",
+		prompt: "Build it",
+	});
+	const queued = await setup.orchestrator.queueMessage(
+		task.id,
+		"Also add a README",
+	);
+	expect(queued.position).toBe(1);
+	await setup.orchestrator.start(task.id);
+	const run = await setup.agentRunRepository.getByTaskId(task.id);
+	expect(run?.status).toBe("completed");
+	const session = setup.runtime.sessions.get(run?.sessionId ?? "");
+	expect(session?.prompts).toHaveLength(1);
+	expect(session?.prompts[0]).toContain("Build it");
+	expect(session?.prompts[0]).toContain(
+		"Additional instructions added before the task started",
+	);
+	expect(session?.prompts[0]).toContain("Also add a README");
+});
+
+test("delivers follow-ups queued during a run as extra turns", async () => {
+	const gate = (() => {
+		let release!: () => void;
+		const promise = new Promise<void>((resolve) => (release = resolve));
+		return { promise, release };
+	})();
+	const base = new MockAgentRuntime();
+	const runtime: AgentRuntime = {
+		createSession: (input) => base.createSession(input),
+		prompt: (input) => base.prompt(input),
+		async wait(_sessionId: string) {
+			await gate.promise;
+			return "completed" as const;
+		},
+		readOutput: (sessionId) => base.readOutput(sessionId),
+		status: (sessionId) => base.status(sessionId),
+		abort: (sessionId) => base.abort(sessionId),
+	};
+	const setup = dependencies(runtime);
+	const task = await setup.orchestrator.create({
+		projectId: "project-1",
+		title: "Build",
+		prompt: "Build it",
+	});
+	const running = setup.orchestrator.start(task.id);
+	// Wait until the first turn has been prompted, then steer it.
+	while (base.sessions.size === 0) await Bun.sleep(5);
+	const firstSessionId = [...base.sessions.keys()][0]!;
+	while ((base.sessions.get(firstSessionId)?.prompts.length ?? 0) === 0)
+		await Bun.sleep(5);
+	const queued = await setup.orchestrator.queueMessage(
+		task.id,
+		"Actually use TypeScript",
+	);
+	expect(queued.position).toBe(1);
+	gate.release();
+	await running;
+	const run = await setup.agentRunRepository.getByTaskId(task.id);
+	expect(run?.status).toBe("completed");
+	const session = base.sessions.get(firstSessionId);
+	expect(session?.prompts).toHaveLength(2);
+	expect(session?.prompts[0]).toContain("Build it");
+	expect(session?.prompts[1]).toContain(
+		"Additional instruction from the user while this task runs",
+	);
+	expect(session?.prompts[1]).toContain("Actually use TypeScript");
+	// The follow-up send is visible in progress history for the UI.
+	expect(
+		setup.events.map((event) => event.type),
+	).toContain("run.progress");
+});

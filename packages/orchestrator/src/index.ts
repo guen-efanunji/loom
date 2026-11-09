@@ -63,7 +63,7 @@ const publicActivityInputKeys = [
 ] as const;
 
 function toPublicRuntimeActivities(activities: RuntimeActivity[]) {
-	return activities.map(({ id, tool, status, input, metadata }) => {
+	return activities.map(({ id, tool, status, input, output, error, metadata }) => {
 		const publicInput = Object.fromEntries(
 			publicActivityInputKeys.flatMap((key) => {
 				const value = input?.[key];
@@ -117,6 +117,12 @@ function toPublicRuntimeActivities(activities: RuntimeActivity[]) {
 			tool,
 			status,
 			...(Object.keys(publicInput).length ? { input: publicInput } : {}),
+			...(typeof output === "string" && output.length
+				? { output: output.slice(-4000) }
+				: {}),
+			...(typeof error === "string" && error.length
+				? { error: error.slice(0, 1000) }
+				: {}),
 			...(Object.keys(publicMetadata).length
 				? { metadata: publicMetadata }
 				: {}),
@@ -538,6 +544,42 @@ export class TaskOrchestrator {
 			permissionCleanup?: () => void;
 		}
 	>();
+	/** Pending user follow-up messages per task, drained by the running turn loop. */
+	private readonly queuedMessages = new Map<string, string[]>();
+
+	/**
+	 * Enqueue a user follow-up for a task. A task that has not started yet
+	 * folds queued text into its first prompt; a running task receives queued
+	 * messages as extra turns in the same session so the user can steer or
+	 * revise mid-run. In-memory only (lost on daemon restart).
+	 */
+	async queueMessage(
+		taskId: string,
+		text: string,
+	): Promise<{ position: number; runId: string | null }> {
+		const record = await this.requireTask(taskId);
+		const trimmed = text.trim();
+		if (!trimmed) throw new Error("Follow-up text is empty");
+		if (
+			!["queued", "ready", "preparing", "running"].includes(record.status)
+		)
+			throw new Error(`Task cannot accept follow-ups while ${record.status}`);
+		const queue = this.queuedMessages.get(taskId) ?? [];
+		queue.push(trimmed.slice(0, 4000));
+		this.queuedMessages.set(taskId, queue);
+		const runId = record.sessionId
+			? ((await this.dependencies.agentRuns?.getByTaskId?.(taskId))?.id ??
+				null)
+			: null;
+		if (runId)
+			await this.publishRunProgress(
+				taskId,
+				runId,
+				"followup_queued",
+				`User follow-up queued (${queue.length} pending). It will be sent to the running agent.`,
+			);
+		return { position: queue.length, runId };
+	}
 
 	constructor(private readonly dependencies: OrchestratorDependencies) {
 		this.now = dependencies.now ?? (() => new Date());
@@ -1128,6 +1170,14 @@ export class TaskOrchestrator {
 				(await this.lifecycle?.prepare(record, workspace)) ?? record.prompt;
 			if ((await this.requireTask(taskId)).status === "cancelled")
 				throw new Error("Task cancelled during preparation");
+			// Follow-ups queued before the task started fold into its first
+			// prompt; queued while running are drained as extra turns below.
+			let startPrompt = preparedPrompt;
+			const preStartQueue = this.queuedMessages.get(taskId) ?? [];
+			if (preStartQueue.length) {
+				startPrompt = `${preparedPrompt}\n\nAdditional instructions added before the task started:\n${preStartQueue.map((message) => `- ${message}`).join("\n")}`;
+				this.queuedMessages.delete(taskId);
+			}
 			const resolved = this.resolvedExecutors.get(taskId);
 			if (resolved instanceof Error) throw resolved;
 			const execution =
@@ -1228,7 +1278,7 @@ export class TaskOrchestrator {
 			}
 			await execution.runtime.prompt({
 				sessionId: session.id,
-				prompt: preparedPrompt,
+				prompt: startPrompt,
 				...(execution.system ? { system: execution.system } : {}),
 				...(execution.model ? { model: execution.model } : {}),
 				...(permission ? { permission } : {}),
@@ -1287,7 +1337,7 @@ export class TaskOrchestrator {
 						outputPollInFlight = false;
 					});
 			}, 750);
-			const terminalStatus = await execution.runtime.wait(session.id, {
+			let terminalStatus = await execution.runtime.wait(session.id, {
 				timeoutMs: execution.timeoutMs ?? this.dependencies.runTimeoutMs,
 			});
 			clearInterval(outputPollTimer);
@@ -1326,6 +1376,91 @@ export class TaskOrchestrator {
 						sequence: ++this.sequence,
 						timestamp: this.now().toISOString(),
 					});
+			}
+			// Drain user follow-ups queued during the run as extra turns in
+			// the same session, so the user can steer or revise mid-run
+			// instead of cancelling and restarting from scratch.
+			while (terminalStatus === "completed") {
+				const followUp = this.queuedMessages.get(taskId)?.shift();
+				if (!followUp) break;
+				if ((await this.requireTask(taskId)).status === "cancelled") break;
+				if (agentRunId)
+					await this.publishRunProgress(
+						taskId,
+						agentRunId,
+						"followup_sent",
+						"User follow-up sent to the running agent.",
+					);
+				publishedOutput = "";
+				publishedActivities = "";
+				await execution.runtime.prompt({
+					sessionId: session.id,
+					prompt: `Additional instruction from the user while this task runs:\n${followUp}`,
+					...(execution.system ? { system: execution.system } : {}),
+					...(execution.model ? { model: execution.model } : {}),
+					...(permission ? { permission } : {}),
+					...(execution.authorizeTool
+						? { authorizeTool: execution.authorizeTool }
+						: {}),
+				});
+				outputPollTimer = setInterval(() => {
+					if (outputPollInFlight) return;
+					outputPollInFlight = true;
+					void publishOutputDelta()
+						.catch(() => {})
+						.finally(() => {
+							outputPollInFlight = false;
+						});
+				}, 750);
+				terminalStatus = await execution.runtime.wait(session.id, {
+					timeoutMs: execution.timeoutMs ?? this.dependencies.runTimeoutMs,
+				});
+				clearInterval(outputPollTimer);
+				outputPollTimer = undefined;
+				const finalRuntimeOutput =
+					await execution.runtime.readOutput?.(session.id);
+				if (finalRuntimeOutput?.output && agentRunId) {
+					if (finalRuntimeOutput.output.startsWith(publishedOutput)) {
+						const delta = finalRuntimeOutput.output.slice(
+							publishedOutput.length,
+						);
+						if (delta) {
+							const boundedDelta = boundOutput(delta);
+							await this.publish({
+								type: "run.output",
+								taskId: record.id,
+								runId: agentRunId,
+								output: boundedDelta.output,
+								truncated: boundedDelta.truncated,
+								sequence: ++this.sequence,
+								timestamp: this.now().toISOString(),
+							});
+						}
+						publishedOutput = finalRuntimeOutput.output;
+					}
+					await this.outputLog.write(
+						record.id,
+						agentRunId,
+						finalRuntimeOutput.output,
+					);
+				}
+				if (agentRunId && finalRuntimeOutput?.activities) {
+					const activities = toPublicRuntimeActivities(
+						finalRuntimeOutput.activities,
+					);
+					const activitiesJson = JSON.stringify(activities);
+					if (activitiesJson !== publishedActivities)
+						await this.publish({
+							type: "run.output",
+							taskId: record.id,
+							runId: agentRunId,
+							output: "",
+							truncated: false,
+							activities,
+							sequence: ++this.sequence,
+							timestamp: this.now().toISOString(),
+						});
+				}
 			}
 			if (terminalStatus !== "completed") {
 				throw new Error(`Agent run ended with status: ${terminalStatus}`);
@@ -1476,6 +1611,8 @@ export class TaskOrchestrator {
 		runId: string,
 		stage:
 			| "prompt_sent"
+			| "followup_queued"
+			| "followup_sent"
 			| "review_started"
 			| "review_passed"
 			| "review_changes_requested"

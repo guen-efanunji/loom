@@ -1,5 +1,6 @@
 <script lang="ts">
 import { Activity, Bot, LoaderCircle } from "@lucide/svelte";
+import { toast } from "svelte-sonner";
 import { type Catalog, type ChatState, chat } from "$lib/chat";
 import { groupTurns } from "$lib/chat-utils";
 import { Button } from "$lib/components/ui/button";
@@ -65,6 +66,33 @@ let conversation = $state<ChatState | null>(null);
 let conversationFailed = $state(false);
 let conversationLoading = $state(true);
 let disposed = false;
+let followUpDraft = $state("");
+let queueing = $state(false);
+const followUpVisible = $derived(
+	["queued", "ready", "preparing", "running"].includes(task.status),
+);
+const canQueueNow = $derived(followUpVisible);
+async function sendFollowUp() {
+	const text = followUpDraft.trim();
+	if (!text || queueing || !canQueueNow) return;
+	queueing = true;
+	try {
+		const result = await daemon.queueTaskMessage(task.id, text);
+		followUpDraft = "";
+		toast.success(
+			result.position > 1
+				? `Follow-up queued (position ${result.position}).`
+				: "Follow-up queued. It will be sent to the running agent.",
+		);
+		await refreshConversation();
+	} catch (reason) {
+		toast.error(
+			reason instanceof Error ? reason.message : "Unable to queue follow-up",
+		);
+	} finally {
+		queueing = false;
+	}
+}
 
 const sessionId = $derived(task.sessionId ?? "");
 const active = $derived(
@@ -263,6 +291,48 @@ $effect(() => () => {
 				wide
 				compact
 			/>
+		{/if}
+		{#if followUpVisible}
+			<form
+				class="sticky bottom-0 mt-6 border-t bg-background/90 pt-3 backdrop-blur"
+				onsubmit={(event) => {
+					event.preventDefault();
+					void sendFollowUp();
+				}}
+			>
+				<div class="flex items-end gap-2">
+					<input
+						type="text"
+						bind:value={followUpDraft}
+						placeholder={canQueueNow
+							? active
+								? "Send a follow-up — steers the running agent"
+								: "Send a follow-up — included when the task starts"
+							: "Task is finished — retry to start a new run"}
+						disabled={!canQueueNow || queueing}
+						class="h-10 min-w-0 flex-1 rounded-lg border border-white/10 bg-white/[0.04] px-3 text-sm text-white/85 placeholder:text-white/35 focus:border-white/25 focus:outline-none disabled:opacity-50"
+						aria-label="Send a follow-up to the running task"
+						onkeydown={(event) => {
+							if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+								event.preventDefault();
+								void sendFollowUp();
+							}
+						}}
+					/>
+					<Button
+						type="submit"
+						size="sm"
+						class="h-10 shrink-0"
+						disabled={!canQueueNow || queueing || !followUpDraft.trim()}
+						>{queueing ? "Queuing…" : "Send"}</Button
+					>
+				</div>
+				<p class="mt-1.5 text-[11px] text-muted-foreground">
+					Follow-ups are queued and delivered as extra turns in the same
+					session — correct the agent without cancelling. Queue is lost if
+					the daemon restarts.
+				</p>
+			</form>
 		{/if}
 	</div>
 </section>

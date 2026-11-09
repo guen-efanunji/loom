@@ -68,6 +68,8 @@ export const daemonEventSchema = z.discriminatedUnion("type", [
 			...runEventSchema.shape,
 			stage: z.enum([
 				"prompt_sent",
+				"followup_queued",
+				"followup_sent",
 				"review_started",
 				"review_passed",
 				"review_changes_requested",

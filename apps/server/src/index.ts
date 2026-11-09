@@ -4260,6 +4260,24 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			return errorResponse(c, error);
 		}
 	});
+	// Queue a follow-up instruction for a running (or not-yet-started) task.
+	// The orchestrator delivers queued text as extra turns in the same
+	// session, so the user can steer or revise mid-run without cancelling.
+	app.post("/api/tasks/:id/messages", async (c) => {
+		try {
+			await taskIdInputSchema.parseAsync({ taskId: c.req.param("id") });
+			const input = z
+				.object({ text: z.string().trim().min(1).max(4000) })
+				.parse(await c.req.json());
+			const result = await orchestrator.queueMessage(
+				c.req.param("id"),
+				input.text,
+			);
+			return c.json({ queued: true, ...result });
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
 	app.post("/api/tasks/:id/cancel", async (c) => {
 		try {
 			await orchestrator.cancel(c.req.param("id"));

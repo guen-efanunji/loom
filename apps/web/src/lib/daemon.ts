@@ -1311,6 +1311,11 @@ export const daemon = {
 		request<{ cancelled: boolean }>(`/api/tasks/${id}/cancel`, {
 			method: "POST",
 		}),
+	queueTaskMessage: (id: string, text: string) =>
+		request<{ queued: boolean; position: number; runId: string | null }>(
+			`/api/tasks/${id}/messages`,
+			{ method: "POST", body: JSON.stringify({ text }) },
+		),
 	retryTask: (id: string) =>
 		request<{ id: string }>(`/api/tasks/${id}/retry`, { method: "POST" }),
 	renameTask: (
