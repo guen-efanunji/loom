@@ -55,6 +55,8 @@ const promptSchema = z
 		designNodeIds: z.array(z.string().min(1)).max(5).default([]),
 		sshConnectionIds: z.array(z.string().min(1).max(120)).max(10).default([]),
 		sessionRefs: z.array(id).max(3).default([]),
+		/** Kanban tasks the user mentioned to start; the client enqueues them. */
+		taskRefs: z.array(id).max(10).default([]),
 		attachments: z
 			.array(
 				z.object({
@@ -74,7 +76,8 @@ const promptSchema = z
 			value.attachments.length ||
 			value.designNodeIds.length ||
 			value.sshConnectionIds.length ||
-			value.sessionRefs.length,
+			value.sessionRefs.length ||
+			value.taskRefs.length,
 		"Message cannot be empty",
 	);
 type Session = {

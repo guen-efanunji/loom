@@ -407,6 +407,7 @@ export const chat = {
 			designNodeIds?: string[];
 			sshConnectionIds?: string[];
 			sessionRefs?: string[];
+			taskRefs?: string[];
 			agents: string[];
 		},
 	) => post<void>(`/sessions/${encodeURIComponent(id)}/messages`, input),

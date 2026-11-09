@@ -1174,6 +1174,12 @@ export const daemon = {
 		request<{ review: TaskReview }>(`/api/tasks/${id}/review/run`, {
 			method: "POST",
 		}),
+	/** Checkpoint + review with an auto-picked registered agent reviewer. */
+	runTaskReviewAuto: (id: string) =>
+		request<{ review: TaskReview; reviewer: string; autoPicked: boolean }>(
+			`/api/tasks/${id}/review/auto`,
+			{ method: "POST" },
+		),
 	addTaskDependency: (
 		id: string,
 		input: {

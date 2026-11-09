@@ -110,6 +110,7 @@
 	import SplitChatWorkspace from "./chat/SplitChatWorkspace.svelte";
 	import TaskChatView from "./chat/TaskChatView.svelte";
 	import Turn from "./chat/Turn.svelte";
+	import PlanDialog from "./chat/PlanDialog.svelte";
 	import KanbanBoard from "./KanbanBoard.svelte";
 	import SshPanel, { type SshConnection } from "./SshPanel.svelte";
 	import SshTerminal from "./SshTerminal.svelte";
@@ -647,6 +648,12 @@
 		};
 	});
 	let visibleTurnCount = $state(80);
+	// "Add to Kanban" converts a chat message into board tasks via a plan.
+	let planDialog = $state<{
+		messageId: string;
+		text: string;
+		role: string;
+	} | null>(null);
 	// Shared turn grouping lives in $lib/chat so the split pane and this page
 	// render identically (P3-12).
 	const turns = $derived(groupTurns(messages));
@@ -1144,13 +1151,14 @@
 		try {
 			if (!id.startsWith("ses_")) {
 				const task = await daemon.getTask(id);
-				if (task.sessionId) {
+				if (task.sessionId && task.sessionId.startsWith("ses_")) {
 					await goto(homeUrl(task.sessionId), {
 						replaceState: true,
 					});
 					return;
 				}
-				await goto(`/task/${encodeURIComponent(task.id)}`);
+				// Task tabs render runs in chat; the standalone /task page is gone.
+				await openTaskRunTab(task.id);
 				return;
 			}
 			const modelVersionAtLoad = modelSelectionVersion;
@@ -2816,6 +2824,35 @@
 				scroller?.scrollTo({ top: scroller.scrollHeight });
 			}
 			await chat.send(id, input);
+			// Chat-driven Kanban: mentioned tasks start now (backlog → in
+			// progress live on the board); the chat message itself is already
+			// delivered, so per-task failures are reported, not fatal.
+			const mentioned = input.taskRefs ?? [];
+			if (mentioned.length) {
+				const results = await Promise.allSettled(
+					mentioned.map((taskId) => daemon.startTask(taskId)),
+				);
+				const started = results.filter(
+					(result) => result.status === "fulfilled",
+				).length;
+				const failed = results.filter(
+					(result) => result.status === "rejected",
+				);
+				for (const failure of failed)
+					if (failure.status === "rejected")
+						toast.error(
+							failure.reason instanceof Error
+								? failure.reason.message
+								: "Unable to start a mentioned task",
+						);
+				if (started)
+					toast.success(
+						started > 1
+							? `Started ${started} Kanban tasks.`
+							: "Started 1 Kanban task.",
+					);
+				void refreshBoard().catch(() => {});
+			}
 			return true;
 		} catch (reason) {
 			if (
@@ -3617,6 +3654,7 @@
 							)}
 							onChanged={refreshBoard}
 							onTaskStarted={openTaskRunTab}
+							onopentask={openTaskRunTab}
 						/>
 					{/if}
 				</div>
@@ -4164,6 +4202,13 @@
 															onedit={turn.role === "user" && !busy
 																? editResponse
 																: undefined}
+															onaddplan={planDialog || !selectedProjectId
+																? undefined
+																: (
+																			messageId: string,
+																			text: string,
+																			role: string,
+																		) => (planDialog = { messageId, text, role })}
 														/>
 													{/each}
 												</div>
@@ -4343,6 +4388,9 @@
 													currentSessionId={sessionId}
 													{catalog}
 													{customAgents}
+													tasks={legacyTasks.filter(
+														(task) => task.projectId === selectedProjectId,
+													)}
 													{busy}
 													disabled={!selectedProjectId || loading}
 													onsend={send}
@@ -4385,6 +4433,9 @@
 												currentSessionId={sessionId}
 												{catalog}
 												{customAgents}
+											tasks={legacyTasks.filter(
+												(task) => task.projectId === selectedProjectId,
+											)}
 												{busy}
 												disabled={!conversation || sessionLoading}
 												onsend={send}
@@ -6141,5 +6192,17 @@
 					}}>Discuss this file</Button
 				></Dialog.Footer
 			>{/if}
-	</Dialog.Content></Dialog.Root
->
+	</Dialog.Content></Dialog.Root>
+
+{#if planDialog && selectedProjectId}
+	<PlanDialog
+		open={true}
+		projectId={selectedProjectId}
+		sessionId={sessionId || undefined}
+		messageId={planDialog.messageId}
+		messageText={planDialog.text}
+		role={planDialog.role}
+		onconverted={refreshBoard}
+		onclose={() => (planDialog = null)}
+	/>
+{/if}

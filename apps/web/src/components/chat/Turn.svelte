@@ -3,6 +3,7 @@
 		Check,
 		Copy,
 		FileCode,
+		KanbanSquare,
 		MessageSquarePlus,
 		PanelsTopLeft,
 		Pencil,
@@ -46,6 +47,7 @@
 		onbranch,
 		onregenerate,
 		onedit,
+		onaddplan,
 	}: {
 		messages: ChatMessage[];
 		catalog: Catalog;
@@ -61,6 +63,8 @@
 		onregenerate?: () => void;
 		/** Present on user turns to edit the prompt and re-send. */
 		onedit?: (messageId: string, text: string) => Promise<void> | void;
+		/** Present to turn this message into Kanban tasks. */
+		onaddplan?: (messageId: string, text: string, role: string) => void;
 	} = $props();
 
 	const role = $derived(messages[0]?.info.role ?? "assistant");
@@ -661,7 +665,14 @@
 							>
 						</div>
 					</div>
-				{:else}<Button
+				{:else}{#if onaddplan && first}<Button
+						variant="ghost"
+						size="sm"
+						class="h-7 gap-1.5 text-xs opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+						onclick={() => onaddplan(first.info.id, userMessageText(first), "user")}
+						title="Turn this message into Kanban tasks"
+						><KanbanSquare size={13} />Add to Kanban</Button
+					>{/if}<Button
 						variant="ghost"
 						size="sm"
 						class="h-7 gap-1.5 text-xs opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
@@ -911,7 +922,7 @@
 					{error.data?.message || error.name}
 				</p>{/if}
 		</div>
-		{#if canCopyResponse || onregenerate || error}
+		{#if canCopyResponse || onregenerate || error || (onaddplan && responseText)}
 			<div
 				class="mt-3 flex flex-wrap items-center gap-1 border-t border-white/[0.07] pt-2 text-xs text-muted-foreground"
 			>
@@ -943,6 +954,14 @@
 						title="Start a new chat from this answer"
 						><MessageSquarePlus size={13} />New session from answer</Button
 					>{/if}
+				{#if onaddplan && responseText && first}<Button
+					variant="ghost"
+					size="sm"
+					class="h-7 gap-1.5 text-xs"
+					onclick={() => onaddplan(first.info.id, responseText, "assistant")}
+					title="Turn this answer into Kanban tasks"
+					><KanbanSquare size={13} />Add to Kanban</Button
+				>{/if}
 				{#if canCopyResponse}<Button
 						variant="ghost"
 						size="sm"

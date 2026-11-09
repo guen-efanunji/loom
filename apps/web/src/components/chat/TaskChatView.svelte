@@ -4,7 +4,12 @@ import { toast } from "svelte-sonner";
 import { type Catalog, type ChatState, chat } from "$lib/chat";
 import { groupTurns } from "$lib/chat-utils";
 import { Button } from "$lib/components/ui/button";
-import { daemon, type PermissionRequest, type Task } from "$lib/daemon";
+import {
+	daemon,
+	diffStats,
+	type PermissionRequest,
+	type Task,
+} from "$lib/daemon";
 import TaskRunChat from "./TaskRunChat.svelte";
 import Turn from "./Turn.svelte";
 
@@ -68,6 +73,113 @@ let conversationLoading = $state(true);
 let disposed = false;
 let followUpDraft = $state("");
 let queueing = $state(false);
+// Completion confirmation: manual (self-review diff) vs automatic
+// (auto-picked registered agent reviews). Reset whenever the task changes.
+let reviewChoice = $state<"manual" | "auto" | null>(null);
+let reviewBusy = $state(false);
+let reviewError = $state("");
+let diffText = $state("");
+let diffStatsText = $state("");
+let manualPhase = $state<"checkpoint" | "inspect" | "approved" | "merged">(
+	"checkpoint",
+);
+let autoNote = $state("");
+let autoApproved = $state(false);
+let bannerTaskKey = $state(task.id);
+$effect(() => {
+	if (bannerTaskKey !== task.id) {
+		bannerTaskKey = task.id;
+		reviewChoice = null;
+		manualPhase = "checkpoint";
+		reviewError = "";
+		diffText = "";
+		diffStatsText = "";
+		autoNote = "";
+		autoApproved = false;
+	}
+});
+const showReviewBanner = $derived(
+	(task.status === "completed" || task.status === "ready_to_merge") &&
+		reviewChoice === null,
+);
+const showManualPanel = $derived(reviewChoice === "manual");
+async function loadDiff() {
+	try {
+		const result = await daemon.getDiff(task.id);
+		diffText = result.diff;
+		const stats = diffStats(result.diff);
+		diffStatsText = `${stats.files.length} file(s) · +${stats.additions} −${stats.deletions}`;
+	} catch (reason) {
+		reviewError =
+			reason instanceof Error ? reason.message : "Unable to load diff";
+	}
+}
+async function runManualReview() {
+	reviewChoice = "manual";
+	reviewBusy = true;
+	reviewError = "";
+	try {
+		await daemon.checkpointTask(task.id);
+		await loadDiff();
+		manualPhase = "inspect";
+	} catch (reason) {
+		reviewError =
+			reason instanceof Error ? reason.message : "Checkpoint failed";
+	} finally {
+		reviewBusy = false;
+	}
+}
+async function runApprove() {
+	reviewBusy = true;
+	reviewError = "";
+	try {
+		await daemon.approveTaskReview(task.id);
+		manualPhase = "approved";
+		toast.success("Manual review approved. Merge when ready.");
+	} catch (reason) {
+		reviewError =
+			reason instanceof Error ? reason.message : "Approval failed";
+	} finally {
+		reviewBusy = false;
+	}
+}
+async function runAutoReview() {
+	reviewChoice = "auto";
+	reviewBusy = true;
+	reviewError = "";
+	autoNote = "";
+	autoApproved = false;
+	try {
+		const result = await daemon.runTaskReviewAuto(task.id);
+		autoNote = `Reviewed by ${result.reviewer}${result.autoPicked ? " (auto-picked)" : ""}: ${result.review.status.replaceAll("_", " ")}`;
+		autoApproved = result.review.status === "approved";
+		if (autoApproved) toast.success("Automatic review approved the task.");
+		else toast.error(autoNote);
+	} catch (reason) {
+		reviewError =
+			reason instanceof Error ? reason.message : "Automatic review failed";
+	} finally {
+		reviewBusy = false;
+	}
+}
+async function runMerge() {
+	reviewBusy = true;
+	reviewError = "";
+	try {
+		const result = await daemon.mergeTask(task.id);
+		if (result.conflict)
+			reviewError = `Merge conflict in ${result.conflict.files.join(", ")}`;
+		else {
+			manualPhase = "merged";
+			toast.success("Merged into the project.");
+		}
+	} catch (reason) {
+		reviewError =
+			reason instanceof Error ? reason.message : "Merge failed";
+	} finally {
+		reviewBusy = false;
+	}
+}
 const followUpVisible = $derived(
 	["queued", "ready", "preparing", "running"].includes(task.status),
 );
@@ -241,7 +353,7 @@ $effect(() => () => {
 						{catalog}
 						sessionId={sessionId}
 						projectId={task.projectId}
-						onfile={(path) => (onfile ?? onopenfile)?.(path)}
+						onfile={(path: string) => (onfile ?? onopenfile)?.(path)}
 						onopenfile={onopenfile}
 					/>
 				{/each}
@@ -291,6 +403,95 @@ $effect(() => () => {
 				wide
 				compact
 			/>
+		{/if}
+		{#if showReviewBanner}
+			<div class="mt-6 rounded-xl border border-emerald-400/25 bg-emerald-500/[0.06] p-4">
+				<p class="text-sm font-medium text-emerald-200">
+					Task finished — how should it be reviewed?
+				</p>
+				<p class="mt-1 text-xs text-white/55">
+					Manual: you inspect the diff and approve. Automatic: a registered
+					agent is picked to check the work against the brief.
+				</p>
+				<div class="mt-3 flex flex-wrap gap-2">
+					<Button size="sm" variant="outline" onclick={runManualReview}>
+						Manual review
+					</Button>
+					<Button size="sm" onclick={runAutoReview}>
+						Automatic review
+					</Button>
+				</div>
+			</div>
+		{/if}
+		{#if showManualPanel}
+			<div class="mt-6 rounded-xl border border-white/10 bg-white/[0.03] p-4">
+				{#if manualPhase === "checkpoint"}
+					<p class="text-xs text-white/60">
+						Checkpointing the task output… ready for inspection momentarily.
+					</p>
+				{:else if manualPhase === "inspect" || manualPhase === "approved"}
+					<div class="flex flex-wrap items-center justify-between gap-2">
+						<div>
+							<p class="text-sm font-medium text-white/85">Manual review</p>
+							<p class="text-[11px] text-white/45">{diffStatsText}</p>
+						</div>
+						<div class="flex flex-wrap gap-2">
+							{#if manualPhase === "inspect"}
+								<Button size="sm" disabled={reviewBusy} onclick={runApprove}>
+									{reviewBusy ? "Approving…" : "Approve"}
+								</Button>
+							{/if}
+							{#if manualPhase === "approved"}
+								<Button size="sm" disabled={reviewBusy} onclick={runMerge}>
+									{reviewBusy ? "Merging…" : "Merge into project"}
+								</Button>
+							{/if}
+						</div>
+					</div>
+					{#if diffText}
+						<pre
+							class="mt-3 max-h-72 overflow-auto rounded-lg bg-black/40 p-3 text-[11px] leading-relaxed text-white/70"
+						>{diffText}</pre
+						>
+					{/if}
+					{#if manualPhase === "approved"}
+						<p class="mt-2 text-[11px] text-emerald-300">
+							Approved — merge to land the changes on the project branch.
+						</p>
+					{/if}
+				{:else if manualPhase === "merged"}
+					<p class="text-sm text-emerald-300">Merged into the project.</p>
+				{/if}
+			</div>
+		{/if}
+		{#if reviewChoice === "auto"}
+			<div class="mt-6 rounded-xl border border-white/10 bg-white/[0.03] p-4">
+				<p class="text-sm font-medium text-white/85">Automatic review</p>
+				{#if reviewBusy}
+					<p class="mt-1 text-xs text-white/55">
+						A reviewer agent is checking the work against the brief and acceptance
+						criteria…
+					</p>
+				{:else if autoNote}
+					<p
+						class="mt-1 text-xs {autoApproved
+							? 'text-emerald-300'
+							: 'text-amber-300'}"
+					>
+						{autoNote}
+					</p>
+					{#if autoApproved}
+						<div class="mt-3">
+							<Button size="sm" disabled={reviewBusy} onclick={runMerge}>
+								Merge into project
+							</Button>
+						</div>
+					{/if}
+				{/if}
+			</div>
+		{/if}
+		{#if reviewError}
+			<p class="mt-3 text-xs text-red-300">{reviewError}</p>
 		{/if}
 		{#if followUpVisible}
 			<form

@@ -8,6 +8,7 @@
 		File as FileIcon,
 		Folder,
 		Image as ImageIcon,
+		KanbanSquare,
 		LoaderCircle,
 		Lock,
 		PanelsTopLeft,
@@ -55,6 +56,7 @@
 		agent = $bindable("build"),
 		customAgentId = $bindable(""),
 		customAgents = [],
+		tasks = [],
 		showAgents = true,
 		showDesigns = true,
 		inputId,
@@ -71,6 +73,7 @@
 			text: string;
 			files: string[];
 			sessionRefs?: string[];
+			taskRefs?: string[];
 			sshConnectionIds: string[];
 			attachments?: ChatAttachment[];
 			designNodeIds: string[];
@@ -92,6 +95,8 @@
 			provider: string;
 			modelId: string | null;
 		}>;
+		/** Project Kanban tasks mentionable via @ for chat-driven execution. */
+		tasks?: Array<{ id: string; title: string; status: string }>;
 		showAgents?: boolean;
 		showDesigns?: boolean;
 		inputId?: string;
@@ -102,6 +107,7 @@
 	let textarea = $state<HTMLTextAreaElement | null>(null);
 	let files = $state<string[]>([]);
 	let sessionRefs = $state<string[]>([]);
+	let taskRefs = $state<string[]>([]);
 	let projectSessions = $state<ChatSession[]>([]);
 	let sshConnections = $state<
 		Array<{
@@ -323,6 +329,23 @@
 						type: "ssh",
 						id: connection.id,
 						detail: `${connection.username}@${connection.host}:${connection.port}`,
+					}))
+			: []),
+		...(!sessionMention
+			? tasks
+					.filter(
+						(task) =>
+							!taskRefs.includes(task.id) &&
+							task.title
+								.toLowerCase()
+								.includes((query ?? "").toLowerCase()),
+					)
+					.slice(0, 8)
+					.map((task) => ({
+						value: task.title,
+						type: "task",
+						id: task.id,
+						detail: task.status,
 					}))
 			: []),
 		...(!sessionMention
@@ -847,6 +870,11 @@
 			await insertMention(`session:${item.value}`, mentionStart, cursor);
 			return;
 		}
+		if (item.type === "task") {
+			taskRefs = [...new Set([...taskRefs, item.id ?? ""])].filter(Boolean);
+			await insertMention(`@${item.value} `, mentionStart, cursor);
+			return;
+		}
 		if (item.type === "custom-agent") customAgentId = item.id ?? "";
 		else agents = [...new Set([...agents, item.value])];
 		draft = `${draft.slice(0, mentionStart)}${draft.slice(cursor)}`;
@@ -931,6 +959,7 @@
 			(!draft.trim() &&
 				!files.length &&
 				!sessionRefs.length &&
+				!taskRefs.length &&
 				!attachments.length &&
 				!selectedDesignIds.length &&
 				!selectedSshConnections.length)
@@ -941,6 +970,7 @@
 		const pendingDraft = draft;
 		const pendingFiles = [...files];
 		const pendingSessionRefs = [...sessionRefs];
+		const pendingTaskRefs = [...taskRefs];
 		const pendingAttachments = [...attachments];
 		const pendingDesignIds = [...selectedDesignIds];
 		const pendingSshConnections = [...selectedSshConnections];
@@ -963,6 +993,7 @@
 				text: pendingDraft.trim(),
 				files: pendingFiles,
 				sessionRefs: pendingSessionRefs,
+				taskRefs: pendingTaskRefs,
 				sshConnectionIds: pendingSshConnections.map(
 					(connection) => connection.id,
 				),
@@ -982,6 +1013,7 @@
 			draft = "";
 			files = [];
 			sessionRefs = [];
+			taskRefs = [];
 			selectedSshConnections = [];
 			attachments = [];
 			selectedDesignIds = [];
@@ -998,6 +1030,7 @@
 				draft = pendingDraft;
 				files = pendingFiles;
 				sessionRefs = pendingSessionRefs;
+				taskRefs = pendingTaskRefs;
 				selectedSshConnections = pendingSshConnections;
 				attachments = pendingAttachments;
 				selectedDesignIds = pendingDesignIds;
@@ -1007,6 +1040,7 @@
 			draft = pendingDraft;
 			files = pendingFiles;
 			sessionRefs = pendingSessionRefs;
+			taskRefs = pendingTaskRefs;
 			selectedSshConnections = pendingSshConnections;
 			attachments = pendingAttachments;
 			selectedDesignIds = pendingDesignIds;
@@ -1190,7 +1224,7 @@
 			</div>
 		</div>
 	{/if}
-	{#if files.length || sessionRefs.length || agents.length || attachments.length || selectedDesignIds.length || selectedSshConnections.length}<div
+	{#if files.length || sessionRefs.length || taskRefs.length || agents.length || attachments.length || selectedDesignIds.length || selectedSshConnections.length}<div
 			class="flex flex-wrap gap-1 px-3 pt-3"
 			aria-label="Message attachments"
 		>
@@ -1249,6 +1283,22 @@
 						></Attachment.Actions
 					>
 				</Attachment.Root>{/each}
+			{#each taskRefs as refId}<Attachment.Root size="sm">
+				<Attachment.Media><KanbanSquare /></Attachment.Media>
+				<Attachment.Content
+					><Attachment.Title
+						>{tasks.find((item) => item.id === refId)?.title ?? refId}</Attachment.Title
+					></Attachment.Content
+				>
+				<Attachment.Actions
+					><Attachment.Action
+						type="button"
+						aria-label={`Remove task ${refId}`}
+						onclick={() => (taskRefs = taskRefs.filter((id) => id !== refId))}
+						><X /></Attachment.Action
+					></Attachment.Actions
+				>
+			</Attachment.Root>{/each}
 			{#each agents as name}<Attachment.Root size="sm"
 					><Attachment.Media><Bot /></Attachment.Media><Attachment.Content
 						><Attachment.Title>{name}</Attachment.Title></Attachment.Content

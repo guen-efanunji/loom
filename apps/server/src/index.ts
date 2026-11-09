@@ -901,6 +901,14 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			providerId = selection.providerId;
 			modelId = selection.modelId;
 		}
+		// Executor resolution runs at task start, often seconds after a daemon
+		// (re)start, before the provider registry has discovered the CLI.
+		// Refresh on demand instead of failing the start — the same race the
+		// chat validation path already tolerates.
+		if (providerManager.get(providerId)?.status !== "connected")
+			await providerManager
+				.refresh(providerId, { refreshModels: true })
+				.catch(() => {});
 		const connection = providerManager.get(providerId);
 		if (connection?.status !== "connected")
 			throw new Error(`Selected provider is unavailable: ${providerId}`);
@@ -4052,6 +4060,104 @@ export async function createApp(options: DaemonAppOptions = {}) {
 				c.req.param("id"),
 			);
 			return c.json({ review }, 201);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+	// Automatic review with a reviewer picked from the project's registered
+	// agents when the policy has no reviewer configured yet. The pick is
+	// deterministic (keyword overlap with the task, then label) and the
+	// choice is persisted into the review policy so later runs reuse it.
+	app.post("/api/tasks/:id/review/auto", async (c) => {
+		try {
+			const taskId = c.req.param("id");
+			const task = await repos.tasks.getById(taskId);
+			if (!task) return errorResponse(c, new Error("Task not found"));
+			if (!["completed", "ready_to_merge", "merge_conflict"].includes(task.status))
+				return c.json(
+					{
+						error: {
+							message: `Task cannot be reviewed from ${task.status}`,
+						},
+					},
+					409,
+				);
+			const policy = await orchestrator.getReviewPolicy(task.projectId);
+			let reviewerIdentity = "auto-reviewer";
+			let autoPicked = false;
+			if (!policy.reviewerExecutorJson) {
+				let executorAgentId: string | null = null;
+				if (task.executorConfig) {
+					try {
+						const parsed = taskExecutorSchema.parse(
+							JSON.parse(task.executorConfig),
+						);
+						executorAgentId = parsed.kind === "agent" ? parsed.agentId : null;
+					} catch {
+						// Legacy direct-provider executors simply can't be picked.
+					}
+				}
+				const candidates = await db
+					.select()
+					.from(customAgents)
+					.where(and(eq(customAgents.status, "active"), eq(customAgents.allowKanban, true)))
+					.then((rows) =>
+						rows.filter(
+							(agent) =>
+								(!agent.projectId || agent.projectId === task.projectId) &&
+								agent.approvalPolicy !== "read_only" &&
+								agent.id !== executorAgentId,
+						),
+					);
+				const words = new Set(
+					`${task.title} ${task.prompt}`.toLowerCase().match(/[a-z0-9]{3,}/g) ?? [],
+				);
+				const score = (agent: (typeof candidates)[number]) =>
+					`${agent.label} ${agent.role} ${agent.roleDescription ?? ""}`
+						.toLowerCase()
+						.split(/\s+/)
+						.filter((word) => word.length >= 3 && words.has(word)).length;
+				const picked = candidates
+					.map((agent) => ({ agent, points: score(agent) }))
+					.sort((a, b) => b.points - a.points || a.agent.label.localeCompare(b.agent.label))[0]?.agent;
+				if (!picked)
+					return c.json(
+						{
+							error: {
+								message:
+									"No registered agent is available for automatic review. Configure a reviewer or choose manual review.",
+							},
+						},
+						400,
+					);
+				const reviewerExecutorJson = JSON.stringify({
+					kind: "agent",
+					agentId: picked.id,
+				});
+				await repos.reviewPolicies.set({
+					projectId: task.projectId,
+					mode: "automatic",
+					reviewerExecutorJson,
+					autoMerge: policy.autoMerge,
+					requiredChecksJson: policy.requiredChecksJson,
+					maxRevisionRounds: policy.maxRevisionRounds,
+				});
+				reviewerIdentity = picked.label;
+				autoPicked = true;
+				log(
+					"review",
+					"reviewer-auto-picked",
+					{ taskId, agentId: picked.id, label: picked.label },
+					"info",
+				);
+			}
+			if (task.status === "completed")
+				await orchestrator.checkpoint(taskId);
+			const review = await orchestrator.runTaskReviewWithRepairs(
+				taskId,
+				reviewerIdentity,
+			);
+			return c.json({ review, reviewer: reviewerIdentity, autoPicked }, 201);
 		} catch (error) {
 			return errorResponse(c, error);
 		}

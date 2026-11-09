@@ -21,11 +21,13 @@ let {
 	tasks = [],
 	onChanged,
 	onTaskStarted,
+	onopentask,
 }: {
 	projectId: string;
 	tasks?: Task[];
 	onChanged?: () => unknown;
 	onTaskStarted?: (taskId: string) => unknown;
+	onopentask?: (taskId: string) => unknown;
 } = $props();
 
 const columns = [
@@ -946,8 +948,10 @@ async function doCancel(task: Task) {
 										disabled={busy}
 										onclick={() => doCancel(task)}>Cancel</Button
 									>{/if}
-								<Button size="sm" variant="ghost" href={`/task/${task.id}`}
-									>Open</Button
+								<Button
+									size="sm"
+									variant="ghost"
+									onclick={() => onopentask?.(task.id)}>Open</Button
 								>
 							</div>
 						</article>
