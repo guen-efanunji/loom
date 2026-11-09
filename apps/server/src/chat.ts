@@ -753,6 +753,153 @@ export function createChatRoutes(options: {
 			return changed ? { ...message, parts } : message;
 		});
 	}
+	/**
+	 * Session titles are derived from the first line of the initial message
+	 * (client creation title, 80 chars). Continuation/handoff prompts start with
+	 * internal scaffolding, so the sidebar ends up with identical junk titles
+	 * like "Referenced session context: Untrusted, compact references from
+	 * other project ses…" instead of the user's actual request. These prefixes
+	 * mark first lines (or title fragments) produced by Loom bookkeeping rather
+	 * than by the user.
+	 */
+	const scaffoldingTitleLines = [
+		"referenced session context:",
+		"untrusted, compact references",
+		"previous conversation (carried over",
+		"<previous-conversation>",
+		"continue from this answer:",
+		"continue the previous task in a new chat.",
+		"continue from this handoff.",
+		"recent user requests:",
+		"failed request:",
+		"context overflow diagnostic:",
+	];
+	/**
+	 * Scaffolding the user never types (server-injected context): a title that
+	 * begins with one of these is pure bookkeeping — never a usable title.
+	 */
+	const invisibleScaffoldingPrefixes = [
+		"referenced session context:",
+		"untrusted, compact references",
+		"previous conversation (carried over",
+		"<previous-conversation>",
+	];
+	function stripScaffoldingPrefix(line: string): string | null {
+		const trimmed = line.trim();
+		const lower = trimmed.toLowerCase();
+		const prefix = scaffoldingTitleLines.find((item) => lower.startsWith(item));
+		if (!prefix) return null;
+		// Return the remainder (may be empty → caller falls back).
+		return trimmed
+			.slice(prefix.length)
+			.replace(/^[\s:–—-]+/, "")
+			.trim();
+	}
+	/** True when the title itself is (or starts with) Loom scaffolding text. */
+	function isScaffoldingTitle(title: string): boolean {
+		const lower = title.trim().toLowerCase();
+		return scaffoldingTitleLines.some((prefix) => lower.startsWith(prefix));
+	}
+	/**
+	 * Clean an incoming creation title: strip scaffolding prefixes the sender
+	 * may have seeded (handoff/continuation drafts). When nothing meaningful
+	 * remains, use a neutral fallback — the read-time repair below refines it
+	 * to the first real user line once the first message exists.
+	 */
+	function cleanSessionTitle(title: string): string {
+		const trimmed = title.trim();
+		const lower = trimmed.toLowerCase();
+		// Pure bookkeeping prefix (server-injected context the user never
+		// typed): nothing in the truncated title is usable intent. Use a
+		// neutral fallback now; the read-time repair refines it to the first
+		// real user line once the first message exists.
+		if (invisibleScaffoldingPrefixes.some((prefix) => lower.startsWith(prefix)))
+			return "Continued chat";
+		// Client-seeded continuation drafts (visible to the user): strip the
+		// seed prefix and keep the attempt's real text when present.
+		let result = trimmed;
+		for (;;) {
+			const stripped = stripScaffoldingPrefix(result);
+			if (stripped === null) break;
+			result = stripped;
+			if (!result) break;
+		}
+		if (!result) return "Continued chat";
+		return result.slice(0, 200);
+	}
+	/** Derive a title from a (already display-stripped) user message text. */
+	function deriveTitleFromUserText(text: string): string | null {
+		for (const rawLine of text.split("\n")) {
+			let line = rawLine.trim();
+			if (!line) continue;
+			// Handoff transcripts are rendered as `role [msg_id]: text`.
+			const transcript = /^(user|assistant) \[[^\]]+\]:\s*(.*)$/.exec(line);
+			if (transcript) line = (transcript[2] ?? "").trim();
+			if (!line) continue;
+			for (;;) {
+				const stripped = stripScaffoldingPrefix(line);
+				if (stripped === null) break;
+				line = stripped;
+				if (!line) break;
+			}
+			if (!line) continue;
+			return line.slice(0, 80);
+		}
+		return null;
+	}
+	/** In-process throttle so a failing PATCH doesn't hot-loop on every poll. */
+	const titleRepairAttempts = new Map<string, number>();
+	function shouldAttemptTitleRepair(sessionId: string): boolean {
+		const last = titleRepairAttempts.get(sessionId) ?? 0;
+		if (Date.now() - last < 10 * 60_000) return false;
+		titleRepairAttempts.set(sessionId, Date.now());
+		return true;
+	}
+	/**
+	 * Self-healing title repair: if the gateway title starts with scaffolding
+	 * (created before the creation-time sanitization), derive the real title
+	 * from the first user message and persist it via the gateway PATCH.
+	 */
+	async function repairedSessionTitle(
+		session: Session,
+		messages: ProviderMessage[],
+	): Promise<Session> {
+		if (!isScaffoldingTitle(session.title)) return session;
+		if (!shouldAttemptTitleRepair(session.id)) return session;
+		const visible = stripInjectedGuidance(visibleMessages(messages));
+		const firstUserText =
+			visible
+				.find((message) => message.info.role === "user")
+				?.parts.filter((part) => part.type === "text" && part.text)
+				.map((part) => part.text ?? "")
+				.join("\n") ?? "";
+		const derived = deriveTitleFromUserText(firstUserText) ?? "Continued chat";
+		if (derived === session.title) return session;
+		try {
+			const patched = await request<Session>(
+				`/session/${session.id}`,
+				session.directory,
+				{ title: derived },
+				"PATCH",
+			);
+			return { ...session, title: patched?.title ?? derived };
+		} catch (error) {
+			logChatEvent(
+				"chat",
+				"chat.titleRepairFailed",
+				{
+					sessionId: session.id,
+					message: (error instanceof Error
+						? error.message
+						: String(error)
+					).slice(0, 300),
+				},
+				"warn",
+			);
+			// Still show the clean title in the UI even if persistence failed.
+			return { ...session, title: derived };
+		}
+	}
 	async function supersedeTurn(sessionId: string, messageIds: string[]) {
 		if (!messageIds.length) return;
 		const turn = providerSessions.get(sessionId);
@@ -1705,8 +1852,41 @@ export function createChatRoutes(options: {
 		);
 		const merged = new Map<string, Session>();
 		for (const session of lists.flat()) merged.set(session.id, session);
+		// Self-healing title repair: sessions whose title starts with internal
+		// scaffolding (continuation/handoff seeded drafts) get a real title
+		// derived from their first user message, persisted to the gateway.
+		const repaired = await Promise.all(
+			[...merged.values()].map(async (session) => {
+				if (!isScaffoldingTitle(session.title)) return session;
+				try {
+					const [native, prior] = await Promise.all([
+						request<ProviderMessage[]>(
+							`/session/${session.id}/message`,
+							session.directory,
+						).catch(() => [] as ProviderMessage[]),
+						(async (): Promise<ProviderMessage[]> => {
+							try {
+								return (
+									(await options.providerHistory?.get<ProviderMessage[]>(
+										session.id,
+									)) ?? []
+								);
+							} catch {
+								return [];
+							}
+						})(),
+					]);
+					return await repairedSessionTitle(
+						session,
+						mergeMessages(prior, native),
+					);
+				} catch {
+					return session;
+				}
+			}),
+		);
 		return c.json(
-			[...merged.values()]
+			repaired
 				.sort((a, b) => b.time.updated - a.time.updated)
 				.map((session) => ({
 					...session,
@@ -1752,9 +1932,13 @@ export function createChatRoutes(options: {
 			})
 			.parse(await c.req.json());
 		const root = await directory(input.projectId);
+		// Creation titles are derived from the first line of the initial text,
+		// which for continuation/handoff drafts is internal scaffolding —
+		// never let it become the sidebar title.
+		const createdTitle = cleanSessionTitle(input.title);
 		if (input.mode !== "isolated")
 			return c.json(
-				await request<Session>("/session", root, { title: input.title }),
+				await request<Session>("/session", root, { title: createdTitle }),
 				201,
 			);
 		if (!options.worktrees || !options.chatWorkspaces)
@@ -1778,7 +1962,7 @@ export function createChatRoutes(options: {
 		let createdSessionId: string | undefined;
 		try {
 			const created = await request<Session>("/session", workspace.path, {
-				title: input.title,
+				title: createdTitle,
 			});
 			createdSessionId = created.id;
 			const record = {
@@ -2011,7 +2195,7 @@ export function createChatRoutes(options: {
 					sessionID: current.id,
 				})) ?? [];
 			return c.json({
-				session: current,
+				session: await repairedSessionTitle(current, providerSession.messages),
 				messages: stripInjectedGuidance(
 					visibleMessages(providerSession.messages),
 				),
@@ -2068,7 +2252,7 @@ export function createChatRoutes(options: {
 				? { type: "idle" }
 				: normalizedStatus;
 		return c.json({
-			session: current,
+			session: await repairedSessionTitle(current, visible),
 			messages: visible,
 			status: sessionStatus,
 			permissions: permissions.filter((p) => p.sessionID === current.id),

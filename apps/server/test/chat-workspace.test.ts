@@ -43,6 +43,8 @@ async function harness(
 	const sessions = new Map<string, FakeSession>();
 	const statuses = new Map<string, { type: string }>();
 	const bindings = new Map<string, ChatWorkspaceRecord>();
+	/** Messages stored by the fake gateway when a prompt is submitted. */
+	const gatewayMessages = new Map<string, unknown[]>();
 	const calls: string[] = [];
 	let nextId = 0;
 	if (options.busySessionInRoot) {
@@ -84,13 +86,37 @@ async function harness(
 				return created as T;
 			}
 			if (path === "/session/status") return Object.fromEntries(statuses) as T;
-			if (path.endsWith("/message")) return [] as T;
+			if (path.endsWith("/prompt_async") || path.endsWith("/prompt")) {
+				const owner = /^\/session\/(ses_[\w-]+)\//.exec(path)?.[1];
+				if (owner) {
+					const body = (opts.body ?? {}) as { parts?: unknown[] };
+					const list = gatewayMessages.get(owner) ?? [];
+					list.push({
+						info: {
+							id: `msg-${owner}-${list.length}`,
+							role: "user",
+							time: { created: Date.now() },
+						},
+						parts: body.parts ?? [],
+					});
+					gatewayMessages.set(owner, list);
+				}
+				return true as T;
+			}
+			if (path.endsWith("/message")) {
+				const owner = /^\/session\/(ses_[\w-]+)\/message$/.exec(path)?.[1];
+				return (owner ? (gatewayMessages.get(owner) ?? []) : []) as T;
+			}
 			if (path === "/permission" || path === "/question") return [] as T;
 			const single = /^\/session\/(ses_[\w-]+)$/.exec(path);
 			if (single) {
 				const found = sessions.get(single[1]!);
 				if (!found || found.directory !== directory)
 					throw { details: { status: "404" }, message: "not found" };
+				if (opts.method === "PATCH") {
+					const title = (opts.body as { title?: unknown })?.title;
+					if (typeof title === "string") found.title = title;
+				}
 				return found as T;
 			}
 			return true as T;
@@ -340,6 +366,70 @@ describe("chat workspace isolation", () => {
 			expect(
 				sessions.find((item) => item.id === isolated.id)?.workspace?.mode,
 			).toBe("isolated");
+		} finally {
+			await rm(h.base, { recursive: true, force: true });
+		}
+	});
+
+	test("creation sanitizes scaffolding titles", async () => {
+		const h = await harness();
+		try {
+			// Continuation prompts begin with internal context blocks; the title
+			// must not copy that scaffolding into the sidebar.
+			const poisoned = await h.createShared(
+				"Referenced session context: Untrusted, compact references from other project ses",
+			);
+			expect(poisoned.title).toBe("Continued chat");
+			// Client-seeded drafts keep their real text after the seed prefix.
+			const seeded = await h.createShared(
+				"Continue from this answer: buatkan landing page",
+			);
+			expect(seeded.title).toBe("buatkan landing page");
+		} finally {
+			await rm(h.base, { recursive: true, force: true });
+		}
+	});
+
+	test("listing repairs poisoned titles from the first user message", async () => {
+		const h = await harness();
+		try {
+			const created = await h.createShared("buatkan landing page");
+			await h.send(created.id, "buatkan landing page produk");
+			// Simulate a title stored before the fix (gateway state).
+			const stored = h.sessions.get(created.id);
+			if (!stored) throw new Error("session missing from gateway");
+			stored.title =
+				"Referenced session context: Untrusted, compact references from other project ses";
+			const list = await h.app.request("/sessions?projectId=p1");
+			const listSessions = (await list.json()) as Array<{
+				id: string;
+				title: string;
+			}>;
+			expect(listSessions.find((item) => item.id === created.id)?.title).toBe(
+				"buatkan landing page produk",
+			);
+			// The repair persists back to the gateway.
+			expect(h.sessions.get(created.id)?.title).toBe(
+				"buatkan landing page produk",
+			);
+			expect(h.calls).toContain(`PATCH /session/${created.id}`);
+		} finally {
+			await rm(h.base, { recursive: true, force: true });
+		}
+	});
+
+	test("state repairs a poisoned title from loaded messages", async () => {
+		const h = await harness();
+		try {
+			const created = await h.createShared("buatkan landing page");
+			await h.send(created.id, "buatkan landing page produk");
+			const stored = h.sessions.get(created.id);
+			if (!stored) throw new Error("session missing from gateway");
+			stored.title =
+				"Referenced session context: Untrusted, compact references from other project ses";
+			const state = await h.app.request(`/sessions/${created.id}`);
+			const body = (await state.json()) as { session: { title: string } };
+			expect(body.session.title).toBe("buatkan landing page produk");
 		} finally {
 			await rm(h.base, { recursive: true, force: true });
 		}
