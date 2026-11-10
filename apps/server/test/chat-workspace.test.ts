@@ -194,10 +194,6 @@ async function harness(
 					owner: "loom",
 				};
 			},
-			prepareDependencies: async (workspace) => {
-				calls.push(`worktree:deps:${workspace.taskId}`);
-				return [];
-			},
 			inspectHead: async () => ({
 				head: "branch-head",
 				clean: options.workspaceClean !== false,
@@ -298,9 +294,9 @@ describe("chat workspace isolation", () => {
 			expect(
 				h.calls.some((call) => call.startsWith("worktree:create:chat-")),
 			).toBe(true);
-			// Dependencies are linked so the agent can actually build in the new tree.
+			// Installed dependency trees are not symlinked into isolated workspaces.
 			expect(h.calls.some((call) => call.startsWith("worktree:deps:"))).toBe(
-				true,
+				false,
 			);
 			expect(h.bindings.get(created.id)?.path).toBe(created.directory);
 		} finally {

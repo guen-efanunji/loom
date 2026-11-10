@@ -46,6 +46,12 @@
 		isolated: boolean;
 		workspace: ChatWorkspace | null;
 		workspaceError: string;
+		workspaceOperation:
+			| "checkpointing"
+			| "merging"
+			| "syncing"
+			| "discarding"
+			| null;
 		/** Files the last merge/sync reported as conflicting. */
 		conflict: string[];
 	};
@@ -121,6 +127,7 @@
 			isolated,
 			workspace: null,
 			workspaceError: "",
+			workspaceOperation: null,
 			conflict: [],
 		};
 	}
@@ -143,9 +150,7 @@
 	let scroller: HTMLDivElement;
 	// P2-9: hold at most one message per tab while its session is busy so a fast
 	// follow-up is queued and auto-sent the moment the run finishes.
-	let queues = $state<Record<string, Parameters<typeof chat.send>[1] | null>>(
-		{},
-	);
+	let queues = $state<Record<string, Parameters<typeof chat.send>[1] | null>>({});
 	// P1-7: last cheap status signature per tab, so we only re-fetch full state
 	// when the conversation actually changed instead of every poll.
 	let signatures = $state<Record<string, string>>({});
@@ -154,7 +159,8 @@
 		!!active &&
 			(sendingIds.includes(active.id) ||
 				active.conversation?.status.type === "busy" ||
-				active.conversation?.status.type === "retry"),
+				active.conversation?.status.type === "retry" ||
+				active.workspaceOperation !== null),
 	);
 	let displayedMessages = $derived(
 		active
@@ -191,20 +197,27 @@
 		});
 	}
 	$effect(() => publishState(active));
-	async function refresh(tab: PaneTab) {
+	async function refresh(tab: PaneTab, hydrateWorkspace = false) {
 		if (!tab.sessionId) return;
+		const sessionId = tab.sessionId;
 		try {
-			const state = await chat.state(tab.sessionId);
+			const state = await chat.state(sessionId);
 			if (
 				!tabs.some((item) => item.id === tab.id) ||
 				tab.sessionId !== state.session.id
 			)
 				return;
+			const latestMessage = state.messages.at(-1);
 			const signature = [
 				state.messages.length,
-				state.messages.at(-1)?.info.id ?? "",
-				state.messages.at(-1)?.info.time.completed ?? "",
+				latestMessage?.info.id ?? "",
+				latestMessage?.info.time.completed ?? "",
+				// OpenCode streams text/tool updates into the same message id.
+				// Include its current content/error, not just its identity/status,
+				// otherwise each poll discards fresh content and leaves chat frozen.
+				latestMessage ? JSON.stringify(latestMessage) : "",
 				state.status.type,
+				state.status.message ?? "",
 				state.permissions.length,
 				state.questions.length,
 			].join("|");
@@ -244,6 +257,9 @@
 				reason instanceof Error
 					? reason.message
 					: "Unable to load this conversation.";
+		} finally {
+			if (hydrateWorkspace && tab.sessionId === sessionId)
+				await loadWorkspace(tab);
 		}
 	}
 	// Cheap poll: hit only the status summary and re-fetch full state when it
@@ -289,17 +305,25 @@
 		// tab shows pending output that is ready to checkpoint and merge.
 		if (wasBusy && settled && tab.workspace) await loadWorkspace(tab);
 	}
+	let pollInFlight = false;
 	async function poll() {
-		for (const tab of tabs) {
-			if (
-				tab.sessionId &&
-				(tab.loading ||
-					queues[tab.id] ||
-					tab.conversation?.status.type === "busy" ||
-					tab.conversation?.status.type === "retry" ||
-					sendingIds.includes(tab.id))
-			)
-				await pollTab(tab);
+		if (pollInFlight) return;
+		pollInFlight = true;
+		try {
+			const pending = tabs.filter(
+				(tab) =>
+					tab.sessionId &&
+					(tab.loading ||
+						queues[tab.id] ||
+						tab.conversation?.status.type === "busy" ||
+						tab.conversation?.status.type === "retry" ||
+						sendingIds.includes(tab.id)),
+			);
+			// Keep tabs independent while bounding concurrent daemon requests.
+			for (let index = 0; index < pending.length; index += 3)
+				await Promise.all(pending.slice(index, index + 3).map(pollTab));
+		} finally {
+			pollInFlight = false;
 		}
 	}
 	/**
@@ -308,13 +332,17 @@
 	 */
 	async function loadWorkspace(tab: PaneTab) {
 		if (!tab.sessionId) return;
+		const sessionId = tab.sessionId;
 		try {
-			const state = await chat.workspace(tab.sessionId);
-			if (!tabs.some((item) => item.id === tab.id)) return;
+			const state = await chat.workspace(sessionId);
+			if (!tabs.some((item) => item.id === tab.id) || tab.sessionId !== sessionId)
+				return;
 			tab.workspace = state.mode === "isolated" ? state : null;
 			tab.isolated = state.mode === "isolated";
 			tab.workspaceError = "";
 		} catch (reason) {
+			if (!tabs.some((item) => item.id === tab.id) || tab.sessionId !== sessionId)
+				return;
 			// A deleted worktree or a Git failure must not break the conversation view.
 			tab.workspace = null;
 			tab.workspaceError =
@@ -325,7 +353,7 @@
 	}
 	onMount(() => {
 		const first = tabs[0];
-		if (first?.sessionId) void refresh(first);
+		if (first?.sessionId) void refresh(first, true);
 		timer = setInterval(() => void poll(), 1200);
 	});
 	onDestroy(() => {
@@ -358,7 +386,7 @@
 		visibleTurnCount = 80;
 		publishState();
 		const tab = tabs.find((item) => item.id === id);
-		if (tab?.sessionId && !tab.conversation) await refresh(tab);
+		if (tab?.sessionId) await refresh(tab, true);
 	}
 	function closeTab(id: string) {
 		const index = tabs.findIndex((tab) => tab.id === id);
@@ -386,6 +414,11 @@
 			tab.conversation?.status.type === "busy" ||
 			tab.conversation?.status.type === "retry";
 		if (running) {
+			if (queues[tab.id]) {
+				tab.error =
+					"A follow-up is already queued. Cancel it before replacing it.";
+				return false;
+			}
 			queues[tab.id] = input;
 			return true;
 		}
@@ -458,7 +491,17 @@
 				],
 			};
 			await chat.send(tab.sessionId, input);
-			await refresh(tab);
+			// The POST response is the acceptance boundary. A failed follow-up
+			// refresh must not tell Composer the send failed: it would restore the
+			// draft and a retry would submit the already-accepted prompt twice.
+			try {
+				await refresh(tab);
+			} catch (reason) {
+				tab.error =
+					reason instanceof Error
+						? `Message sent, but chat refresh failed: ${reason.message}`
+						: "Message sent, but chat refresh failed.";
+			}
 			publishState(tab);
 			return true;
 		} catch (reason) {
@@ -478,7 +521,7 @@
 				tab.workspace = null;
 				tab.isolated = true;
 				tab.error =
-					"The project folder was busy, so this chat restarted in its own workspace.";
+					"The project folder was busy, so this chat restarted in an isolated workspace based on the latest commit. Uncommitted project-folder changes are not included.";
 				retryIsolated = true;
 			} else {
 				tab.error =
@@ -495,12 +538,14 @@
 	}
 	/** Commit this tab's output on its branch, then integrate it into the project. */
 	async function integrate(tab: PaneTab) {
-		if (!tab.sessionId || !tab.workspace) return;
+		if (!tab.sessionId || !tab.workspace || tab.workspaceOperation) return;
+		tab.workspaceOperation = "checkpointing";
 		tab.error = "";
 		tab.conflict = [];
 		try {
 			if (tab.workspace.pendingChanges !== false)
 				await chat.checkpoint(tab.sessionId);
+			tab.workspaceOperation = "merging";
 			await chat.mergeWorkspace(tab.sessionId);
 			await loadWorkspace(tab);
 		} catch (reason) {
@@ -510,15 +555,19 @@
 					? reason.message
 					: "Unable to merge this workspace.";
 			await loadWorkspace(tab);
+		} finally {
+			tab.workspaceOperation = null;
 		}
 	}
 	async function syncWorkspace(tab: PaneTab) {
-		if (!tab.sessionId || !tab.workspace) return;
+		if (!tab.sessionId || !tab.workspace || tab.workspaceOperation) return;
+		tab.workspaceOperation = "syncing";
 		tab.error = "";
 		tab.conflict = [];
 		try {
 			if (tab.workspace.pendingChanges !== false)
 				await chat.checkpoint(tab.sessionId);
+			tab.workspaceOperation = "syncing";
 			await chat.syncWorkspace(tab.sessionId);
 			await loadWorkspace(tab);
 		} catch (reason) {
@@ -527,16 +576,17 @@
 				reason instanceof Error
 					? reason.message
 					: "Unable to sync this workspace.";
+		} finally {
+			tab.workspaceOperation = null;
 		}
 	}
 	async function discardWorkspace(tab: PaneTab) {
-		if (!tab.sessionId || !tab.workspace) return;
+		if (!tab.sessionId || !tab.workspace || tab.workspaceOperation) return;
 		if (
-			!confirm(
-				"Discard this isolated workspace? Unmerged agent output is lost.",
-			)
+			!confirm("Discard this isolated workspace? Unmerged agent output is lost.")
 		)
 			return;
+		tab.workspaceOperation = "discarding";
 		tab.error = "";
 		try {
 			await chat.discardWorkspace(tab.sessionId);
@@ -551,6 +601,8 @@
 				reason instanceof Error
 					? reason.message
 					: "Unable to discard this workspace.";
+		} finally {
+			tab.workspaceOperation = null;
 		}
 	}
 	// Rebuild a send payload from the tab's current model/agent selection so a
@@ -625,9 +677,7 @@
 			await refresh(active);
 		} catch (reason) {
 			active.error =
-				reason instanceof Error
-					? reason.message
-					: "Unable to update permission.";
+				reason instanceof Error ? reason.message : "Unable to update permission.";
 		} finally {
 			permissionReplying = "";
 		}
@@ -735,10 +785,10 @@
 				<span class="ml-auto flex items-center gap-1">
 					<Button
 						variant="outline"
-						size="sm"
+					size="sm"
 						class="h-6 px-2 text-[11px]"
 						title="Commit this tab's output and merge it into the project branch"
-						disabled={busy || !!active.workspaceError}
+					disabled={busy || !!active.workspaceError || !!active.workspaceOperation}
 						onclick={() => void integrate(active)}
 						><Upload size={11} />Merge into project</Button
 					>
@@ -747,7 +797,7 @@
 						size="sm"
 						class="h-6 px-2 text-[11px]"
 						title="Pull the project branch into this workspace"
-						disabled={busy}
+						disabled={busy || !!active.workspaceOperation}
 						onclick={() => void syncWorkspace(active)}>Sync</Button
 					>
 					<Button
@@ -755,7 +805,7 @@
 						size="sm"
 						class="h-6 px-2 text-[11px] text-muted-foreground"
 						title="Throw away this workspace and its unmerged output"
-						disabled={busy}
+						disabled={busy || !!active.workspaceOperation}
 						onclick={() => void discardWorkspace(active)}>Discard</Button
 					>
 				</span>
@@ -894,6 +944,20 @@
 				>
 					{active.error}
 				</p>{/if}
+			{#if active && queues[active.id]}
+				<div class="mt-3 flex items-center justify-between gap-3 rounded-lg border border-cyan-300/20 bg-cyan-300/[0.05] p-3 text-xs">
+					<span>One follow-up is queued and will send when this response finishes.</span>
+					<Button
+						variant="ghost"
+						size="sm"
+						class="h-7 px-2 text-xs"
+						onclick={() => {
+							queues[active.id] = null;
+							active.error = "Queued follow-up cancelled.";
+						}}
+					>Cancel queued message</Button>
+				</div>
+			{/if}
 		</div>
 	</div>
 	{#if project}<div

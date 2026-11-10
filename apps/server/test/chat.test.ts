@@ -15,7 +15,7 @@ function setup(
 	} = { type: "busy" },
 	openCodeSessionActive = true,
 	/** Intercept a gateway path before the default fake handlers run. */
-	hooks?: (path: string) => Response | undefined,
+	hooks?: (path: string) => Response | undefined | Promise<Response | undefined>,
 	extra?: {
 		providerHistory?: Parameters<typeof createChatRoutes>[0]["providerHistory"];
 		chatCompactions?: Parameters<typeof createChatRoutes>[0]["chatCompactions"];
@@ -55,7 +55,7 @@ function setup(
 			const req = new Request(url, init);
 			requests.push(req);
 			const path = new URL(req.url).pathname.replace(/^\/api/, "");
-			const injected = hooks?.(path);
+			const injected = await hooks?.(path);
 			if (injected) return injected;
 			if (path === "/session/ses_test")
 				return Response.json({
@@ -211,6 +211,52 @@ describe("chat gateway", () => {
 		expect(await summary.json()).toMatchObject({
 			busy: false,
 		});
+	});
+
+	test("persists provider errors into the assistant message on send failure", async () => {
+		const failures: string[] = [];
+		const persisted: unknown[][] = [];
+		const { app } = setup(
+			{ type: "busy" },
+			true,
+			(path) =>
+				path.endsWith("/prompt_async")
+					? new Response("provider rejected the model with full diagnostic", {
+							status: 400,
+						})
+					: undefined,
+				{
+					providerHistory: {
+						get: async () => undefined,
+						save: async (_sessionId, messages) => {
+							persisted.push(messages);
+						},
+						delete: async () => {},
+					},
+					logger: (_component, event, details) => {
+						failures.push(`${event}:${String(details?.message ?? "")}`);
+					},
+				},
+		);
+		const response = await app.request("/sessions/ses_test/messages", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				text: "Trigger failure",
+				model: { providerID: "opencode", modelID: "omniroute/BACKEND" },
+				files: [],
+				agents: [],
+			}),
+		});
+		expect(response.status).toBe(502);
+		const saved = persisted.at(-1) as Array<{
+			info: { role: string; error?: { data?: { message?: string } } };
+		}>;
+		expect(saved.at(-1)?.info.error?.data?.message).toContain(
+			"provider rejected the model with full diagnostic",
+		);
+		expect(saved.at(-2)?.info.role).toBe("user");
+		expect(failures).toHaveLength(1);
 	});
 
 	test("keeps short transient OpenCode retries as active work", async () => {
@@ -562,6 +608,85 @@ describe("chat gateway", () => {
 		expect(userMessage?.parts.find((part) => part.type === "text")?.text).toBe(
 			"haii",
 		);
+	});
+
+	test("persists assistant errors for rejected model prompts", async () => {
+		const persisted: unknown[][] = [];
+		const { app, requests } = setup(
+			{ type: "busy" },
+			true,
+			(path) =>
+				path.endsWith("/prompt_async")
+					? new Response('{"message":"model no longer available"}', {
+							status: 404,
+						})
+					: undefined,
+			{
+				providerHistory: {
+					get: async () => undefined,
+					save: async (_sessionId, messages) => {
+						persisted.push(messages);
+					},
+					delete: async () => {},
+				},
+			},
+		);
+		const response = await app.request("/sessions/ses_test/messages", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				text: "Use this model",
+				model: { providerID: "opencode", modelID: "missing-model" },
+				files: [],
+				agents: [],
+			}),
+		});
+		expect(response.status).toBe(502);
+		const saved = persisted.at(-1) as Array<{
+			info: { role: string; error?: { data?: { message?: string } } };
+		}>;
+		expect(saved.at(-1)?.info.error?.data?.message).toContain(
+			"model no longer available",
+		);
+		expect(requests.some((item) => item.url.endsWith("/prompt_async"))).toBe(true);
+	});
+
+	test("rejects a concurrent duplicate send while the gateway accepts the first", async () => {
+		let releasePrompt!: () => void;
+		let markPromptStarted!: () => void;
+		const started = new Promise<void>((resolve) => {
+			markPromptStarted = resolve;
+		});
+		const gate = new Promise<void>((resolve) => {
+			releasePrompt = resolve;
+		});
+		const { app, requests } = setup(
+			{ type: "busy" },
+			true,
+			async (path) => {
+				if (!path.endsWith("/prompt_async")) return undefined;
+				markPromptStarted();
+				await gate;
+				return new Response(null, { status: 204 });
+			},
+		);
+		const request = {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				text: "Only once",
+				model: { providerID: "opencode", modelID: "omniroute/BACKEND" },
+				files: [],
+				agents: [],
+			}),
+		};
+		const first = app.request("/sessions/ses_test/messages", request);
+		await started;
+		const duplicate = await app.request("/sessions/ses_test/messages", request);
+		expect(duplicate.status).toBe(409);
+		releasePrompt();
+		expect((await first).status).toBe(204);
+		expect(requests.filter((item) => item.url.endsWith("/prompt_async"))).toHaveLength(1);
 	});
 
 	test("sends model, agent and subsequent prompts to the same OpenCode session", async () => {

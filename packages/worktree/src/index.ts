@@ -594,13 +594,17 @@ export class WorktreeManager {
 	}
 
 	/**
-	 * Mirror the repository's installed dependencies into a managed worktree so
-	 * an agent can build, test, and start dev servers there immediately. Every
-	 * link is also added to the exclude file, keeping Git state clean enough to
-	 * checkpoint, merge, and remove the workspace.
+	 * Optionally mirror installed dependencies into a managed worktree for
+	 * faster startup. Shared dependency trees are mutable and therefore disabled
+	 * by default; isolated workspaces should install dependencies in their own
+	 * checkout using the repository's package manager and lockfile.
 	 */
-	async prepareDependencies(workspace: Workspace): Promise<LinkedDependency[]> {
+	async prepareDependencies(
+		workspace: Workspace,
+		options: { shareInstalled?: boolean } = {},
+	): Promise<LinkedDependency[]> {
 		await this.assertWorkspacePath(workspace);
+		if (!options.shareInstalled) return [];
 		const linked: LinkedDependency[] = [];
 		for (const relativePath of await dependencyDirectories(
 			workspace.projectPath,

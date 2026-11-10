@@ -209,31 +209,29 @@ describe("OpenCode HTTP runtime", () => {
 		expect(requests[2]?.url).toContain("/session/session-1/prompt");
 	});
 
-	test("fails a modern prompt with an unknown model instead of demoting the gateway", async () => {
+	test("surfaces a modern prompt failure for a removed model without falling back", async () => {
 		const requests: Request[] = [];
 		const runtime = new OpenCodeHttpRuntime({
 			fetcher: async (input, init) => {
 				requests.push(new Request(input, init));
 				const path = new URL(String(input)).pathname;
 				if (path.endsWith("/session/session-1/model"))
-					return new Response('{"message":"unknown model"}', { status: 404 });
+					return new Response('{"message":"ProviderModelNotFoundError: no model"}', { status: 404 });
 				return new Response(null, { status: 204 });
 			},
 		});
-		await runtime.prompt({
-			sessionId: "session-1",
-			prompt: "Implement it",
-			model: { providerID: "opencode", modelID: "unknown-model" },
-		});
-		// Probe + rejected model selection, then submit using the configured
-		// default. Never fall back to removed prompt_async on a modern server.
-		expect(requests[0]?.url).toContain("/session/active");
-		expect(requests[1]?.url).toContain("/session/session-1/model");
-		expect(requests[2]?.url).toContain("/session/session-1/prompt");
-		expect(requests).toHaveLength(3);
-		// The gateway stays modern on subsequent prompts too.
-		await runtime.prompt({ sessionId: "session-1", prompt: "Again" });
-		expect(requests[3]?.url).toContain("/session/session-1/prompt");
+		await expect(
+			runtime.prompt({
+				sessionId: "session-1",
+				prompt: "Implement it",
+				model: { providerID: "opencode", modelID: "unknown-model" },
+			}),
+		).rejects.toThrow("ProviderModelNotFoundError: no model");
+		// The prompt endpoint must not be called with OpenCode's unrelated default.
+		expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
+			"/api/session/active",
+			"/api/session/session-1/model",
+		]);
 	});
 
 	test("does not demote the gateway when abort/interrupt returns 404 on an inactive session", async () => {
@@ -567,39 +565,18 @@ describe("OpenCode HTTP runtime", () => {
 		await expect(runtime.request("/question")).resolves.toEqual([]);
 	});
 
-	test("includes OpenCode validation details for rejected config updates", async () => {
-		const runtime = new OpenCodeHttpRuntime({
-			fetcher: async () =>
-				new Response(
-					JSON.stringify({
-						errors: [
-							{
-								path: ["provider", "custom", "options", "baseURL"],
-								message: "Invalid URL",
-							},
-						],
-					}),
-					{ status: 400 },
-				),
+	test("preserves the complete OpenCode error response verbatim", async () => {
+		const responseBody = JSON.stringify({
+			message: "invalid apiKey: sk-secret-value-123456",
+			diagnostics: "provider.custom.options.baseURL: Invalid URL",
+			additional: "x".repeat(900),
 		});
-		await expect(
-			runtime.request("/config", {
-				method: "PATCH",
-				body: JSON.stringify({ provider: {} }),
-			}),
-		).rejects.toThrow("provider.custom.options.baseURL: Invalid URL");
-	});
-
-	test("redacts API keys from OpenCode error details", async () => {
 		const runtime = new OpenCodeHttpRuntime({
-			fetcher: async () =>
-				new Response('{"message":"invalid apiKey: sk-secret-value-123456"}', {
-					status: 400,
-				}),
+			fetcher: async () => new Response(responseBody, { status: 400 }),
 		});
 		await expect(
 			runtime.request("/config", { method: "PATCH", body: "{}" }),
-		).rejects.toThrow("[redacted]");
+		).rejects.toThrow(responseBody);
 	});
 
 	test("revives the server and retries once when the gateway is unreachable", async () => {

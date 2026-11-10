@@ -306,6 +306,17 @@ export function friendlyProviderStatus(
 const root = "/api/chat";
 const catalogCache = new Map<string, Catalog>();
 const catalogRequests = new Map<string, Promise<Catalog>>();
+const catalogGenerations = new Map<string, number>();
+function invalidateCatalog(projectId: string) {
+	catalogGenerations.set(projectId, (catalogGenerations.get(projectId) ?? 0) + 1);
+	catalogCache.delete(projectId);
+	catalogRequests.delete(projectId);
+	if (typeof localStorage !== "undefined") {
+		try {
+			localStorage.removeItem(catalogStorageKey(projectId));
+		} catch {}
+	}
+}
 const catalogStorageKey = (projectId: string) =>
 	`loom.chat.catalog.${projectId}`;
 function isCatalog(value: unknown): value is Catalog {
@@ -444,13 +455,17 @@ export const chat = {
 	diff: (id: string) =>
 		request<FileDiff[]>(`${root}/sessions/${encodeURIComponent(id)}/diff`),
 	cachedCatalog: (projectId: string) => readCachedCatalog(projectId),
-	catalog: (projectId: string) => {
+	invalidateCatalog,
+	catalog: (projectId: string, options: { force?: boolean } = {}) => {
+		if (options.force) invalidateCatalog(projectId);
 		const pending = catalogRequests.get(projectId);
 		if (pending) return pending;
+		const generation = catalogGenerations.get(projectId) ?? 0;
 		const result = request<Catalog>(
-			`${root}/catalog?projectId=${encodeURIComponent(projectId)}`,
+			`${root}/catalog?projectId=${encodeURIComponent(projectId)}${options.force ? "&refresh=1" : ""}`,
 		).then((catalog) => {
-			writeCachedCatalog(projectId, catalog);
+			if ((catalogGenerations.get(projectId) ?? 0) === generation)
+				writeCachedCatalog(projectId, catalog);
 			return catalog;
 		});
 		catalogRequests.set(projectId, result);

@@ -115,6 +115,36 @@ describe("provider core", () => {
 		);
 	});
 
+	test("clears stale models when a live model refresh fails", async () => {
+		const provider = adapter({
+			listModels: async () => [
+				{
+					id: "fixture:local:old",
+					providerId: "fixture",
+					connectionId: "fixture:local",
+					name: "Old model",
+					displayName: "Old model",
+					capabilities: ["text"],
+					isAvailable: true,
+					metadata: { modelId: "old" },
+				},
+			],
+		});
+		const manager = new ProviderManager({
+			registry: new ProviderRegistry().register(provider),
+		});
+		await manager.refresh("fixture");
+		await manager.refreshModels("fixture");
+		expect(manager.getModels("fixture")).toHaveLength(1);
+		provider.listModels = async () => {
+			throw new Error("gateway model listing failed");
+		};
+		await expect(manager.refreshModels("fixture")).rejects.toThrow(
+			"gateway model listing failed",
+		);
+		expect(manager.getModels("fixture")).toEqual([]);
+	});
+
 	test("does not claim unsupported execution", async () => {
 		const unsupported = adapter({
 			createSession: async () => {

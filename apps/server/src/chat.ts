@@ -645,7 +645,6 @@ export function createChatRoutes(options: {
 			workspace: Workspace,
 			commitSha: string,
 		): Promise<boolean>;
-		prepareDependencies?(workspace: Workspace): Promise<unknown>;
 	};
 	/** Emits lightweight chat lifecycle events so the UI can refresh on demand. */
 	onEvent?: (event: { sessionId: string; status: string }) => void;
@@ -1173,7 +1172,10 @@ export function createChatRoutes(options: {
 				request<unknown>("/api/agent", root),
 				request<unknown>("/api/command", root),
 			]);
-		const gatewayArray = <T>(result: PromiseSettledResult<unknown>, endpoint: string): T[] => {
+		const gatewayArray = <T>(
+			result: PromiseSettledResult<unknown>,
+			endpoint: string,
+		): T[] => {
 			if (result.status === "rejected") {
 				logChatEvent(
 					"chat",
@@ -1211,10 +1213,7 @@ export function createChatRoutes(options: {
 			modelResponse,
 			"/api/model",
 		);
-		const agents = gatewayArray<CatalogAgent>(
-			agentResponse,
-			"/api/agent",
-		);
+		const agents = gatewayArray<CatalogAgent>(agentResponse, "/api/agent");
 		const commands = gatewayArray<CatalogCommand>(
 			commandResponse,
 			"/api/command",
@@ -2287,9 +2286,9 @@ export function createChatRoutes(options: {
 			};
 			await options.chatWorkspaces.create(record);
 			await recordSessionProject(created.id, input.projectId);
-			// Best effort: an agent that cannot build or run tests in its own
-			// checkout is barely useful, but a failed link must not block the chat.
-			await options.worktrees.prepareDependencies?.(workspace).catch(() => {});
+			// Dependency trees are intentionally not symlinked: they are mutable
+			// package-manager state and would otherwise be shared with the project
+			// checkout and other worktrees.
 			return c.json({ ...created, workspace: publicWorkspace(record) }, 201);
 		} catch (error) {
 			if (createdSessionId) {
@@ -2441,7 +2440,15 @@ export function createChatRoutes(options: {
 	});
 	app.get("/catalog", async (c) => {
 		const projectId = c.req.query("projectId") ?? "";
-		if (cachedCatalog) return c.json(cachedCatalog);
+		const forceRefresh = c.req.query("refresh") === "1";
+		if (cachedCatalog && !forceRefresh) return c.json(cachedCatalog);
+		if (forceRefresh) {
+			// Retire any in-flight build too: it may finish after this forced
+			// refresh and otherwise repopulate the cache with its stale snapshot.
+			catalogVersion += 1;
+			cachedCatalog = null;
+			catalogPromise = null;
+		}
 		const version = catalogVersion;
 		if (!catalogPromise) {
 			const pending = (async () => {
@@ -2566,7 +2573,8 @@ export function createChatRoutes(options: {
 			typeof options.openCodeRuntime?.isLegacyGateway === "function"
 				? await options.openCodeRuntime.isLegacyGateway().catch(() => false)
 				: false;
-		const runOver = newestMessage?.info.role === "assistant" &&
+		const runOver =
+			newestMessage?.info.role === "assistant" &&
 			newestMessage.info.time?.completed !== undefined;
 		const sessionStatus =
 			legacyGateway &&
@@ -2584,6 +2592,28 @@ export function createChatRoutes(options: {
 			permissions: permissions.filter((p) => p.sessionID === current.id),
 			questions: questions.filter((q) => q.sessionID === current.id),
 		});
+	});
+	const messageRequestsInFlight = new Set<string>();
+	app.use("/sessions/:id/messages", async (c, next) => {
+		if (c.req.method !== "POST") return next();
+		const sessionId = c.req.param("id");
+		if (messageRequestsInFlight.has(sessionId))
+			return c.json(
+				{
+					error: {
+						code: "CHAT_SEND_IN_PROGRESS",
+						message:
+							"This chat is already processing a message. Wait for it to finish before sending another.",
+					},
+				},
+				409,
+			);
+		messageRequestsInFlight.add(sessionId);
+		try {
+			await next();
+		} finally {
+			messageRequestsInFlight.delete(sessionId);
+		}
 	});
 	app.post("/sessions/:id/messages", async (c) => {
 		const current = await session(c.req.param("id"));
@@ -3151,6 +3181,8 @@ export function createChatRoutes(options: {
 					});
 				assistant.info.time.completed = Date.now();
 				assistant.info.error = { name: "ProviderError", data: { message } };
+				await options.providerHistory?.save(current.id, turn.messages);
+				await options.onEvent?.({ sessionId: current.id, status: "error" });
 				throw error;
 			}
 			return c.body(null, 204);
@@ -3160,6 +3192,34 @@ export function createChatRoutes(options: {
 			current.directory,
 		);
 		const currentGatewayStatus = gatewayStatuses[current.id];
+		const gatewayFailure =
+			currentGatewayStatus?.type === "retry"
+				? normalizeRetryStatus(currentGatewayStatus)
+				: null;
+		if (gatewayFailure?.type === "error") {
+			const failureMessage = gatewayFailure.message ?? "OpenCode run failed";
+			const latestHistory = await request<ProviderMessage[]>(
+				`/session/${current.id}/message`,
+				current.directory,
+			).catch(() => []);
+			const prior =
+				(await options.providerHistory?.get<ProviderMessage[]>(current.id)) ??
+				[];
+			const history = mergeMessages(prior, latestHistory);
+			// Only annotate a native assistant row from this gateway snapshot;
+			// never attach a current failure to an older Loom-persisted turn.
+			const newestAssistant = [...latestHistory]
+				.reverse()
+				.find((message) => message.info.role === "assistant");
+			if (newestAssistant) {
+				newestAssistant.info.time.completed ??= Date.now();
+				newestAssistant.info.error = {
+					name: "ProviderError",
+					data: { message: failureMessage },
+				};
+				await options.providerHistory?.save(current.id, history);
+			}
+		}
 		if (
 			currentGatewayStatus?.type === "retry" &&
 			normalizeRetryStatus(currentGatewayStatus).type === "error"
@@ -3391,9 +3451,38 @@ export function createChatRoutes(options: {
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			if (!isContextOverflow(message)) {
-				// Gateway unreachable, invalid model, etc. Surface the same error to
-				// the client but also keep a structured trace in the daemon log.
+				// Gateway prompt/model errors happen before OpenCode creates its own
+				// user/assistant rows. Persist a failed turn in Loom's history so the
+				// diagnostic remains visible after the POST response is gone.
+				const failedAt = Date.now();
+				const failureId = `opencode-failure-${crypto.randomUUID()}`;
+				const failureHistory = mergeMessages(priorHistory, nativeHistory);
+				failureHistory.push(
+					{
+						info: {
+							id: `${failureId}-user`,
+							role: "user",
+							time: { created: failedAt },
+						},
+						parts: [
+							{ id: `${failureId}-prompt`, type: "text", text: input.text },
+						],
+					},
+					{
+						info: {
+							id: `${failureId}-assistant`,
+							role: "assistant",
+							providerID: providerId,
+							modelID: openCodeModel?.modelID,
+							time: { created: failedAt, completed: failedAt },
+							error: { name: "ProviderError", data: { message } },
+						},
+						parts: [],
+					},
+				);
+				await options.providerHistory?.save(current.id, failureHistory);
 				logGatewayFailure("chat.sendFailed", current.id, error);
+				await options.onEvent?.({ sessionId: current.id, status: "error" });
 				throw error;
 			}
 			// The conversation overflowed the provider context window. Unlike the

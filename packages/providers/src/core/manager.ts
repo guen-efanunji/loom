@@ -192,7 +192,21 @@ export class ProviderManager {
 			return [];
 		}
 		if (!adapter.definition.capabilities.includes("models")) return [];
-		const models = await adapter.listModels();
+		let models: AgentModel[];
+		try {
+			models = await adapter.listModels();
+		} catch (error) {
+			// A failed live refresh must not leave stale models selectable from
+			// the restored cache. Mark this connection's previous catalog invalid
+			// before propagating the provider error to the caller.
+			this.catalog.replaceConnection(connection.id, []);
+			await this.emit({
+				type: "provider.modelsUpdated",
+				providerId,
+				models: [],
+			});
+			throw error;
+		}
 		if (!models.length) {
 			this.catalog.replaceConnection(connection.id, []);
 			await this.emit({

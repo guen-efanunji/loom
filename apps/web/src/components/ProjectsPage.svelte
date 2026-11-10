@@ -1288,7 +1288,7 @@
 			catalogLoaded = false;
 		}
 		chat
-			.catalog(projectId)
+			.catalog(projectId, { force: catalogNonce > 0 })
 			.then((result) => {
 				if (disposed || request !== projectRequest) return;
 				catalog = result;
@@ -1411,6 +1411,16 @@
 	function applyMonitorEvent(event: DaemonEvent) {
 		// P1-7: an in-flight provider turn pushed a status change — refresh the
 		// open conversation immediately instead of waiting for the next poll tick.
+		if (event.type === "provider.modelsUpdated") {
+			// Provider caches can be restored from disk/browser storage. Replace
+			// them as soon as a live model refresh arrives, including an empty list
+			// when OpenCode removed or invalidated a model.
+			if (selectedProjectId) {
+				chat.invalidateCatalog(selectedProjectId);
+				catalogNonce += 1;
+			}
+			return;
+		}
 		if (event.type === "chat.updated") {
 			if (event.sessionId === sessionId && !sessionLoading) {
 				const delay = Math.max(

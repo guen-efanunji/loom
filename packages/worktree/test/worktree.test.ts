@@ -658,7 +658,7 @@ describe("temporary git repository", () => {
 		expect(branches.stdout).not.toContain("loom/chat-dropped");
 	});
 
-	test("links installed dependencies into a new workspace", async () => {
+	test("keeps installed dependency trees private to a new workspace by default", async () => {
 		root = await tempDir("loom-repository-");
 		home = await tempDir("loom-home-");
 		const run = async (args: string[], cwd = root) => {
@@ -699,14 +699,9 @@ describe("temporary git repository", () => {
 			taskId: "chat-deps",
 		});
 		const linked = await manager.prepareDependencies(workspace);
-		expect(linked.map((entry) => entry.path)).toEqual([
-			"apps/web/node_modules",
-			"node_modules",
-		]);
-		expect(
-			(await stat(join(workspace.path, "node_modules"))).isDirectory(),
-		).toBe(true);
-		// Linked installs stay invisible to Git so checkpoint/merge/remove still work.
+		expect(linked).toEqual([]);
+		await expect(stat(join(workspace.path, "node_modules"))).rejects.toThrow();
+		// Dependency directories are not implicitly shared or excluded from Git.
 		expect((await manager.inspectHead(workspace)).clean).toBe(true);
 		await writeFile(join(workspace.path, "feature.ts"), "new\n");
 		const sha = await manager.checkpoint(workspace, "feat: isolated work");

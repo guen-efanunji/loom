@@ -135,6 +135,48 @@ test("CLI wait timeout aborts the running child process", async () => {
 	}
 });
 
+test("CLI abort waits for process-group descendants that ignore SIGTERM", async () => {
+	if (process.platform === "win32") return;
+	const runtime = new CliProviderAdapter({
+		definition: {
+			id: "agy",
+			name: "Agy",
+			executable: process.execPath,
+			capabilities: ["chat"],
+			install: { supported: false },
+			authStrategy: "none",
+		},
+		getAuthStatus: async () => ({ authenticated: true, strategy: "none" }),
+		buildPrompt: async () => ({
+			command: process.execPath,
+			args: [
+				"-e",
+				`const { spawn } = require("node:child_process"); const child = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], { stdio: "ignore" }); process.stdout.write(String(child.pid)); setInterval(() => {}, 1000)`,
+			],
+		}),
+	}).getRuntime();
+	const session = await runtime.createSession({ cwd: "/tmp", title: "Test" });
+	await runtime.prompt({ sessionId: session.id, prompt: "Test" });
+	let childPid = 0;
+	const start = Date.now();
+	while (!childPid && Date.now() - start < 5000) {
+		childPid = Number((await runtime.readOutput?.(session.id))?.output) || 0;
+		if (!childPid) await Bun.sleep(10);
+	}
+	expect(childPid).toBeGreaterThan(0);
+	// Give the descendant time to install its SIGTERM handler before cancellation.
+	await Bun.sleep(100);
+	await runtime.abort(session.id);
+	expect(await runtime.status(session.id)).toBe("cancelled");
+	let alive = true;
+	try {
+		process.kill(childPid, 0);
+	} catch {
+		alive = false;
+	}
+	expect(alive).toBe(false);
+});
+
 test("Agy denied_actions is an error even with SUCCESS and exit code zero", async () => {
 	const runtime = runtimeWithOutput(deniedResult);
 	const session = await runtime.createSession({ cwd: "/tmp", title: "Test" });

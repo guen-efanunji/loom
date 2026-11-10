@@ -48,7 +48,15 @@ type SessionState = {
 	cwd: string;
 	title: string;
 	process: ChildProcess | null;
-	status: "queued" | "running" | "completed" | "failed" | "cancelled";
+	status:
+		| "queued"
+		| "running"
+		| "stopping"
+		| "completed"
+		| "failed"
+		| "cancelled";
+	closePromise: Promise<void> | null;
+	resolveClose: (() => void) | null;
 	output: string;
 	error: string | null;
 	permission?: RuntimePermission;
@@ -177,6 +185,8 @@ class CliRuntime implements AgentRuntime {
 			title: input.title,
 			process: null,
 			status: "queued",
+			closePromise: null,
+			resolveClose: null,
 			output: "",
 			error: null,
 		});
@@ -226,9 +236,15 @@ class CliRuntime implements AgentRuntime {
 			stdio: [command.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
 			env: { ...process.env, ...session.permission?.env, ...command.env },
 			windowsHide: true,
+			// POSIX process groups let abort signal CLI descendants that may keep
+			// writing into this workspace after the top-level CLI exits.
+			detached: process.platform !== "win32",
 		});
 		session.process = child;
 		session.status = "running";
+		session.closePromise = new Promise<void>((resolve) => {
+			session.resolveClose = resolve;
+		});
 		session.output = "";
 		session.error = null;
 		child.stdout?.on("data", (chunk: Buffer) => {
@@ -239,13 +255,16 @@ class CliRuntime implements AgentRuntime {
 		});
 		if (command.stdin !== undefined) child.stdin?.end(command.stdin);
 		child.once("error", (error) => {
-			session.process = null;
 			session.status = "failed";
 			session.error = error.message;
 		});
 		child.once("close", (code, signal) => {
 			session.process = null;
-			if (session.status === "cancelled") return;
+			session.resolveClose?.();
+			session.resolveClose = null;
+			session.closePromise = null;
+			if (session.status === "cancelled" || session.status === "stopping")
+				return;
 			// Codex prints this informational notice while consuming non-TTY stdin.
 			// It is not a failure reason and should not become the chat error message.
 			session.error =
@@ -267,8 +286,13 @@ class CliRuntime implements AgentRuntime {
 		});
 	}
 
-	async status(sessionId: string) {
-		return this.requireSession(sessionId).status;
+	async status(
+		sessionId: string,
+	): Promise<"queued" | "running" | "completed" | "failed" | "cancelled"> {
+		const status = this.requireSession(sessionId).status;
+		// `stopping` is an internal lifecycle state, exposed as running so callers
+		// cannot mistake a termination request for a completed cancellation.
+		return status === "stopping" ? "running" : status;
 	}
 
 	async lastError(sessionId: string): Promise<string | null> {
@@ -357,9 +381,80 @@ class CliRuntime implements AgentRuntime {
 
 	async abort(sessionId: string): Promise<void> {
 		const session = this.requireSession(sessionId);
+		const child = session.process;
+		if (!child) {
+			if (session.status === "running" || session.status === "stopping")
+				session.status = "failed";
+			return;
+		}
+		if (session.status === "cancelled") {
+			await session.closePromise;
+			return;
+		}
+		if (session.status === "stopping") {
+			await session.closePromise;
+			if (session.process === child)
+				throw new ProviderError(
+					"PROCESS_FAILED",
+					`${this.options.definition.name} did not confirm process shutdown`,
+					{ providerId: this.options.definition.id },
+				);
+			return;
+		}
+		session.status = "stopping";
+		const closed = session.closePromise;
+		try {
+			if (process.platform !== "win32" && child.pid)
+				process.kill(-child.pid, "SIGTERM");
+			else child.kill("SIGTERM");
+		} catch (error) {
+			session.error = error instanceof Error ? error.message : String(error);
+			child.kill("SIGTERM");
+		}
+		// SIGTERM is only a request. Keep process ownership until close confirms
+		// the child has exited; escalate if it does not terminate promptly.
+		const graceful = await Promise.race([
+			closed?.then(() => true) ?? Promise.resolve(true),
+			new Promise<false>((resolve) => setTimeout(() => resolve(false), 1500)),
+		]);
+		const processGroupMayRemain = () => {
+			if (process.platform === "win32" || !child.pid) return false;
+			try {
+				process.kill(-child.pid, 0);
+				return true;
+			} catch {
+				return false;
+			}
+		};
+		if (!graceful || processGroupMayRemain()) {
+			try {
+				if (process.platform !== "win32" && child.pid)
+					process.kill(-child.pid, "SIGKILL");
+				else if (session.process === child) child.kill("SIGKILL");
+			} catch (error) {
+				session.error = error instanceof Error ? error.message : String(error);
+				if (session.process === child) child.kill("SIGKILL");
+			}
+			await closed;
+			if (process.platform !== "win32" && child.pid) {
+				const descendantsStoppedAt = Date.now() + 5000;
+				while (processGroupMayRemain() && Date.now() < descendantsStoppedAt)
+					await new Promise((resolve) => setTimeout(resolve, 25));
+				if (processGroupMayRemain())
+					throw new ProviderError(
+						"PROCESS_FAILED",
+						`${this.options.definition.name} descendants did not confirm shutdown`,
+						{ providerId: this.options.definition.id },
+					);
+			}
+		}
+		if (session.process === child)
+			throw new ProviderError(
+				"PROCESS_FAILED",
+				`${this.options.definition.name} did not confirm process shutdown`,
+				{ providerId: this.options.definition.id },
+			);
 		session.status = "cancelled";
-		session.process?.kill("SIGTERM");
-		session.process = null;
 	}
 
 	async getDiff(): Promise<unknown> {
@@ -560,7 +655,7 @@ export function parseCliOutput(output: string): {
 							: event.result?.usage && typeof event.result.usage === "object"
 								? event.result.usage
 								: event.result?.usageMetadata &&
-									  typeof event.result.usageMetadata === "object"
+										typeof event.result.usageMetadata === "object"
 									? event.result.usageMetadata
 									: undefined;
 			const numeric = (value: unknown) =>
