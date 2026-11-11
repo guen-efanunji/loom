@@ -8,13 +8,16 @@ let {
 }: { question: Question; onanswer: (answers: string[][]) => Promise<void> } =
 	$props();
 
-// Each clarifying question becomes one wizard item. Choice values reuse the
-// option label so the answer text we send back reads naturally to the agent.
+// Each clarifying question becomes one wizard item. Prefer the gateway's
+// option value so a GitHub-style form reply (value !== label) round-trips;
+// fall back to the label for legacy /question payloads.
 const items = $derived(
 	question.questions.map((item, index) => ({
 		name: `q${index}`,
 		required: true,
-		choices: item.options.map((option) => ({ value: option.label })),
+		choices: item.options.map((option) => ({
+			value: option.value ?? option.label,
+		})),
 	})),
 );
 
@@ -48,8 +51,8 @@ function handleSubmit(event: SubmitEvent) {
 				<Questionnaire.Description>{item.header}</Questionnaire.Description>
 			{/if}
 			<Questionnaire.Choices>
-				{#each item.options as option (option.label)}
-					<Questionnaire.Choice value={option.label}>
+				{#each item.options as option (option.value ?? option.label)}
+					<Questionnaire.Choice value={option.value ?? option.label}>
 						<span class="font-medium">{option.label}</span>
 						{#if option.description}
 							<Questionnaire.ChoiceDescription>

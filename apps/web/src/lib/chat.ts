@@ -125,7 +125,7 @@ export type Question = {
 		header: string;
 		question: string;
 		multiple?: boolean;
-		options: Array<{ label: string; description: string }>;
+		options: Array<{ label: string; description: string; value?: string }>;
 	}>;
 };
 export type ChatAttachment = {

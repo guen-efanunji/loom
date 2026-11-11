@@ -3,6 +3,7 @@ import { mkdir, readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { atomicJson, dataDirectory } from "@loom/distribution";
 import {
+	missingOpenCodeEndpoint,
 	type AgentRuntime as OpenCodeAgentRuntime,
 	requireOpenCodeArray,
 } from "@loom/opencode";
@@ -471,6 +472,117 @@ export type ChatRequestGateway = <T>(
 	path: string,
 	options?: ChatRequestOptions,
 ) => Promise<T>;
+
+type GatewayFormOption = {
+	value?: string;
+	label?: string;
+	description?: string;
+};
+
+type GatewayFormField = {
+	key: string;
+	type?: string;
+	title?: string;
+	description?: string;
+	hidden?: boolean;
+	required?: boolean;
+	options?: GatewayFormOption[];
+};
+
+type GatewayForm = {
+	id: string;
+	sessionID?: string;
+	title?: string;
+	fields?: GatewayFormField[];
+	state?: { status?: string };
+};
+
+type GatewayQuestion = {
+	id: string;
+	sessionID?: string;
+	questions: Array<{
+		header: string;
+		question: string;
+		multiple?: boolean;
+		options: Array<{ label: string; description: string; value?: string }>;
+	}>;
+};
+
+type GatewayPermission = {
+	id: string;
+	sessionID: string;
+	permission?: string;
+	action?: string;
+	patterns?: string[];
+	resources?: string[];
+};
+
+function interactiveFormFields(form: GatewayForm): GatewayFormField[] {
+	return (form.fields ?? []).filter(
+		(field) =>
+			field &&
+			typeof field.key === "string" &&
+			field.type !== "external" &&
+			!field.hidden,
+	);
+}
+
+/**
+ * OpenCode 2.2 turns the `question` tool into a per-session form whose fields
+ * carry the header/prompt/choices Loom renders as a QuestionCard. Map only the
+ * fields a user can answer; external and hidden fields stay in the gateway.
+ */
+function formQuestions(form: GatewayForm): GatewayQuestion["questions"] {
+	return interactiveFormFields(form).map((field) => ({
+		header: field.title ?? "",
+		question: field.description || field.title || "Question",
+		multiple: field.type === "multiselect",
+		options: (field.options ?? [])
+			.filter((option) => option && (option.label || option.value))
+			.map((option) => ({
+				label: option.label || option.value || "",
+				description: option.description ?? "",
+				...(option.value ? { value: option.value } : {}),
+			})),
+	}));
+}
+
+function gatewayQuestions(
+	forms: GatewayForm[],
+	sessionId: string,
+): GatewayQuestion[] {
+	return forms.flatMap((form) => {
+		if (!form || typeof form.id !== "string") return [];
+		const questions = formQuestions(form);
+		if (questions.length === 0) return [];
+		return [
+			{
+				id: form.id,
+				sessionID: form.sessionID ?? sessionId,
+				questions,
+			},
+		];
+	});
+}
+
+function formAnswerValue(
+	field: GatewayFormField,
+	values: string[],
+): string | number | boolean | string[] {
+	const single = values[0] ?? "";
+	if (field.type === "multiselect") return values;
+	if (field.type === "number" || field.type === "integer") {
+		const parsed = Number(single);
+		return single !== "" && Number.isFinite(parsed) ? parsed : single;
+	}
+	if (field.type === "boolean") {
+		const normalized = single.trim().toLowerCase();
+		if (["true", "yes", "1"].includes(normalized)) return true;
+		if (["false", "no", "0"].includes(normalized)) return false;
+		return single;
+	}
+	return single;
+}
 
 export function createChatRoutes(options: {
 	projects: {
@@ -1284,6 +1396,111 @@ export function createChatRoutes(options: {
 			method,
 			...(timeoutMs ? { timeoutMs } : {}),
 		});
+	// OpenCode 2.2 removed the flat /permission and /question collections in
+	// favor of per-session resources. Prefer the 2.2 vocabulary and keep the
+	// legacy collections as the fallback for older gateways.
+	const sessionPermissions = async (current: {
+		id: string;
+		directory: string;
+	}): Promise<GatewayPermission[]> => {
+		try {
+			const requests = await request<unknown>(
+				"/permission/request",
+				current.directory,
+			);
+			if (Array.isArray(requests))
+				return (requests as GatewayPermission[])
+					.filter((entry) => entry && entry.sessionID === current.id)
+					.map((entry) => ({
+						id: entry.id,
+						sessionID: entry.sessionID,
+						permission: entry.action ?? entry.permission ?? "permission",
+						patterns: entry.resources ?? entry.patterns ?? [],
+					}));
+		} catch (error) {
+			if (!missingOpenCodeEndpoint(error)) throw error;
+		}
+		return request<GatewayPermission[]>("/permission", current.directory);
+	};
+	const sessionQuestions = async (current: {
+		id: string;
+		directory: string;
+	}): Promise<GatewayQuestion[]> => {
+		try {
+			const forms = await request<unknown>(
+				`/session/${encodeURIComponent(current.id)}/form`,
+				current.directory,
+			);
+			if (Array.isArray(forms))
+				return gatewayQuestions(forms as GatewayForm[], current.id);
+		} catch (error) {
+			if (!missingOpenCodeEndpoint(error)) throw error;
+		}
+		return request<GatewayQuestion[]>("/question", current.directory);
+	};
+	// Replies need the form detail to translate the card's positional answers
+	// back into the gateway's `{ fieldKey: value }` object. Returning false
+	// means "not a 2.2 form", so the legacy /question flow still runs.
+	const replyToSessionForm = async (
+		current: { id: string; directory: string },
+		requestId: string,
+		answers: string[][],
+	): Promise<boolean> => {
+		let form: GatewayForm;
+		try {
+			form = await request<GatewayForm>(
+				`/session/${encodeURIComponent(current.id)}/form/${encodeURIComponent(requestId)}`,
+				current.directory,
+			);
+		} catch (error) {
+			if (missingOpenCodeEndpoint(error)) return false;
+			throw error;
+		}
+		if (!form || form.id !== requestId) return false;
+		if (form.state?.status && form.state.status !== "pending")
+			throw new HTTPException(404, { message: "Request no longer pending" });
+		const fields = interactiveFormFields(form);
+		if (fields.length === 0) return false;
+		const answer = Object.fromEntries(
+			fields.map((field, index) => [
+				field.key,
+				formAnswerValue(field, answers[index] ?? []),
+			]),
+		);
+		await request(
+			`/session/${encodeURIComponent(current.id)}/form/${encodeURIComponent(requestId)}/reply`,
+			current.directory,
+			{ answer },
+		);
+		return true;
+	};
+	const replyToSessionPermission = async (
+		current: { id: string; directory: string },
+		requestId: string,
+		reply: "once" | "always" | "reject",
+	): Promise<boolean> => {
+		let pending: GatewayPermission[];
+		try {
+			const requests = await request<unknown>(
+				"/permission/request",
+				current.directory,
+			);
+			if (!Array.isArray(requests)) return false;
+			pending = (requests as GatewayPermission[]).filter(
+				(entry) => entry && entry.sessionID === current.id,
+			);
+		} catch (error) {
+			if (missingOpenCodeEndpoint(error)) return false;
+			throw error;
+		}
+		if (!pending.some((entry) => entry.id === requestId)) return false;
+		await request(
+			`/session/${encodeURIComponent(current.id)}/permission/${encodeURIComponent(requestId)}/reply`,
+			current.directory,
+			{ decision: reply },
+		);
+		return true;
+	};
 	// User-visible gateway failures never carried a daemon-log trace; this is
 	// the hook that records them next to the rest of the structured output.
 	const defaultOpenCodeRuntime =
@@ -2537,8 +2754,8 @@ export function createChatRoutes(options: {
 				"/session/status",
 				current.directory,
 			),
-			request<Array<{ sessionID: string }>>("/permission", current.directory),
-			request<Array<{ sessionID: string }>>("/question", current.directory),
+			sessionPermissions(current),
+			sessionQuestions(current),
 		]);
 		const providerMessages =
 			providerSession?.messages ??
@@ -3859,8 +4076,8 @@ export function createChatRoutes(options: {
 				"/session/status",
 				current.directory,
 			),
-			request<Array<{ sessionID: string }>>("/permission", current.directory),
-			request<Array<{ sessionID: string }>>("/question", current.directory),
+			sessionPermissions(current),
+			sessionQuestions(current),
 		]);
 		const providerMessages =
 			providerSession?.messages ??
@@ -4143,42 +4360,62 @@ export function createChatRoutes(options: {
 		app.post(`/sessions/:id/${kind}/:requestId`, async (c) => {
 			const current = await session(c.req.param("id"));
 			const requestId = c.req.param("requestId");
-			// Agy runs gate tools through the in-memory hook store rather than
-			// OpenCode, so resolve those requests locally before proxying.
-			if (
-				kind === "permission" &&
-				options.permissions?.get(requestId)?.sessionId === current.id
-			) {
+			const body = await c.req.json();
+			if (kind === "permission") {
+				// Agy runs gate tools through the in-memory hook store rather than
+				// OpenCode, so resolve those requests locally before proxying.
+				if (options.permissions?.get(requestId)?.sessionId === current.id) {
+					const input = z
+						.object({ reply: z.enum(["once", "always", "reject"]) })
+						.parse(body);
+					if (input.reply === "always")
+						options.permissions.enableAutoAccept(current.id);
+					const decision = input.reply === "reject" ? "deny" : "allow";
+					if (!options.permissions.decide(requestId, decision))
+						throw new HTTPException(404, {
+							message: "Request no longer pending",
+						});
+					return c.json({ decided: true });
+				}
 				const input = z
 					.object({ reply: z.enum(["once", "always", "reject"]) })
-					.parse(await c.req.json());
-				if (input.reply === "always")
-					options.permissions.enableAutoAccept(current.id);
-				const decision = input.reply === "reject" ? "deny" : "allow";
-				if (!options.permissions.decide(requestId, decision))
+					.parse(body);
+				if (await replyToSessionPermission(current, requestId, input.reply))
+					return c.json({ decided: true });
+				const pending = await request<Array<{ id: string; sessionID: string }>>(
+					"/permission",
+					current.directory,
+				);
+				if (
+					!pending.some((p) => p.id === requestId && p.sessionID === current.id)
+				)
 					throw new HTTPException(404, {
 						message: "Request no longer pending",
 					});
-				return c.json({ decided: true });
+				return c.json(
+					await request(
+						`/permission/${encodeURIComponent(requestId)}/reply`,
+						current.directory,
+						input,
+					),
+				);
 			}
+			const input = z
+				.object({ answers: z.array(z.array(z.string())) })
+				.parse(body);
+			if (await replyToSessionForm(current, requestId, input.answers))
+				return c.json({ answered: true });
 			const pending = await request<Array<{ id: string; sessionID: string }>>(
-				`/${kind}`,
+				"/question",
 				current.directory,
 			);
 			if (
 				!pending.some((p) => p.id === requestId && p.sessionID === current.id)
 			)
 				throw new HTTPException(404, { message: "Request no longer pending" });
-			const body = await c.req.json();
-			const input =
-				kind === "permission"
-					? z
-							.object({ reply: z.enum(["once", "always", "reject"]) })
-							.parse(body)
-					: z.object({ answers: z.array(z.array(z.string())) }).parse(body);
 			return c.json(
 				await request(
-					`/${kind}/${encodeURIComponent(requestId)}/reply`,
+					`/question/${encodeURIComponent(requestId)}/reply`,
 					current.directory,
 					input,
 				),

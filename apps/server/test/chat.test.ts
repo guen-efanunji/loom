@@ -108,6 +108,7 @@ function setup(
 				]);
 			if (path === "/question" || path.endsWith("/diff"))
 				return Response.json([]);
+			if (path === "/session/ses_test/form") return Response.json([]);
 			if (path.endsWith("/message")) return Response.json(gatewayMessages);
 			return Response.json(true);
 		},
@@ -863,6 +864,162 @@ describe("chat gateway", () => {
 			compacted: false,
 			scheduled: true,
 		});
+	});
+
+	test("surfaces OpenCode 2.2 forms as questions and replies with field-keyed answers", async () => {
+		const form = {
+			id: "frm_test",
+			sessionID: "ses_test",
+			title: "Questions",
+			fields: [
+				{
+					key: "q0",
+					type: "string",
+					title: "Choose a color",
+					description: "Which color do you choose?",
+					options: [
+						{ value: "red", label: "Red", description: "Warm" },
+						{ value: "blue", label: "Blue", description: "Cool" },
+					],
+					custom: true,
+				},
+				{
+					key: "q1",
+					type: "multiselect",
+					title: "Extras",
+					description: "Pick any extras",
+					options: [
+						{ value: "logs", label: "Logs" },
+						{ value: "metrics", label: "Metrics" },
+					],
+				},
+			],
+		};
+		const { app, requests } = setup({ type: "idle" }, true, (path) => {
+			if (path === "/session/ses_test/form") return Response.json([form]);
+			if (path === "/session/ses_test/form/frm_test")
+				return Response.json({ ...form, state: { status: "pending" } });
+			if (path === "/session/ses_test/form/frm_test/reply")
+				return new Response(null, { status: 204 });
+			return undefined;
+		});
+		const state = (await (await app.request("/sessions/ses_test")).json()) as {
+			questions: Array<{
+				id: string;
+				sessionID?: string;
+				questions: Array<{
+					header: string;
+					question: string;
+					multiple?: boolean;
+					options: Array<{
+						label: string;
+						description: string;
+						value?: string;
+					}>;
+				}>;
+			}>;
+		};
+		expect(state.questions).toEqual([
+			{
+				id: "frm_test",
+				sessionID: "ses_test",
+				questions: [
+					{
+						header: "Choose a color",
+						question: "Which color do you choose?",
+						multiple: false,
+						options: [
+							{ label: "Red", description: "Warm", value: "red" },
+							{ label: "Blue", description: "Cool", value: "blue" },
+						],
+					},
+					{
+						header: "Extras",
+						question: "Pick any extras",
+						multiple: true,
+						options: [
+							{ label: "Logs", description: "", value: "logs" },
+							{ label: "Metrics", description: "", value: "metrics" },
+						],
+					},
+				],
+			},
+		]);
+
+		const summary = (await (
+			await app.request("/sessions/ses_test/status")
+		).json()) as { pendingQuestions: number };
+		expect(summary.pendingQuestions).toBe(1);
+
+		const reply = await app.request("/sessions/ses_test/question/frm_test", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ answers: [["blue"], ["logs", "metrics"]] }),
+		});
+		expect(reply.status).toBe(200);
+		const sent = requests.find(
+			(item) =>
+				item.method === "POST" &&
+				new URL(item.url).pathname.endsWith("/form/frm_test/reply"),
+		);
+		expect(await sent?.json()).toEqual({
+			answer: { q0: "blue", q1: ["logs", "metrics"] },
+		});
+	});
+
+	test("maps OpenCode 2.2 permission requests and replies with a decision", async () => {
+		const { app, requests } = setup({ type: "idle" }, true, (path) => {
+			if (path === "/permission/request")
+				return Response.json([
+					{
+						id: "per_modern",
+						sessionID: "ses_test",
+						action: "bash",
+						resources: ["rm -rf build"],
+					},
+					{
+						id: "per_foreign",
+						sessionID: "ses_other",
+						action: "edit",
+						resources: ["README.md"],
+					},
+				]);
+			if (path === "/session/ses_test/permission/per_modern/reply")
+				return new Response(null, { status: 204 });
+			return undefined;
+		});
+		const state = (await (await app.request("/sessions/ses_test")).json()) as {
+			permissions: Array<{
+				id: string;
+				sessionID: string;
+				permission: string;
+				patterns: string[];
+			}>;
+		};
+		expect(state.permissions).toEqual([
+			{
+				id: "per_modern",
+				sessionID: "ses_test",
+				permission: "bash",
+				patterns: ["rm -rf build"],
+			},
+		]);
+
+		const reply = await app.request(
+			"/sessions/ses_test/permission/per_modern",
+			{
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ reply: "once" }),
+			},
+		);
+		expect(reply.status).toBe(200);
+		const sent = requests.find(
+			(item) =>
+				item.method === "POST" &&
+				new URL(item.url).pathname.endsWith("/permission/per_modern/reply"),
+		);
+		expect(await sent?.json()).toEqual({ decision: "once" });
 	});
 
 	test("logs unrecoverable send failures to the daemon logger", async () => {

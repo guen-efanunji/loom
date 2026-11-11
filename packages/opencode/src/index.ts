@@ -150,7 +150,7 @@ function withDirectoryAlias<T>(body: unknown): T {
  * modern OpenCode gives for legacy routes (404) and route-shadowed rewrites
  * of them (400), which is the cue to fall back to the old gateway vocabulary.
  */
-function missingOpenCodeEndpoint(error: unknown): boolean {
+export function missingOpenCodeEndpoint(error: unknown): boolean {
 	return (
 		error instanceof OpenCodeError &&
 		(error.details.status === "400" || error.details.status === "404")
