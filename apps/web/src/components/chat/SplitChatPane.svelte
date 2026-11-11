@@ -968,6 +968,7 @@
 				{catalog}
 				{customAgents}
 				{busy}
+				queueWhileBusy
 				disabled={!project}
 				onsend={send}
 				onstop={stop}

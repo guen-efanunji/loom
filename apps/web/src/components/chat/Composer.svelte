@@ -51,6 +51,7 @@
 		// working abort to wire Stop to (e.g. the design agent, which has no
 		// cancel endpoint). Used by callers where generation cannot be aborted.
 		hideStop = false,
+		queueWhileBusy = false,
 		draft = $bindable(""),
 		model = $bindable(""),
 		agent = $bindable("build"),
@@ -69,6 +70,7 @@
 		busy: boolean;
 		disabled: boolean;
 		hideStop?: boolean;
+		queueWhileBusy?: boolean;
 		onsend: (input: {
 			text: string;
 			files: string[];
@@ -954,7 +956,7 @@
 	async function send() {
 		if (
 			sending ||
-			busy ||
+			(busy && !queueWhileBusy) ||
 			disabled ||
 			(!draft.trim() &&
 				!files.length &&
@@ -1629,7 +1631,7 @@
 							>{/each}</Select.Content
 					></Select.Root
 				>{/if}
-			{#if busy && !hideStop}<Button
+			{#if busy && !hideStop && !queueWhileBusy}<Button
 					type="button"
 					size="icon"
 					variant="secondary"
@@ -1645,7 +1647,7 @@
 					title="Send message"
 					disabled={disabled ||
 						sending ||
-						(busy && hideStop) ||
+						(busy && !queueWhileBusy && hideStop) ||
 						(!draft.trim() &&
 							!files.length &&
 							!attachments.length &&
