@@ -4590,6 +4590,70 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		return c.json(recordToWorkspace(workspace));
 	});
 
+	app.get("/api/tasks/:id/files", async (c) => {
+		try {
+			const task = await repos.tasks.getById(c.req.param("id"));
+			const workspace = task?.workspaceId
+				? await repos.workspaces.getById(task.workspaceId)
+				: undefined;
+			if (!workspace)
+				return errorResponse(c, new Error("Workspace not found"));
+			const relativePath = c.req.query("path") ?? "";
+			if (!relativePath)
+				return errorResponse(c, new Error("Missing path query"));
+			const root = resolve(workspace.path);
+			const target = resolve(root, relativePath);
+			const rel = relative(root, target);
+			if (rel.startsWith("..") || isAbsolute(rel))
+				return errorResponse(c, new Error("Path outside workspace"));
+			const fileStat = await stat(target);
+			if (!fileStat.isFile())
+				return errorResponse(c, new Error("Not a file"));
+			const data = await readFile(target);
+			const ext = target.toLowerCase().split(".").pop() ?? "";
+			const mime: Record<string, string> = {
+				mp4: "video/mp4",
+				webm: "video/webm",
+				mov: "video/quicktime",
+				mkv: "video/x-matroska",
+				png: "image/png",
+				jpg: "image/jpeg",
+				jpeg: "image/jpeg",
+				gif: "image/gif",
+				json: "application/json",
+				txt: "text/plain",
+				md: "text/markdown",
+			};
+			c.header("Content-Type", mime[ext] ?? "application/octet-stream");
+			c.header("Content-Length", String(data.byteLength));
+			c.header("Cache-Control", "no-cache");
+			// Range support for video streaming
+			const range = c.req.header("range");
+			if (range && (mime[ext] ?? "").startsWith("video/")) {
+				const match = /bytes=(\d+)-(\d*)/.exec(range);
+				if (match) {
+					const start = Number(match[1]);
+					const end = match[2]
+						? Number(match[2])
+						: data.byteLength - 1;
+					const chunk = data.subarray(start, end + 1);
+					c.status(206);
+					c.header(
+						"Content-Range",
+						`bytes ${start}-${end}/${data.byteLength}`,
+					);
+					c.header("Accept-Ranges", "bytes");
+					c.header("Content-Length", String(chunk.byteLength));
+					return c.body(chunk);
+				}
+			}
+			c.header("Accept-Ranges", "bytes");
+			return c.body(data);
+		} catch (error) {
+			return errorResponse(c, error);
+		}
+	});
+
 	const apiHandler = new OpenAPIHandler(appRouter, {
 		plugins: [
 			new OpenAPIReferencePlugin({

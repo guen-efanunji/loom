@@ -1,5 +1,5 @@
 <script lang="ts">
-import { Columns3, MessageSquare, Sparkles } from "@lucide/svelte";
+import { Columns3, Film, MessageSquare, Sparkles } from "@lucide/svelte";
 import { onMount } from "svelte";
 import { page } from "$app/state";
 import DesignCanvas from "$lib/../components/DesignCanvas.svelte";
@@ -85,6 +85,11 @@ async function load() {
 					aria-current="page"
 					class="inline-flex h-9 items-center gap-2 rounded-lg bg-white/[0.12] px-3 text-xs font-medium text-white shadow-sm"
 					><Sparkles size={14} />Canvas</span
+				>
+				<a
+					href={`/project/${project.id}/video`}
+					class="inline-flex h-9 items-center gap-2 rounded-lg px-3 text-xs font-medium text-white/50 transition hover:text-white/80"
+					><Film size={14} />Video</a
 				>
 			</nav>
 		</header>

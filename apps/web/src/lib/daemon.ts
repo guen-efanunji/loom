@@ -1111,6 +1111,22 @@ export const daemon = {
 			{ method: "POST" },
 		),
 	listTasks: () => request<Task[]>("/api/tasks"),
+	taskFileUrl: async (taskId: string, path: string) => {
+		await provisionDaemonToken();
+		const res = await fetch(
+			`${serverUrl()}/api/tasks/${encodeURIComponent(taskId)}/files?path=${encodeURIComponent(path)}`,
+			{
+				headers: { Authorization: `Bearer ${getDaemonToken()}` },
+				credentials: "include",
+			},
+		);
+		if (!res.ok) {
+			const text = await res.text().catch(() => "");
+			throw new Error(text || `Failed to load file (${res.status})`);
+		}
+		const blob = await res.blob();
+		return URL.createObjectURL(blob);
+	},
 	listIntegrationBatches: (projectId: string) =>
 		request<{ batches: IntegrationBatch[] }>(
 			`/api/integration-batches?projectId=${encodeURIComponent(projectId)}`,

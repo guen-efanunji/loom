@@ -9,6 +9,7 @@
 		EllipsisVertical,
 		FileCode,
 		FileDiff as FileDiffIcon,
+		Film,
 		Folder,
 		FolderPlus,
 		GitBranch,
@@ -3652,6 +3653,13 @@
 								aria-label="Design canvas"
 								><Sparkles size={14} /><span class="hidden sm:inline"
 									>Canvas</span
+								></a
+							><a
+								href={`/project/${selectedProject.id}/video`}
+								class="inline-flex h-9 items-center gap-1.5 sm:gap-2 rounded-lg px-2 sm:px-3 text-xs font-medium text-white/50 transition hover:text-white/80"
+								aria-label="Video studio"
+								><Film size={14} /><span class="hidden sm:inline"
+									>Video</span
 								></a
 							>{/if}</Tabs.List
 					></Tabs.Root
