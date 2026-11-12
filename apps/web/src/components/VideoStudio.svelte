@@ -19,6 +19,7 @@
 	import { Button } from "$lib/components/ui/button";
 	import { Input } from "$lib/components/ui/input";
 	import { Textarea } from "$lib/components/ui/textarea/index.js";
+	import * as Select from "$lib/components/ui/select/index.js";
 	import {
 		daemon,
 		type CustomAgentMonitorItem,
@@ -45,6 +46,10 @@
 
 	let selectedAgentId = $state("");
 	let selectedProviderId = $state("");
+	let selectedModelId = $state("");
+	let availableModels = $state<
+		Array<{ id: string; name: string; displayName: string; isAvailable: boolean; isDefault?: boolean }>
+	>([]);
 	let selectedTaskId = $state("");
 	let filePath = $state("out/video.mp4");
 	let loadingFile = $state(false);
@@ -82,6 +87,31 @@
 			void autoDetectVideo(selectedTaskId);
 		}
 	});
+
+	$effect(() => {
+		if (!selectedProviderId) {
+			availableModels = [];
+			selectedModelId = "";
+			return;
+		}
+		const p = providers.find((x) => x.id === selectedProviderId);
+		if (!p) return;
+		void (async () => {
+			try {
+				const ms = await daemon.listProviderModels(p.providerId);
+				availableModels = ms.filter((m) => m.isAvailable);
+				const def = availableModels.find((m) => m.isDefault);
+				selectedModelId = def?.id ?? availableModels[0]?.id ?? "";
+			} catch {
+				availableModels = [];
+			}
+		})();
+	});
+
+	const remotionSrcdoc =
+		"<!DOCTYPE html><html><head><style>body{margin:0;background:#0b0b0d;color:#fff;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;overflow:hidden}h1{font-size:2rem;animation:fade 2s ease-in-out infinite alternate}@keyframes fade{from{opacity:.3;transform:scale(.9)}to{opacity:1;transform:scale(1)}}</style></head><body><h1>Remotion · Title Card</h1></body></html>";
+	const bangMotionSrcdoc =
+		"<!DOCTYPE html><html><head><style>body{margin:0;background:#0b0b0d;color:#fff;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;overflow:hidden}.box{width:60px;height:60px;background:#a78bfa;border-radius:12px;animation:move 1.5s ease-in-out infinite alternate}@keyframes move{from{transform:translateX(-60px) rotate(0)}to{transform:translateX(60px) rotate(360deg)}}</style></head><body><div class=\"box\"></div></body></html>";
 
 	onMount(async () => {
 		try {
@@ -169,7 +199,7 @@
 						"Use Remotion (remotion-dev/remotion) to render MP4 videos programmatically in React.",
 					content:
 						"When generating videos for this project, use Remotion. Install with `npm i remotion @remotion/cli`. Create compositions in src/Video.tsx, render with `npx remotion render src/index.ts CompositionId out/video.mp4`. Reference: https://github.com/remotion-dev/remotion",
-					sourceRef: "https://github.com/remotion-dev/remotion",
+					sourceRef: null,
 				},
 				{
 					title: "bang-motion motion design",
@@ -177,7 +207,7 @@
 						"Motion design references and templates from bangtutorial/bang-motion.",
 					content:
 						"Use bang-motion templates for kinetic typography, transitions and motion graphics. Reference: https://github.com/bangtutorial/bang-motion",
-					sourceRef: "https://github.com/bangtutorial/bang-motion",
+					sourceRef: null,
 				},
 			];
 			let created = 0;
@@ -252,13 +282,15 @@
 		const c = canvasEl;
 		if (!v || !c) return;
 		try {
+			if (!v.videoWidth || !v.videoHeight) return;
 			v.currentTime = Math.min(1, (v.duration || 1) * 0.1);
-			await new Promise((resolve) => {
+			await new Promise<void>((resolve) => {
 				const handler = () => {
 					v.removeEventListener("seeked", handler);
-					resolve(null);
+					resolve();
 				};
 				v.addEventListener("seeked", handler);
+				setTimeout(resolve, 1500);
 			});
 			c.width = v.videoWidth || 320;
 			c.height = v.videoHeight || 180;
@@ -268,7 +300,7 @@
 				thumbnailUrl = c.toDataURL("image/jpeg", 0.7);
 			}
 		} catch {
-			// ignore
+			// ignore thumbnail errors
 		}
 	}
 
@@ -289,7 +321,7 @@
 			executor = {
 				kind: "direct",
 				providerId: p.providerId,
-				modelId: null,
+				modelId: selectedModelId || null,
 			};
 		} else {
 			toast.error(
@@ -365,9 +397,7 @@
 		}
 	}
 
-	const remotionOg = "https://opengraph.githubassets.com/1/remotion-dev/remotion";
-	const bangMotionOg =
-		"https://opengraph.githubassets.com/1/bangtutorial/bang-motion";
+	// references are shown in-app via iframes above
 </script>
 
 <div class="flex h-full flex-col gap-6 overflow-y-auto p-6">
@@ -405,53 +435,45 @@
 		</p>
 	{/if}
 
-	<!-- Preview from GitHub -->
+	<!-- Concept preview (in-app) -->
 	<section class="space-y-3">
-		<h2 class="text-sm font-semibold text-white/80">
-			Concept preview (from GitHub)
-		</h2>
+		<h2 class="text-sm font-semibold text-white/80">Concept preview</h2>
 		<p class="text-xs text-white/45">
-			Review these references before generating so you know the visual style.
+			Live preview rendered inside Loom. Review before generating.
 		</p>
 		<div class="grid gap-4 sm:grid-cols-2">
-			<a
-				href="https://github.com/remotion-dev/remotion"
-				target="_blank"
-				rel="noreferrer"
-				class="group overflow-hidden rounded-xl border border-white/10 bg-white/[0.03] transition hover:border-violet-400/40"
+			<div
+				class="overflow-hidden rounded-xl border border-white/10 bg-white/[0.03]"
 			>
-				<img
-					src={remotionOg}
-					alt="Remotion preview"
-					class="h-32 w-full object-cover opacity-80 transition group-hover:opacity-100"
-					loading="lazy"
-				/>
+				<iframe
+					title="Remotion example"
+					class="h-40 w-full bg-black"
+					srcdoc={remotionSrcdoc}
+					sandbox="allow-scripts"
+				></iframe>
 				<div class="p-3">
 					<p class="text-sm font-medium">Remotion</p>
 					<p class="text-xs text-white/45">
 						Make videos programmatically in React.
 					</p>
 				</div>
-			</a>
-			<a
-				href="https://github.com/bangtutorial/bang-motion"
-				target="_blank"
-				rel="noreferrer"
-				class="group overflow-hidden rounded-xl border border-white/10 bg-white/[0.03] transition hover:border-violet-400/40"
+			</div>
+			<div
+				class="overflow-hidden rounded-xl border border-white/10 bg-white/[0.03]"
 			>
-				<img
-					src={bangMotionOg}
-					alt="bang-motion preview"
-					class="h-32 w-full object-cover opacity-80 transition group-hover:opacity-100"
-					loading="lazy"
-				/>
+				<iframe
+					title="bang-motion example"
+					class="h-40 w-full bg-black"
+					srcdoc={bangMotionSrcdoc}
+					sandbox="allow-scripts allow-same-origin"
+				></iframe>
 				<div class="p-3">
 					<p class="text-sm font-medium">bang-motion</p>
 					<p class="text-xs text-white/45">
 						Motion design references and templates.
 					</p>
 				</div>
-			</a>
+			</div>
 		</div>
 	</section>
 
@@ -463,45 +485,74 @@
 		{:else}
 			<div class="grid gap-3 sm:grid-cols-2">
 				<div class="space-y-1.5">
-					<label class="text-xs text-white/60" for="agent-select"
-						>Kanban agent</label
-					>
-					<select
-						id="agent-select"
-						class="h-9 w-full rounded-md border border-white/10 bg-white/[0.04] px-2 text-sm"
-						bind:value={selectedAgentId}
-						onchange={() => {
+					<label class="text-xs text-white/60">Kanban agent</label>
+					<Select.Root
+						type="single"
+						value={selectedAgentId}
+						onValueChange={(v) => {
+							selectedAgentId = v ?? "";
 							if (selectedAgentId) selectedProviderId = "";
 						}}
 					>
-						<option value="">— none —</option>
-						{#each agents as agent (agent.id)}
-							<option value={agent.id}>{agent.label}</option>
-						{/each}
-					</select>
+						<Select.Trigger class="w-full">
+							{agents.find((a) => a.id === selectedAgentId)?.label ??
+								"— none —"}
+						</Select.Trigger>
+						<Select.Content>
+							<Select.Item value="">— none —</Select.Item>
+							{#each agents as agent (agent.id)}
+								<Select.Item value={agent.id}>{agent.label}</Select.Item>
+							{/each}
+						</Select.Content>
+					</Select.Root>
 				</div>
 				<div class="space-y-1.5">
-					<label class="text-xs text-white/60" for="provider-select"
-						>Direct provider</label
-					>
-					<select
-						id="provider-select"
-						class="h-9 w-full rounded-md border border-white/10 bg-white/[0.04] px-2 text-sm"
-						bind:value={selectedProviderId}
-						onchange={() => {
+					<label class="text-xs text-white/60">Direct provider</label>
+					<Select.Root
+						type="single"
+						value={selectedProviderId}
+						onValueChange={(v) => {
+							selectedProviderId = v ?? "";
 							if (selectedProviderId) selectedAgentId = "";
 						}}
-						disabled={!!selectedAgentId}
 					>
-						<option value="">— none —</option>
-						{#each providers as provider (provider.id)}
-							<option value={provider.id}
-								>{provider.name} ({provider.status})</option
-							>
-						{/each}
-					</select>
+						<Select.Trigger class="w-full">
+							{providers.find((p) => p.id === selectedProviderId)?.name ??
+								"— none —"}
+						</Select.Trigger>
+						<Select.Content>
+							<Select.Item value="">— none —</Select.Item>
+							{#each providers as provider (provider.id)}
+								<Select.Item value={provider.id}
+									>{provider.name} ({provider.status})</Select.Item
+								>
+							{/each}
+						</Select.Content>
+					</Select.Root>
 				</div>
 			</div>
+			{#if selectedProviderId && availableModels.length}
+				<div class="space-y-1.5">
+					<label class="text-xs text-white/60">Model</label>
+					<Select.Root
+						type="single"
+						value={selectedModelId}
+						onValueChange={(v) => {
+							selectedModelId = v ?? "";
+						}}
+					>
+						<Select.Trigger class="w-full">
+							{availableModels.find((m) => m.id === selectedModelId)
+								?.displayName ?? "— none —"}
+						</Select.Trigger>
+						<Select.Content>
+							{#each availableModels as m (m.id)}
+								<Select.Item value={m.id}>{m.displayName}</Select.Item>
+							{/each}
+						</Select.Content>
+					</Select.Root>
+				</div>
+			{/if}
 			<div class="space-y-1.5">
 				<label class="text-xs text-white/60" for="prompt">Prompt</label>
 				<Textarea
@@ -548,18 +599,26 @@
 		<div class="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
 			<div class="space-y-1.5">
 				<label class="text-xs text-white/60" for="task-select">Task</label>
-				<select
-					id="task-select"
-					class="h-9 w-full rounded-md border border-white/10 bg-white/[0.04] px-2 text-sm"
-					bind:value={selectedTaskId}
+				<Select.Root
+					type="single"
+					value={selectedTaskId}
+					onValueChange={(v) => {
+						selectedTaskId = v ?? "";
+					}}
 				>
-					<option value="">— none —</option>
-					{#each tasks as task (task.id)}
-						<option value={task.id}
-							>{task.title} ({task.status})</option
-						>
-					{/each}
-				</select>
+					<Select.Trigger class="w-full">
+						{tasks.find((t) => t.id === selectedTaskId)?.title ??
+							"— none —"}
+					</Select.Trigger>
+					<Select.Content>
+						<Select.Item value="">— none —</Select.Item>
+						{#each tasks as task (task.id)}
+							<Select.Item value={task.id}
+								>{task.title} ({task.status})</Select.Item
+							>
+						{/each}
+					</Select.Content>
+				</Select.Root>
 			</div>
 			<div class="space-y-1.5">
 				<label class="text-xs text-white/60" for="filepath">File path</label>
