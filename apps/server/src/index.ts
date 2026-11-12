@@ -639,7 +639,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			const lastSentAt = new Map<string, number>();
 			return (sessionId: string) => {
 				const now = Date.now();
-				if (now - (lastSentAt.get(sessionId) ?? 0) < 750) return;
+				if (now - (lastSentAt.get(sessionId) ?? 0) < 250) return;
 				lastSentAt.set(sessionId, now);
 				eventPublisher.publish({
 					type: "chat.updated",

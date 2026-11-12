@@ -354,7 +354,7 @@
 	onMount(() => {
 		const first = tabs[0];
 		if (first?.sessionId) void refresh(first, true);
-		timer = setInterval(() => void poll(), 1200);
+		timer = setInterval(() => void poll(), 400);
 	});
 	onDestroy(() => {
 		if (timer) clearInterval(timer);

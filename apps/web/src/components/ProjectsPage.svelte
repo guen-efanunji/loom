@@ -1425,7 +1425,7 @@
 			if (event.sessionId === sessionId && !sessionLoading) {
 				const delay = Math.max(
 					0,
-					1_000 - (Date.now() - lastSocketSessionRefreshAt),
+					250 - (Date.now() - lastSocketSessionRefreshAt),
 				);
 				if (!socketSessionRefreshTimer) {
 					socketSessionRefreshTimer = setTimeout(() => {
@@ -1606,7 +1606,7 @@
 					// While running, refresh the snapshot near-live (parts stream
 					// in second-granularity bursts otherwise); the cheap status
 					// signature still gates idle refreshes.
-					if (changed || (busy && now - lastSessionSnapshotAt >= 1_200)) {
+					if (changed || (busy && now - lastSessionSnapshotAt >= 300)) {
 						lastSessionSnapshotAt = now;
 						await refreshSession(currentSession);
 					}
@@ -1648,7 +1648,7 @@
 			connected = false;
 			report(reason);
 		} finally {
-			if (!disposed) timer = setTimeout(poll, 2000);
+			if (!disposed) timer = setTimeout(poll, 500);
 		}
 	}
 	async function refreshVisiblePanel() {
