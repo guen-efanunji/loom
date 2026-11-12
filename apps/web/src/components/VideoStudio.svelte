@@ -81,10 +81,13 @@
 	let currentTime = $state(0);
 	let duration = $state(0);
 	let autoDetecting = $state(false);
+	let autoDetectingTaskId = "";
+	let autoDetectedTaskId = "";
 
 	$effect(() => {
-		if (selectedTaskId) {
-			void autoDetectVideo(selectedTaskId);
+		const taskId = selectedTaskId;
+		if (taskId) {
+			void autoDetectVideo(taskId);
 		}
 	});
 
@@ -251,28 +254,39 @@
 	];
 
 	async function autoDetectVideo(taskId: string) {
-		if (!taskId) return;
+		if (
+			!taskId ||
+			autoDetectingTaskId === taskId ||
+			autoDetectedTaskId === taskId
+		)
+			return;
+		autoDetectingTaskId = taskId;
 		autoDetecting = true;
 		try {
 			for (const p of candidatePaths) {
 				try {
-					if (objectUrl && objectUrl.startsWith("blob:")) {
-						// revoke previous
-					}
 					const url = await daemon.taskFileUrl(taskId, p);
-					// revoke old object url
+					if (selectedTaskId !== taskId) {
+						URL.revokeObjectURL(url);
+						return;
+					}
 					if (objectUrl) URL.revokeObjectURL(objectUrl);
 					objectUrl = url;
 					videoUrl = url;
 					filePath = p;
+					autoDetectedTaskId = taskId;
 					toast.success(`Auto-detected: ${p}`);
 					return;
 				} catch {
 					// try next
 				}
 			}
-			toast.info("No output MP4 found in common paths. Enter path manually.");
+			if (selectedTaskId === taskId) {
+				autoDetectedTaskId = taskId;
+				toast.info("No output MP4 found in common paths. Enter path manually.");
+			}
 		} finally {
+			if (autoDetectingTaskId === taskId) autoDetectingTaskId = "";
 			autoDetecting = false;
 		}
 	}

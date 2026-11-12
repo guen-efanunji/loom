@@ -15,8 +15,16 @@ const catalog = {
 	agents: [],
 	commands: [],
 };
+const task = {
+	id: "e2e-video-task",
+	projectId,
+	title: "Generate project video",
+	status: "completed",
+};
+let autoDetectRequests = 0;
 
 async function stubVideoStudio(browser: Browser) {
+	autoDetectRequests = 0;
 	await browser.addInitScript(() => {
 		try {
 			localStorage.setItem("loom.ui.trusted", "true");
@@ -59,8 +67,20 @@ async function stubVideoStudio(browser: Browser) {
 					isDefault: true,
 				},
 			];
-		else if (pathname === "/api/tasks") body = [];
-		else if (pathname === `/api/context/entries`)
+		else if (pathname === "/api/tasks") body = [task];
+		else if (pathname === `/api/tasks/${task.id}/files`) {
+			autoDetectRequests++;
+			if (new URL(route.request.url).searchParams.get("path") === "out/video.mp4") {
+				await route.fulfill({
+					status: 200,
+					contentType: "video/mp4",
+					body: "e2e-video-fixture",
+				});
+				return;
+			}
+			await route.fulfill({ status: 404, body: "Not found" });
+			return;
+		} else if (pathname === `/api/context/entries`)
 			body = [];
 		else if (pathname === "/api/bootstrap")
 			body = { token: "e2e-video-studio-token" };
@@ -90,5 +110,10 @@ test("Video Studio renders and captures a screenshot", async ({
 	await app.open(`/project/${projectId}/video`);
 
 	await expect(screen.getByText("Video Studio")).toBeVisible();
+	await expect(screen.getByText("Auto-detected: out/video.mp4")).toBeVisible();
 	await app.screenshot("video-studio");
+	await new Promise((resolve) => setTimeout(resolve, 500));
+	if (autoDetectRequests !== 1) {
+		throw new Error(`Expected one auto-detect request, got ${autoDetectRequests}`);
+	}
 });
