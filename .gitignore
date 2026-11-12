@@ -58,3 +58,6 @@ coverage
 .cache
 tmp
 temp
+
+# Vendored reference templates (cloned on demand)
+vendor/
