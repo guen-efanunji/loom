@@ -776,9 +776,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	let providerModelBootstrap: Promise<void> | undefined;
 	let openCodeStartup: Promise<void> = Promise.resolve();
 	const discoverProviders = () =>
-		(providerDiscovery ??= openCodeStartup.then(async () => {
-			return providerManager.refreshAll();
-		}));
+		(providerDiscovery ??= providerManager.refreshAll());
 	const refreshConnectedProviderModels = async (
 		connections: Awaited<ReturnType<typeof providerManager.refreshAll>>,
 	) => {
@@ -804,7 +802,31 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		// Start OpenCode in the background so the daemon can bind its API
 		// immediately. A missing or slow provider must not leave the client in
 		// an endless reconnect loop.
-		openCodeStartup = openCodeManager.start().catch((error) =>
+		openCodeStartup = (async () => {
+			let lastError: unknown;
+			for (let attempt = 1; attempt <= 3; attempt++) {
+				try {
+					await openCodeManager.start();
+					return;
+				} catch (error) {
+					lastError = error;
+					log(
+						"opencode",
+						"unavailable",
+						{
+							attempt,
+							error: error instanceof Error ? error.message : String(error),
+						},
+						"warn",
+					);
+					if (attempt < 3)
+						await new Promise((resolve) => setTimeout(resolve, 2000));
+				}
+			}
+			throw lastError instanceof Error
+				? lastError
+				: new Error(String(lastError));
+		})().catch((error) =>
 			log(
 				"opencode",
 				"unavailable",
@@ -814,6 +836,14 @@ export async function createApp(options: DaemonAppOptions = {}) {
 				"warn",
 			),
 		);
+		// Re-run provider/model discovery once OpenCode has started (or failed)
+		// so models become available without a manual "Check now", even when
+		// the initial discovery ran before the server was ready.
+		openCodeStartup.finally(() => {
+			void discoverProviders()
+				.then(refreshConnectedProviderModels)
+				.catch(() => {});
+		});
 	}
 	const worktreeManager = new WorktreeManager();
 	const agentRuntime = options.agentRuntime ?? providerManager.getRuntime();

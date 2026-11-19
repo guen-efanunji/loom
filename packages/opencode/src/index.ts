@@ -537,7 +537,7 @@ export class OpenCodeServerManager implements OpenCodeManager {
 	) {
 		this.executable = options.executable ?? null;
 		this.baseUrl = (options.baseUrl ?? openCodeBaseUrl()).replace(/\/$/, "");
-		this.healthTimeoutMs = options.healthTimeoutMs ?? 10_000;
+		this.healthTimeoutMs = options.healthTimeoutMs ?? 30_000;
 		this.pollIntervalMs = options.pollIntervalMs ?? 100;
 		this.fetcher = options.fetcher ?? fetch;
 		this.processRunner = options.processRunner ?? createProcessRunner();

@@ -25,7 +25,7 @@ export const settingsSchema = z.object({
 	token: z.string().min(32),
 	releaseChannel: releaseChannelSchema.default("stable"),
 	updateChecks: z.boolean().default(true),
-	providerUpdateChecks: z.boolean().default(false),
+	providerUpdateChecks: z.boolean().default(true),
 	automationMode: automationModeSchema.default("review"),
 });
 export type Settings = z.infer<typeof settingsSchema>;
