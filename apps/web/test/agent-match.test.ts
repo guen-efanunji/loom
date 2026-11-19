@@ -66,7 +66,11 @@ describe("suggestAgentForMessage", () => {
 
 	test("returns undefined for small talk", () => {
 		expect(
-			suggestAgentForMessage("Halo, bagaimana cara kerja ini?", agents, "project-1"),
+			suggestAgentForMessage(
+				"Halo, bagaimana cara kerja ini?",
+				agents,
+				"project-1",
+			),
 		).toBeUndefined();
 	});
 

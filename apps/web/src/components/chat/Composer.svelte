@@ -20,8 +20,6 @@
 	} from "@lucide/svelte";
 	import { onMount, tick } from "svelte";
 	import { toast } from "svelte-sonner";
-	// AI Elements (PromptInput) — prepared for gradual migration; not yet wired.
-	import * as PromptInput from "$lib/components/ai-elements/prompt-input";
 	import {
 		type Catalog,
 		type ChatAttachment,
@@ -39,7 +37,9 @@
 	import * as Popover from "$lib/components/ui/popover";
 	import * as Select from "$lib/components/ui/select";
 	import { Switch } from "$lib/components/ui/switch";
-	import { Textarea } from "$lib/components/ui/textarea";
+	import * as InputGroup from "$lib/components/ui/input-group";
+	import * as PromptInput from "$lib/components/ai-elements/prompt-input";
+	import { AttachmentsContext } from "$lib/components/ai-elements/prompt-input";
 	import { type DesignNode, daemon, request } from "$lib/daemon";
 
 	let {
@@ -145,7 +145,6 @@
 	let loadingDesigns = $state(false);
 	let designError = $state("");
 	let designNotice = $state("");
-	let attachmentInput = $state<HTMLInputElement | null>(null);
 	let agents = $state<string[]>([]);
 	let attachmentOpen = $state(false);
 	let modelOpen = $state(false);
@@ -265,6 +264,7 @@
 			? "image/*,.txt,.md,.json,.ts,.tsx,.js,.jsx,.css,.html,.pdf"
 			: "image/*",
 	);
+	const attachmentsContext = new AttachmentsContext(undefined, true, 10);
 	const sessionMention = $derived(
 		query === "session" || query?.startsWith("session:") === true,
 	);
@@ -341,9 +341,7 @@
 					.filter(
 						(task) =>
 							!taskRefs.includes(task.id) &&
-							task.title
-								.toLowerCase()
-								.includes((query ?? "").toLowerCase()),
+							task.title.toLowerCase().includes((query ?? "").toLowerCase()),
 					)
 					.slice(0, 8)
 					.map((task) => ({
@@ -893,10 +891,25 @@
 		textarea?.focus();
 		textarea?.setSelectionRange(mentionStart, mentionStart);
 	}
+	function handlePromptFilesAdded(incoming: globalThis.File[]) {
+		void addFiles(incoming, textarea?.selectionStart ?? draft.length);
+	}
 	async function addFiles(incoming: globalThis.File[], position: number) {
 		const added = incoming.slice(0, Math.max(0, 10 - attachments.length));
+		const rejected = incoming.slice(added.length);
+		for (const file of rejected) {
+			const item = attachmentsContext.files.find(
+				(entry) => entry.sourceFile === file,
+			);
+			if (item) attachmentsContext.remove(item.id);
+		}
 		if (!added.length) return;
 		attachments = [...attachments, ...added];
+		for (const file of added) {
+			if (!attachmentsContext.files.some((item) => item.sourceFile === file)) {
+				attachmentsContext.add([file]);
+			}
+		}
 		const newPreviews = added
 			.filter((file) => file.type.startsWith("image/"))
 			.map((file) => ({ file, url: URL.createObjectURL(file) }));
@@ -908,17 +921,15 @@
 			caret = textarea?.selectionStart ?? caret;
 		}
 	}
-	function addAttachments(event: Event) {
-		const input = event.currentTarget as HTMLInputElement;
-		void addFiles(Array.from(input.files ?? []), attachmentCursor);
-		input.value = "";
-	}
 	let attachmentCursor = 0;
 	function openAttachments() {
 		attachmentCursor = textarea?.selectionStart ?? draft.length;
-		attachmentInput?.click();
+		attachmentsContext.openFileDialog();
 	}
 	function removeAttachment(file: globalThis.File) {
+		for (const item of attachmentsContext.files) {
+			if (item.sourceFile === file) attachmentsContext.remove(item.id);
+		}
 		attachments = attachments.filter((item) => item !== file);
 		const preview = previews.find((item) => item.file === file);
 		if (preview) URL.revokeObjectURL(preview.url);
@@ -966,7 +977,7 @@
 			toast.error(
 				"Selected model is no longer available. Refresh providers and reselect a model.",
 			);
-			return;
+			return false;
 		}
 		if (
 			sending ||
@@ -981,7 +992,7 @@
 				!selectedDesignIds.length &&
 				!selectedSshConnections.length)
 		)
-			return;
+			return false;
 		sending = true;
 		query = null;
 		const pendingDraft = draft;
@@ -1037,6 +1048,7 @@
 			agents = [];
 			const ok = await request;
 			if (ok) {
+				attachmentsContext.clear();
 				for (const preview of previewCache) URL.revokeObjectURL(preview.url);
 				previewCache = [];
 				previews = [];
@@ -1050,9 +1062,13 @@
 				taskRefs = pendingTaskRefs;
 				selectedSshConnections = pendingSshConnections;
 				attachments = pendingAttachments;
+				attachmentsContext.clear();
+				attachmentsContext.add(pendingAttachments);
 				selectedDesignIds = pendingDesignIds;
 				agents = pendingAgents;
+				return false;
 			}
+			return true;
 		} catch (error) {
 			draft = pendingDraft;
 			files = pendingFiles;
@@ -1060,6 +1076,8 @@
 			taskRefs = pendingTaskRefs;
 			selectedSshConnections = pendingSshConnections;
 			attachments = pendingAttachments;
+			attachmentsContext.clear();
+			attachmentsContext.add(pendingAttachments);
 			selectedDesignIds = pendingDesignIds;
 			agents = pendingAgents;
 			throw error;
@@ -1161,11 +1179,13 @@
 		</Button>
 	</div>
 {/snippet}
-<form
-	onsubmit={(event) => {
-		event.preventDefault();
-		void send();
-	}}
+<PromptInput.PromptInput
+	onSubmit={() => send()}
+	onFilesAdded={handlePromptFilesAdded}
+	accept={attachmentAccept}
+	multiple
+	{attachmentsContext}
+	clearOnSubmit={false}
 	class="relative rounded-2xl border border-white/[0.14] bg-[#191b1e] shadow-[0_18px_70px_rgba(0,0,0,0.3)] transition-colors focus-within:border-cyan-300/30"
 >
 	{#if query !== null}
@@ -1241,448 +1261,451 @@
 			</div>
 		</div>
 	{/if}
-	{#if files.length || sessionRefs.length || taskRefs.length || agents.length || attachments.length || selectedDesignIds.length || selectedSshConnections.length}<div
-			class="flex flex-wrap gap-1 px-3 pt-3"
-			aria-label="Message attachments"
-		>
-			{#each selectedSshConnections as connection (connection.id)}<Attachment.Root
-					size="sm"
-				>
-					<Attachment.Media><Lock /></Attachment.Media><Attachment.Content
-						><Attachment.Title>SSH · {connection.label}</Attachment.Title
-						></Attachment.Content
-					><Attachment.Actions
-						><Attachment.Action
-							type="button"
-							aria-label={`Remove SSH server ${connection.label}`}
-							onclick={() =>
-								(selectedSshConnections = selectedSshConnections.filter(
-									(item) => item.id !== connection.id,
-								))}><X /></Attachment.Action
-						></Attachment.Actions
-					>
-				</Attachment.Root>{/each}
-			{#each files as file}<Attachment.Root size="sm" class="max-w-56"
-					><Attachment.Media><FileIcon /></Attachment.Media><Attachment.Content
-						><Attachment.Title>{file}</Attachment.Title></Attachment.Content
-					><Attachment.Actions
-						><Attachment.Action
-							type="button"
-							aria-label={`Remove ${file}`}
-							onclick={() => {
-								files = files.filter((f) => f !== file);
-								removeMention(file);
-							}}><X /></Attachment.Action
-						></Attachment.Actions
-					><Attachment.Trigger
-						aria-label={`Preview ${file}`}
-						onclick={() => void openProjectPreview(file)}
-					/></Attachment.Root
-				>{/each}
-			{#each sessionRefs as sessionId}<Attachment.Root size="sm">
-					<Attachment.Media><PanelsTopLeft /></Attachment.Media>
-					<Attachment.Content
-						><Attachment.Title
-							>{projectSessions.find((item) => item.id === sessionId)?.title ??
-								sessionId}</Attachment.Title
-						></Attachment.Content
-					>
-					<Attachment.Actions
-						><Attachment.Action
-							type="button"
-							aria-label={`Remove session ${sessionId}`}
-							onclick={() => {
-								sessionRefs = sessionRefs.filter((id) => id !== sessionId);
-								removeMention(
-									`session:${projectSessions.find((item) => item.id === sessionId)?.title ?? sessionId}`,
-								);
-							}}><X /></Attachment.Action
-						></Attachment.Actions
-					>
-				</Attachment.Root>{/each}
-			{#each taskRefs as refId}<Attachment.Root size="sm">
-				<Attachment.Media><KanbanSquare /></Attachment.Media>
-				<Attachment.Content
-					><Attachment.Title
-						>{tasks.find((item) => item.id === refId)?.title ?? refId}</Attachment.Title
-					></Attachment.Content
-				>
-				<Attachment.Actions
-					><Attachment.Action
-						type="button"
-						aria-label={`Remove task ${refId}`}
-						onclick={() => (taskRefs = taskRefs.filter((id) => id !== refId))}
-						><X /></Attachment.Action
-					></Attachment.Actions
-				>
-			</Attachment.Root>{/each}
-			{#each agents as name}<Attachment.Root size="sm"
-					><Attachment.Media><Bot /></Attachment.Media><Attachment.Content
-						><Attachment.Title>{name}</Attachment.Title></Attachment.Content
-					><Attachment.Actions
-						><Attachment.Action
-							type="button"
-							aria-label={`Remove ${name}`}
-							onclick={() => (agents = agents.filter((a) => a !== name))}
-							><X /></Attachment.Action
-						></Attachment.Actions
-					></Attachment.Root
-				>{/each}
-			{#each attachments as file (file)}{@const preview = previews.find(
-					(item) => item.file === file,
-				)}<Attachment.Root size="sm" class="max-w-56"
-					><Attachment.Media variant={preview ? "image" : "icon"}
-						>{#if preview}<img
-								src={preview.url}
-								alt={file.name}
-							/>{:else}<FileIcon />{/if}</Attachment.Media
-					><Attachment.Content
-						><Attachment.Title>{file.name}</Attachment.Title
-						></Attachment.Content
-					><Attachment.Actions
-						><Attachment.Action
-							type="button"
-							aria-label={`Remove ${file.name}`}
-							onclick={() => removeAttachment(file)}><X /></Attachment.Action
-						></Attachment.Actions
-					>{#if preview}<Attachment.Trigger
-							aria-label={`Preview ${file.name}`}
-							onclick={() => {
-								previewFile = file;
-								previewOpen = true;
-							}}
-						/>{/if}</Attachment.Root
-				>{/each}
-			{#each designNodes.filter( (node) => selectedDesignIds.includes(node.id) ) as node}<Attachment.Root
-					size="sm"
-					class="max-w-56"
-					><Attachment.Media><PanelsTopLeft /></Attachment.Media
-					><Attachment.Content
-						><Attachment.Title>{node.title}</Attachment.Title
-						></Attachment.Content
-					><Attachment.Actions
-						><Attachment.Action
-							type="button"
-							aria-label={`Remove Canvas design ${node.title}`}
-							onclick={() => toggleDesign(node)}><X /></Attachment.Action
-						></Attachment.Actions
-					></Attachment.Root
-				>{/each}
-		</div>{/if}
-	<input
-		bind:this={attachmentInput}
-		type="file"
-		accept={attachmentAccept}
-		multiple
-		onchange={addAttachments}
-		class="sr-only"
-		aria-label="Attach files or images"
-	/>
-	<Textarea
-		id={inputId}
-		bind:ref={textarea}
-		bind:value={draft}
-		oninput={input}
-		onclick={clickInput}
-		{onpaste}
-		onkeydown={keydown}
-		aria-label="Message agent"
-		aria-controls={query !== null ? "mention-list" : undefined}
-		aria-activedescendant={query !== null ? `mention-${active}` : undefined}
-		placeholder="Ask anything… @ for files, agents, and SSH servers"
-		rows={3}
-		class="max-h-56 min-h-[126px] resize-none border-0 bg-transparent px-4 py-4 text-sm text-white shadow-none placeholder:text-white/35 focus-visible:ring-0"
-		disabled={disabled || sending}
-	/>
-	{#if model && !selectedModel}
-		<p class="px-4 pb-2 text-xs text-amber-300">
-			Selected model is no longer available. Refresh providers and reselect a model.
-		</p>
-	{/if}
-	<div
-		class="flex flex-wrap items-center justify-between gap-2 border-t border-white/[0.07] px-3 py-2"
+	<InputGroup.Root
+		class="h-auto flex-col items-stretch rounded-2xl border-0 bg-transparent shadow-none"
 	>
-		<div class="flex flex-wrap items-center gap-1">
-			<Popover.Root bind:open={attachmentOpen}
-				><Popover.Trigger
-					class="inline-flex size-8 items-center justify-center rounded-lg border border-transparent text-white/55 transition hover:bg-white/[0.08] hover:text-white disabled:pointer-events-none disabled:opacity-50"
-					title="Add to message"
-					aria-label="Add to message"
-					disabled={sending}><Plus size={16} /></Popover.Trigger
-				><Popover.Content class="w-64 p-1" align="start"
-					><Command.Root
-						><Command.List
-							><Command.Group
-								><Command.Item
-									value="Add photos & files"
-									onSelect={() => {
-										attachmentOpen = false;
-										openAttachments();
-									}}
-									><ImageIcon size={15} /><span>Add photos &amp; files</span
-									></Command.Item
-								><Command.Item
-									value="@ for mentions"
-									disabled={!projectId}
-									onSelect={() => {
-										attachmentOpen = false;
-										void attach();
-									}}
-									><AtSign size={15} /><span>@ for mentions</span></Command.Item
-								></Command.Group
-							></Command.List
-						></Command.Root
-					></Popover.Content
-				></Popover.Root
+		{#if files.length || sessionRefs.length || taskRefs.length || agents.length || attachments.length || selectedDesignIds.length || selectedSshConnections.length}<InputGroup.Addon
+				align="block-start"
+				class="flex flex-wrap gap-1 border-0 px-3 pt-3"
+				aria-label="Message attachments"
 			>
-			{#if showDesigns}<Popover.Root
-					bind:open={designOpen}
+				{#each selectedSshConnections as connection (connection.id)}<Attachment.Root
+						size="sm"
+					>
+						<Attachment.Media><Lock /></Attachment.Media><Attachment.Content
+							><Attachment.Title>SSH · {connection.label}</Attachment.Title
+							></Attachment.Content
+						><Attachment.Actions
+							><Attachment.Action
+								type="button"
+								aria-label={`Remove SSH server ${connection.label}`}
+								onclick={() =>
+									(selectedSshConnections = selectedSshConnections.filter(
+										(item) => item.id !== connection.id,
+									))}><X /></Attachment.Action
+							></Attachment.Actions
+						>
+					</Attachment.Root>{/each}
+				{#each files as file}<Attachment.Root size="sm" class="max-w-56"
+						><Attachment.Media><FileIcon /></Attachment.Media
+						><Attachment.Content
+							><Attachment.Title>{file}</Attachment.Title></Attachment.Content
+						><Attachment.Actions
+							><Attachment.Action
+								type="button"
+								aria-label={`Remove ${file}`}
+								onclick={() => {
+									files = files.filter((f) => f !== file);
+									removeMention(file);
+								}}><X /></Attachment.Action
+							></Attachment.Actions
+						><Attachment.Trigger
+							aria-label={`Preview ${file}`}
+							onclick={() => void openProjectPreview(file)}
+						/></Attachment.Root
+					>{/each}
+				{#each sessionRefs as sessionId}<Attachment.Root size="sm">
+						<Attachment.Media><PanelsTopLeft /></Attachment.Media>
+						<Attachment.Content
+							><Attachment.Title
+								>{projectSessions.find((item) => item.id === sessionId)
+									?.title ?? sessionId}</Attachment.Title
+							></Attachment.Content
+						>
+						<Attachment.Actions
+							><Attachment.Action
+								type="button"
+								aria-label={`Remove session ${sessionId}`}
+								onclick={() => {
+									sessionRefs = sessionRefs.filter((id) => id !== sessionId);
+									removeMention(
+										`session:${projectSessions.find((item) => item.id === sessionId)?.title ?? sessionId}`,
+									);
+								}}><X /></Attachment.Action
+							></Attachment.Actions
+						>
+					</Attachment.Root>{/each}
+				{#each taskRefs as refId}<Attachment.Root size="sm">
+						<Attachment.Media><KanbanSquare /></Attachment.Media>
+						<Attachment.Content
+							><Attachment.Title
+								>{tasks.find((item) => item.id === refId)?.title ??
+									refId}</Attachment.Title
+							></Attachment.Content
+						>
+						<Attachment.Actions
+							><Attachment.Action
+								type="button"
+								aria-label={`Remove task ${refId}`}
+								onclick={() =>
+									(taskRefs = taskRefs.filter((id) => id !== refId))}
+								><X /></Attachment.Action
+							></Attachment.Actions
+						>
+					</Attachment.Root>{/each}
+				{#each agents as name}<Attachment.Root size="sm"
+						><Attachment.Media><Bot /></Attachment.Media><Attachment.Content
+							><Attachment.Title>{name}</Attachment.Title></Attachment.Content
+						><Attachment.Actions
+							><Attachment.Action
+								type="button"
+								aria-label={`Remove ${name}`}
+								onclick={() => (agents = agents.filter((a) => a !== name))}
+								><X /></Attachment.Action
+							></Attachment.Actions
+						></Attachment.Root
+					>{/each}
+				{#each attachments as file (file)}{@const preview = previews.find(
+						(item) => item.file === file,
+					)}<Attachment.Root size="sm" class="max-w-56"
+						><Attachment.Media variant={preview ? "image" : "icon"}
+							>{#if preview}<img
+									src={preview.url}
+									alt={file.name}
+								/>{:else}<FileIcon />{/if}</Attachment.Media
+						><Attachment.Content
+							><Attachment.Title>{file.name}</Attachment.Title
+							></Attachment.Content
+						><Attachment.Actions
+							><Attachment.Action
+								type="button"
+								aria-label={`Remove ${file.name}`}
+								onclick={() => removeAttachment(file)}><X /></Attachment.Action
+							></Attachment.Actions
+						>{#if preview}<Attachment.Trigger
+								aria-label={`Preview ${file.name}`}
+								onclick={() => {
+									previewFile = file;
+									previewOpen = true;
+								}}
+							/>{/if}</Attachment.Root
+					>{/each}
+				{#each designNodes.filter( (node) => selectedDesignIds.includes(node.id) ) as node}<Attachment.Root
+						size="sm"
+						class="max-w-56"
+						><Attachment.Media><PanelsTopLeft /></Attachment.Media
+						><Attachment.Content
+							><Attachment.Title>{node.title}</Attachment.Title
+							></Attachment.Content
+						><Attachment.Actions
+							><Attachment.Action
+								type="button"
+								aria-label={`Remove Canvas design ${node.title}`}
+								onclick={() => toggleDesign(node)}><X /></Attachment.Action
+							></Attachment.Actions
+						></Attachment.Root
+					>{/each}
+			</InputGroup.Addon>{/if}
+		<PromptInput.PromptInputTextarea
+			id={inputId}
+			bind:ref={textarea}
+			bind:value={draft}
+			oninput={input}
+			onclick={clickInput}
+			{onpaste}
+			onkeydown={keydown}
+			aria-label="Message agent"
+			aria-controls={query !== null ? "mention-list" : undefined}
+			aria-activedescendant={query !== null ? `mention-${active}` : undefined}
+			placeholder="Ask anything… @ for files, agents, and SSH servers"
+			rows={3}
+			class="max-h-56 min-h-[126px] resize-none border-0 bg-transparent px-4 py-4 text-sm text-white shadow-none placeholder:text-white/35 focus-visible:ring-0"
+			disabled={disabled || sending}
+		/>
+		{#if model && !selectedModel}
+			<p class="px-4 pb-2 text-xs text-amber-300">
+				Selected model is no longer available. Refresh providers and reselect a
+				model.
+			</p>
+		{/if}
+		<InputGroup.Addon
+			align="block-end"
+			class="flex flex-wrap items-center justify-between gap-2 border-t border-white/[0.07] px-3 py-2"
+		>
+			<div class="flex flex-wrap items-center gap-1">
+				<PromptInput.PromptInputActionMenu bind:open={attachmentOpen}>
+					<PromptInput.PromptInputActionMenuTrigger
+						class="inline-flex size-8 items-center justify-center rounded-lg border border-transparent text-white/55 transition hover:bg-white/[0.08] hover:text-white disabled:pointer-events-none disabled:opacity-50"
+						aria-label="Add to message"
+						disabled={sending}
+						><Plus size={16} /></PromptInput.PromptInputActionMenuTrigger
+					>
+					<PromptInput.PromptInputActionMenuContent class="w-64 p-1">
+						<Command.Root
+							><Command.List
+								><Command.Group
+									><Command.Item
+										value="Add photos & files"
+										onSelect={() => {
+											attachmentOpen = false;
+											openAttachments();
+										}}
+										><ImageIcon size={15} /><span>Add photos &amp; files</span
+										></Command.Item
+									><Command.Item
+										value="@ for mentions"
+										disabled={!projectId}
+										onSelect={() => {
+											attachmentOpen = false;
+											void attach();
+										}}
+										><AtSign size={15} /><span>@ for mentions</span
+										></Command.Item
+									></Command.Group
+								></Command.List
+							></Command.Root
+						>
+					</PromptInput.PromptInputActionMenuContent>
+				</PromptInput.PromptInputActionMenu>
+				{#if showDesigns}<Popover.Root
+						bind:open={designOpen}
+						onOpenChange={(open) => {
+							designOpen = open;
+							if (open) void loadDesigns();
+						}}
+						><Popover.Trigger
+							class="inline-flex size-8 items-center justify-center rounded-lg border border-transparent text-white/55 transition hover:bg-white/[0.08] hover:text-white disabled:pointer-events-none disabled:opacity-50"
+							title="Embed Canvas designs"
+							aria-label="Embed Canvas designs"
+							disabled={sending || !projectId}
+							><PanelsTopLeft size={16} />{#if selectedDesignIds.length}<span
+									class="ml-0.5 text-[10px]">{selectedDesignIds.length}</span
+								>{/if}</Popover.Trigger
+						><Popover.Content class="w-80 p-2" align="start"
+							><div class="mb-2 flex items-center justify-between px-1">
+								<p class="text-sm font-medium">Canvas designs</p>
+								<span class="text-xs text-muted-foreground"
+									>{selectedDesignIds.length}/5 selected</span
+								>
+							</div>
+							{#if loadingDesigns}<p
+									class="px-1 py-3 text-xs text-muted-foreground"
+								>
+									Loading designs…
+								</p>{:else if designError}<p
+									role="alert"
+									class="px-1 py-2 text-xs text-destructive"
+								>
+									{designError}
+								</p>{:else if !designNodes.length}<p
+									class="px-1 py-3 text-xs text-muted-foreground"
+								>
+									No ready designs in this project's Canvas.
+								</p>{:else}<div class="max-h-64 space-y-1 overflow-y-auto">
+									{#each designNodes as node}<Button
+											type="button"
+											variant="ghost"
+											class="h-auto w-full justify-start gap-2 py-2 text-left"
+											aria-pressed={selectedDesignIds.includes(node.id)}
+											onclick={() => toggleDesign(node)}
+											><span
+												class="relative h-12 w-16 shrink-0 overflow-hidden rounded border bg-background"
+												><iframe
+													title={`Preview of ${node.title}`}
+													srcdoc={node.html}
+													sandbox=""
+													tabindex="-1"
+													aria-hidden="true"
+													style={thumbnailStyle(node, 64, 48)}
+													class="pointer-events-none absolute origin-top-left border-0"
+												></iframe></span
+											><span class="min-w-0 flex-1"
+												><span class="block truncate text-xs">{node.title}</span
+												><span
+													class="block truncate text-[10px] text-muted-foreground"
+													>{node.viewport} · {node.brief}</span
+												></span
+											>{#if selectedDesignIds.includes(node.id)}<Check
+													size={14}
+													class="shrink-0"
+												/>{/if}</Button
+										>{/each}
+								</div>
+								{#if designNotice}<p class="px-1 pt-2 text-xs text-amber-300">
+										{designNotice}
+									</p>{/if}{/if}</Popover.Content
+						></Popover.Root
+					>{/if}
+				{#if onAutoAcceptChange}<label
+						class="ml-1 flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-white/50 transition hover:bg-white/[0.06]"
+						title="Auto-approve tool permissions for this project. When off, each tool asks for your approval."
+						><Switch
+							checked={autoAccept}
+							onCheckedChange={(value) => onAutoAcceptChange(value)}
+							size="sm"
+						/><span class="hidden sm:inline">Auto-accept</span></label
+					>{/if}
+			</div>
+			<div
+				class="flex min-w-0 flex-wrap items-center justify-end gap-1 sm:flex-nowrap"
+			>
+				<Popover.Root
+					bind:open={modelOpen}
 					onOpenChange={(open) => {
-						designOpen = open;
-						if (open) void loadDesigns();
+						modelOpen = open;
+						if (!open) modelSearch = "";
 					}}
 					><Popover.Trigger
-						class="inline-flex size-8 items-center justify-center rounded-lg border border-transparent text-white/55 transition hover:bg-white/[0.08] hover:text-white disabled:pointer-events-none disabled:opacity-50"
-						title="Embed Canvas designs"
-						aria-label="Embed Canvas designs"
-						disabled={sending || !projectId}
-						><PanelsTopLeft size={16} />{#if selectedDesignIds.length}<span
-								class="ml-0.5 text-[10px]">{selectedDesignIds.length}</span
-							>{/if}</Popover.Trigger
-					><Popover.Content class="w-80 p-2" align="start"
-						><div class="mb-2 flex items-center justify-between px-1">
-							<p class="text-sm font-medium">Canvas designs</p>
-							<span class="text-xs text-muted-foreground"
-								>{selectedDesignIds.length}/5 selected</span
-							>
-						</div>
-						{#if loadingDesigns}<p
-								class="px-1 py-3 text-xs text-muted-foreground"
-							>
-								Loading designs…
-							</p>{:else if designError}<p
-								role="alert"
-								class="px-1 py-2 text-xs text-destructive"
-							>
-								{designError}
-							</p>{:else if !designNodes.length}<p
-								class="px-1 py-3 text-xs text-muted-foreground"
-							>
-								No ready designs in this project's Canvas.
-							</p>{:else}<div class="max-h-64 space-y-1 overflow-y-auto">
-								{#each designNodes as node}<Button
-										type="button"
-										variant="ghost"
-										class="h-auto w-full justify-start gap-2 py-2 text-left"
-										aria-pressed={selectedDesignIds.includes(node.id)}
-										onclick={() => toggleDesign(node)}
-										><span
-											class="relative h-12 w-16 shrink-0 overflow-hidden rounded border bg-background"
-											><iframe
-												title={`Preview of ${node.title}`}
-												srcdoc={node.html}
-												sandbox=""
-												tabindex="-1"
-												aria-hidden="true"
-												style={thumbnailStyle(node, 64, 48)}
-												class="pointer-events-none absolute origin-top-left border-0"
-											></iframe></span
-										><span class="min-w-0 flex-1"
-											><span class="block truncate text-xs">{node.title}</span
-											><span
-												class="block truncate text-[10px] text-muted-foreground"
-												>{node.viewport} · {node.brief}</span
-											></span
-										>{#if selectedDesignIds.includes(node.id)}<Check
-												size={14}
-												class="shrink-0"
-											/>{/if}</Button
-									>{/each}
-							</div>
-							{#if designNotice}<p class="px-1 pt-2 text-xs text-amber-300">
-									{designNotice}
-								</p>{/if}{/if}</Popover.Content
-					></Popover.Root
-				>{/if}
-			{#if onAutoAcceptChange}<label
-					class="ml-1 flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-white/50 transition hover:bg-white/[0.06]"
-					title="Auto-approve tool permissions for this project. When off, each tool asks for your approval."
-					><Switch
-						checked={autoAccept}
-						onCheckedChange={(value) => onAutoAcceptChange(value)}
-						size="sm"
-					/><span class="hidden sm:inline">Auto-accept</span></label
-				>{/if}
-		</div>
-		<div
-			class="flex min-w-0 flex-wrap items-center justify-end gap-1 sm:flex-nowrap"
-		>
-			<Popover.Root
-				bind:open={modelOpen}
-				onOpenChange={(open) => {
-					modelOpen = open;
-					if (!open) modelSearch = "";
-				}}
-				><Popover.Trigger
-					class="flex max-w-36 sm:max-w-56 items-center gap-1 rounded-lg px-2 py-1.5 text-xs text-white/65 transition hover:bg-white/[0.06] hover:text-white"
-					aria-label={selectedModel
-						? `Selected model: ${selectedModel.name} from ${modelLabel(selectedModel)}`
-						: selectedCustomAgent
-							? `Custom agent model: ${customAgentModelLabel(selectedCustomAgent)}`
-							: "Select model"}
-					title={selectedModel
-						? `${selectedModel.name} · ${modelLabel(selectedModel)} · ${selectedModel.modelID}`
-						: selectedCustomAgent
-							? customAgentModelLabel(selectedCustomAgent)
-							: "Default model"}
-					><span class="truncate"
-						>{selectedModel
-							? selectedModel.name
+						class="flex max-w-36 sm:max-w-56 items-center gap-1 rounded-lg px-2 py-1.5 text-xs text-white/65 transition hover:bg-white/[0.06] hover:text-white"
+						aria-label={selectedModel
+							? `Selected model: ${selectedModel.name} from ${modelLabel(selectedModel)}`
+							: selectedCustomAgent
+								? `Custom agent model: ${customAgentModelLabel(selectedCustomAgent)}`
+								: "Select model"}
+						title={selectedModel
+							? `${selectedModel.name} · ${modelLabel(selectedModel)} · ${selectedModel.modelID}`
 							: selectedCustomAgent
 								? customAgentModelLabel(selectedCustomAgent)
-								: "Default model"}</span
-					>{#if selectedModel}<Badge
-							variant="outline"
-							class={`model-badge model-badge--${providerTone(selectedModel.providerID)} max-w-20 shrink-0 truncate px-1 text-[9px] uppercase tracking-wide`}
-							>{modelLabel(selectedModel)}</Badge
-						>{/if}<ChevronDown size={12} /></Popover.Trigger
-				>
-				<Popover.Content class="w-96 max-w-[calc(100vw-2rem)] p-0" align="end"
-					><Command.Root
-						><Command.Input
-							bind:value={modelSearch}
-							placeholder="Search models…"
-						/><Command.List bind:ref={modelListEl} class="max-h-96"
-							><Command.Empty>No configured models found.</Command.Empty>
-							{#if visibleFavoriteModels.length}<Command.Group
-									heading="Favorites"
-									>{#each visibleFavoriteModels as item (modelKey(item))}{@render modelOption(
-											item,
-											"favorite",
-										)}{/each}</Command.Group
-								>{/if}
-							{#if visibleRecentModels.length}<Command.Separator
-								/><Command.Group heading="Recent"
-									>{#each visibleRecentModels as item (modelKey(item))}{@render modelOption(
-											item,
-											"recent",
-										)}{/each}</Command.Group
-								>{/if}
-							<Command.Separator /><Command.Group heading="Default"
-								><Command.Item value="default" onSelect={chooseDefaultModel}
-									>Default model</Command.Item
-								></Command.Group
-							>
-							{#each visibleProviderGroups as group (group.id)}
-								<Command.Separator />
-								<button
-									type="button"
-									aria-expanded={providerGroupExpanded(group.id)}
-									onclick={() => toggleProviderGroup(group.id)}
-									class="flex w-full items-center justify-between gap-2 px-4 py-1.5 text-xs font-medium text-foreground/50 transition-colors hover:text-foreground"
+								: "Default model"}
+						><span class="truncate"
+							>{selectedModel
+								? selectedModel.name
+								: selectedCustomAgent
+									? customAgentModelLabel(selectedCustomAgent)
+									: "Default model"}</span
+						>{#if selectedModel}<Badge
+								variant="outline"
+								class={`model-badge model-badge--${providerTone(selectedModel.providerID)} max-w-20 shrink-0 truncate px-1 text-[9px] uppercase tracking-wide`}
+								>{modelLabel(selectedModel)}</Badge
+							>{/if}<ChevronDown size={12} /></Popover.Trigger
+					>
+					<Popover.Content class="w-96 max-w-[calc(100vw-2rem)] p-0" align="end"
+						><Command.Root
+							><Command.Input
+								bind:value={modelSearch}
+								placeholder="Search models…"
+							/><Command.List bind:ref={modelListEl} class="max-h-96"
+								><Command.Empty>No configured models found.</Command.Empty>
+								{#if visibleFavoriteModels.length}<Command.Group
+										heading="Favorites"
+										>{#each visibleFavoriteModels as item (modelKey(item))}{@render modelOption(
+												item,
+												"favorite",
+											)}{/each}</Command.Group
+									>{/if}
+								{#if visibleRecentModels.length}<Command.Separator
+									/><Command.Group heading="Recent"
+										>{#each visibleRecentModels as item (modelKey(item))}{@render modelOption(
+												item,
+												"recent",
+											)}{/each}</Command.Group
+									>{/if}
+								<Command.Separator /><Command.Group heading="Default"
+									><Command.Item value="default" onSelect={chooseDefaultModel}
+										>Default model</Command.Item
+									></Command.Group
 								>
-									<span class="truncate">{groupHeading(group)}</span>
-									<span
-										class="flex shrink-0 items-center gap-1 text-muted-foreground"
-										>{group.models.length}<ChevronDown
-											size={12}
-											class={providerGroupExpanded(group.id)
-												? ""
-												: "-rotate-90"}
-										/></span
+								{#each visibleProviderGroups as group (group.id)}
+									<Command.Separator />
+									<button
+										type="button"
+										aria-expanded={providerGroupExpanded(group.id)}
+										onclick={() => toggleProviderGroup(group.id)}
+										class="flex w-full items-center justify-between gap-2 px-4 py-1.5 text-xs font-medium text-foreground/50 transition-colors hover:text-foreground"
 									>
-								</button>
-								{#if providerGroupExpanded(group.id)}
-									{#each group.models as item (modelKey(item))}
-										{@render modelOption(item, group.id)}
-									{/each}
-								{/if}
-							{/each}
-						</Command.List></Command.Root
-					></Popover.Content
-				>
-			</Popover.Root>
+										<span class="truncate">{groupHeading(group)}</span>
+										<span
+											class="flex shrink-0 items-center gap-1 text-muted-foreground"
+											>{group.models.length}<ChevronDown
+												size={12}
+												class={providerGroupExpanded(group.id)
+													? ""
+													: "-rotate-90"}
+											/></span
+										>
+									</button>
+									{#if providerGroupExpanded(group.id)}
+										{#each group.models as item (modelKey(item))}
+											{@render modelOption(item, group.id)}
+										{/each}
+									{/if}
+								{/each}
+							</Command.List></Command.Root
+						></Popover.Content
+					>
+				</Popover.Root>
 
-			{#if showAgents}<Select.Root type="single" bind:value={agent}
-					><Select.Trigger
-						class="h-8 max-w-28 gap-1 rounded-lg border-0 bg-transparent px-2 text-xs text-white/65 shadow-none transition hover:bg-white/[0.06] hover:text-white focus-visible:ring-1 [&>svg:last-child]:hidden"
-						aria-label={`Chat mode: ${agent}`}
-						title={`Chat mode: ${agent}`}
-						><Bot size={14} /><span class="truncate">{agent}</span
-						></Select.Trigger
-					><Select.Content
-						>{#each catalog.agents.filter((a) => a.mode !== "subagent") as item}<Select.Item
-								value={item.name}>{item.name}</Select.Item
-							>{/each}</Select.Content
-					></Select.Root
-				>{/if}
-			{#if supportsThinkingMode}<Select.Root
-					type="single"
-					bind:value={thinkingMode}
-					><Select.Trigger
-						class="h-8 w-8 gap-0 rounded-lg border-0 bg-transparent p-0 text-white/65 shadow-none transition hover:bg-transparent hover:text-white dark:bg-transparent dark:hover:bg-transparent data-[state=open]:bg-transparent focus-visible:ring-1 [&>svg:last-child]:hidden"
-						aria-label={`Thinking mode: ${thinkingMode}`}
-						title={`Thinking mode: ${thinkingMode}`}
-						><Sparkles size={16} /><span class="sr-only"
-							>{thinkingMode === "default" ? "Thinking" : thinkingMode}</span
-						></Select.Trigger
-					><Select.Content
-						><Select.Group
-							><Select.Label>Thinking</Select.Label><Select.Item value="default"
-								>Default</Select.Item
-							>{#each thinkingModes as mode}<Select.Item value={mode}
-									>{mode[0]!.toUpperCase() + mode.slice(1)}</Select.Item
-								>{/each}</Select.Group
-						></Select.Content
-					></Select.Root
-				>{/if}
-			{#if customAgents.length}<Select.Root
-					type="single"
-					bind:value={customAgentId}
-					><Select.Trigger
-						class="ml-1 h-8 max-w-32 sm:max-w-none truncate gap-1 rounded-lg border-0 border-l border-white/10 bg-transparent px-2 text-xs text-white/65 shadow-none transition hover:bg-white/[0.06]"
-						aria-label="Select custom agent"
-						>{customAgents.find((item) => item.id === customAgentId)?.label ??
-							"Custom agent"}</Select.Trigger
-					><Select.Content
-						><Select.Item value="">Default agent</Select.Item
-						>{#each customAgents as item}<Select.Item value={item.id}
-								>{item.label}</Select.Item
-							>{/each}</Select.Content
-					></Select.Root
-				>{/if}
-			{#if busy && !hideStop && !queueWhileBusy}<Button
-					type="button"
-					size="icon"
-					variant="secondary"
-					class="rounded-full"
-					aria-label="Stop response"
-					title="Stop response"
-					onclick={onstop}><Square size={14} /></Button
-				>{:else}<Button
-					type="submit"
-					size="icon"
-					class="size-9 rounded-full bg-white/65 text-[#191b1e] transition hover:bg-white"
-					aria-label="Send message"
-					title={model && !selectedModel
-						? "Selected model is no longer available"
-						: "Send message"}
-					disabled={disabled ||
-						sending ||
-						(busy && !queueWhileBusy && hideStop) ||
-						(!!model && !selectedModel) ||
-						(!draft.trim() &&
-							!files.length &&
-							!attachments.length &&
-							!selectedDesignIds.length)}
-					>{#if sending}<LoaderCircle
-							size={16}
-							class="animate-spin"
-						/>{:else}<ArrowUp size={17} />{/if}</Button
-				>{/if}
-		</div>
-	</div>
-</form>
+				{#if showAgents}<Select.Root type="single" bind:value={agent}
+						><Select.Trigger
+							class="h-8 max-w-28 gap-1 rounded-lg border-0 bg-transparent px-2 text-xs text-white/65 shadow-none transition hover:bg-white/[0.06] hover:text-white focus-visible:ring-1 [&>svg:last-child]:hidden"
+							aria-label={`Chat mode: ${agent}`}
+							title={`Chat mode: ${agent}`}
+							><Bot size={14} /><span class="truncate">{agent}</span
+							></Select.Trigger
+						><Select.Content
+							>{#each catalog.agents.filter((a) => a.mode !== "subagent") as item}<Select.Item
+									value={item.name}>{item.name}</Select.Item
+								>{/each}</Select.Content
+						></Select.Root
+					>{/if}
+				{#if supportsThinkingMode}<Select.Root
+						type="single"
+						bind:value={thinkingMode}
+						><Select.Trigger
+							class="h-8 w-8 gap-0 rounded-lg border-0 bg-transparent p-0 text-white/65 shadow-none transition hover:bg-transparent hover:text-white dark:bg-transparent dark:hover:bg-transparent data-[state=open]:bg-transparent focus-visible:ring-1 [&>svg:last-child]:hidden"
+							aria-label={`Thinking mode: ${thinkingMode}`}
+							title={`Thinking mode: ${thinkingMode}`}
+							><Sparkles size={16} /><span class="sr-only"
+								>{thinkingMode === "default" ? "Thinking" : thinkingMode}</span
+							></Select.Trigger
+						><Select.Content
+							><Select.Group
+								><Select.Label>Thinking</Select.Label><Select.Item
+									value="default">Default</Select.Item
+								>{#each thinkingModes as mode}<Select.Item value={mode}
+										>{mode[0]!.toUpperCase() + mode.slice(1)}</Select.Item
+									>{/each}</Select.Group
+							></Select.Content
+						></Select.Root
+					>{/if}
+				{#if customAgents.length}<Select.Root
+						type="single"
+						bind:value={customAgentId}
+						><Select.Trigger
+							class="ml-1 h-8 max-w-32 sm:max-w-none truncate gap-1 rounded-lg border-0 border-l border-white/10 bg-transparent px-2 text-xs text-white/65 shadow-none transition hover:bg-white/[0.06]"
+							aria-label="Select custom agent"
+							>{customAgents.find((item) => item.id === customAgentId)?.label ??
+								"Custom agent"}</Select.Trigger
+						><Select.Content
+							><Select.Item value="">Default agent</Select.Item
+							>{#each customAgents as item}<Select.Item value={item.id}
+									>{item.label}</Select.Item
+								>{/each}</Select.Content
+						></Select.Root
+					>{/if}
+				{#if busy && !hideStop && !queueWhileBusy}<Button
+						type="button"
+						size="icon"
+						variant="secondary"
+						class="rounded-full"
+						aria-label="Stop response"
+						title="Stop response"
+						onclick={onstop}><Square size={14} /></Button
+					>{:else}<PromptInput.PromptInputSubmit
+						class="size-9 rounded-full bg-white/65 text-[#191b1e] transition hover:bg-white"
+						aria-label="Send message"
+						title={model && !selectedModel
+							? "Selected model is no longer available"
+							: "Send message"}
+						disabled={disabled ||
+							sending ||
+							(busy && !queueWhileBusy && hideStop) ||
+							(!!model && !selectedModel) ||
+							(!draft.trim() &&
+								!files.length &&
+								!attachments.length &&
+								!selectedDesignIds.length)}
+						>{#snippet children()}
+							{#if sending}<LoaderCircle
+									size={16}
+									class="animate-spin"
+								/>{:else}<ArrowUp size={17} />{/if}
+						{/snippet}</PromptInput.PromptInputSubmit
+					>{/if}
+			</div>
+		</InputGroup.Addon>
+	</InputGroup.Root>
+</PromptInput.PromptInput>
 <AlertDialog.Root bind:open={previewOpen}>
 	<AlertDialog.Content class="max-h-[90vh] max-w-3xl overflow-auto">
 		<AlertDialog.Header>

@@ -72,7 +72,9 @@ const definitions: Record<string, UpdateDefinition> = {
 				{ signal: AbortSignal.timeout(12_000) },
 			);
 			if (!response.ok)
-				throw new Error(`Antigravity update server returned ${response.status}`);
+				throw new Error(
+					`Antigravity update server returned ${response.status}`,
+				);
 			const manifest = (await response.json()) as { version?: unknown };
 			return typeof manifest.version === "string" ? manifest.version : null;
 		},
@@ -115,9 +117,7 @@ const definitions: Record<string, UpdateDefinition> = {
 			if (!response.ok)
 				throw new Error(`OpenCode release API returned ${response.status}`);
 			const release = (await response.json()) as { tag_name?: unknown };
-			return typeof release.tag_name === "string"
-				? release.tag_name
-				: null;
+			return typeof release.tag_name === "string" ? release.tag_name : null;
 		},
 		command: (version) => ({
 			executable: "opencode",

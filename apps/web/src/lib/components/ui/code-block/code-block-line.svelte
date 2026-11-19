@@ -16,7 +16,9 @@
 		},
 	});
 
-	export type CodeBlockLineVariant = VariantProps<typeof codeBlockLineVariants>["variant"];
+	export type CodeBlockLineVariant = VariantProps<
+		typeof codeBlockLineVariants
+	>["variant"];
 
 	// One highlighted token, such as one returned by `useHighlightedCode`.
 	export type CodeBlockLineToken = {
@@ -49,12 +51,13 @@
 <!-- An empty line holds a newline so copying a selection keeps blank lines. -->
 <span
 	bind:this={ref}
-	data-slot="code-block-line"data-variant={variant}
+	data-slot="code-block-line"
+	data-variant={variant}
 	class={cn(codeBlockLineVariants({ variant }), className)}
 	{...restProps}
 >
-	<span data-slot="code-block-line-content"class="min-w-0">
-		{#if typeof code ==="string"}
+	<span data-slot="code-block-line-content" class="min-w-0">
+		{#if typeof code === "string"}
 			{code || newline}
 		{:else if code?.length}
 			{#each code as token, index (index)}

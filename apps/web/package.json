@@ -11,6 +11,8 @@
 		"check-types": "tsc -b ../../packages/api && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check": "tsc -b ../../packages/protocol ../../packages/api && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+		"lint": "prettier --check . && eslint .",
+		"format": "prettier --write .",
 		"env:generate": "varlock codegen"
 	},
 	"dependencies": {

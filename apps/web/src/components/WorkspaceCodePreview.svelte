@@ -1,786 +1,796 @@
 <script lang="ts">
-import DOMPurify from "dompurify";
-import hljs from "highlight.js/lib/common";
-import "highlight.js/styles/github-dark.css";
-import {
-	Check,
-	ChevronDown,
-	ChevronRight,
-	ChevronUp,
-	Copy,
-	FileCode,
-	FilePlus2,
-	Folder,
-	FolderPlus,
-	LoaderCircle,
-	Maximize2,
-	Minimize2,
-	PanelRightClose,
-	Pencil,
-	RefreshCw,
-	Save,
-	Search,
-	X,
-} from "@lucide/svelte";
-import { onDestroy, onMount, tick } from "svelte";
-import { toast } from "svelte-sonner";
-import {
-	chat,
-	type WorkspaceFileEntry,
-	type WorkspaceFilePreview,
-} from "$lib/chat";
-import { Button } from "$lib/components/ui/button";
-import * as Dialog from "$lib/components/ui/dialog";
-import { Input } from "$lib/components/ui/input";
-import { daemon } from "$lib/daemon";
+	import DOMPurify from "dompurify";
+	import hljs from "highlight.js/lib/common";
+	import "highlight.js/styles/github-dark.css";
+	import {
+		Check,
+		ChevronDown,
+		ChevronRight,
+		ChevronUp,
+		Copy,
+		FileCode,
+		FilePlus2,
+		Folder,
+		FolderPlus,
+		LoaderCircle,
+		Maximize2,
+		Minimize2,
+		PanelRightClose,
+		Pencil,
+		RefreshCw,
+		Save,
+		Search,
+		X,
+	} from "@lucide/svelte";
+	import { onDestroy, onMount, tick } from "svelte";
+	import { toast } from "svelte-sonner";
+	import {
+		chat,
+		type WorkspaceFileEntry,
+		type WorkspaceFilePreview,
+	} from "$lib/chat";
+	import { Button } from "$lib/components/ui/button";
+	import * as Dialog from "$lib/components/ui/dialog";
+	import { Input } from "$lib/components/ui/input";
+	import { daemon } from "$lib/daemon";
 
-let {
-	projectId,
-	projectName,
-	projectPath,
-	requestedPath = "",
-	openRequest = 0,
-	busy = false,
-	hasUnsavedChanges = $bindable(false),
-	expanded = $bindable(false),
-	onclose,
-}: {
-	projectId: string;
-	projectName: string;
-	projectPath: string;
-	requestedPath?: string;
-	openRequest?: number;
-	busy?: boolean;
-	hasUnsavedChanges?: boolean;
-	expanded?: boolean;
-	onclose: () => void;
-} = $props();
+	let {
+		projectId,
+		projectName,
+		projectPath,
+		requestedPath = "",
+		openRequest = 0,
+		busy = false,
+		hasUnsavedChanges = $bindable(false),
+		expanded = $bindable(false),
+		onclose,
+	}: {
+		projectId: string;
+		projectName: string;
+		projectPath: string;
+		requestedPath?: string;
+		openRequest?: number;
+		busy?: boolean;
+		hasUnsavedChanges?: boolean;
+		expanded?: boolean;
+		onclose: () => void;
+	} = $props();
 
-type PreviewPreferences = {
-	treeVisible?: boolean;
-	treeWidth?: number;
-	workspaceId?: string;
-	activePath?: string | null;
-	selectedDirectory?: string | null;
-	expandedDirectories?: string[];
-	expanded?: boolean;
-};
+	type PreviewPreferences = {
+		treeVisible?: boolean;
+		treeWidth?: number;
+		workspaceId?: string;
+		activePath?: string | null;
+		selectedDirectory?: string | null;
+		expandedDirectories?: string[];
+		expanded?: boolean;
+	};
 
-let treeVisible = $state(true);
-let treeWidth = $state(250);
-let entriesByDirectory = $state<Record<string, WorkspaceFileEntry[]>>({});
-let expandedDirectories = $state<string[]>([]);
-let activePath = $state<string | null>(null);
-let selectedDirectory = $state<string | null>(null);
-// Git working-tree status so the file tree can flag new (green) and modified
-// (amber) files/directories. Keyed by repo-relative path.
-let gitStatus = $state<Record<string, string>>({});
-let changedDirectories = $state<Set<string>>(new Set());
-let treeSearchQuery = $state("");
-let editing = $state(false);
-let draftContent = $state("");
-let saveBaseRevision = $state("");
-let saving = $state(false);
-let findReplaceOpen = $state(false);
-let findQuery = $state("");
-let replaceQuery = $state("");
-let caseSensitive = $state(false);
-let regexSearch = $state(false);
-let wholeWord = $state(false);
-let matchIndex = $state(-1);
-let editorElement = $state<HTMLTextAreaElement | undefined>(undefined);
-let findInputElement = $state<HTMLInputElement | undefined>(undefined);
-let gutterElement = $state<HTMLDivElement | undefined>(undefined);
-let treeLoading = $state(false);
-let refreshing = $state(false);
-let fileLoading = $state(false);
-let filePreview = $state<WorkspaceFilePreview | null>(null);
-let fileError = $state("");
-let missingFile = $state(false);
-let createOpen = $state(false);
-let createKind = $state<"file" | "directory">("file");
-let createName = $state("");
-let createError = $state("");
-let creating = $state(false);
-let copyState = $state<"path" | "content" | null>(null);
-let contextLabel = $state("Project checkout");
-let workspaceId = $state("");
-let disposed = false;
-let refreshTimer: ReturnType<typeof setInterval> | undefined;
-let preferencesReady = false;
-let initialTreeReady = false;
-let contentRequest = 0;
-let treeRequest = 0;
-let directoryRequest = new Map<string, number>();
-let lastRevision = "";
-let lastRevisionPath = "";
-let contextEpoch = 0;
-let handledOpenRequest = 0;
-const hiddenPreferencesKey = $derived(`loom.preview.panel.${projectId}`);
+	let treeVisible = $state(true);
+	let treeWidth = $state(250);
+	let entriesByDirectory = $state<Record<string, WorkspaceFileEntry[]>>({});
+	let expandedDirectories = $state<string[]>([]);
+	let activePath = $state<string | null>(null);
+	let selectedDirectory = $state<string | null>(null);
+	// Git working-tree status so the file tree can flag new (green) and modified
+	// (amber) files/directories. Keyed by repo-relative path.
+	let gitStatus = $state<Record<string, string>>({});
+	let changedDirectories = $state<Set<string>>(new Set());
+	let treeSearchQuery = $state("");
+	let editing = $state(false);
+	let draftContent = $state("");
+	let saveBaseRevision = $state("");
+	let saving = $state(false);
+	let findReplaceOpen = $state(false);
+	let findQuery = $state("");
+	let replaceQuery = $state("");
+	let caseSensitive = $state(false);
+	let regexSearch = $state(false);
+	let wholeWord = $state(false);
+	let matchIndex = $state(-1);
+	let editorElement = $state<HTMLTextAreaElement | undefined>(undefined);
+	let findInputElement = $state<HTMLInputElement | undefined>(undefined);
+	let gutterElement = $state<HTMLDivElement | undefined>(undefined);
+	let treeLoading = $state(false);
+	let refreshing = $state(false);
+	let fileLoading = $state(false);
+	let filePreview = $state<WorkspaceFilePreview | null>(null);
+	let fileError = $state("");
+	let missingFile = $state(false);
+	let createOpen = $state(false);
+	let createKind = $state<"file" | "directory">("file");
+	let createName = $state("");
+	let createError = $state("");
+	let creating = $state(false);
+	let copyState = $state<"path" | "content" | null>(null);
+	let contextLabel = $state("Project checkout");
+	let workspaceId = $state("");
+	let disposed = false;
+	let refreshTimer: ReturnType<typeof setInterval> | undefined;
+	let preferencesReady = false;
+	let initialTreeReady = false;
+	let contentRequest = 0;
+	let treeRequest = 0;
+	let directoryRequest = new Map<string, number>();
+	let lastRevision = "";
+	let lastRevisionPath = "";
+	let contextEpoch = 0;
+	let handledOpenRequest = 0;
+	const hiddenPreferencesKey = $derived(`loom.preview.panel.${projectId}`);
 
-const selectedParent = $derived.by(() => {
-	if (selectedDirectory !== null) return selectedDirectory;
-	if (activePath) return activePath.split("/").slice(0, -1).join("/");
-	return "";
-});
-const unsavedChanges = $derived(
-	editing && draftContent !== (filePreview?.content ?? ""),
-);
-const draftLineNumbers = $derived(
-	draftContent.split("\n").map((_, index) => index + 1),
-);
-const findPatternError = $derived.by(() => {
-	if (!regexSearch || !findQuery) return "";
-	try {
-		const source = wholeWord ? `\\b(?:${findQuery})\\b` : findQuery;
-		new RegExp(source, `gu${caseSensitive ? "" : "i"}`);
+	const selectedParent = $derived.by(() => {
+		if (selectedDirectory !== null) return selectedDirectory;
+		if (activePath) return activePath.split("/").slice(0, -1).join("/");
 		return "";
-	} catch {
-		return "Invalid regular expression";
-	}
-});
-const findMatches = $derived.by(() => {
-	if (!findQuery || findPatternError) return [];
-	try {
-		const source = regexSearch ? findQuery : escapeRegExp(findQuery);
-		const boundedSource = wholeWord ? `\\b(?:${source})\\b` : source;
-		const expression = new RegExp(
-			boundedSource,
-			`gu${caseSensitive ? "" : "i"}`,
-		);
-		const matches: Array<{ start: number; end: number; text: string }> = [];
-		const sourceText = editing ? draftContent : displayCode;
-		for (
-			let match = expression.exec(sourceText);
-			match;
-			match = expression.exec(sourceText)
-		) {
-			matches.push({
-				start: match.index,
-				end: match.index + match[0].length,
-				text: match[0],
-			});
-			if (!match[0].length) expression.lastIndex += 1;
-		}
-		return matches;
-	} catch {
-		return [];
-	}
-});
-const syntaxLanguage = $derived(
-	activePath?.split(".").at(-1)?.toLowerCase() ?? "plaintext",
-);
-const displayCode = $derived(filePreview?.content ?? "");
-const highlighted = $derived.by(() => {
-	if (!filePreview || filePreview.binary || !filePreview.complete) return "";
-	try {
-		if (hljs.getLanguage(syntaxLanguage))
-			return hljs.highlight(displayCode, { language: syntaxLanguage }).value;
-		return hljs.highlightAuto(displayCode).value;
-	} catch {
-		return hljs.highlightAuto(displayCode).value;
-	}
-});
-const safeHighlighted = $derived(DOMPurify.sanitize(highlighted));
-const codeLines = $derived(safeHighlighted.split("\n"));
-const filteredRootEntries = $derived(
-	filterEntries(entriesByDirectory[""] ?? []),
-);
-
-function filterEntries(entries: WorkspaceFileEntry[]): WorkspaceFileEntry[] {
-	const query = treeSearchQuery.trim().toLocaleLowerCase();
-	if (!query) return entries;
-	return entries.filter((entry) => {
-		if (entry.name.toLocaleLowerCase().includes(query)) return true;
-		return (
-			entry.type === "directory" &&
-			filterEntries(entriesByDirectory[entry.path] ?? []).length > 0
-		);
 	});
-}
-
-function escapeRegExp(value: string) {
-	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function preferences(): PreviewPreferences {
-	try {
-		return JSON.parse(
-			localStorage.getItem(hiddenPreferencesKey) ?? "{}",
-		) as PreviewPreferences;
-	} catch {
-		return {};
-	}
-}
-
-function projectRelativePath(path: string | null | undefined): string | null {
-	if (!path) return null;
-	const normalized = path.replaceAll("\\", "/");
-	const root = projectPath.replaceAll("\\", "/").replace(/\/$/, "");
-	if (normalized === root) return "";
-	if (normalized.startsWith(`${root}/`))
-		return normalized.slice(root.length + 1);
-	return normalized.startsWith("/") ? null : normalized;
-}
-
-function savePreferences() {
-	if (typeof localStorage === "undefined") return;
-	try {
-		localStorage.setItem(
-			hiddenPreferencesKey,
-			JSON.stringify({
-				treeVisible,
-				treeWidth,
-				workspaceId,
-				activePath,
-				selectedDirectory,
-				expandedDirectories: expandedDirectories.slice(0, 30),
-				expanded,
-			}),
-		);
-	} catch {
-		// Panel state is only a preference; storage may be disabled.
-	}
-}
-
-async function loadDirectory(directory: string) {
-	const request = ++treeRequest;
-	const requestContextEpoch = contextEpoch;
-	const requestForDirectory = (directoryRequest.get(directory) ?? 0) + 1;
-	directoryRequest.set(directory, requestForDirectory);
-	if (!entriesByDirectory[directory]) treeLoading = true;
-	try {
-		const result = await chat.workspaceTree(
-			projectId,
-			directory,
-			directory ? workspaceId : "",
-		);
-		if (
-			disposed ||
-			projectId !== result.context.projectId ||
-			(requestContextEpoch !== contextEpoch && directory !== "") ||
-			directoryRequest.get(directory) !== requestForDirectory
-		)
-			return;
-		if (workspaceId && workspaceId !== result.context.workspaceId) {
-			contextEpoch++;
-			contentRequest++;
-			entriesByDirectory = {};
-			expandedDirectories = [];
-			activePath = null;
-			selectedDirectory = null;
-			filePreview = null;
-			fileError = "";
-			lastRevision = "";
-			lastRevisionPath = "";
-			toast.info("The project checkout changed. The file selection was reset.");
+	const unsavedChanges = $derived(
+		editing && draftContent !== (filePreview?.content ?? ""),
+	);
+	const draftLineNumbers = $derived(
+		draftContent.split("\n").map((_, index) => index + 1),
+	);
+	const findPatternError = $derived.by(() => {
+		if (!regexSearch || !findQuery) return "";
+		try {
+			const source = wholeWord ? `\\b(?:${findQuery})\\b` : findQuery;
+			new RegExp(source, `gu${caseSensitive ? "" : "i"}`);
+			return "";
+		} catch {
+			return "Invalid regular expression";
 		}
-		workspaceId = result.context.workspaceId;
-		contextLabel = result.context.label;
-		entriesByDirectory = {
-			...entriesByDirectory,
-			[directory]: result.entries,
-		};
-		if (result.truncated)
-			toast.info(
-				`Showing the first ${result.entries.length} entries in ${directory || "the project root"}.`,
+	});
+	const findMatches = $derived.by(() => {
+		if (!findQuery || findPatternError) return [];
+		try {
+			const source = regexSearch ? findQuery : escapeRegExp(findQuery);
+			const boundedSource = wholeWord ? `\\b(?:${source})\\b` : source;
+			const expression = new RegExp(
+				boundedSource,
+				`gu${caseSensitive ? "" : "i"}`,
 			);
-	} catch (reason) {
-		if (!disposed && directoryRequest.get(directory) === requestForDirectory) {
-			fileError =
-				reason instanceof Error
-					? reason.message
-					: "Unable to list workspace files.";
+			const matches: Array<{ start: number; end: number; text: string }> = [];
+			const sourceText = editing ? draftContent : displayCode;
+			for (
+				let match = expression.exec(sourceText);
+				match;
+				match = expression.exec(sourceText)
+			) {
+				matches.push({
+					start: match.index,
+					end: match.index + match[0].length,
+					text: match[0],
+				});
+				if (!match[0].length) expression.lastIndex += 1;
+			}
+			return matches;
+		} catch {
+			return [];
 		}
-	} finally {
-		if (!disposed && request === treeRequest) treeLoading = false;
-	}
-}
+	});
+	const syntaxLanguage = $derived(
+		activePath?.split(".").at(-1)?.toLowerCase() ?? "plaintext",
+	);
+	const displayCode = $derived(filePreview?.content ?? "");
+	const highlighted = $derived.by(() => {
+		if (!filePreview || filePreview.binary || !filePreview.complete) return "";
+		try {
+			if (hljs.getLanguage(syntaxLanguage))
+				return hljs.highlight(displayCode, { language: syntaxLanguage }).value;
+			return hljs.highlightAuto(displayCode).value;
+		} catch {
+			return hljs.highlightAuto(displayCode).value;
+		}
+	});
+	const safeHighlighted = $derived(DOMPurify.sanitize(highlighted));
+	const codeLines = $derived(safeHighlighted.split("\n"));
+	const filteredRootEntries = $derived(
+		filterEntries(entriesByDirectory[""] ?? []),
+	);
 
-async function openFile(path: string, silent = false) {
-	if (unsavedChanges) {
-		toast.error("Save or discard your edits before opening another file.");
-		return;
+	function filterEntries(entries: WorkspaceFileEntry[]): WorkspaceFileEntry[] {
+		const query = treeSearchQuery.trim().toLocaleLowerCase();
+		if (!query) return entries;
+		return entries.filter((entry) => {
+			if (entry.name.toLocaleLowerCase().includes(query)) return true;
+			return (
+				entry.type === "directory" &&
+				filterEntries(entriesByDirectory[entry.path] ?? []).length > 0
+			);
+		});
 	}
-	if (editing) editing = false;
-	activePath = path;
-	selectedDirectory = null;
-	fileLoading = !silent;
-	fileError = "";
-	missingFile = false;
-	const request = ++contentRequest;
-	try {
-		if (!workspaceId) throw new Error("Workspace context is not ready yet.");
-		const result = await chat.workspaceFile(projectId, path, workspaceId);
-		if (disposed || request !== contentRequest) return;
-		if (
-			lastRevisionPath === path &&
-			lastRevision &&
-			lastRevision !== result.revision
-		)
-			toast.info("File changed on disk. Preview refreshed.");
-		lastRevision = result.revision;
-		lastRevisionPath = path;
-		filePreview = result;
-	} catch (reason) {
-		if (disposed || request !== contentRequest) return;
-		filePreview = null;
-		missingFile = true;
-		fileError =
-			reason instanceof Error ? reason.message : "Unable to read this file.";
-	} finally {
-		if (!disposed && request === contentRequest) fileLoading = false;
-	}
-}
 
-async function toggleDirectory(path: string) {
-	selectedDirectory = path;
-	if (expandedDirectories.includes(path)) {
-		expandedDirectories = expandedDirectories.filter((item) => item !== path);
-		return;
+	function escapeRegExp(value: string) {
+		return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 	}
-	expandedDirectories = [...expandedDirectories, path];
-	await loadDirectory(path);
-}
 
-async function refresh() {
-	if (refreshing) return;
-	if (unsavedChanges) {
-		toast.error("Save or discard your edits before refreshing the preview.");
-		return;
+	function preferences(): PreviewPreferences {
+		try {
+			return JSON.parse(
+				localStorage.getItem(hiddenPreferencesKey) ?? "{}",
+			) as PreviewPreferences;
+		} catch {
+			return {};
+		}
 	}
-	refreshing = true;
-	fileError = "";
-	try {
-		await loadDirectory("");
-		for (const directory of expandedDirectories) await loadDirectory(directory);
-		if (activePath) await openFile(activePath);
-		void loadGitStatus();
-	} finally {
-		refreshing = false;
-	}
-}
 
-// Pull the project's git working-tree status and index it by path, plus the set
-// of ancestor directories that contain a change (so collapsed folders flag it).
-async function loadGitStatus() {
-	const project = projectId;
-	try {
-		const overview = await daemon.getProjectGit(project);
-		if (disposed || project !== projectId) return;
-		const status: Record<string, string> = {};
-		const dirs = new Set<string>();
-		for (const file of overview?.files ?? []) {
-			const path = file.path.replace(/^\.\//, "");
-			if (!path) continue;
-			status[path] = file.status;
-			const segments = path.split("/");
-			let prefix = "";
-			for (let i = 0; i < segments.length - 1; i++) {
-				prefix = prefix ? `${prefix}/${segments[i]}` : (segments[i] ?? "");
-				dirs.add(prefix);
+	function projectRelativePath(path: string | null | undefined): string | null {
+		if (!path) return null;
+		const normalized = path.replaceAll("\\", "/");
+		const root = projectPath.replaceAll("\\", "/").replace(/\/$/, "");
+		if (normalized === root) return "";
+		if (normalized.startsWith(`${root}/`))
+			return normalized.slice(root.length + 1);
+		return normalized.startsWith("/") ? null : normalized;
+	}
+
+	function savePreferences() {
+		if (typeof localStorage === "undefined") return;
+		try {
+			localStorage.setItem(
+				hiddenPreferencesKey,
+				JSON.stringify({
+					treeVisible,
+					treeWidth,
+					workspaceId,
+					activePath,
+					selectedDirectory,
+					expandedDirectories: expandedDirectories.slice(0, 30),
+					expanded,
+				}),
+			);
+		} catch {
+			// Panel state is only a preference; storage may be disabled.
+		}
+	}
+
+	async function loadDirectory(directory: string) {
+		const request = ++treeRequest;
+		const requestContextEpoch = contextEpoch;
+		const requestForDirectory = (directoryRequest.get(directory) ?? 0) + 1;
+		directoryRequest.set(directory, requestForDirectory);
+		if (!entriesByDirectory[directory]) treeLoading = true;
+		try {
+			const result = await chat.workspaceTree(
+				projectId,
+				directory,
+				directory ? workspaceId : "",
+			);
+			if (
+				disposed ||
+				projectId !== result.context.projectId ||
+				(requestContextEpoch !== contextEpoch && directory !== "") ||
+				directoryRequest.get(directory) !== requestForDirectory
+			)
+				return;
+			if (workspaceId && workspaceId !== result.context.workspaceId) {
+				contextEpoch++;
+				contentRequest++;
+				entriesByDirectory = {};
+				expandedDirectories = [];
+				activePath = null;
+				selectedDirectory = null;
+				filePreview = null;
+				fileError = "";
+				lastRevision = "";
+				lastRevisionPath = "";
+				toast.info(
+					"The project checkout changed. The file selection was reset.",
+				);
+			}
+			workspaceId = result.context.workspaceId;
+			contextLabel = result.context.label;
+			entriesByDirectory = {
+				...entriesByDirectory,
+				[directory]: result.entries,
+			};
+			if (result.truncated)
+				toast.info(
+					`Showing the first ${result.entries.length} entries in ${directory || "the project root"}.`,
+				);
+		} catch (reason) {
+			if (
+				!disposed &&
+				directoryRequest.get(directory) === requestForDirectory
+			) {
+				fileError =
+					reason instanceof Error
+						? reason.message
+						: "Unable to list workspace files.";
+			}
+		} finally {
+			if (!disposed && request === treeRequest) treeLoading = false;
+		}
+	}
+
+	async function openFile(path: string, silent = false) {
+		if (unsavedChanges) {
+			toast.error("Save or discard your edits before opening another file.");
+			return;
+		}
+		if (editing) editing = false;
+		activePath = path;
+		selectedDirectory = null;
+		fileLoading = !silent;
+		fileError = "";
+		missingFile = false;
+		const request = ++contentRequest;
+		try {
+			if (!workspaceId) throw new Error("Workspace context is not ready yet.");
+			const result = await chat.workspaceFile(projectId, path, workspaceId);
+			if (disposed || request !== contentRequest) return;
+			if (
+				lastRevisionPath === path &&
+				lastRevision &&
+				lastRevision !== result.revision
+			)
+				toast.info("File changed on disk. Preview refreshed.");
+			lastRevision = result.revision;
+			lastRevisionPath = path;
+			filePreview = result;
+		} catch (reason) {
+			if (disposed || request !== contentRequest) return;
+			filePreview = null;
+			missingFile = true;
+			fileError =
+				reason instanceof Error ? reason.message : "Unable to read this file.";
+		} finally {
+			if (!disposed && request === contentRequest) fileLoading = false;
+		}
+	}
+
+	async function toggleDirectory(path: string) {
+		selectedDirectory = path;
+		if (expandedDirectories.includes(path)) {
+			expandedDirectories = expandedDirectories.filter((item) => item !== path);
+			return;
+		}
+		expandedDirectories = [...expandedDirectories, path];
+		await loadDirectory(path);
+	}
+
+	async function refresh() {
+		if (refreshing) return;
+		if (unsavedChanges) {
+			toast.error("Save or discard your edits before refreshing the preview.");
+			return;
+		}
+		refreshing = true;
+		fileError = "";
+		try {
+			await loadDirectory("");
+			for (const directory of expandedDirectories)
+				await loadDirectory(directory);
+			if (activePath) await openFile(activePath);
+			void loadGitStatus();
+		} finally {
+			refreshing = false;
+		}
+	}
+
+	// Pull the project's git working-tree status and index it by path, plus the set
+	// of ancestor directories that contain a change (so collapsed folders flag it).
+	async function loadGitStatus() {
+		const project = projectId;
+		try {
+			const overview = await daemon.getProjectGit(project);
+			if (disposed || project !== projectId) return;
+			const status: Record<string, string> = {};
+			const dirs = new Set<string>();
+			for (const file of overview?.files ?? []) {
+				const path = file.path.replace(/^\.\//, "");
+				if (!path) continue;
+				status[path] = file.status;
+				const segments = path.split("/");
+				let prefix = "";
+				for (let i = 0; i < segments.length - 1; i++) {
+					prefix = prefix ? `${prefix}/${segments[i]}` : (segments[i] ?? "");
+					dirs.add(prefix);
+				}
+			}
+			gitStatus = status;
+			changedDirectories = dirs;
+		} catch {
+			if (project === projectId) {
+				gitStatus = {};
+				changedDirectories = new Set();
 			}
 		}
-		gitStatus = status;
-		changedDirectories = dirs;
-	} catch {
-		if (project === projectId) {
-			gitStatus = {};
-			changedDirectories = new Set();
-		}
 	}
-}
 
-type FileChange = "added" | "modified" | "deleted" | "renamed" | null;
-function fileChange(path: string): FileChange {
-	const code = (gitStatus[path] ?? "").trim();
-	if (!code) return null;
-	if (code.startsWith("??") || code.includes("A")) return "added";
-	if (code.includes("D")) return "deleted";
-	if (code.includes("R")) return "renamed";
-	if (code.includes("M")) return "modified";
-	return "modified";
-}
-const changeText: Record<Exclude<FileChange, null>, string> = {
-	added: "text-emerald-400",
-	modified: "text-amber-400",
-	deleted: "text-red-400 line-through",
-	renamed: "text-sky-400",
-};
-const changeDot: Record<Exclude<FileChange, null>, string> = {
-	added: "bg-emerald-400",
-	modified: "bg-amber-400",
-	deleted: "bg-red-400",
-	renamed: "bg-sky-400",
-};
-const changeLabel: Record<Exclude<FileChange, null>, string> = {
-	added: "New file",
-	modified: "Modified",
-	deleted: "Deleted",
-	renamed: "Renamed",
-};
-// Highest-priority change among a directory's contents, for the folder dot.
-function directoryChange(path: string): FileChange {
-	if (!changedDirectories.has(path)) return null;
-	const prefix = `${path}/`;
-	const rank: Record<string, number> = {
-		added: 3,
-		modified: 2,
-		renamed: 1,
-		deleted: 1,
+	type FileChange = "added" | "modified" | "deleted" | "renamed" | null;
+	function fileChange(path: string): FileChange {
+		const code = (gitStatus[path] ?? "").trim();
+		if (!code) return null;
+		if (code.startsWith("??") || code.includes("A")) return "added";
+		if (code.includes("D")) return "deleted";
+		if (code.includes("R")) return "renamed";
+		if (code.includes("M")) return "modified";
+		return "modified";
+	}
+	const changeText: Record<Exclude<FileChange, null>, string> = {
+		added: "text-emerald-400",
+		modified: "text-amber-400",
+		deleted: "text-red-400 line-through",
+		renamed: "text-sky-400",
 	};
-	let best: FileChange = null;
-	let bestRank = 0;
-	for (const file of Object.keys(gitStatus)) {
-		if (!file.startsWith(prefix)) continue;
-		const change = fileChange(file);
-		const value = change ? (rank[change] ?? 0) : 0;
-		if (change && value > bestRank) {
-			bestRank = value;
-			best = change;
-		}
-	}
-	return best;
-}
-
-function beginEdit() {
-	if (!filePreview || filePreview.binary || !filePreview.complete) return;
-	draftContent = filePreview.content ?? "";
-	saveBaseRevision = filePreview.revision;
-	editing = true;
-}
-
-function cancelEdit() {
-	if (saving) return;
-	draftContent = filePreview?.content ?? "";
-	editing = false;
-	findReplaceOpen = false;
-	matchIndex = -1;
-}
-
-async function saveFile() {
-	if (
-		!activePath ||
-		!filePreview ||
-		!editing ||
-		!unsavedChanges ||
-		saving ||
-		busy ||
-		!workspaceId
-	)
-		return;
-	saving = true;
-	const lineEnding = filePreview.content?.includes("\r\n") ? "\r\n" : "\n";
-	const content =
-		lineEnding === "\r\n"
-			? draftContent.replace(/\r?\n/g, "\r\n")
-			: draftContent;
-	try {
-		const result = await chat.saveWorkspaceFile(
-			projectId,
-			workspaceId,
-			activePath,
-			content,
-			saveBaseRevision,
-			crypto.randomUUID(),
-		);
-		filePreview = {
-			...filePreview,
-			content,
-			byteSize: result.byteSize,
-			revision: result.revision,
+	const changeDot: Record<Exclude<FileChange, null>, string> = {
+		added: "bg-emerald-400",
+		modified: "bg-amber-400",
+		deleted: "bg-red-400",
+		renamed: "bg-sky-400",
+	};
+	const changeLabel: Record<Exclude<FileChange, null>, string> = {
+		added: "New file",
+		modified: "Modified",
+		deleted: "Deleted",
+		renamed: "Renamed",
+	};
+	// Highest-priority change among a directory's contents, for the folder dot.
+	function directoryChange(path: string): FileChange {
+		if (!changedDirectories.has(path)) return null;
+		const prefix = `${path}/`;
+		const rank: Record<string, number> = {
+			added: 3,
+			modified: 2,
+			renamed: 1,
+			deleted: 1,
 		};
-		draftContent = content;
-		saveBaseRevision = result.revision;
-		lastRevision = result.revision;
-		lastRevisionPath = activePath;
+		let best: FileChange = null;
+		let bestRank = 0;
+		for (const file of Object.keys(gitStatus)) {
+			if (!file.startsWith(prefix)) continue;
+			const change = fileChange(file);
+			const value = change ? (rank[change] ?? 0) : 0;
+			if (change && value > bestRank) {
+				bestRank = value;
+				best = change;
+			}
+		}
+		return best;
+	}
+
+	function beginEdit() {
+		if (!filePreview || filePreview.binary || !filePreview.complete) return;
+		draftContent = filePreview.content ?? "";
+		saveBaseRevision = filePreview.revision;
+		editing = true;
+	}
+
+	function cancelEdit() {
+		if (saving) return;
+		draftContent = filePreview?.content ?? "";
 		editing = false;
 		findReplaceOpen = false;
-		toast.success("File saved.");
-	} catch (reason) {
-		toast.error(
-			reason instanceof Error ? reason.message : "Unable to save this file.",
-		);
-	} finally {
-		saving = false;
-	}
-}
-
-async function openFindReplace() {
-	findReplaceOpen = !findReplaceOpen;
-	if (!findReplaceOpen) return;
-	await tick();
-	findInputElement?.focus();
-	findInputElement?.select();
-}
-
-async function findNext(direction: 1 | -1) {
-	if (!editing) beginEdit();
-	await tick();
-	if (!findMatches.length) {
 		matchIndex = -1;
-		return;
 	}
-	matchIndex =
-		direction === 1
-			? (matchIndex + 1 + findMatches.length) % findMatches.length
-			: (matchIndex <= 0 ? findMatches.length : matchIndex) - 1;
-	const match = findMatches[matchIndex];
-	if (!match || !editorElement) return;
-	editorElement.setSelectionRange(match.start, match.end);
-	const line = draftContent.slice(0, match.start).split("\n").length - 1;
-	editorElement.scrollTop = line * 24;
-}
 
-async function replaceCurrent() {
-	if (!editing) beginEdit();
-	await tick();
-	if (matchIndex < 0 && findMatches.length) matchIndex = 0;
-	const match = findMatches[matchIndex];
-	if (!match) {
-		await findNext(1);
-		return;
-	}
-	const source = regexSearch ? findQuery : escapeRegExp(findQuery);
-	const boundedSource = wholeWord ? `\\b(?:${source})\\b` : source;
-	const flags = `u${caseSensitive ? "" : "i"}`;
-	try {
-		const expression = new RegExp(boundedSource, flags);
-		const replacement = match.text.replace(expression, replaceQuery);
-		draftContent =
-			draftContent.slice(0, match.start) +
-			replacement +
-			draftContent.slice(match.end);
-		matchIndex = -1;
-		await tick();
-		await findNext(1);
-	} catch {
-		toast.error("Check the search expression and replacement text.");
-	}
-}
-
-function replaceAll() {
-	if (!findQuery) return;
-	if (!editing) beginEdit();
-	const source = regexSearch ? findQuery : escapeRegExp(findQuery);
-	const boundedSource = wholeWord ? `\\b(?:${source})\\b` : source;
-	try {
-		const expression = new RegExp(
-			boundedSource,
-			`gu${caseSensitive ? "" : "i"}`,
-		);
-		const nextContent = draftContent.replace(expression, replaceQuery);
-		const replacements = findMatches.length;
-		draftContent = nextContent;
-		matchIndex = -1;
-		toast.success(
-			`${replacements} replacement${replacements === 1 ? "" : "s"} applied.`,
-		);
-	} catch {
-		toast.error("Check the search expression and replacement text.");
-	}
-}
-
-function handleFindKeydown(event: KeyboardEvent) {
-	if (event.key !== "Enter") return;
-	event.preventDefault();
-	void findNext(event.shiftKey ? -1 : 1);
-}
-
-function handleEditorScroll(event: Event) {
-	if (gutterElement)
-		gutterElement.scrollTop = (
-			event.currentTarget as HTMLTextAreaElement
-		).scrollTop;
-}
-
-function collapseAll() {
-	expandedDirectories = [];
-	selectedDirectory = null;
-	// Keep the active file and the currently visible preview selected.
-}
-
-function showCreate(kind: "file" | "directory") {
-	if (busy || !projectId || !workspaceId) return;
-	if (unsavedChanges) {
-		toast.error("Save or discard your edits before creating a file or folder.");
-		return;
-	}
-	createKind = kind;
-	createName = "";
-	createError = "";
-	createOpen = true;
-}
-
-async function submitCreate(event: SubmitEvent) {
-	event.preventDefault();
-	if (!createName.trim() || creating) return;
-	creating = true;
-	createError = "";
-	const name = createName;
-	const requestId = crypto.randomUUID();
-	try {
-		const result =
-			createKind === "file"
-				? await chat.createWorkspaceFile(
-						projectId,
-						workspaceId,
-						selectedParent,
-						name,
-						requestId,
-					)
-				: await chat.createWorkspaceDirectory(
-						projectId,
-						workspaceId,
-						selectedParent,
-						name,
-						requestId,
-					);
-		createOpen = false;
-		await loadDirectory(selectedParent);
-		if (selectedParent && !expandedDirectories.includes(selectedParent))
-			expandedDirectories = [...expandedDirectories, selectedParent];
-		if (result.type === "directory") {
-			selectedDirectory = result.path;
-			expandedDirectories = [...expandedDirectories, result.path];
-			await loadDirectory(result.path);
-		} else {
-			selectedDirectory = selectedParent;
-			await openFile(result.path);
+	async function saveFile() {
+		if (
+			!activePath ||
+			!filePreview ||
+			!editing ||
+			!unsavedChanges ||
+			saving ||
+			busy ||
+			!workspaceId
+		)
+			return;
+		saving = true;
+		const lineEnding = filePreview.content?.includes("\r\n") ? "\r\n" : "\n";
+		const content =
+			lineEnding === "\r\n"
+				? draftContent.replace(/\r?\n/g, "\r\n")
+				: draftContent;
+		try {
+			const result = await chat.saveWorkspaceFile(
+				projectId,
+				workspaceId,
+				activePath,
+				content,
+				saveBaseRevision,
+				crypto.randomUUID(),
+			);
+			filePreview = {
+				...filePreview,
+				content,
+				byteSize: result.byteSize,
+				revision: result.revision,
+			};
+			draftContent = content;
+			saveBaseRevision = result.revision;
+			lastRevision = result.revision;
+			lastRevisionPath = activePath;
+			editing = false;
+			findReplaceOpen = false;
+			toast.success("File saved.");
+		} catch (reason) {
+			toast.error(
+				reason instanceof Error ? reason.message : "Unable to save this file.",
+			);
+		} finally {
+			saving = false;
 		}
-		toast.success(`${createKind === "file" ? "File" : "Folder"} created.`);
-	} catch (reason) {
-		createError =
-			reason instanceof Error
-				? reason.message
-				: "Unable to create workspace entry.";
-	} finally {
-		creating = false;
 	}
-}
 
-async function copy(value: string, kind: "path" | "content") {
-	try {
-		if (!navigator.clipboard?.writeText)
-			throw new Error("Clipboard access is unavailable in this browser.");
-		await navigator.clipboard.writeText(value);
-		copyState = kind;
-		toast.success(
-			kind === "path" ? "File path copied." : "File content copied.",
-		);
-		setTimeout(() => {
-			if (copyState === kind) copyState = null;
-		}, 1500);
-	} catch (reason) {
-		toast.error(
-			reason instanceof Error ? reason.message : "Unable to copy to clipboard.",
-		);
+	async function openFindReplace() {
+		findReplaceOpen = !findReplaceOpen;
+		if (!findReplaceOpen) return;
+		await tick();
+		findInputElement?.focus();
+		findInputElement?.select();
 	}
-}
 
-function handleWindowKeydown(event: KeyboardEvent) {
-	if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+	async function findNext(direction: 1 | -1) {
+		if (!editing) beginEdit();
+		await tick();
+		if (!findMatches.length) {
+			matchIndex = -1;
+			return;
+		}
+		matchIndex =
+			direction === 1
+				? (matchIndex + 1 + findMatches.length) % findMatches.length
+				: (matchIndex <= 0 ? findMatches.length : matchIndex) - 1;
+		const match = findMatches[matchIndex];
+		if (!match || !editorElement) return;
+		editorElement.setSelectionRange(match.start, match.end);
+		const line = draftContent.slice(0, match.start).split("\n").length - 1;
+		editorElement.scrollTop = line * 24;
+	}
+
+	async function replaceCurrent() {
+		if (!editing) beginEdit();
+		await tick();
+		if (matchIndex < 0 && findMatches.length) matchIndex = 0;
+		const match = findMatches[matchIndex];
+		if (!match) {
+			await findNext(1);
+			return;
+		}
+		const source = regexSearch ? findQuery : escapeRegExp(findQuery);
+		const boundedSource = wholeWord ? `\\b(?:${source})\\b` : source;
+		const flags = `u${caseSensitive ? "" : "i"}`;
+		try {
+			const expression = new RegExp(boundedSource, flags);
+			const replacement = match.text.replace(expression, replaceQuery);
+			draftContent =
+				draftContent.slice(0, match.start) +
+				replacement +
+				draftContent.slice(match.end);
+			matchIndex = -1;
+			await tick();
+			await findNext(1);
+		} catch {
+			toast.error("Check the search expression and replacement text.");
+		}
+	}
+
+	function replaceAll() {
+		if (!findQuery) return;
+		if (!editing) beginEdit();
+		const source = regexSearch ? findQuery : escapeRegExp(findQuery);
+		const boundedSource = wholeWord ? `\\b(?:${source})\\b` : source;
+		try {
+			const expression = new RegExp(
+				boundedSource,
+				`gu${caseSensitive ? "" : "i"}`,
+			);
+			const nextContent = draftContent.replace(expression, replaceQuery);
+			const replacements = findMatches.length;
+			draftContent = nextContent;
+			matchIndex = -1;
+			toast.success(
+				`${replacements} replacement${replacements === 1 ? "" : "s"} applied.`,
+			);
+		} catch {
+			toast.error("Check the search expression and replacement text.");
+		}
+	}
+
+	function handleFindKeydown(event: KeyboardEvent) {
+		if (event.key !== "Enter") return;
 		event.preventDefault();
-		if (!findReplaceOpen) void openFindReplace();
-		return;
+		void findNext(event.shiftKey ? -1 : 1);
 	}
-	if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "h") {
+
+	function handleEditorScroll(event: Event) {
+		if (gutterElement)
+			gutterElement.scrollTop = (
+				event.currentTarget as HTMLTextAreaElement
+			).scrollTop;
+	}
+
+	function collapseAll() {
+		expandedDirectories = [];
+		selectedDirectory = null;
+		// Keep the active file and the currently visible preview selected.
+	}
+
+	function showCreate(kind: "file" | "directory") {
+		if (busy || !projectId || !workspaceId) return;
+		if (unsavedChanges) {
+			toast.error(
+				"Save or discard your edits before creating a file or folder.",
+			);
+			return;
+		}
+		createKind = kind;
+		createName = "";
+		createError = "";
+		createOpen = true;
+	}
+
+	async function submitCreate(event: SubmitEvent) {
 		event.preventDefault();
-		if (!findReplaceOpen) void openFindReplace();
-		return;
+		if (!createName.trim() || creating) return;
+		creating = true;
+		createError = "";
+		const name = createName;
+		const requestId = crypto.randomUUID();
+		try {
+			const result =
+				createKind === "file"
+					? await chat.createWorkspaceFile(
+							projectId,
+							workspaceId,
+							selectedParent,
+							name,
+							requestId,
+						)
+					: await chat.createWorkspaceDirectory(
+							projectId,
+							workspaceId,
+							selectedParent,
+							name,
+							requestId,
+						);
+			createOpen = false;
+			await loadDirectory(selectedParent);
+			if (selectedParent && !expandedDirectories.includes(selectedParent))
+				expandedDirectories = [...expandedDirectories, selectedParent];
+			if (result.type === "directory") {
+				selectedDirectory = result.path;
+				expandedDirectories = [...expandedDirectories, result.path];
+				await loadDirectory(result.path);
+			} else {
+				selectedDirectory = selectedParent;
+				await openFile(result.path);
+			}
+			toast.success(`${createKind === "file" ? "File" : "Folder"} created.`);
+		} catch (reason) {
+			createError =
+				reason instanceof Error
+					? reason.message
+					: "Unable to create workspace entry.";
+		} finally {
+			creating = false;
+		}
 	}
-	if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
-		event.preventDefault();
-		void saveFile();
-		return;
+
+	async function copy(value: string, kind: "path" | "content") {
+		try {
+			if (!navigator.clipboard?.writeText)
+				throw new Error("Clipboard access is unavailable in this browser.");
+			await navigator.clipboard.writeText(value);
+			copyState = kind;
+			toast.success(
+				kind === "path" ? "File path copied." : "File content copied.",
+			);
+			setTimeout(() => {
+				if (copyState === kind) copyState = null;
+			}, 1500);
+		} catch (reason) {
+			toast.error(
+				reason instanceof Error
+					? reason.message
+					: "Unable to copy to clipboard.",
+			);
+		}
 	}
-	if (event.key === "Escape" && findReplaceOpen) {
-		findReplaceOpen = false;
-		event.stopPropagation();
-		return;
+
+	function handleWindowKeydown(event: KeyboardEvent) {
+		if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+			event.preventDefault();
+			if (!findReplaceOpen) void openFindReplace();
+			return;
+		}
+		if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "h") {
+			event.preventDefault();
+			if (!findReplaceOpen) void openFindReplace();
+			return;
+		}
+		if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+			event.preventDefault();
+			void saveFile();
+			return;
+		}
+		if (event.key === "Escape" && findReplaceOpen) {
+			findReplaceOpen = false;
+			event.stopPropagation();
+			return;
+		}
+		if (event.key === "Escape" && expanded && !createOpen) {
+			expanded = false;
+			event.stopPropagation();
+		}
 	}
-	if (event.key === "Escape" && expanded && !createOpen) {
-		expanded = false;
-		event.stopPropagation();
+
+	function closePreview() {
+		if (unsavedChanges) {
+			toast.error("Save or discard your edits before closing this panel.");
+			return;
+		}
+		onclose();
 	}
-}
 
-function closePreview() {
-	if (unsavedChanges) {
-		toast.error("Save or discard your edits before closing this panel.");
-		return;
+	function openCreateParentLabel() {
+		return selectedParent || "Project root";
 	}
-	onclose();
-}
 
-function openCreateParentLabel() {
-	return selectedParent || "Project root";
-}
+	onMount(async () => {
+		const saved = preferences();
+		treeVisible = saved.treeVisible ?? true;
+		treeWidth = Math.max(180, Math.min(420, saved.treeWidth ?? 250));
+		activePath = projectRelativePath(saved.activePath);
+		selectedDirectory = projectRelativePath(saved.selectedDirectory);
+		expandedDirectories = (saved.expandedDirectories ?? [])
+			.map(projectRelativePath)
+			.filter((path): path is string => path !== null)
+			.slice(0, 30);
+		workspaceId = saved.workspaceId ?? "";
+		expanded = saved.expanded ?? false;
+		preferencesReady = true;
+		await loadDirectory("");
+		void loadGitStatus();
+		initialTreeReady = true;
+		for (const path of expandedDirectories) await loadDirectory(path);
+		if (activePath) await openFile(activePath);
+		refreshTimer = setInterval(() => {
+			if (disposed || document.hidden) return;
+			void (async () => {
+				await loadDirectory("");
+				for (const path of expandedDirectories) await loadDirectory(path);
+				if (activePath && !unsavedChanges && !editing)
+					await openFile(activePath, true);
+				void loadGitStatus();
+			})();
+		}, 3000);
+	});
 
-onMount(async () => {
-	const saved = preferences();
-	treeVisible = saved.treeVisible ?? true;
-	treeWidth = Math.max(180, Math.min(420, saved.treeWidth ?? 250));
-	activePath = projectRelativePath(saved.activePath);
-	selectedDirectory = projectRelativePath(saved.selectedDirectory);
-	expandedDirectories = (saved.expandedDirectories ?? [])
-		.map(projectRelativePath)
-		.filter((path): path is string => path !== null)
-		.slice(0, 30);
-	workspaceId = saved.workspaceId ?? "";
-	expanded = saved.expanded ?? false;
-	preferencesReady = true;
-	await loadDirectory("");
-	void loadGitStatus();
-	initialTreeReady = true;
-	for (const path of expandedDirectories) await loadDirectory(path);
-	if (activePath) await openFile(activePath);
-	refreshTimer = setInterval(() => {
-		if (disposed || document.hidden) return;
-		void (async () => {
-			await loadDirectory("");
-			for (const path of expandedDirectories) await loadDirectory(path);
-			if (activePath && !unsavedChanges && !editing)
-				await openFile(activePath, true);
-			void loadGitStatus();
-		})();
-	}, 3000);
-});
+	onDestroy(() => {
+		disposed = true;
+		if (refreshTimer) clearInterval(refreshTimer);
+	});
 
-onDestroy(() => {
-	disposed = true;
-	if (refreshTimer) clearInterval(refreshTimer);
-});
+	$effect(() => {
+		if (!preferencesReady) return;
+		treeVisible;
+		treeWidth;
+		activePath;
+		selectedDirectory;
+		expandedDirectories;
+		expanded;
+		savePreferences();
+	});
 
-$effect(() => {
-	if (!preferencesReady) return;
-	treeVisible;
-	treeWidth;
-	activePath;
-	selectedDirectory;
-	expandedDirectories;
-	expanded;
-	savePreferences();
-});
+	$effect(() => {
+		const request = openRequest;
+		const path = requestedPath;
+		if (
+			!initialTreeReady ||
+			!workspaceId ||
+			!path ||
+			request === 0 ||
+			request === handledOpenRequest
+		)
+			return;
+		handledOpenRequest = request;
+		void openFile(path);
+	});
 
-$effect(() => {
-	const request = openRequest;
-	const path = requestedPath;
-	if (
-		!initialTreeReady ||
-		!workspaceId ||
-		!path ||
-		request === 0 ||
-		request === handledOpenRequest
-	)
-		return;
-	handledOpenRequest = request;
-	void openFile(path);
-});
-
-$effect(() => {
-	hasUnsavedChanges = unsavedChanges;
-});
+	$effect(() => {
+		hasUnsavedChanges = unsavedChanges;
+	});
 </script>
 
 <svelte:window onkeydown={handleWindowKeydown} />
@@ -797,7 +807,9 @@ $effect(() => {
 				<Button
 					variant="ghost"
 					class={`h-7 min-w-0 flex-1 justify-start gap-1.5 rounded-md px-1.5 text-left text-xs ${selectedDirectory === entry.path ? "bg-accent text-accent-foreground" : "text-muted-foreground"}`}
-					title={dirChange ? `${entry.path}/ · contains ${changeLabel[dirChange]}` : entry.path}
+					title={dirChange
+						? `${entry.path}/ · contains ${changeLabel[dirChange]}`
+						: entry.path}
 					aria-expanded={isOpen}
 					aria-label={`${isOpen ? "Collapse" : "Expand"} folder ${entry.name}`}
 					onclick={() => void toggleDirectory(entry.path)}
@@ -811,8 +823,8 @@ $effect(() => {
 							class={`ml-auto size-1.5 shrink-0 rounded-full ${changeDot[dirChange]}`}
 							role="img"
 							aria-label={`Contains ${changeLabel[dirChange]}`}
-							title={`Contains ${changeLabel[dirChange]}`}></span
-						>{:else}<span class="ml-auto"></span>{/if}
+							title={`Contains ${changeLabel[dirChange]}`}
+						></span>{:else}<span class="ml-auto"></span>{/if}
 				</Button>
 			{:else}
 				{@const change = fileChange(entry.path)}
@@ -828,16 +840,15 @@ $effect(() => {
 						size={14}
 						class={`shrink-0 ${change ? changeText[change] : "text-sky-300/80"}`}
 					/>
-					<span
-						class={`min-w-0 truncate ${change ? changeText[change] : ""}`}
+					<span class={`min-w-0 truncate ${change ? changeText[change] : ""}`}
 						>{entry.name}</span
 					>
 					{#if change}<span
 							class={`ml-auto size-1.5 shrink-0 rounded-full ${changeDot[change]}`}
 							role="img"
 							aria-label={changeLabel[change]}
-							title={changeLabel[change]}></span
-						>{:else}<span class="ml-auto"></span>{/if}
+							title={changeLabel[change]}
+						></span>{:else}<span class="ml-auto"></span>{/if}
 				</Button>
 			{/if}
 		</div>

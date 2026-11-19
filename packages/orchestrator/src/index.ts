@@ -63,71 +63,81 @@ const publicActivityInputKeys = [
 ] as const;
 
 function toPublicRuntimeActivities(activities: RuntimeActivity[]) {
-	return activities.map(({ id, tool, status, input, output, error, metadata }) => {
-		const publicInput = Object.fromEntries(
-			publicActivityInputKeys.flatMap((key) => {
-				const value = input?.[key];
-				return typeof value === "string" && value.trim()
-					? [[key, value.slice(0, 2000)]]
-					: [];
-			}),
-		);
-		const publicMetadata: Record<string, unknown> = {};
-		const filediff = metadata?.filediff;
-		if (filediff && typeof filediff === "object" && !Array.isArray(filediff)) {
-			const diff = filediff as Record<string, unknown>;
-			publicMetadata.filediff = Object.fromEntries(
-				["file", "filePath", "relativePath", "additions", "deletions"].flatMap(
-					(key) => {
+	return activities.map(
+		({ id, tool, status, input, output, error, metadata }) => {
+			const publicInput = Object.fromEntries(
+				publicActivityInputKeys.flatMap((key) => {
+					const value = input?.[key];
+					return typeof value === "string" && value.trim()
+						? [[key, value.slice(0, 2000)]]
+						: [];
+				}),
+			);
+			const publicMetadata: Record<string, unknown> = {};
+			const filediff = metadata?.filediff;
+			if (
+				filediff &&
+				typeof filediff === "object" &&
+				!Array.isArray(filediff)
+			) {
+				const diff = filediff as Record<string, unknown>;
+				publicMetadata.filediff = Object.fromEntries(
+					[
+						"file",
+						"filePath",
+						"relativePath",
+						"additions",
+						"deletions",
+					].flatMap((key) => {
 						const value = diff[key];
 						return (typeof value === "string" && value.length <= 2000) ||
 							typeof value === "number"
 							? [[key, value]]
 							: [];
-					},
-				),
-			);
-		}
-		if (Array.isArray(metadata?.files)) {
-			publicMetadata.files = metadata.files.slice(0, 50).flatMap((entry) => {
-				if (!entry || typeof entry !== "object" || Array.isArray(entry))
-					return [];
-				const file = entry as Record<string, unknown>;
-				return [
-					Object.fromEntries(
-						[
-							"file",
-							"filePath",
-							"relativePath",
-							"additions",
-							"deletions",
-						].flatMap((key) => {
-							const value = file[key];
-							return (typeof value === "string" && value.length <= 2000) ||
-								typeof value === "number"
-								? [[key, value]]
-								: [];
-						}),
-					),
-				];
-			});
-		}
-		return {
-			id,
-			tool,
-			status,
-			...(Object.keys(publicInput).length ? { input: publicInput } : {}),
-			...(typeof output === "string" && output.length
-				? { output: output.slice(-4000) }
-				: {}),
-			...(typeof error === "string" && error.length
-				? { error: error.slice(0, 1000) }
-				: {}),
-			...(Object.keys(publicMetadata).length
-				? { metadata: publicMetadata }
-				: {}),
-		};
-	});
+					}),
+				);
+			}
+			if (Array.isArray(metadata?.files)) {
+				publicMetadata.files = metadata.files.slice(0, 50).flatMap((entry) => {
+					if (!entry || typeof entry !== "object" || Array.isArray(entry))
+						return [];
+					const file = entry as Record<string, unknown>;
+					return [
+						Object.fromEntries(
+							[
+								"file",
+								"filePath",
+								"relativePath",
+								"additions",
+								"deletions",
+							].flatMap((key) => {
+								const value = file[key];
+								return (typeof value === "string" && value.length <= 2000) ||
+									typeof value === "number"
+									? [[key, value]]
+									: [];
+							}),
+						),
+					];
+				});
+			}
+			return {
+				id,
+				tool,
+				status,
+				...(Object.keys(publicInput).length ? { input: publicInput } : {}),
+				...(typeof output === "string" && output.length
+					? { output: output.slice(-4000) }
+					: {}),
+				...(typeof error === "string" && error.length
+					? { error: error.slice(0, 1000) }
+					: {}),
+				...(Object.keys(publicMetadata).length
+					? { metadata: publicMetadata }
+					: {}),
+			};
+		},
+	);
 }
 
 export type TaskRepository = {
@@ -560,16 +570,13 @@ export class TaskOrchestrator {
 		const record = await this.requireTask(taskId);
 		const trimmed = text.trim();
 		if (!trimmed) throw new Error("Follow-up text is empty");
-		if (
-			!["queued", "ready", "preparing", "running"].includes(record.status)
-		)
+		if (!["queued", "ready", "preparing", "running"].includes(record.status))
 			throw new Error(`Task cannot accept follow-ups while ${record.status}`);
 		const queue = this.queuedMessages.get(taskId) ?? [];
 		queue.push(trimmed.slice(0, 4000));
 		this.queuedMessages.set(taskId, queue);
 		const runId = record.sessionId
-			? ((await this.dependencies.agentRuns?.getByTaskId?.(taskId))?.id ??
-				null)
+			? ((await this.dependencies.agentRuns?.getByTaskId?.(taskId))?.id ?? null)
 			: null;
 		if (runId)
 			await this.publishRunProgress(
@@ -1417,8 +1424,9 @@ export class TaskOrchestrator {
 				});
 				clearInterval(outputPollTimer);
 				outputPollTimer = undefined;
-				const finalRuntimeOutput =
-					await execution.runtime.readOutput?.(session.id);
+				const finalRuntimeOutput = await execution.runtime.readOutput?.(
+					session.id,
+				);
 				if (finalRuntimeOutput?.output && agentRunId) {
 					if (finalRuntimeOutput.output.startsWith(publishedOutput)) {
 						const delta = finalRuntimeOutput.output.slice(

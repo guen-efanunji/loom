@@ -77,7 +77,8 @@
 			id = created.planId;
 			planId = id;
 		} catch (reason) {
-			error = reason instanceof Error ? reason.message : "Unable to create plan";
+			error =
+				reason instanceof Error ? reason.message : "Unable to create plan";
 			stage = "failed";
 			return;
 		}
@@ -196,24 +197,34 @@
 		role="dialog"
 		aria-modal="true"
 		aria-label="Turn message into Kanban tasks"
+		tabindex="-1"
 		onclick={(event) => {
 			if (event.target === event.currentTarget) close();
+		}}
+		onkeydown={(event) => {
+			if (event.key === "Escape") close();
 		}}
 	>
 		<div
 			class="flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-white/10 bg-background shadow-2xl"
 		>
-			<div class="flex items-center justify-between gap-3 border-b border-white/10 px-5 py-4">
+			<div
+				class="flex items-center justify-between gap-3 border-b border-white/10 px-5 py-4"
+			>
 				<div>
-					<p class="text-sm font-semibold text-white/90">
-						Add to Kanban board
-					</p>
+					<p class="text-sm font-semibold text-white/90">Add to Kanban board</p>
 					<p class="mt-0.5 text-xs text-white/50">
 						This {role === "assistant" ? "answer" : "message"} becomes structured
 						tasks. Review them, then they land in Backlog.
 					</p>
 				</div>
-				<Button variant="ghost" size="sm" class="h-8 w-8 p-0" onclick={close} aria-label="Close">
+				<Button
+					variant="ghost"
+					size="sm"
+					class="h-8 w-8 p-0"
+					onclick={close}
+					aria-label="Close"
+				>
 					<X size={16} />
 				</Button>
 			</div>
@@ -244,26 +255,29 @@
 					</div>
 				{:else}
 					<label class="mb-3 block">
-						<span class="mb-1 block text-xs font-medium text-white/60">Plan title</span>
+						<span class="mb-1 block text-xs font-medium text-white/60"
+							>Plan title</span
+						>
 						<Input bind:value={title} />
 					</label>
 					<label class="mb-4 block">
-						<span class="mb-1 block text-xs font-medium text-white/60">Summary</span>
+						<span class="mb-1 block text-xs font-medium text-white/60"
+							>Summary</span
+						>
 						<Textarea bind:value={summary} rows={2} />
 					</label>
 
 					<div class="space-y-4">
 						{#each draft as task, index (task.key)}
-							<div class="rounded-lg border border-white/10 bg-white/[0.03] p-3">
+							<div
+								class="rounded-lg border border-white/10 bg-white/[0.03] p-3"
+							>
 								<div class="mb-2 flex items-start gap-2">
 									<span class="mt-2 text-[11px] font-medium text-white/40">
 										{moveKey(index) + 1}
 									</span>
 									<div class="min-w-0 flex-1 space-y-2">
-										<Input
-											bind:value={task.title}
-											placeholder="Task title"
-										/>
+										<Input bind:value={task.title} placeholder="Task title" />
 										<Textarea
 											bind:value={task.description}
 											rows={2}
@@ -287,7 +301,8 @@
 										type="single"
 										bind:value={task.priority}
 										onValueChange={(value) => {
-											if (value) task.priority = value as PlanTaskDraft["priority"];
+											if (value)
+												task.priority = value as PlanTaskDraft["priority"];
 										}}
 									>
 										<Select.Trigger class="w-24">
@@ -318,7 +333,9 @@
 					</Button>
 
 					{#if issues.length}
-						<div class="mt-4 rounded-lg border border-amber-400/25 bg-amber-500/[0.07] p-3">
+						<div
+							class="mt-4 rounded-lg border border-amber-400/25 bg-amber-500/[0.07] p-3"
+						>
 							<ul class="list-disc space-y-1 pl-5 text-xs text-amber-200">
 								{#each issues as issue (issue.code + issue.message)}
 									<li>{issue.message}</li>
@@ -333,9 +350,15 @@
 			</div>
 
 			{#if stage === "review"}
-				<div class="flex items-center justify-end gap-2 border-t border-white/10 px-5 py-3">
+				<div
+					class="flex items-center justify-end gap-2 border-t border-white/10 px-5 py-3"
+				>
 					<Button variant="ghost" size="sm" onclick={close}>Cancel</Button>
-					<Button size="sm" disabled={saving || !draft.length} onclick={() => void saveEdits()}>
+					<Button
+						size="sm"
+						disabled={saving || !draft.length}
+						onclick={() => void saveEdits()}
+					>
 						{saving ? "Adding…" : "Add to board"}
 					</Button>
 				</div>

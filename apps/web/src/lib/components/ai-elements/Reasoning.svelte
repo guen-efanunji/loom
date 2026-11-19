@@ -1,21 +1,42 @@
 <script lang="ts">
+	import { Check, LoaderCircle } from "@lucide/svelte";
+	import * as Trace from "$lib/components/ui/trace";
 	import Markdown from "../../../components/chat/Markdown.svelte";
-	let { content = "", open = $bindable(false) } = $props();
+
+	let {
+		content = "",
+		running = false,
+		open = $bindable<boolean | undefined>(undefined),
+	} = $props<{
+		content?: string;
+		running?: boolean;
+		open?: boolean;
+	}>();
 </script>
 
-<div class="rounded-lg border border-white/10 bg-white/[0.03]">
-	<button
-		type="button"
-		class="flex w-full items-center justify-between px-3 py-2 text-xs text-neutral-300 hover:bg-white/[0.05]"
-		onclick={() => (open = !open)}
-		aria-expanded={open}
+{#snippet line()}
+	<Trace.Line status={running ? "running" : undefined}>
+		<Trace.Icon>
+			{#if running}
+				<LoaderCircle class="animate-spin" />
+			{:else}
+				<Check />
+			{/if}
+		</Trace.Icon>
+		<Trace.Title>{running ? "Thinking" : "Thought"}</Trace.Title>
+	</Trace.Line>
+{/snippet}
+
+{#if content.length === 0}
+	{@render line()}
+{:else}
+	<Trace.Collapsible
+		open={open ?? running}
+		onOpenChange={(value) => (open = value)}
 	>
-		<span class="font-medium">Reasoning</span>
-		<span class="text-neutral-500">{open ? "Hide" : "Show"}</span>
-	</button>
-	{#if open}
-		<div class="border-t border-white/[0.08] px-3 py-2 text-xs text-neutral-400">
+		<Trace.CollapsibleTrigger>{@render line()}</Trace.CollapsibleTrigger>
+		<Trace.CollapsibleContent class="whitespace-pre-wrap">
 			<Markdown text={content} />
-		</div>
-	{/if}
-</div>
+		</Trace.CollapsibleContent>
+	</Trace.Collapsible>
+{/if}

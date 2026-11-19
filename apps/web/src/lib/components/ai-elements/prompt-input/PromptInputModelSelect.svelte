@@ -7,7 +7,12 @@
 		children?: import("svelte").Snippet;
 	}
 
-	let { value = $bindable(""), onValueChange, children, ...props }: Props = $props();
+	let {
+		value = $bindable(""),
+		onValueChange,
+		children,
+		...props
+	}: Props = $props();
 </script>
 
 <Select.Root bind:value {onValueChange} type="single" {...props}>

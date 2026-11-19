@@ -1,85 +1,85 @@
 <script lang="ts">
-import { QueryClientProvider } from "@tanstack/svelte-query";
-import { onMount } from "svelte";
-import { goto } from "$app/navigation";
-import { page } from "$app/state";
-import "../app.css";
-import { Sonner } from "$lib/components/ui/sonner/index.js";
-import UpdateNotice from "$lib/components/update-notice.svelte";
-import { queryClient } from "$lib/orpc";
-import {
-	clearLegacyUiPassword,
-	peekLegacyUiPassword,
-	type UiLockState,
-	uiLock,
-} from "$lib/ui-access";
+	import { QueryClientProvider } from "@tanstack/svelte-query";
+	import { onMount } from "svelte";
+	import { goto } from "$app/navigation";
+	import { page } from "$app/state";
+	import "../app.css";
+	import { Sonner } from "$lib/components/ui/sonner/index.js";
+	import UpdateNotice from "$lib/components/update-notice.svelte";
+	import { queryClient } from "$lib/orpc";
+	import {
+		clearLegacyUiPassword,
+		peekLegacyUiPassword,
+		type UiLockState,
+		uiLock,
+	} from "$lib/ui-access";
 
-const { children } = $props();
-let lock = $state<UiLockState | null>(null);
-let legacyChecked = $state(false);
-let previousPathname = page.url.pathname;
-let lockRefresh: Promise<UiLockState> | undefined;
-let lockRequest = 0;
+	const { children } = $props();
+	let lock = $state<UiLockState | null>(null);
+	let legacyChecked = $state(false);
+	let previousPathname = page.url.pathname;
+	let lockRefresh: Promise<UiLockState> | undefined;
+	let lockRequest = 0;
 
-async function refresh(force = false): Promise<UiLockState> {
-	if (lockRefresh && !force) return lockRefresh;
-	const request = ++lockRequest;
-	const pending = (async () => {
-		let state: UiLockState;
+	async function refresh(force = false): Promise<UiLockState> {
+		if (lockRefresh && !force) return lockRefresh;
+		const request = ++lockRequest;
+		const pending = (async () => {
+			let state: UiLockState;
+			try {
+				state = await uiLock.state();
+			} catch {
+				// The daemon may still be starting; the workspace surfaces its own
+				// connection errors, so the gate stays open rather than blocking.
+				state = { configured: false, notInUse: true, unlocked: true };
+			}
+			if (request === lockRequest) lock = state;
+			return state;
+		})();
+		lockRefresh = pending;
 		try {
-			state = await uiLock.state();
-		} catch {
-			// The daemon may still be starting; the workspace surfaces its own
-			// connection errors, so the gate stays open rather than blocking.
-			state = { configured: false, notInUse: true, unlocked: true };
+			return await pending;
+		} finally {
+			if (lockRefresh === pending) lockRefresh = undefined;
 		}
-		if (request === lockRequest) lock = state;
-		return state;
-	})();
-	lockRefresh = pending;
-	try {
-		return await pending;
-	} finally {
-		if (lockRefresh === pending) lockRefresh = undefined;
 	}
-}
-$effect(() => {
-	const pathname = page.url.pathname;
-	const previous = previousPathname;
-	previousPathname = pathname;
-	if (pathname === "/unlock") return;
-	if (previous === "/unlock") void refresh(true);
-	else if (!lock) void refresh();
-});
-/** Old browsers kept the password in localStorage; migrate it once. */
-$effect(() => {
-	if (legacyChecked || !lock || lock.configured) return;
-	legacyChecked = true;
-	const legacy = peekLegacyUiPassword();
-	if (!legacy || legacy === "123456") return;
-	void uiLock
-		.setPassword(legacy)
-		.then(() => {
-			clearLegacyUiPassword();
-			return refresh();
-		})
-		.catch(() => {});
-});
+	$effect(() => {
+		const pathname = page.url.pathname;
+		const previous = previousPathname;
+		previousPathname = pathname;
+		if (pathname === "/unlock") return;
+		if (previous === "/unlock") void refresh(true);
+		else if (!lock) void refresh();
+	});
+	/** Old browsers kept the password in localStorage; migrate it once. */
+	$effect(() => {
+		if (legacyChecked || !lock || lock.configured) return;
+		legacyChecked = true;
+		const legacy = peekLegacyUiPassword();
+		if (!legacy || legacy === "123456") return;
+		void uiLock
+			.setPassword(legacy)
+			.then(() => {
+				clearLegacyUiPassword();
+				return refresh();
+			})
+			.catch(() => {});
+	});
 
-const gated = $derived(
-	page.url.pathname !== "/unlock" && !!lock?.configured && !lock.unlocked,
-);
-onMount(() => {
-	document.documentElement.classList.add("dark");
-	if (page.url.pathname === "/unlock") return;
-	void (async () => {
-		await refresh();
-		if (gated)
-			goto(
-				`/unlock?next=${encodeURIComponent(page.url.pathname + page.url.search)}`,
-			);
-	})();
-});
+	const gated = $derived(
+		page.url.pathname !== "/unlock" && !!lock?.configured && !lock.unlocked,
+	);
+	onMount(() => {
+		document.documentElement.classList.add("dark");
+		if (page.url.pathname === "/unlock") return;
+		void (async () => {
+			await refresh();
+			if (gated)
+				goto(
+					`/unlock?next=${encodeURIComponent(page.url.pathname + page.url.search)}`,
+				);
+		})();
+	});
 </script>
 
 <Sonner />

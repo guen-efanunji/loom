@@ -6,23 +6,24 @@
 		GitBranch,
 		LoaderCircle,
 		MessageSquare,
+		Pencil as PencilIcon,
 		PlayCircle,
 		Plus,
 		Sparkles,
 		Upload,
 		Video,
-		Pencil as PencilIcon,
 	} from "@lucide/svelte";
 	import { onMount } from "svelte";
 	import { toast } from "svelte-sonner";
 	import type { Catalog } from "$lib/chat";
 	import { Button } from "$lib/components/ui/button";
 	import { Input } from "$lib/components/ui/input";
-	import { Textarea } from "$lib/components/ui/textarea/index.js";
+	import { Label } from "$lib/components/ui/label";
 	import * as Select from "$lib/components/ui/select/index.js";
+	import { Textarea } from "$lib/components/ui/textarea/index.js";
 	import {
-		daemon,
 		type CustomAgentMonitorItem,
+		daemon,
 		type Project,
 	} from "$lib/daemon";
 
@@ -40,7 +41,9 @@
 	let providers = $state<
 		Array<{ id: string; providerId: string; name: string; status: string }>
 	>([]);
-	let tasks = $state<Array<{ id: string; projectId: string; title: string; status: string }>>([]);
+	let tasks = $state<
+		Array<{ id: string; projectId: string; title: string; status: string }>
+	>([]);
 	let loading = $state(true);
 	let error = $state("");
 
@@ -48,7 +51,13 @@
 	let selectedProviderId = $state("");
 	let selectedModelId = $state("");
 	let availableModels = $state<
-		Array<{ id: string; name: string; displayName: string; isAvailable: boolean; isDefault?: boolean }>
+		Array<{
+			id: string;
+			name: string;
+			displayName: string;
+			isAvailable: boolean;
+			isDefault?: boolean;
+		}>
 	>([]);
 	let selectedTaskId = $state("");
 	let filePath = $state("out/video.mp4");
@@ -83,6 +92,52 @@
 	let autoDetecting = $state(false);
 	let autoDetectingTaskId = "";
 	let autoDetectedTaskId = "";
+	type PreviewTheme = "cinematic" | "neon" | "minimal";
+	let previewTheme = $state<PreviewTheme>("cinematic");
+	const previewThemes: Array<{
+		id: PreviewTheme;
+		label: string;
+		background: string;
+		foreground: string;
+		accent: string;
+		font: string;
+	}> = [
+		{
+			id: "cinematic",
+			label: "Cinematic",
+			background: "#0b0b0d",
+			foreground: "#ffffff",
+			accent: "#a78bfa",
+			font: "system-ui",
+		},
+		{
+			id: "neon",
+			label: "Neon",
+			background: "#07111f",
+			foreground: "#d8fff9",
+			accent: "#20f0c0",
+			font: "Arial, sans-serif",
+		},
+		{
+			id: "minimal",
+			label: "Minimal",
+			background: "#f5f2eb",
+			foreground: "#24211d",
+			accent: "#e66b45",
+			font: "Georgia, serif",
+		},
+	];
+
+	function previewSrcdoc(kind: "remotion" | "bang-motion") {
+		const theme =
+			previewThemes.find((item) => item.id === previewTheme) ??
+			previewThemes[0];
+		const content =
+			kind === "remotion"
+				? `<div class="eyebrow">${theme.label.toUpperCase()} / REMOTION</div><h1>Make it <span>move.</span></h1><p>A title sequence, designed in motion.</p>`
+				: `<div class="orb"></div><div class="caption">${theme.label.toUpperCase()} / BANG-MOTION</div>`;
+		return `<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>*{box-sizing:border-box}body{margin:0;background:${theme.background};color:${theme.foreground};font-family:${theme.font};display:flex;align-items:center;justify-content:center;height:100vh;overflow:hidden;text-align:center}.eyebrow,.caption{font:600 10px system-ui;letter-spacing:.18em;color:${theme.accent}}h1{font-size:clamp(24px,7vw,44px);line-height:1.02;margin:14px 0 8px;animation:enter 1s ease both}h1 span{color:${theme.accent}}p{font:12px system-ui;opacity:.65;margin:0}.orb{width:58px;height:58px;border-radius:18px;background:linear-gradient(135deg,${theme.accent},${theme.foreground});box-shadow:0 0 44px ${theme.accent}66;animation:float 1.8s ease-in-out infinite alternate}.caption{position:absolute;bottom:18px}@keyframes enter{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}@keyframes float{from{transform:translateY(12px) rotate(-8deg)}to{transform:translateY(-12px) rotate(12deg)}}</style></head><body>${content}</body></html>`;
+	}
 
 	$effect(() => {
 		const taskId = selectedTaskId;
@@ -110,11 +165,6 @@
 			}
 		})();
 	});
-
-	const remotionSrcdoc =
-		"<!DOCTYPE html><html><head><style>body{margin:0;background:#0b0b0d;color:#fff;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;overflow:hidden}h1{font-size:2rem;animation:fade 2s ease-in-out infinite alternate}@keyframes fade{from{opacity:.3;transform:scale(.9)}to{opacity:1;transform:scale(1)}}</style></head><body><h1>Remotion · Title Card</h1></body></html>";
-	const bangMotionSrcdoc =
-		"<!DOCTYPE html><html><head><style>body{margin:0;background:#0b0b0d;color:#fff;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;overflow:hidden}.box{width:60px;height:60px;background:#a78bfa;border-radius:12px;animation:move 1.5s ease-in-out infinite alternate}@keyframes move{from{transform:translateX(-60px) rotate(0)}to{transform:translateX(60px) rotate(360deg)}}</style></head><body><div class=\"box\"></div></body></html>";
 
 	onMount(async () => {
 		try {
@@ -430,7 +480,12 @@
 					: ""}
 			</p>
 		</div>
-		<Button variant="outline" size="sm" onclick={seedVideoSkills} disabled={seeding}>
+		<Button
+			variant="outline"
+			size="sm"
+			onclick={seedVideoSkills}
+			disabled={seeding}
+		>
 			{#if seeding}
 				<LoaderCircle size={14} class="animate-spin" />
 			{:else}
@@ -451,10 +506,36 @@
 
 	<!-- Concept preview (in-app) -->
 	<section class="space-y-3">
-		<h2 class="text-sm font-semibold text-white/80">Concept preview</h2>
-		<p class="text-xs text-white/45">
-			Live preview rendered inside Loom. Review before generating.
-		</p>
+		<div class="flex flex-wrap items-end justify-between gap-3">
+			<div>
+				<h2 class="text-sm font-semibold text-white/80">Concept preview</h2>
+				<p class="text-xs text-white/45">
+					Live preview rendered inside Loom. Review before generating.
+				</p>
+			</div>
+			<div class="w-full space-y-1.5 sm:w-48">
+				<Label for="video-preview-theme" class="text-xs text-white/60"
+					>Preview theme</Label
+				>
+				<Select.Root
+					type="single"
+					value={previewTheme}
+					onValueChange={(value) => {
+						if (value) previewTheme = value as PreviewTheme;
+					}}
+				>
+					<Select.Trigger id="video-preview-theme" class="w-full">
+						{previewThemes.find((theme) => theme.id === previewTheme)?.label ??
+							"Cinematic"}
+					</Select.Trigger>
+					<Select.Content>
+						{#each previewThemes as theme (theme.id)}
+							<Select.Item value={theme.id}>{theme.label}</Select.Item>
+						{/each}
+					</Select.Content>
+				</Select.Root>
+			</div>
+		</div>
 		<div class="grid gap-4 sm:grid-cols-2">
 			<div
 				class="overflow-hidden rounded-xl border border-white/10 bg-white/[0.03]"
@@ -462,7 +543,7 @@
 				<iframe
 					title="Remotion example"
 					class="h-40 w-full bg-black"
-					srcdoc={remotionSrcdoc}
+					srcdoc={previewSrcdoc("remotion")}
 					sandbox="allow-scripts"
 				></iframe>
 				<div class="p-3">
@@ -478,7 +559,7 @@
 				<iframe
 					title="bang-motion example"
 					class="h-40 w-full bg-black"
-					srcdoc={bangMotionSrcdoc}
+					srcdoc={previewSrcdoc("bang-motion")}
 					sandbox="allow-scripts allow-same-origin"
 				></iframe>
 				<div class="p-3">
@@ -492,14 +573,18 @@
 	</section>
 
 	<!-- Generate -->
-	<section class="space-y-3 rounded-xl border border-white/10 bg-white/[0.02] p-4">
+	<section
+		class="space-y-3 rounded-xl border border-white/10 bg-white/[0.02] p-4"
+	>
 		<h2 class="text-sm font-semibold text-white/80">Generate video</h2>
 		{#if loading}
 			<p class="text-xs text-white/45">Loading agents…</p>
 		{:else}
 			<div class="grid gap-3 sm:grid-cols-2">
 				<div class="space-y-1.5">
-					<label class="text-xs text-white/60">Kanban agent</label>
+					<Label for="video-kanban-agent" class="text-xs text-white/60"
+						>Kanban agent</Label
+					>
 					<Select.Root
 						type="single"
 						value={selectedAgentId}
@@ -508,7 +593,7 @@
 							if (selectedAgentId) selectedProviderId = "";
 						}}
 					>
-						<Select.Trigger class="w-full">
+						<Select.Trigger id="video-kanban-agent" class="w-full">
 							{agents.find((a) => a.id === selectedAgentId)?.label ??
 								"— none —"}
 						</Select.Trigger>
@@ -521,7 +606,9 @@
 					</Select.Root>
 				</div>
 				<div class="space-y-1.5">
-					<label class="text-xs text-white/60">Direct provider</label>
+					<Label for="video-direct-provider" class="text-xs text-white/60"
+						>Direct provider</Label
+					>
 					<Select.Root
 						type="single"
 						value={selectedProviderId}
@@ -530,7 +617,7 @@
 							if (selectedProviderId) selectedAgentId = "";
 						}}
 					>
-						<Select.Trigger class="w-full">
+						<Select.Trigger id="video-direct-provider" class="w-full">
 							{providers.find((p) => p.id === selectedProviderId)?.name ??
 								"— none —"}
 						</Select.Trigger>
@@ -547,7 +634,7 @@
 			</div>
 			{#if selectedProviderId && availableModels.length}
 				<div class="space-y-1.5">
-					<label class="text-xs text-white/60">Model</label>
+					<Label for="video-model" class="text-xs text-white/60">Model</Label>
 					<Select.Root
 						type="single"
 						value={selectedModelId}
@@ -555,7 +642,7 @@
 							selectedModelId = v ?? "";
 						}}
 					>
-						<Select.Trigger class="w-full">
+						<Select.Trigger id="video-model" class="w-full">
 							{availableModels.find((m) => m.id === selectedModelId)
 								?.displayName ?? "— none —"}
 						</Select.Trigger>
@@ -568,7 +655,7 @@
 				</div>
 			{/if}
 			<div class="space-y-1.5">
-				<label class="text-xs text-white/60" for="prompt">Prompt</label>
+				<Label class="text-xs text-white/60" for="prompt">Prompt</Label>
 				<Textarea
 					id="prompt"
 					bind:value={prompt}
@@ -577,8 +664,8 @@
 				/>
 			</div>
 			<div class="space-y-1.5">
-				<label class="text-xs text-white/60" for="criteria"
-					>Acceptance criteria (one per line)</label
+				<Label class="text-xs text-white/60" for="criteria"
+					>Acceptance criteria (one per line)</Label
 				>
 				<Textarea
 					id="criteria"
@@ -605,14 +692,16 @@
 	</section>
 
 	<!-- Preview result -->
-	<section class="space-y-3 rounded-xl border border-white/10 bg-white/[0.02] p-4">
+	<section
+		class="space-y-3 rounded-xl border border-white/10 bg-white/[0.02] p-4"
+	>
 		<h2 class="text-sm font-semibold text-white/80">Preview generated video</h2>
 		<p class="text-xs text-white/45">
 			Select the rendered MP4 from your filesystem to preview it here.
 		</p>
 		<div class="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
 			<div class="space-y-1.5">
-				<label class="text-xs text-white/60" for="task-select">Task</label>
+				<Label class="text-xs text-white/60" for="task-select">Task</Label>
 				<Select.Root
 					type="single"
 					value={selectedTaskId}
@@ -621,8 +710,7 @@
 					}}
 				>
 					<Select.Trigger class="w-full">
-						{tasks.find((t) => t.id === selectedTaskId)?.title ??
-							"— none —"}
+						{tasks.find((t) => t.id === selectedTaskId)?.title ?? "— none —"}
 					</Select.Trigger>
 					<Select.Content>
 						<Select.Item value="">— none —</Select.Item>
@@ -635,7 +723,7 @@
 				</Select.Root>
 			</div>
 			<div class="space-y-1.5">
-				<label class="text-xs text-white/60" for="filepath">File path</label>
+				<Label class="text-xs text-white/60" for="filepath">File path</Label>
 				<Input
 					id="filepath"
 					bind:value={filePath}
@@ -651,9 +739,7 @@
 				Load
 			</Button>
 		</div>
-		<p class="text-[11px] text-white/30">
-			Or pick a file manually:
-		</p>
+		<p class="text-[11px] text-white/30">Or pick a file manually:</p>
 		<input
 			type="file"
 			accept="video/mp4,video/webm"
@@ -662,9 +748,7 @@
 		/>
 		<canvas bind:this={canvasEl} class="hidden"></canvas>
 		{#if thumbnailUrl}
-			<p class="text-[11px] text-white/40">
-				Thumbnail captured automatically.
-			</p>
+			<p class="text-[11px] text-white/40">Thumbnail captured automatically.</p>
 		{/if}
 		{#if videoUrl}
 			<video
@@ -693,15 +777,43 @@
 					<div
 						class="relative h-8 rounded-md border border-white/10 bg-white/[0.03]"
 						role="slider"
+						aria-label="Video timeline"
 						aria-valuemin={0}
 						aria-valuemax={duration}
 						aria-valuenow={currentTime}
 						tabindex="0"
 						onclick={(e) => {
-							const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+							const rect = (
+								e.currentTarget as HTMLElement
+							).getBoundingClientRect();
 							const ratio = (e.clientX - rect.left) / rect.width;
 							const t = Math.max(0, Math.min(duration, ratio * duration));
 							if (videoEl) videoEl.currentTime = t;
+						}}
+						onkeydown={(e) => {
+							const step = e.shiftKey ? 10 : 1;
+							let nextTime = currentTime;
+							switch (e.key) {
+								case "ArrowLeft":
+								case "ArrowDown":
+									nextTime -= step;
+									break;
+								case "ArrowRight":
+								case "ArrowUp":
+									nextTime += step;
+									break;
+								case "Home":
+									nextTime = 0;
+									break;
+								case "End":
+									nextTime = duration;
+									break;
+								default:
+									return;
+							}
+							e.preventDefault();
+							if (videoEl)
+								videoEl.currentTime = Math.max(0, Math.min(duration, nextTime));
 						}}
 					>
 						<div
@@ -741,14 +853,16 @@
 	</section>
 
 	<!-- Edit at timestamp -->
-	<section class="space-y-3 rounded-xl border border-white/10 bg-white/[0.02] p-4">
+	<section
+		class="space-y-3 rounded-xl border border-white/10 bg-white/[0.02] p-4"
+	>
 		<h2 class="text-sm font-semibold text-white/80">Revise at timestamp</h2>
 		<p class="text-xs text-white/45">
 			Found a mistake at a specific second? Queue a revision to the agent.
 		</p>
 		<div class="flex flex-wrap items-end gap-3">
 			<div class="space-y-1.5">
-				<label class="text-xs text-white/60" for="secs">Second</label>
+				<Label class="text-xs text-white/60" for="secs">Second</Label>
 				<Input
 					id="secs"
 					type="number"
@@ -758,7 +872,7 @@
 				/>
 			</div>
 			<div class="min-w-0 flex-1 space-y-1.5">
-				<label class="text-xs text-white/60" for="editinstr">Change</label>
+				<Label class="text-xs text-white/60" for="editinstr">Change</Label>
 				<Input
 					id="editinstr"
 					bind:value={editInstruction}
@@ -796,9 +910,7 @@
 							>
 								{r.seconds}s
 							</button>
-							<span class="flex-1 truncate text-white/70"
-								>{r.instruction}</span
-							>
+							<span class="flex-1 truncate text-white/70">{r.instruction}</span>
 							<span class="text-white/30">{r.at}</span>
 						</li>
 					{/each}

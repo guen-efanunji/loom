@@ -41,9 +41,7 @@
 
 <svelte:head
 	><title
-		>{project
-			? `${project.name} · Video · Loom`
-			: "Video studio · Loom"}</title
+		>{project ? `${project.name} · Video · Loom` : "Video studio · Loom"}</title
 	></svelte:head
 >
 
@@ -100,7 +98,11 @@
 				{error}
 			</p>{/if}
 		<div class="min-h-0 flex-1">
-			<VideoStudio projectId={project.id} projectName={project.name} {catalog} />
+			<VideoStudio
+				projectId={project.id}
+				projectName={project.name}
+				{catalog}
+			/>
 		</div>
 	</div>
 {:else}

@@ -101,9 +101,9 @@ describe("chat-utils", () => {
 				}),
 			),
 		).toBe(true);
-		expect(isContextOverflowError(new Error("CLI authentication expired"))).toBe(
-			false,
-		);
+		expect(
+			isContextOverflowError(new Error("CLI authentication expired")),
+		).toBe(false);
 	});
 
 	test("labels permission actions from the tool name and target", () => {

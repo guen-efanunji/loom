@@ -9,6 +9,7 @@ export interface FileUIPart {
 
 export interface FileWithId extends FileUIPart {
 	id: string;
+	sourceFile?: File;
 }
 
 export interface PromptInputMessage {
@@ -23,14 +24,14 @@ export class AttachmentsContext {
 	fileInputRef = $state<HTMLInputElement | null>(null);
 
 	constructor(
-		private accept?: string,
-		private multiple?: boolean,
+		public accept?: string,
+		_multiple?: boolean,
 		private maxFiles?: number,
 		private maxFileSize?: number,
 		private onError?: (err: {
 			code: "max_files" | "max_file_size" | "accept";
 			message: string;
-		}) => void
+		}) => void,
 	) {}
 
 	openFileDialog = () => {
@@ -38,16 +39,18 @@ export class AttachmentsContext {
 	};
 
 	matchesAccept = (file: File): boolean => {
-		if (!this.accept || this.accept.trim() === "") {
-			return true;
-		}
-		if (this.accept.includes("image/*")) {
-			return file.type.startsWith("image/");
-		}
-		return true;
+		if (!this.accept || this.accept.trim() === "") return true;
+
+		return this.accept.split(",").some((entry) => {
+			const rule = entry.trim().toLowerCase();
+			if (!rule) return false;
+			if (rule.startsWith(".")) return file.name.toLowerCase().endsWith(rule);
+			if (rule.endsWith("/*")) return file.type.startsWith(rule.slice(0, -1));
+			return file.type.toLowerCase() === rule;
+		});
 	};
 
-	add = (files: File[] | FileList) => {
+	add = (files: File[] | FileList): FileWithId[] => {
 		let incoming = Array.from(files);
 		let accepted = incoming.filter((f) => this.matchesAccept(f));
 
@@ -56,10 +59,11 @@ export class AttachmentsContext {
 				code: "accept",
 				message: "No files match the accepted types.",
 			});
-			return;
+			return [];
 		}
 
-		let withinSize = (f: File) => (this.maxFileSize ? f.size <= this.maxFileSize : true);
+		let withinSize = (f: File) =>
+			this.maxFileSize ? f.size <= this.maxFileSize : true;
 		let sized = accepted.filter(withinSize);
 
 		if (sized.length === 0 && accepted.length > 0) {
@@ -67,14 +71,15 @@ export class AttachmentsContext {
 				code: "max_file_size",
 				message: "All files exceed the maximum size.",
 			});
-			return;
+			return [];
 		}
 
 		let capacity =
 			typeof this.maxFiles === "number"
 				? Math.max(0, this.maxFiles - this.files.length)
 				: undefined;
-		let capped = typeof capacity === "number" ? sized.slice(0, capacity) : sized;
+		let capped =
+			typeof capacity === "number" ? sized.slice(0, capacity) : sized;
 
 		if (typeof capacity === "number" && sized.length > capacity) {
 			this.onError?.({
@@ -91,10 +96,12 @@ export class AttachmentsContext {
 				url: URL.createObjectURL(file),
 				mediaType: file.type,
 				filename: file.name,
+				sourceFile: file,
 			});
 		}
 
 		this.files = [...this.files, ...next];
+		return next;
 	};
 
 	remove = (id: string) => {
@@ -152,7 +159,9 @@ export function setAttachmentsContext(context: AttachmentsContext) {
 export function getAttachmentsContext(): AttachmentsContext {
 	let context = getContext<AttachmentsContext>(ATTACHMENTS_CONTEXT_KEY);
 	if (!context) {
-		throw new Error("usePromptInputAttachments must be used within a PromptInput");
+		throw new Error(
+			"usePromptInputAttachments must be used within a PromptInput",
+		);
 	}
 	return context;
 }
@@ -169,7 +178,9 @@ export function getPromptInputProvider(): PromptInputController | null {
 export function getPromptInputController(): PromptInputController {
 	let context = getContext<PromptInputController>(PROVIDER_CONTEXT_KEY);
 	if (!context) {
-		throw new Error("getPromptInputController must be used within a PromptInputProvider");
+		throw new Error(
+			"getPromptInputController must be used within a PromptInputProvider",
+		);
 	}
 	return context;
 }

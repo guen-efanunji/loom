@@ -40,7 +40,6 @@
 	import { toast } from "svelte-sonner";
 	import { goto, replaceState } from "$app/navigation";
 	import { page } from "$app/state";
-	import { suggestAgentForMessage } from "$lib/agent-match";
 	import {
 		type Catalog,
 		type ChatChildSession,
@@ -494,14 +493,6 @@
 		input: Parameters<typeof chat.send>[1];
 	} | null>(null);
 	let continuingIsolatedTabId = $state("");
-	// One-click "hand off to registered agent?" suggestion for the first
-	// message of a fresh tab (see lib/agent-match.ts).
-	let pendingAgentHandoff = $state<{
-		tabId: string;
-		agentId: string;
-		agentLabel: string;
-		input: Parameters<typeof chat.send>[1];
-	} | null>(null);
 	const sending = $derived(sendingChatTabIds.includes(activeChatTabId));
 	let permissionReplying = $state<string | null>(null);
 	const selectedProject = $derived(
@@ -1152,7 +1143,7 @@
 		try {
 			if (!id.startsWith("ses_")) {
 				const task = await daemon.getTask(id);
-				if (task.sessionId && task.sessionId.startsWith("ses_")) {
+				if (task.sessionId?.startsWith("ses_")) {
 					await goto(homeUrl(task.sessionId), {
 						replaceState: true,
 					});
@@ -1934,25 +1925,25 @@
 		chatTabs = reordered;
 		persistChatTabs();
 	}
-		const reportedOwnership = new Set<string>();
-		// The daemon persists session→project ownership at creation, but
-		// sessions predating that (or created elsewhere) can be attributed
-		// through the tabs the user has open — report them once per page load.
-		const reportTabOwnership = (tab: WorkspaceChatTab) => {
-			const key = `${tab.sessionId}:${tab.projectId}`;
-			if (
-				!tab.sessionId ||
-				!tab.projectId ||
-				reportedOwnership.has(key) ||
-				tab.id.startsWith("task-tab-")
-			)
-				return;
-			reportedOwnership.add(key);
-			void chat
-				.ownership(tab.sessionId, tab.projectId)
-				.catch(() => reportedOwnership.delete(key));
-		};
-		function saveActiveChatTab() {
+	const reportedOwnership = new Set<string>();
+	// The daemon persists session→project ownership at creation, but
+	// sessions predating that (or created elsewhere) can be attributed
+	// through the tabs the user has open — report them once per page load.
+	const reportTabOwnership = (tab: WorkspaceChatTab) => {
+		const key = `${tab.sessionId}:${tab.projectId}`;
+		if (
+			!tab.sessionId ||
+			!tab.projectId ||
+			reportedOwnership.has(key) ||
+			tab.id.startsWith("task-tab-")
+		)
+			return;
+		reportedOwnership.add(key);
+		void chat
+			.ownership(tab.sessionId, tab.projectId)
+			.catch(() => reportedOwnership.delete(key));
+	};
+	function saveActiveChatTab() {
 		const tab = chatTabs.find((item) => item.id === activeChatTabId);
 		if (!tab || tab.taskId) return;
 		tab.sessionId = sessionId;
@@ -2763,26 +2754,6 @@
 		const projectId = selectedProjectId;
 		const existingSessionId = sessionId;
 		if (pendingIsolatedSend?.tabId === tabId) pendingIsolatedSend = null;
-		// First message of a fresh tab: offer a one-click hand-off when exactly
-		// one registered agent clearly matches the request (frontend request +
-		// a registered FE agent, etc.). YES routes the whole turn to that agent;
-		// NO keeps the user-picked model exactly as requested.
-		if (!existingSessionId && !input.customAgentId && !input.agents.length) {
-			const suggestion = suggestAgentForMessage(
-				input.text,
-				customAgents,
-				projectId,
-			);
-			if (suggestion && pendingAgentHandoff?.tabId !== tabId) {
-				pendingAgentHandoff = {
-					tabId,
-					agentId: suggestion.agent.id,
-					agentLabel: suggestion.agent.label,
-					input,
-				};
-				return false;
-			}
-		}
 		sendingChatTabIds = [...sendingChatTabIds, tabId];
 		if (activeChatTabId === tabId) error = "";
 		let createdHere = "";
@@ -2853,9 +2824,7 @@
 				const started = results.filter(
 					(result) => result.status === "fulfilled",
 				).length;
-				const failed = results.filter(
-					(result) => result.status === "rejected",
-				);
+				const failed = results.filter((result) => result.status === "rejected");
 				for (const failure of failed)
 					if (failure.status === "rejected")
 						toast.error(
@@ -2934,21 +2903,6 @@
 		} finally {
 			continuingIsolatedTabId = "";
 		}
-	}
-	// YES on the hand-off suggestion: route the pending turn to the registered
-	// agent (its provider/model and role instructions take over), preserving
-	// attachments and mentions from the original input.
-	async function acceptAgentHandoff() {
-		const pending = pendingAgentHandoff;
-		if (!pending || pending.tabId !== activeChatTabId) return;
-		pendingAgentHandoff = null;
-		customAgentId = pending.agentId;
-		await send(pending.input);
-	}
-	function dismissAgentHandoff() {
-		const pending = pendingAgentHandoff;
-		pendingAgentHandoff = null;
-		if (pending && pending.tabId === activeChatTabId) void send(pending.input);
 	}
 	async function stop() {
 		try {
@@ -3522,7 +3476,8 @@
 														class="shrink-0 text-emerald-300"
 														aria-label="Isolated workspace chat"
 														title="Edits its own git worktree"
-													/>{/if}<span class="truncate">{session.title}</span></Button
+													/>{/if}<span class="truncate">{session.title}</span
+												></Button
 											>
 											<span class="hidden shrink-0 group-hover:flex">
 												<Button
@@ -3658,8 +3613,7 @@
 								href={`/project/${selectedProject.id}/video`}
 								class="inline-flex h-9 items-center gap-1.5 sm:gap-2 rounded-lg px-2 sm:px-3 text-xs font-medium text-white/50 transition hover:text-white/80"
 								aria-label="Video studio"
-								><Film size={14} /><span class="hidden sm:inline"
-									>Video</span
+								><Film size={14} /><span class="hidden sm:inline">Video</span
 								></a
 							>{/if}</Tabs.List
 					></Tabs.Root
@@ -3800,22 +3754,22 @@
 														>{tab.sessionId || tab.taskId
 															? tab.label
 															: (agentLabel ?? tab.label)}</span
-														></Button
-													>{#if tab.isolated}<GitBranch
-															size={11}
-															class="shrink-0 text-emerald-300"
-															aria-label="Isolated workspace"
-															title="Edits its own git worktree"
-														/>{/if}{#if runTask && (runTask.status === "running" || runTask.status === "preparing")}<span
-															class="size-1.5 shrink-0 animate-pulse rounded-full bg-sky-400"
-															aria-label="Task running"
+													></Button
+												>{#if tab.isolated}<GitBranch
+														size={11}
+														class="shrink-0 text-emerald-300"
+														aria-label="Isolated workspace"
+														title="Edits its own git worktree"
+													/>{/if}{#if runTask && (runTask.status === "running" || runTask.status === "preparing")}<span
+														class="size-1.5 shrink-0 animate-pulse rounded-full bg-sky-400"
+														aria-label="Task running"
 
-														></span>{:else if runTask && (runTask.status === "queued" || runTask.status === "ready")}<span
-															class="size-1.5 shrink-0 rounded-full bg-amber-400"
-															aria-label="Task queued"
-														></span>{:else if isActive && sending}<span
-															class="size-1.5 shrink-0 animate-pulse rounded-full bg-primary"
-														></span>{/if}
+													></span>{:else if runTask && (runTask.status === "queued" || runTask.status === "ready")}<span
+														class="size-1.5 shrink-0 rounded-full bg-amber-400"
+														aria-label="Task queued"
+													></span>{:else if isActive && sending}<span
+														class="size-1.5 shrink-0 animate-pulse rounded-full bg-primary"
+													></span>{/if}
 												<Button
 													variant="ghost"
 													size="icon"
@@ -3963,37 +3917,23 @@
 										</div>
 									{/if}
 									{#if pendingIsolatedSend?.tabId === activeChatTabId}
-										<div class="flex shrink-0 items-center gap-3 border-b border-amber-400/20 bg-amber-400/[0.06] px-4 py-3 text-sm">
-											<p class="min-w-0 flex-1 text-muted-foreground">Another chat is editing this project. Continue this request in an isolated workspace?</p>
-											<Button size="sm" disabled={continuingIsolatedTabId === activeChatTabId} onclick={() => void continuePendingInIsolation()}>
-												{#if continuingIsolatedTabId === activeChatTabId}<LoaderCircle size={13} class="animate-spin" />{/if}
-												Continue in isolated
-											</Button>
-										</div>
-									{/if}
-									{#if pendingAgentHandoff?.tabId === activeChatTabId}
-										{@const handoffAgent = customAgents.find((item) => item.id === pendingAgentHandoff?.agentId)}
 										<div
-											role="alertdialog"
-											aria-label="Agent hand-off suggestion"
-											class="flex shrink-0 flex-wrap items-center gap-3 border-b border-cyan-400/25 bg-cyan-400/[0.07] px-4 py-3 text-sm"
+											class="flex shrink-0 items-center gap-3 border-b border-amber-400/20 bg-amber-400/[0.06] px-4 py-3 text-sm"
 										>
-											<Bot size={15} class="shrink-0 text-cyan-200" />
 											<p class="min-w-0 flex-1 text-muted-foreground">
-												This looks like a
-												{handoffAgent?.role ? handoffAgent.role : "specialist"}
-												task. Hand it off to registered agent
-												<span class="font-medium text-foreground">{pendingAgentHandoff.agentLabel}</span>?
+												Another chat is editing this project. Continue this
+												request in an isolated workspace?
 											</p>
-											<Button size="sm" onclick={() => void acceptAgentHandoff()}>
-												Yes, use {pendingAgentHandoff.agentLabel}
-											</Button>
 											<Button
-												variant="outline"
 												size="sm"
-												onclick={dismissAgentHandoff}
+												disabled={continuingIsolatedTabId === activeChatTabId}
+												onclick={() => void continuePendingInIsolation()}
 											>
-												No, use my model
+												{#if continuingIsolatedTabId === activeChatTabId}<LoaderCircle
+														size={13}
+														class="animate-spin"
+													/>{/if}
+												Continue in isolated
 											</Button>
 										</div>
 									{/if}
@@ -4219,9 +4159,9 @@
 															onfile={showFiles}
 															onopenfile={openProjectFile}
 															onbranch={startNewChatFromAnswer}
-														busy={busy &&
-															turn.role === "assistant" &&
-															turn.key === lastAssistantTurnKey}
+															busy={busy &&
+																turn.role === "assistant" &&
+																turn.key === lastAssistantTurnKey}
 															onregenerate={turn.role === "assistant" &&
 															turn.key === lastAssistantTurnKey &&
 															!busy
@@ -4233,10 +4173,10 @@
 															onaddplan={planDialog || !selectedProjectId
 																? undefined
 																: (
-																			messageId: string,
-																			text: string,
-																			role: string,
-																		) => (planDialog = { messageId, text, role })}
+																		messageId: string,
+																		text: string,
+																		role: string,
+																	) => (planDialog = { messageId, text, role })}
 														/>
 													{/each}
 												</div>
@@ -4461,9 +4401,9 @@
 												currentSessionId={sessionId}
 												{catalog}
 												{customAgents}
-											tasks={legacyTasks.filter(
-												(task) => task.projectId === selectedProjectId,
-											)}
+												tasks={legacyTasks.filter(
+													(task) => task.projectId === selectedProjectId,
+												)}
 												{busy}
 												disabled={!conversation || sessionLoading}
 												onsend={send}
@@ -6220,7 +6160,8 @@
 					}}>Discuss this file</Button
 				></Dialog.Footer
 			>{/if}
-	</Dialog.Content></Dialog.Root>
+	</Dialog.Content></Dialog.Root
+>
 
 {#if planDialog && selectedProjectId}
 	<PlanDialog

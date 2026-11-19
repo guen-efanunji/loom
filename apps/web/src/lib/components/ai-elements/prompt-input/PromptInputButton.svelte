@@ -8,7 +8,13 @@
 		children?: import("svelte").Snippet;
 	}
 
-	let { variant = "ghost", class: className, size, children, ...props }: Props = $props();
+	let {
+		variant = "ghost",
+		class: className,
+		size,
+		children,
+		...props
+	}: Props = $props();
 
 	let hasMultipleChildren = $derived.by(() => {
 		// In Svelte, we can't easily count children like in React, so we'll default to checking if size is provided
@@ -25,7 +31,7 @@
 		"shrink-0 gap-1.5 rounded-lg",
 		variant === "ghost" && "text-muted-foreground",
 		newSize === "default" && "px-3",
-		className
+		className,
 	)}
 	size={newSize}
 	type="button"

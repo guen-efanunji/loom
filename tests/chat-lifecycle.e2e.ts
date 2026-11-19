@@ -5,7 +5,9 @@ const projectId = "e2e-chat-project";
 const sessionId = "ses_e2e_chat_lifecycle";
 const projectDirectory = "/tmp/loom-e2e-chat-project";
 
-function conversation(options: { busy?: boolean; text?: string; questions?: unknown[] } = {}) {
+function conversation(
+	options: { busy?: boolean; text?: string; questions?: unknown[] } = {},
+) {
 	return {
 		session: {
 			id: sessionId,
@@ -32,7 +34,9 @@ function conversation(options: { busy?: boolean; text?: string; questions?: unkn
 				],
 			},
 		],
-		status: options.busy ? { type: "busy", message: "Working" } : { type: "idle" },
+		status: options.busy
+			? { type: "busy", message: "Working" }
+			: { type: "idle" },
 		permissions: [],
 		questions: options.questions ?? [],
 	};
@@ -61,15 +65,20 @@ async function stubWorkspace(
 		let status = 200;
 
 		if (pathname === "/api/projects") {
-			body = [{
-				id: projectId,
-				name: "E2E Chat Project",
-				path: projectDirectory,
-				defaultBranch: "main",
-				autoAccept: false,
-				createdAt: "2026-10-20T00:00:00.000Z",
-			}];
-		} else if (pathname === "/api/tasks" || pathname.startsWith("/api/agents")) {
+			body = [
+				{
+					id: projectId,
+					name: "E2E Chat Project",
+					path: projectDirectory,
+					defaultBranch: "main",
+					autoAccept: false,
+					createdAt: "2026-10-20T00:00:00.000Z",
+				},
+			];
+		} else if (
+			pathname === "/api/tasks" ||
+			pathname.startsWith("/api/agents")
+		) {
 			body = [];
 		} else if (pathname === "/api/automation/settings") {
 			body = { automationMode: "review" };
@@ -77,28 +86,38 @@ async function stubWorkspace(
 			body = null;
 		} else if (pathname === "/api/chat/catalog") {
 			body = {
-				models: [{
-					providerID: "opencode",
-					modelID: "fixture-model",
-					name: "Fixture Model",
-					provider: "OpenCode",
-				}],
+				models: [
+					{
+						providerID: "opencode",
+						modelID: "fixture-model",
+						name: "Fixture Model",
+						provider: "OpenCode",
+					},
+				],
 				defaults: {},
-				agents: [{ name: "build", mode: "primary" }, { name: "plan", mode: "primary" }],
+				agents: [
+					{ name: "build", mode: "primary" },
+					{ name: "plan", mode: "primary" },
+				],
 				commands: [],
 			};
 		} else if (pathname === "/api/chat/sessions") {
-			body = [{
-				id: sessionId,
-				title: "Lifecycle fixture chat",
-				directory: projectDirectory,
-				projectId,
-				time: { updated: 1_800_000_000_200 },
-			}];
+			body = [
+				{
+					id: sessionId,
+					title: "Lifecycle fixture chat",
+					directory: projectDirectory,
+					projectId,
+					time: { updated: 1_800_000_000_200 },
+				},
+			];
 		} else if (pathname === `/api/chat/sessions/${sessionId}/children`) {
 			body = [];
 		} else if (pathname === `/api/chat/sessions/${sessionId}/workspace`) {
-			body = hooks.workspace?.() ?? { mode: "shared", isolationAvailable: true };
+			body = hooks.workspace?.() ?? {
+				mode: "shared",
+				isolationAvailable: true,
+			};
 		} else if (pathname === `/api/chat/sessions/${sessionId}`) {
 			body = hooks.state?.() ?? conversation();
 		} else if (pathname === `/api/chat/sessions/${sessionId}/status`) {
@@ -121,10 +140,13 @@ async function stubWorkspace(
 		} else if (pathname === "/api" || pathname === "/api/health") {
 			body = { ok: true };
 		} else if (
-			pathname === `/api/chat/sessions/${sessionId}/question/fixture-question` &&
+			pathname ===
+				`/api/chat/sessions/${sessionId}/question/fixture-question` &&
 			request.method === "POST"
 		) {
-			hooks.questionReply?.(JSON.parse(request.postData ?? "{}") as Record<string, unknown>);
+			hooks.questionReply?.(
+				JSON.parse(request.postData ?? "{}") as Record<string, unknown>,
+			);
 			body = {};
 		} else if (request.method !== "GET") {
 			status = 501;
@@ -159,7 +181,9 @@ test("hydrates the authoritative isolated workspace when opening split chat", as
 	await expect(screen.getByText("Initial response text.")).toBeVisible();
 
 	await screen.getByRole("button", "Open split chat").tap();
-	await expect(screen.getByRole("region", "Split chat workspace")).toBeVisible();
+	await expect(
+		screen.getByRole("region", "Split chat workspace"),
+	).toBeVisible();
 	await expect(screen.getByText("loom/chat-e2e-chat")).toBeVisible();
 	await expect(screen.getByText("Uncommitted output")).toBeVisible();
 	await expect(screen.getByRole("button", "Merge into project")).toBeVisible();
@@ -172,21 +196,36 @@ test("renders clickable question choices and submits their selected value", asyn
 }) => {
 	let submitted: Record<string, unknown> | undefined;
 	await stubWorkspace(browser, {
-		state: () => conversation({
-			busy: true,
-			questions: [{
-				id: "fixture-question",
-				questions: [{
-					header: "Implementation",
-					question: "Which approach should I use?",
-					options: [
-						{ label: "Keep it simple", value: "simple", description: "Smallest change" },
-						{ label: "Make it extensible", value: "extensible", description: "More flexible" },
-					],
-				}],
-			}],
-		}),
-		questionReply: (body) => { submitted = body; },
+		state: () =>
+			conversation({
+				busy: true,
+				questions: [
+					{
+						id: "fixture-question",
+						questions: [
+							{
+								header: "Implementation",
+								question: "Which approach should I use?",
+								options: [
+									{
+										label: "Keep it simple",
+										value: "simple",
+										description: "Smallest change",
+									},
+									{
+										label: "Make it extensible",
+										value: "extensible",
+										description: "More flexible",
+									},
+								],
+							},
+						],
+					},
+				],
+			}),
+		questionReply: (body) => {
+			submitted = body;
+		},
 	});
 	await app.open(`/?project=${projectId}&session=${sessionId}`);
 	await screen.getByRole("button", "Open split chat").tap();
@@ -206,21 +245,32 @@ test("shows a visible one-slot follow-up queue and lets the user cancel it", asy
 	await stubWorkspace(browser, {
 		state: () => conversation({ busy: true, text: "Run in progress." }),
 	});
-	await browser.route(`**/api/chat/sessions/${sessionId}/messages`, async (route) => {
-		if (route.request.method === "POST") sendCount++;
-		await route.fulfill({ json: {} });
-	});
+	await browser.route(
+		`**/api/chat/sessions/${sessionId}/messages`,
+		async (route) => {
+			if (route.request.method === "POST") sendCount++;
+			await route.fulfill({ json: {} });
+		},
+	);
 	await app.open(`/?project=${projectId}&session=${sessionId}`);
 	await screen.getByRole("button", "Open split chat").tap();
 
 	const composer = screen.getByRole("textbox", "Message agent").nth(0);
 	await composer.fill("Follow-up that should be queued");
 	await screen.getByRole("button", "Send message").nth(0).tap();
-	await expect(screen.getByText("One follow-up is queued and will send when this response finishes.")).toBeVisible();
+	await expect(
+		screen.getByText(
+			"One follow-up is queued and will send when this response finishes.",
+		),
+	).toBeVisible();
 	await expect.poll(() => sendCount).toBe(0);
 
 	await screen.getByRole("button", "Cancel queued message").tap();
-	await expect(screen.getByText("One follow-up is queued and will send when this response finishes.")).not.toBeVisible();
+	await expect(
+		screen.getByText(
+			"One follow-up is queued and will send when this response finishes.",
+		),
+	).not.toBeVisible();
 	await expect.poll(() => sendCount).toBe(0);
 });
 

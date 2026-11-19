@@ -15,7 +15,9 @@ function setup(
 	} = { type: "busy" },
 	openCodeSessionActive = true,
 	/** Intercept a gateway path before the default fake handlers run. */
-	hooks?: (path: string) => Response | undefined | Promise<Response | undefined>,
+	hooks?: (
+		path: string,
+	) => Response | undefined | Promise<Response | undefined>,
 	extra?: {
 		providerHistory?: Parameters<typeof createChatRoutes>[0]["providerHistory"];
 		chatCompactions?: Parameters<typeof createChatRoutes>[0]["chatCompactions"];
@@ -226,18 +228,18 @@ describe("chat gateway", () => {
 							status: 400,
 						})
 					: undefined,
-				{
-					providerHistory: {
-						get: async () => undefined,
-						save: async (_sessionId, messages) => {
-							persisted.push(messages);
-						},
-						delete: async () => {},
+			{
+				providerHistory: {
+					get: async () => undefined,
+					save: async (_sessionId, messages) => {
+						persisted.push(messages);
 					},
-					logger: (_component, event, details) => {
-						failures.push(`${event}:${String(details?.message ?? "")}`);
-					},
+					delete: async () => {},
 				},
+				logger: (_component, event, details) => {
+					failures.push(`${event}:${String(details?.message ?? "")}`);
+				},
+			},
 		);
 		const response = await app.request("/sessions/ses_test/messages", {
 			method: "POST",
@@ -559,9 +561,7 @@ describe("chat gateway", () => {
 				},
 			],
 		});
-		const state = (await (
-			await app.request("/sessions/ses_test")
-		).json()) as {
+		const state = (await (await app.request("/sessions/ses_test")).json()) as {
 			messages: Array<{
 				info: { role: string };
 				parts: Array<{ text?: string }>;
@@ -649,7 +649,9 @@ describe("chat gateway", () => {
 		expect(saved.at(-1)?.info.error?.data?.message).toContain(
 			"model no longer available",
 		);
-		expect(requests.some((item) => item.url.endsWith("/prompt_async"))).toBe(true);
+		expect(requests.some((item) => item.url.endsWith("/prompt_async"))).toBe(
+			true,
+		);
 	});
 
 	test("rejects a concurrent duplicate send while the gateway accepts the first", async () => {
@@ -661,16 +663,12 @@ describe("chat gateway", () => {
 		const gate = new Promise<void>((resolve) => {
 			releasePrompt = resolve;
 		});
-		const { app, requests } = setup(
-			{ type: "busy" },
-			true,
-			async (path) => {
-				if (!path.endsWith("/prompt_async")) return undefined;
-				markPromptStarted();
-				await gate;
-				return new Response(null, { status: 204 });
-			},
-		);
+		const { app, requests } = setup({ type: "busy" }, true, async (path) => {
+			if (!path.endsWith("/prompt_async")) return undefined;
+			markPromptStarted();
+			await gate;
+			return new Response(null, { status: 204 });
+		});
 		const request = {
 			method: "POST",
 			headers: { "content-type": "application/json" },
@@ -687,7 +685,9 @@ describe("chat gateway", () => {
 		expect(duplicate.status).toBe(409);
 		releasePrompt();
 		expect((await first).status).toBe(204);
-		expect(requests.filter((item) => item.url.endsWith("/prompt_async"))).toHaveLength(1);
+		expect(
+			requests.filter((item) => item.url.endsWith("/prompt_async")),
+		).toHaveLength(1);
 	});
 
 	test("sends model, agent and subsequent prompts to the same OpenCode session", async () => {

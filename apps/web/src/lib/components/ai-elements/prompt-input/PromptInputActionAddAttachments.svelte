@@ -8,7 +8,11 @@
 		class?: string;
 	}
 
-	let { label = "Add photos or files", class: className, ...props }: Props = $props();
+	let {
+		label = "Add photos or files",
+		class: className,
+		...props
+	}: Props = $props();
 
 	let attachments = getAttachmentsContext();
 

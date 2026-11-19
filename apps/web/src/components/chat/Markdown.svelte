@@ -1,57 +1,57 @@
 <script lang="ts">
-import DOMPurify from "dompurify";
-import { marked } from "marked";
-import { browser } from "$app/environment";
-import CodeBlock from "./CodeBlock.svelte";
+	import DOMPurify from "dompurify";
+	import { marked } from "marked";
+	import { browser } from "$app/environment";
+	import CodeBlock from "./CodeBlock.svelte";
 
-let { text }: { text: string } = $props();
+	let { text }: { text: string } = $props();
 
-type Segment = { type: "md" | "code"; value: string; lang?: string };
+	type Segment = { type: "md" | "code"; value: string; lang?: string };
 
-// Split the message into prose and fenced code so code goes through the
-// shadcn CodeBlock (Shiki highlighting, line numbers, copy) while the rest
-// stays rendered as sanitized Markdown.
-const fence = /```([\w+-]*)\r?\n?([\s\S]*?)```/g;
-const segments = $derived.by((): Segment[] => {
-	if (!browser) return [];
-	const src = text ?? "";
-	const out: Segment[] = [];
-	let last = 0;
-	fence.lastIndex = 0;
-	let match = fence.exec(src);
-	while (match) {
-		if (match.index > last)
-			out.push({ type: "md", value: src.slice(last, match.index) });
-		out.push({
-			type: "code",
-			lang: match[1] || undefined,
-			value: match[2] ?? "",
-		});
-		last = match.index + match[0].length;
-		match = fence.exec(src);
-	}
-	if (last < src.length) {
-		const rest = src.slice(last);
-		// An unterminated fence (still streaming) renders as a code block too.
-		const open = rest.match(/```([\w+-]*)\r?\n?([\s\S]*)$/);
-		if (open) {
-			const before = rest.slice(0, open.index);
-			if (before.trim()) out.push({ type: "md", value: before });
+	// Split the message into prose and fenced code so code goes through the
+	// shadcn CodeBlock (Shiki highlighting, line numbers, copy) while the rest
+	// stays rendered as sanitized Markdown.
+	const fence = /```([\w+-]*)\r?\n?([\s\S]*?)```/g;
+	const segments = $derived.by((): Segment[] => {
+		if (!browser) return [];
+		const src = text ?? "";
+		const out: Segment[] = [];
+		let last = 0;
+		fence.lastIndex = 0;
+		let match = fence.exec(src);
+		while (match) {
+			if (match.index > last)
+				out.push({ type: "md", value: src.slice(last, match.index) });
 			out.push({
 				type: "code",
-				lang: open[1] || undefined,
-				value: open[2] ?? "",
+				lang: match[1] || undefined,
+				value: match[2] ?? "",
 			});
-		} else out.push({ type: "md", value: rest });
-	}
-	return out;
-});
-
-function render(value: string) {
-	return DOMPurify.sanitize(marked.parse(value, { async: false }), {
-		USE_PROFILES: { html: true },
+			last = match.index + match[0].length;
+			match = fence.exec(src);
+		}
+		if (last < src.length) {
+			const rest = src.slice(last);
+			// An unterminated fence (still streaming) renders as a code block too.
+			const open = rest.match(/```([\w+-]*)\r?\n?([\s\S]*)$/);
+			if (open) {
+				const before = rest.slice(0, open.index);
+				if (before.trim()) out.push({ type: "md", value: before });
+				out.push({
+					type: "code",
+					lang: open[1] || undefined,
+					value: open[2] ?? "",
+				});
+			} else out.push({ type: "md", value: rest });
+		}
+		return out;
 	});
-}
+
+	function render(value: string) {
+		return DOMPurify.sanitize(marked.parse(value, { async: false }), {
+			USE_PROFILES: { html: true },
+		});
+	}
 </script>
 
 <div class="flex min-w-0 flex-col gap-3 break-words">

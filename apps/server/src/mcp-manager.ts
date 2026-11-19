@@ -813,7 +813,7 @@ export function createMcpManagerRoutes(options: Options) {
 						.query(
 							"UPDATE managed_mcp_connections SET status = 'degraded', last_error = 'The MCP session closed unexpectedly.', updated_at = ? WHERE id = ?",
 						)
-					.run(Date.now(), row.id);
+						.run(Date.now(), row.id);
 				};
 				opened.transport.onerror = () => {
 					if (!liveConnections.has(row.id)) return;
@@ -821,7 +821,7 @@ export function createMcpManagerRoutes(options: Options) {
 						.query(
 							"UPDATE managed_mcp_connections SET status = 'degraded', last_error = 'The MCP transport reported an error.', updated_at = ? WHERE id = ?",
 						)
-					.run(Date.now(), row.id);
+						.run(Date.now(), row.id);
 				};
 			} catch (error) {
 				const message = safeMcpError(error, readMcpConfig(row));
@@ -836,7 +836,9 @@ export function createMcpManagerRoutes(options: Options) {
 	const startupReconnect = reconnectOnStartup();
 	app.get("/connections", async (c) => {
 		await startupReconnect;
-		return c.json({ connections: mcpRows(options.db).map(publicMcpConnection) });
+		return c.json({
+			connections: mcpRows(options.db).map(publicMcpConnection),
+		});
 	});
 	app.post("/connections/:id/auto-reconnect", async (c) => {
 		const id = c.req.param("id");

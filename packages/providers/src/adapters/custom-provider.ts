@@ -790,7 +790,8 @@ export class CustomProviderAdapter implements CliProviderAdapter {
 		);
 		void this.runPrompt(input, run, controller)
 			.catch((error) => {
-				const timedOut = controller.signal.aborted &&
+				const timedOut =
+					controller.signal.aborted &&
 					controller.signal.reason === "Provider request timed out";
 				run.error = timedOut
 					? "Provider request timed out"
@@ -799,7 +800,11 @@ export class CustomProviderAdapter implements CliProviderAdapter {
 						: error instanceof Error
 							? error.message
 							: String(error);
-				run.status = timedOut ? "failed" : controller.signal.aborted ? "cancelled" : "failed";
+				run.status = timedOut
+					? "failed"
+					: controller.signal.aborted
+						? "cancelled"
+						: "failed";
 			})
 			.finally(() => {
 				clearTimeout(timeout);
@@ -847,7 +852,9 @@ export class CustomProviderAdapter implements CliProviderAdapter {
 		const system = [
 			input.system ?? "",
 			...(!noTools
-				? ["You can inspect this project's files with list_files and read_file. Use these tools instead of asking the user to paste project files. Make requested edits with write_file or edit_file, and run checks or project commands with run_command. Loom confines file tools to this project and asks before changing files or running commands unless the user enabled auto-accept."]
+				? [
+						"You can inspect this project's files with list_files and read_file. Use these tools instead of asking the user to paste project files. Make requested edits with write_file or edit_file, and run checks or project commands with run_command. Loom confines file tools to this project and asks before changing files or running commands unless the user enabled auto-accept.",
+					]
 				: []),
 		]
 			.filter(Boolean)
@@ -868,7 +875,9 @@ export class CustomProviderAdapter implements CliProviderAdapter {
 				body: JSON.stringify({
 					model: input.model?.modelID ?? this.config.models[0]?.id,
 					messages,
-					...(!noTools ? { tools: customRuntimeTools, tool_choice: "auto" } : {}),
+					...(!noTools
+						? { tools: customRuntimeTools, tool_choice: "auto" }
+						: {}),
 					stream: false,
 				}),
 			});

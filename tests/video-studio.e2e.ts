@@ -38,8 +38,7 @@ async function stubVideoStudio(browser: Browser) {
 		else if (pathname === "/api/chat/catalog") body = catalog;
 		else if (pathname === "/api/chat/preferences")
 			body = { favoriteModels: [] };
-		else if (pathname === "/api/agents")
-			body = [];
+		else if (pathname === "/api/agents") body = [];
 		else if (pathname === "/api/providers")
 			body = [
 				{
@@ -70,7 +69,9 @@ async function stubVideoStudio(browser: Browser) {
 		else if (pathname === "/api/tasks") body = [task];
 		else if (pathname === `/api/tasks/${task.id}/files`) {
 			autoDetectRequests++;
-			if (new URL(route.request.url).searchParams.get("path") === "out/video.mp4") {
+			if (
+				new URL(route.request.url).searchParams.get("path") === "out/video.mp4"
+			) {
 				await route.fulfill({
 					status: 200,
 					contentType: "video/mp4",
@@ -80,8 +81,7 @@ async function stubVideoStudio(browser: Browser) {
 			}
 			await route.fulfill({ status: 404, body: "Not found" });
 			return;
-		} else if (pathname === `/api/context/entries`)
-			body = [];
+		} else if (pathname === "/api/context/entries") body = [];
 		else if (pathname === "/api/bootstrap")
 			body = { token: "e2e-video-studio-token" };
 		else if (pathname === "/api/events/replay")
@@ -114,6 +114,8 @@ test("Video Studio renders and captures a screenshot", async ({
 	await app.screenshot("video-studio");
 	await new Promise((resolve) => setTimeout(resolve, 500));
 	if (autoDetectRequests !== 1) {
-		throw new Error(`Expected one auto-detect request, got ${autoDetectRequests}`);
+		throw new Error(
+			`Expected one auto-detect request, got ${autoDetectRequests}`,
+		);
 	}
 });

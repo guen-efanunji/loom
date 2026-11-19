@@ -4121,7 +4121,9 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			const taskId = c.req.param("id");
 			const task = await repos.tasks.getById(taskId);
 			if (!task) return errorResponse(c, new Error("Task not found"));
-			if (!["completed", "ready_to_merge", "merge_conflict"].includes(task.status))
+			if (
+				!["completed", "ready_to_merge", "merge_conflict"].includes(task.status)
+			)
 				return c.json(
 					{
 						error: {
@@ -4148,7 +4150,12 @@ export async function createApp(options: DaemonAppOptions = {}) {
 				const candidates = await db
 					.select()
 					.from(customAgents)
-					.where(and(eq(customAgents.status, "active"), eq(customAgents.allowKanban, true)))
+					.where(
+						and(
+							eq(customAgents.status, "active"),
+							eq(customAgents.allowKanban, true),
+						),
+					)
 					.then((rows) =>
 						rows.filter(
 							(agent) =>
@@ -4158,7 +4165,8 @@ export async function createApp(options: DaemonAppOptions = {}) {
 						),
 					);
 				const words = new Set(
-					`${task.title} ${task.prompt}`.toLowerCase().match(/[a-z0-9]{3,}/g) ?? [],
+					`${task.title} ${task.prompt}`.toLowerCase().match(/[a-z0-9]{3,}/g) ??
+						[],
 				);
 				const score = (agent: (typeof candidates)[number]) =>
 					`${agent.label} ${agent.role} ${agent.roleDescription ?? ""}`
@@ -4167,7 +4175,10 @@ export async function createApp(options: DaemonAppOptions = {}) {
 						.filter((word) => word.length >= 3 && words.has(word)).length;
 				const picked = candidates
 					.map((agent) => ({ agent, points: score(agent) }))
-					.sort((a, b) => b.points - a.points || a.agent.label.localeCompare(b.agent.label))[0]?.agent;
+					.sort(
+						(a, b) =>
+							b.points - a.points || a.agent.label.localeCompare(b.agent.label),
+					)[0]?.agent;
 				if (!picked)
 					return c.json(
 						{
@@ -4199,8 +4210,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 					"info",
 				);
 			}
-			if (task.status === "completed")
-				await orchestrator.checkpoint(taskId);
+			if (task.status === "completed") await orchestrator.checkpoint(taskId);
 			const review = await orchestrator.runTaskReviewWithRepairs(
 				taskId,
 				reviewerIdentity,
@@ -4626,8 +4636,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			const workspace = task?.workspaceId
 				? await repos.workspaces.getById(task.workspaceId)
 				: undefined;
-			if (!workspace)
-				return errorResponse(c, new Error("Workspace not found"));
+			if (!workspace) return errorResponse(c, new Error("Workspace not found"));
 			const relativePath = c.req.query("path") ?? "";
 			if (!relativePath)
 				return errorResponse(c, new Error("Missing path query"));
@@ -4637,8 +4646,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			if (rel.startsWith("..") || isAbsolute(rel))
 				return errorResponse(c, new Error("Path outside workspace"));
 			const fileStat = await stat(target);
-			if (!fileStat.isFile())
-				return errorResponse(c, new Error("Not a file"));
+			if (!fileStat.isFile()) return errorResponse(c, new Error("Not a file"));
 			const data = await readFile(target);
 			const ext = target.toLowerCase().split(".").pop() ?? "";
 			const mime: Record<string, string> = {
@@ -4663,15 +4671,10 @@ export async function createApp(options: DaemonAppOptions = {}) {
 				const match = /bytes=(\d+)-(\d*)/.exec(range);
 				if (match) {
 					const start = Number(match[1]);
-					const end = match[2]
-						? Number(match[2])
-						: data.byteLength - 1;
+					const end = match[2] ? Number(match[2]) : data.byteLength - 1;
 					const chunk = data.subarray(start, end + 1);
 					c.status(206);
-					c.header(
-						"Content-Range",
-						`bytes ${start}-${end}/${data.byteLength}`,
-					);
+					c.header("Content-Range", `bytes ${start}-${end}/${data.byteLength}`);
 					c.header("Accept-Ranges", "bytes");
 					c.header("Content-Length", String(chunk.byteLength));
 					return c.body(chunk);

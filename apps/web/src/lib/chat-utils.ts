@@ -85,8 +85,7 @@ export function isContextOverflowError(reason: unknown): reason is Error & {
 	handoff?: string;
 } {
 	const error = reason as { code?: string; message?: string };
-	const message =
-		typeof reason === "string" ? reason : (error?.message ?? "");
+	const message = typeof reason === "string" ? reason : (error?.message ?? "");
 	return (
 		error?.code === "CONTEXT_WINDOW_EXCEEDED" ||
 		error?.code === "CONTEXT_BUDGET_EXCEEDED" ||

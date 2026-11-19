@@ -38,7 +38,11 @@ export type ProviderDefinition = {
 };
 
 export type ProviderConnectionStatus =
-	"disconnected" | "checking" | "connected" | "auth-required" | "error";
+	| "disconnected"
+	| "checking"
+	| "connected"
+	| "auth-required"
+	| "error";
 
 export type ProviderConnection = {
 	id: string;
@@ -56,7 +60,12 @@ export type ProviderConnection = {
 };
 
 export type ModelCapability =
-	"text" | "image" | "tools" | "reasoning" | "coding" | "structured-output";
+	| "text"
+	| "image"
+	| "tools"
+	| "reasoning"
+	| "coding"
+	| "structured-output";
 
 export type ModelRef = {
 	providerId: string;

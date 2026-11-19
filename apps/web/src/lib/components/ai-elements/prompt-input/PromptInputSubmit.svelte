@@ -24,13 +24,9 @@
 	}: Props = $props();
 
 	let Icon = $derived.by(() => {
-		if (status === "submitted") {
-			return Loader2Icon;
-		} else if (status === "streaming") {
-			return SquareIcon;
-		} else if (status === "error") {
-			return XIcon;
-		}
+		if (status === "submitted") return Loader2Icon;
+		if (status === "streaming") return SquareIcon;
+		if (status === "error") return XIcon;
 		return SendIcon;
 	});
 
@@ -42,7 +38,13 @@
 	});
 </script>
 
-<Button class={cn("gap-1.5 rounded-lg", className)} {size} type="submit" {variant} {...props}>
+<Button
+	class={cn("gap-1.5 rounded-lg", className)}
+	{size}
+	type="submit"
+	{variant}
+	{...props}
+>
 	{#if children}
 		{@render children()}
 	{:else}

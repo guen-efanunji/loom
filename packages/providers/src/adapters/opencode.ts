@@ -92,9 +92,8 @@ export class OpenCodeProviderAdapter implements CliProviderAdapter {
 			await this.runtime.request("/api/info");
 			return { authenticated: true, strategy: "provider-managed" };
 		} catch (error) {
-			const status = (
-				error as { details?: { status?: string } } | null
-			)?.details?.status;
+			const status = (error as { details?: { status?: string } } | null)
+				?.details?.status;
 			if (status === "401")
 				return {
 					authenticated: false,

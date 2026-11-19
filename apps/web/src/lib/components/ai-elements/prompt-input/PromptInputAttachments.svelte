@@ -1,7 +1,10 @@
 <script lang="ts">
 	import { cn } from "$lib/shared/utils/shadcn";
 	import { watch } from "runed";
-	import { getAttachmentsContext, type FileWithId } from "./attachments-context.svelte.js";
+	import {
+		getAttachmentsContext,
+		type FileWithId,
+	} from "./attachments-context.svelte.js";
 
 	interface Props {
 		class?: string;
@@ -16,11 +19,13 @@
 
 	// Separate files and images for grouped rendering
 	let nonImageFiles = $derived(
-		attachments.files.filter((f) => !(f.mediaType?.startsWith("image/") && f.url))
+		attachments.files.filter(
+			(f) => !(f.mediaType?.startsWith("image/") && f.url),
+		),
 	);
 
 	let imageFiles = $derived(
-		attachments.files.filter((f) => f.mediaType?.startsWith("image/") && f.url)
+		attachments.files.filter((f) => f.mediaType?.startsWith("image/") && f.url),
 	);
 
 	// Watch for resize changes using ResizeObserver
@@ -39,7 +44,7 @@
 			height = contentRef.getBoundingClientRect().height;
 
 			return () => ro.disconnect();
-		}
+		},
 	);
 
 	let computedHeight = $derived.by(() => {
@@ -49,7 +54,10 @@
 
 <div
 	aria-live="polite"
-	class={cn("overflow-hidden transition-[height] duration-200 ease-out", className)}
+	class={cn(
+		"overflow-hidden transition-[height] duration-200 ease-out",
+		className,
+	)}
 	style:height="{computedHeight}px"
 	{...props}
 >

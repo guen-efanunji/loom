@@ -4,6 +4,7 @@ import { expect } from "e2e";
 const projectId = "e2e-project";
 const parentId = "ses_e2e_parent";
 const childId = "ses_e2e_child";
+const planId = "plan_e2e_adaptive_chat";
 const projectDirectory = "/tmp/loom-e2e-project";
 
 const userMessage = {
@@ -74,14 +75,15 @@ function state(sessionId: string, parentID?: string) {
 }
 
 async function stubWorkspace(browser: Browser, catalogModels: unknown[] = []) {
-	await browser.addInitScript(() => {
+	await browser.addInitScript((projectId) => {
 		try {
 			localStorage.setItem("loom.ui.trusted", "true");
 			localStorage.setItem("loom.daemon.token", "e2e-fixture-token");
+			localStorage.setItem(`loom.model.${projectId}`, "");
 		} catch {
 			// The runner also evaluates init scripts on about:blank before the app origin exists.
 		}
-	});
+	}, projectId);
 	await browser.route("**/api/**", async (route) => {
 		const request = route.request;
 		const url = new URL(request.url);
@@ -142,6 +144,11 @@ async function stubWorkspace(browser: Browser, catalogModels: unknown[] = []) {
 			body = state(childId, parentId);
 		} else if (path === "/api/plans" && request.method === "POST") {
 			body = { planId, status: "draft" };
+		} else if (
+			path === `/api/chat/sessions/${parentId}/ownership` &&
+			request.method === "POST"
+		) {
+			body = { ok: true };
 		} else if (path === "/api/chat/preferences") {
 			body = { favoriteModels: [] };
 		} else if (path === "/api/events/replay") {
@@ -236,6 +243,14 @@ test("keeps planning in chat when the user selects Plan mode", async ({
 	let chatRequest: Record<string, unknown> | undefined;
 	let taskMutationCount = 0;
 	await stubWorkspace(browser);
+	await browser.route(`**/api/chat/sessions/${parentId}`, async (route) => {
+		const emptySession = state(parentId);
+		emptySession.messages = [];
+		await route.fulfill({
+			contentType: "application/json",
+			body: JSON.stringify(emptySession),
+		});
+	});
 	await browser.route("**/api/tasks", async (route) => {
 		if (route.request.method === "POST") taskMutationCount++;
 		return route.fallback();
@@ -253,9 +268,9 @@ test("keeps planning in chat when the user selects Plan mode", async ({
 	);
 	await app.open(`/?project=${projectId}&session=${parentId}`);
 
-	await screen.getByRole("button", "Chat mode: build").tap();
+	await screen.getByRole("combobox", "Chat mode: build").tap();
 	await screen.getByRole("option", "plan").tap();
-	await expect(screen.getByRole("button", "Chat mode: plan")).toBeVisible();
+	await expect(screen.getByRole("combobox", "Chat mode: plan")).toBeVisible();
 	const composer = screen.getByRole("textbox", "Message agent");
 	await composer.fill("Build a small feature");
 	await app.screenshot("adaptive-plan-mode-stays-in-chat");

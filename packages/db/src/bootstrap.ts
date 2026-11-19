@@ -95,7 +95,9 @@ export function bootstrapDatabase(path: string): void {
 			"allow_private_network integer NOT NULL DEFAULT 0",
 		]) {
 			try {
-				database.exec(`ALTER TABLE managed_mcp_connections ADD COLUMN ${column}`);
+				database.exec(
+					`ALTER TABLE managed_mcp_connections ADD COLUMN ${column}`,
+				);
 			} catch (error) {
 				if (
 					!(error instanceof Error) ||

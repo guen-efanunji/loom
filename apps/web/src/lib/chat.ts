@@ -308,7 +308,10 @@ const catalogCache = new Map<string, Catalog>();
 const catalogRequests = new Map<string, Promise<Catalog>>();
 const catalogGenerations = new Map<string, number>();
 function invalidateCatalog(projectId: string) {
-	catalogGenerations.set(projectId, (catalogGenerations.get(projectId) ?? 0) + 1);
+	catalogGenerations.set(
+		projectId,
+		(catalogGenerations.get(projectId) ?? 0) + 1,
+	);
 	catalogCache.delete(projectId);
 	catalogRequests.delete(projectId);
 	if (typeof localStorage !== "undefined") {

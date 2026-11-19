@@ -20,7 +20,10 @@ import type { GrammarState } from "shiki/core";
  * {/each}
  * ```
  */
-export function useHighlightedCode(value: () => string, language: () => string) {
+export function useHighlightedCode(
+	value: () => string,
+	language: () => string,
+) {
 	let loaded = $state.raw<{
 		language: string;
 		highlighter: Highlighter | null;
@@ -66,13 +69,16 @@ export function useHighlightedCode(value: () => string, language: () => string) 
 		let next = done;
 
 		if (next.highlighter !== highlighter || !code.startsWith(next.text)) {
-			next = { highlighter, text:"", lines: [] };
+			next = { highlighter, text: "", lines: [] };
 		}
 
 		const end = code.lastIndexOf("\n") + 1;
 
 		if (end > next.text.length) {
-			const result = highlighter.highlight(code.slice(next.text.length, end - 1), next.state);
+			const result = highlighter.highlight(
+				code.slice(next.text.length, end - 1),
+				next.state,
+			);
 
 			next = {
 				highlighter,

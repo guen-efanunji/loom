@@ -152,8 +152,7 @@ describe("chat regenerate/edit supersede", () => {
 							parts: [{ id: "p2", type: "text", text: "hi there" }],
 						},
 					] as T;
-				if (path === "/session/status")
-					return { ses_x: { type: "busy" } } as T;
+				if (path === "/session/status") return { ses_x: { type: "busy" } } as T;
 				if (path === "/permission" || path === "/question") return [] as T;
 				return true as T;
 			},
@@ -203,8 +202,7 @@ describe("chat regenerate/edit supersede", () => {
 							parts: [{ id: "p3", type: "text", text: "continue" }],
 						},
 					] as T;
-				if (path === "/session/status")
-					return { ses_x: { type: "busy" } } as T;
+				if (path === "/session/status") return { ses_x: { type: "busy" } } as T;
 				if (path === "/permission" || path === "/question") return [] as T;
 				return true as T;
 			},

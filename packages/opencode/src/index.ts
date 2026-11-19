@@ -771,7 +771,7 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 					const { done, value } = await reader.read();
 					if (done) break;
 					buffer += decoder.decode(value, { stream: true });
-					for (let boundary = buffer.indexOf("\n\n"); boundary !== -1;) {
+					for (let boundary = buffer.indexOf("\n\n"); boundary !== -1; ) {
 						this.dispatchGatewayEvent(buffer.slice(0, boundary));
 						buffer = buffer.slice(boundary + 2);
 						boundary = buffer.indexOf("\n\n");
@@ -784,7 +784,10 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 				setTimeout(resolve, this.eventStreamBackoffMs),
 			);
 			if (controller.signal.aborted) return;
-			this.eventStreamBackoffMs = Math.min(this.eventStreamBackoffMs * 2, 10_000);
+			this.eventStreamBackoffMs = Math.min(
+				this.eventStreamBackoffMs * 2,
+				10_000,
+			);
 		}
 	}
 
@@ -1060,27 +1063,23 @@ export class OpenCodeHttpRuntime implements AgentRuntime {
 				// A modern gateway rejects unknown models with 404/400. That is a
 				// model problem, not a gateway-version signal, so it rejects the
 				// turn cleanly instead of demoting every route to legacy.
-				try {
-					await this.request(
-						`/session/${encodeURIComponent(input.sessionId)}/model`,
-						{
-							method: "POST",
-							headers: { "content-type": "application/json" },
-							body: JSON.stringify({
-								model: {
-									providerID: model.providerID,
-									id: model.modelID,
-									...(input.variant ? { variant: input.variant } : {}),
-								},
-							}),
-						},
-					);
-				} catch (error) {
-					// Model selection failures (including 400/404 for removed models)
-					// are real run errors. Never silently submit with a different
-					// configured default: the user must see the gateway's explanation.
-					throw error;
-				}
+				// Model selection failures (including 400/404 for removed models)
+				// are real run errors. Never silently submit with a different
+				// configured default: the user must see the gateway's explanation.
+				await this.request(
+					`/session/${encodeURIComponent(input.sessionId)}/model`,
+					{
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({
+							model: {
+								providerID: model.providerID,
+								id: model.modelID,
+								...(input.variant ? { variant: input.variant } : {}),
+							},
+						}),
+					},
+				);
 			}
 			// The prompt payload no longer carries `system`/`parts`; the system
 			// instruction rides in `text` and attachments move into `files`.

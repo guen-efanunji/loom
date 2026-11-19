@@ -55,7 +55,10 @@
 		},
 		{ tone: "ok", text: "Binary downloaded to a temporary file" },
 		{ tone: "phase", text: "[6/8] Verifying the download" },
-		{ tone: "detail", text: "Comparing downloaded file to the signed-off release checksum" },
+		{
+			tone: "detail",
+			text: "Comparing downloaded file to the signed-off release checksum",
+		},
 		{ tone: "ok", text: "SHA-256 verified before installation" },
 		{ tone: "phase", text: "[7/8] Installing Loom" },
 		{ tone: "ok", text: "Downloaded executable starts successfully" },

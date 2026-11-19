@@ -47,11 +47,7 @@
 		workspace: ChatWorkspace | null;
 		workspaceError: string;
 		workspaceOperation:
-			| "checkpointing"
-			| "merging"
-			| "syncing"
-			| "discarding"
-			| null;
+			"checkpointing" | "merging" | "syncing" | "discarding" | null;
 		/** Files the last merge/sync reported as conflicting. */
 		conflict: string[];
 	};
@@ -150,7 +146,9 @@
 	let scroller: HTMLDivElement;
 	// P2-9: hold at most one message per tab while its session is busy so a fast
 	// follow-up is queued and auto-sent the moment the run finishes.
-	let queues = $state<Record<string, Parameters<typeof chat.send>[1] | null>>({});
+	let queues = $state<Record<string, Parameters<typeof chat.send>[1] | null>>(
+		{},
+	);
 	// P1-7: last cheap status signature per tab, so we only re-fetch full state
 	// when the conversation actually changed instead of every poll.
 	let signatures = $state<Record<string, string>>({});
@@ -335,13 +333,19 @@
 		const sessionId = tab.sessionId;
 		try {
 			const state = await chat.workspace(sessionId);
-			if (!tabs.some((item) => item.id === tab.id) || tab.sessionId !== sessionId)
+			if (
+				!tabs.some((item) => item.id === tab.id) ||
+				tab.sessionId !== sessionId
+			)
 				return;
 			tab.workspace = state.mode === "isolated" ? state : null;
 			tab.isolated = state.mode === "isolated";
 			tab.workspaceError = "";
 		} catch (reason) {
-			if (!tabs.some((item) => item.id === tab.id) || tab.sessionId !== sessionId)
+			if (
+				!tabs.some((item) => item.id === tab.id) ||
+				tab.sessionId !== sessionId
+			)
 				return;
 			// A deleted worktree or a Git failure must not break the conversation view.
 			tab.workspace = null;
@@ -583,7 +587,9 @@
 	async function discardWorkspace(tab: PaneTab) {
 		if (!tab.sessionId || !tab.workspace || tab.workspaceOperation) return;
 		if (
-			!confirm("Discard this isolated workspace? Unmerged agent output is lost.")
+			!confirm(
+				"Discard this isolated workspace? Unmerged agent output is lost.",
+			)
 		)
 			return;
 		tab.workspaceOperation = "discarding";
@@ -677,7 +683,9 @@
 			await refresh(active);
 		} catch (reason) {
 			active.error =
-				reason instanceof Error ? reason.message : "Unable to update permission.";
+				reason instanceof Error
+					? reason.message
+					: "Unable to update permission.";
 		} finally {
 			permissionReplying = "";
 		}
@@ -785,10 +793,12 @@
 				<span class="ml-auto flex items-center gap-1">
 					<Button
 						variant="outline"
-					size="sm"
+						size="sm"
 						class="h-6 px-2 text-[11px]"
 						title="Commit this tab's output and merge it into the project branch"
-					disabled={busy || !!active.workspaceError || !!active.workspaceOperation}
+						disabled={busy ||
+							!!active.workspaceError ||
+							!!active.workspaceOperation}
 						onclick={() => void integrate(active)}
 						><Upload size={11} />Merge into project</Button
 					>
@@ -945,8 +955,12 @@
 					{active.error}
 				</p>{/if}
 			{#if active && queues[active.id]}
-				<div class="mt-3 flex items-center justify-between gap-3 rounded-lg border border-cyan-300/20 bg-cyan-300/[0.05] p-3 text-xs">
-					<span>One follow-up is queued and will send when this response finishes.</span>
+				<div
+					class="mt-3 flex items-center justify-between gap-3 rounded-lg border border-cyan-300/20 bg-cyan-300/[0.05] p-3 text-xs"
+				>
+					<span
+						>One follow-up is queued and will send when this response finishes.</span
+					>
 					<Button
 						variant="ghost"
 						size="sm"
@@ -954,8 +968,8 @@
 						onclick={() => {
 							queues[active.id] = null;
 							active.error = "Queued follow-up cancelled.";
-						}}
-					>Cancel queued message</Button>
+						}}>Cancel queued message</Button
+					>
 				</div>
 			{/if}
 		</div>

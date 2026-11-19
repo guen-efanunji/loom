@@ -14,9 +14,14 @@ async function fixture() {
 		"allow_private_network integer NOT NULL DEFAULT 0",
 	]) {
 		try {
-			db.$client.exec(`ALTER TABLE managed_mcp_connections ADD COLUMN ${column}`);
+			db.$client.exec(
+				`ALTER TABLE managed_mcp_connections ADD COLUMN ${column}`,
+			);
 		} catch (error) {
-			if (!(error instanceof Error) || !error.message.includes("duplicate column"))
+			if (
+				!(error instanceof Error) ||
+				!error.message.includes("duplicate column")
+			)
 				throw error;
 		}
 	}
@@ -79,14 +84,11 @@ describe("MCP manager startup recovery", () => {
 		await insertConnection(db);
 
 		const app = createApp();
-		const response = await app.request(
-			"/connections/mcp_test/auto-reconnect",
-			{
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({ enabled: true }),
-			},
-		);
+		const response = await app.request("/connections/mcp_test/auto-reconnect", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ enabled: true }),
+		});
 		const body = (await response.json()) as {
 			connection: { autoReconnect: boolean };
 		};

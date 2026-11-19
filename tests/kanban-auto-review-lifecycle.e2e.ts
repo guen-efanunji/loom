@@ -765,8 +765,6 @@ test("surfaces a stalled provider run as failed with the watchdog reason instead
 	await expect(
 		screen.getByText(/OpenCode stopped reporting status/).first(),
 	).toBeVisible({ timeout: 10_000 });
-	await expect(
-		screen.getByRole("button", "Retry task").first(),
-	).toBeVisible();
+	await expect(screen.getByRole("button", "Retry task").first()).toBeVisible();
 	await app.screenshot("kanban-stalled-run-failed-with-watchdog-reason");
 });

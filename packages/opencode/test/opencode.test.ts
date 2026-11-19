@@ -110,18 +110,18 @@ describe("OpenCode server manager", () => {
 	test("forwards gateway activity events to the session hook", async () => {
 		const activity: string[] = [];
 		const lines = [
-			`data: {"type":"server.connected","data":{}}`,
-			``,
-			`data: {"type":"session.text.delta","data":{"sessionID":"ses_a"}}`,
-			``,
-			`data: {"type":"session.step.streamed","data":{"sessionID":"ses_b"}}`,
-			``,
-			`data: {"type":"message.other","data":{"sessionID":"ses_a"}}`,
-			``,
-			`data: not-json`,
-			``,
-			`: heartbeat`,
-			``,
+			'data: {"type":"server.connected","data":{}}',
+			"",
+			'data: {"type":"session.text.delta","data":{"sessionID":"ses_a"}}',
+			"",
+			'data: {"type":"session.step.streamed","data":{"sessionID":"ses_b"}}',
+			"",
+			'data: {"type":"message.other","data":{"sessionID":"ses_a"}}',
+			"",
+			"data: not-json",
+			"",
+			": heartbeat",
+			"",
 		];
 		const runtime = new OpenCodeHttpRuntime({
 			baseUrl: "http://127.0.0.1:4096",
@@ -216,7 +216,10 @@ describe("OpenCode HTTP runtime", () => {
 				requests.push(new Request(input, init));
 				const path = new URL(String(input)).pathname;
 				if (path.endsWith("/session/session-1/model"))
-					return new Response('{"message":"ProviderModelNotFoundError: no model"}', { status: 404 });
+					return new Response(
+						'{"message":"ProviderModelNotFoundError: no model"}',
+						{ status: 404 },
+					);
 				return new Response(null, { status: 204 });
 			},
 		});

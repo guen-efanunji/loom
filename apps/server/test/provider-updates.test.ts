@@ -31,9 +31,7 @@ test("checks Antigravity CLI version using its official release manifest", async
 test("does not offer updates when installed CLIs are newer than release latest", async () => {
 	globalThis.fetch = mock(async (input: string | URL | Request) => {
 		const url = String(input);
-		const version = url.includes("anomalyco/opencode")
-			? "v2.2.5"
-			: "2.1.318";
+		const version = url.includes("anomalyco/opencode") ? "v2.2.5" : "2.1.318";
 		return url.includes("anomalyco/opencode")
 			? Response.json({ tag_name: version })
 			: Response.json({ "dist-tags": { latest: version } });

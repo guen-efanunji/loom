@@ -1,91 +1,91 @@
 <script lang="ts">
-import {
-	ArrowRight,
-	CircleAlert,
-	Eye,
-	EyeOff,
-	GitBranch,
-	LoaderCircle,
-	ShieldCheck,
-	Terminal,
-} from "@lucide/svelte";
-import { onMount } from "svelte";
-import { goto } from "$app/navigation";
-import { page } from "$app/state";
-import { Button } from "$lib/components/ui/button";
-import { Input } from "$lib/components/ui/input";
-import { type UiLockState, uiLock } from "$lib/ui-access";
+	import {
+		ArrowRight,
+		CircleAlert,
+		Eye,
+		EyeOff,
+		GitBranch,
+		LoaderCircle,
+		ShieldCheck,
+		Terminal,
+	} from "@lucide/svelte";
+	import { onMount } from "svelte";
+	import { goto } from "$app/navigation";
+	import { page } from "$app/state";
+	import { Button } from "$lib/components/ui/button";
+	import { Input } from "$lib/components/ui/input";
+	import { type UiLockState, uiLock } from "$lib/ui-access";
 
-let password = $state("");
-let error = $state("");
-let showPassword = $state(false);
-let isSubmitting = $state(false);
-let isMounted = $state(false);
-let checking = $state(true);
-let lock = $state<UiLockState | null>(null);
-let daemonOffline = $state(false);
+	let password = $state("");
+	let error = $state("");
+	let showPassword = $state(false);
+	let isSubmitting = $state(false);
+	let isMounted = $state(false);
+	let checking = $state(true);
+	let lock = $state<UiLockState | null>(null);
+	let daemonOffline = $state(false);
 
-function destination() {
-	const next = page.url.searchParams.get("next") || "/";
-	return next.startsWith("/") && !next.startsWith("//") ? next : "/";
-}
+	function destination() {
+		const next = page.url.searchParams.get("next") || "/";
+		return next.startsWith("/") && !next.startsWith("//") ? next : "/";
+	}
 
-onMount(async () => {
-	try {
-		lock = await uiLock.state();
-		daemonOffline = false;
-		// No password configured server-side: nothing to unlock.
-		if (lock.notInUse || lock.unlocked) {
-			void goto(destination(), { replaceState: true });
+	onMount(async () => {
+		try {
+			lock = await uiLock.state();
+			daemonOffline = false;
+			// No password configured server-side: nothing to unlock.
+			if (lock.notInUse || lock.unlocked) {
+				void goto(destination(), { replaceState: true });
+				return;
+			}
+		} catch {
+			daemonOffline = true;
+		}
+		checking = false;
+		requestAnimationFrame(() => {
+			isMounted = true;
+		});
+	});
+
+	async function unlock() {
+		if (!password) {
+			error = "Please enter your password";
 			return;
 		}
-	} catch {
-		daemonOffline = true;
+		isSubmitting = true;
+		error = "";
+		try {
+			await uiLock.unlock(password);
+			void goto(destination(), { replaceState: true });
+		} catch (reason) {
+			error =
+				reason instanceof Error
+					? reason.message
+					: "Unable to unlock. Is the daemon running?";
+			if (reason instanceof Error && reason.name === "UiLockedError")
+				error = "Incorrect password";
+			isSubmitting = false;
+		}
 	}
-	checking = false;
-	requestAnimationFrame(() => {
-		isMounted = true;
-	});
-});
 
-async function unlock() {
-	if (!password) {
-		error = "Please enter your password";
-		return;
-	}
-	isSubmitting = true;
-	error = "";
-	try {
-		await uiLock.unlock(password);
-		void goto(destination(), { replaceState: true });
-	} catch (reason) {
-		error =
-			reason instanceof Error
-				? reason.message
-				: "Unable to unlock. Is the daemon running?";
-		if (reason instanceof Error && reason.name === "UiLockedError")
-			error = "Incorrect password";
-		isSubmitting = false;
-	}
-}
-
-const features = [
-	{
-		icon: GitBranch,
-		title: "Worktree Isolation",
-		desc: "Execute changes safely across isolated branches with live diff inspections.",
-	},
-	{
-		icon: Terminal,
-		title: "Real-time Telemetry",
-		desc: "Inspect live command execution, agent reasoning traces, and diagnostics.",
-	},
-	{
-		icon: ShieldCheck,
-		title: "Server-side Lock",
-		desc: "The password is verified by the local daemon and stored only as a hash.",
-	},
-];
+	const features = [
+		{
+			icon: GitBranch,
+			title: "Worktree Isolation",
+			desc: "Execute changes safely across isolated branches with live diff inspections.",
+		},
+		{
+			icon: Terminal,
+			title: "Real-time Telemetry",
+			desc: "Inspect live command execution, agent reasoning traces, and diagnostics.",
+		},
+		{
+			icon: ShieldCheck,
+			title: "Server-side Lock",
+			desc: "The password is verified by the local daemon and stored only as a hash.",
+		},
+	];
 </script>
 
 <svelte:head>

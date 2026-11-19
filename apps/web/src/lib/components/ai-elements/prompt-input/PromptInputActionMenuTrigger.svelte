@@ -2,8 +2,9 @@
 	import * as DropdownMenu from "$lib/components/ui/dropdown-menu/index.js";
 	import PromptInputButton from "./PromptInputButton.svelte";
 	import PlusIcon from "./PlusIcon.svelte";
+	import type { ButtonProps } from "$lib/components/ui/button/index.js";
 
-	interface Props {
+	interface Props extends ButtonProps {
 		class?: string;
 		children?: import("svelte").Snippet;
 	}

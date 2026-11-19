@@ -2,7 +2,10 @@
 	import { cn } from "$lib/shared/utils/shadcn";
 	import { Button } from "$lib/components/ui/button";
 	import * as Tooltip from "$lib/components/ui/tooltip/index.js";
-	import { getAttachmentsContext, type FileWithId } from "./attachments-context.svelte.js";
+	import {
+		getAttachmentsContext,
+		type FileWithId,
+	} from "./attachments-context.svelte.js";
 	import PaperclipIcon from "./PaperclipIcon.svelte";
 	import XIcon from "./XIcon.svelte";
 
@@ -15,14 +18,16 @@
 
 	let attachments = getAttachmentsContext();
 
-	let mediaType = $derived(data.mediaType?.startsWith("image/") && data.url ? "image" : "file");
+	let mediaType = $derived(
+		data.mediaType?.startsWith("image/") && data.url ? "image" : "file",
+	);
 </script>
 
 <div
 	class={cn(
 		"group relative rounded-md border",
 		mediaType === "image" ? "h-14 w-14" : "h-8 w-auto max-w-full",
-		className
+		className,
 	)}
 	{...props}
 >

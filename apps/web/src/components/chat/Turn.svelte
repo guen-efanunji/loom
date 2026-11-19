@@ -26,6 +26,9 @@
 		userMessageText,
 	} from "$lib/chat";
 	import { childSessionsForUserMessage } from "$lib/chat-utils";
+	import Reasoning from "$lib/components/ai-elements/Reasoning.svelte";
+	// AI Elements (prepared) — not yet wired.
+	import Tool from "$lib/components/ai-elements/Tool.svelte";
 	import { Badge } from "$lib/components/ui/badge";
 	import { Button } from "$lib/components/ui/button";
 	import { Textarea } from "$lib/components/ui/textarea";
@@ -33,9 +36,6 @@
 	import { type DesignNode, daemon } from "$lib/daemon";
 	import CodeBlock from "./CodeBlock.svelte";
 	import Markdown from "./Markdown.svelte";
-	import Reasoning from "$lib/components/ai-elements/Reasoning.svelte";
-	// AI Elements (prepared) — not yet wired.
-	import Tool from "$lib/components/ai-elements/Tool.svelte";
 
 	let {
 		messages,
@@ -697,13 +697,14 @@
 						</div>
 					</div>
 				{:else}{#if onaddplan && first}<Button
-						variant="ghost"
-						size="sm"
-						class="h-7 gap-1.5 text-xs opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
-						onclick={() => onaddplan(first.info.id, userMessageText(first), "user")}
-						title="Turn this message into Kanban tasks"
-						><KanbanSquare size={13} />Add to Kanban</Button
-					>{/if}<Button
+							variant="ghost"
+							size="sm"
+							class="h-7 gap-1.5 text-xs opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+							onclick={() =>
+								onaddplan(first.info.id, userMessageText(first), "user")}
+							title="Turn this message into Kanban tasks"
+							><KanbanSquare size={13} />Add to Kanban</Button
+						>{/if}<Button
 						variant="ghost"
 						size="sm"
 						class="h-7 gap-1.5 text-xs opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
@@ -744,10 +745,13 @@
 				</section>
 			{/if}
 			{#each messages as message (message.info.id)}
+				{@const isRunning = busy && message === messages.at(-1)}
 				{#each message.parts as part (part.id)}
 					{#if part.type === "text" && part.text}<Markdown text={part.text} />
-					{:else if part.type === "reasoning" && part.text}
-						<Reasoning content={part.text} />
+					{:else if part.type === "reasoning"}
+						<Trace.Root class="my-1">
+							<Reasoning content={part.text ?? ""} running={isRunning} />
+						</Trace.Root>
 					{:else if part.type === "tool" && part.state}
 						{@const kind = kindOf(part)}
 						{@const file = fileOf(part)}
@@ -972,13 +976,13 @@
 						><MessageSquarePlus size={13} />New session from answer</Button
 					>{/if}
 				{#if onaddplan && responseText && first}<Button
-					variant="ghost"
-					size="sm"
-					class="h-7 gap-1.5 text-xs"
-					onclick={() => onaddplan(first.info.id, responseText, "assistant")}
-					title="Turn this answer into Kanban tasks"
-					><KanbanSquare size={13} />Add to Kanban</Button
-				>{/if}
+						variant="ghost"
+						size="sm"
+						class="h-7 gap-1.5 text-xs"
+						onclick={() => onaddplan(first.info.id, responseText, "assistant")}
+						title="Turn this answer into Kanban tasks"
+						><KanbanSquare size={13} />Add to Kanban</Button
+					>{/if}
 				{#if canCopyResponse}<Button
 						variant="ghost"
 						size="sm"

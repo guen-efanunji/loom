@@ -1,584 +1,589 @@
 <script lang="ts">
-import {
-	AlertCircle,
-	Check,
-	CheckCircle2,
-	ChevronDown,
-	ChevronLeft,
-	Copy,
-	Download,
-	ExternalLink,
-	Eye,
-	EyeOff,
-	Pencil,
-	Plus,
-	RefreshCw,
-	Search,
-	Terminal,
-	Trash2,
-	X,
-} from "@lucide/svelte";
-import { onMount, tick } from "svelte";
-import { toast } from "svelte-sonner";
-import { page } from "$app/state";
-import SettingsSidebar from "$lib/components/settings/SettingsSidebar.svelte";
-import * as AlertDialog from "$lib/components/ui/alert-dialog";
-import { Badge } from "$lib/components/ui/badge";
-import { Button } from "$lib/components/ui/button";
-import { Input } from "$lib/components/ui/input";
-import {
-	clearDaemonToken,
-	daemon,
-	parseDaemonEvent,
-	provisionDaemonToken,
-	websocketProtocols,
-	websocketUrl,
-} from "$lib/daemon";
-import { settingsHref } from "$lib/settings-navigation";
+	import {
+		AlertCircle,
+		Check,
+		CheckCircle2,
+		ChevronDown,
+		ChevronLeft,
+		Copy,
+		Download,
+		ExternalLink,
+		Eye,
+		EyeOff,
+		Pencil,
+		Plus,
+		RefreshCw,
+		Search,
+		Terminal,
+		Trash2,
+		X,
+	} from "@lucide/svelte";
+	import { onMount, tick } from "svelte";
+	import { toast } from "svelte-sonner";
+	import { page } from "$app/state";
+	import SettingsSidebar from "$lib/components/settings/SettingsSidebar.svelte";
+	import * as AlertDialog from "$lib/components/ui/alert-dialog";
+	import { Badge } from "$lib/components/ui/badge";
+	import { Button } from "$lib/components/ui/button";
+	import { Input } from "$lib/components/ui/input";
+	import {
+		clearDaemonToken,
+		daemon,
+		parseDaemonEvent,
+		provisionDaemonToken,
+		websocketProtocols,
+		websocketUrl,
+	} from "$lib/daemon";
+	import { settingsHref } from "$lib/settings-navigation";
 
-type Provider = Awaited<ReturnType<typeof daemon.listProviders>>[number];
-let providers = $state<Provider[]>([]);
-type CustomProvider = Awaited<
-	ReturnType<typeof daemon.listCustomProviders>
->[number];
-let customProviders = $state<CustomProvider[]>([]);
-type ProviderModel = { id: string; name: string; contextWindow?: number };
-let providerModelCatalog = $state<
-	Awaited<ReturnType<typeof daemon.listAvailableProviderModels>>
->([]);
-let loading = $state(true);
-let checking = $state(false);
-let customSaving = $state(false);
-let customTesting = $state(false);
-const customBusy = $derived(customSaving || customTesting);
-let customDialogOpen = $state(false);
-let customEditingId = $state<string | null>(null);
-let customName = $state("");
-let customBaseUrl = $state("");
-let customApiKey = $state("");
-let showApiKey = $state(false);
-let testStatus = $state<"idle" | "testing" | "success" | "error">("idle");
-let testErrorMessage = $state("");
-let modelSearchQuery = $state("");
-let discoveredModels = $state<
-	Array<{ id: string; name: string; contextWindow?: number }>
->([]);
-let expandedModelsProviderId = $state("");
-let providerModelQuery = $state("");
-let providerModelChecks = $state<
-	Record<string, { status: "testing" | "success" | "error"; message?: string }>
->({});
-let deleteFirstOpen = $state(false);
-let deleteSecondOpen = $state(false);
-let providerPendingDelete = $state<CustomProvider | null>(null);
-let deletingProvider = $state(false);
-let autoCheck = $state(false);
-let lastChecked = $state<string | null>(null);
-let search = $state("");
-let providerSearch = $state("");
-let updateChecks = $state<
-	Awaited<ReturnType<typeof daemon.checkProviderUpdates>>["updates"]
->([]);
-const visibleUpdateChecks = $derived(
-	updateChecks.filter(
-		(item) =>
-			item.installed &&
-			(item.updateAvailable || item.error) &&
-			item.name.toLowerCase().includes(providerSearch.toLowerCase()),
-	),
-);
-let updateDialogOpen = $state(false);
-let selectedUpdate = $state<(typeof updateChecks)[number] | null>(null);
-let updateState = $state<"idle" | "updating" | "success" | "error">("idle");
-let updateMessage = $state("");
-let updatingProviderId = $state<string | null>(null);
-const filtered = $derived(
-	providers.filter(
-		(provider) =>
-			!provider.providerId.startsWith("loom_custom_") &&
-			provider.name.toLowerCase().includes(providerSearch.toLowerCase()),
-	),
-);
-const lastCheckedLabel = $derived(
-	checking
-		? "checking\u2026"
-		: lastChecked
-			? new Date(lastChecked).toLocaleTimeString()
-			: "never",
-);
-
-onMount(() => {
-	const timer = window.setInterval(() => {
-		if (autoCheck) void checkProviders();
-	}, 30 * 60_000);
-	void loadProviders();
-	// Provider discovery runs server-side and can finish (or re-run after a
-	// daemon restart) after this page renders. Live provider events re-load the
-	// list so the page is current by default instead of waiting for "Check now".
-	let socket: WebSocket | undefined;
-	let reconnect: ReturnType<typeof setTimeout> | undefined;
-	let disposed = false;
-	const connectEvents = () => {
-		if (disposed) return;
-		provisionDaemonToken()
-			.then(() => {
-				if (disposed) return;
-				socket = new WebSocket(websocketUrl(), websocketProtocols());
-				socket.onmessage = (message) => {
-					try {
-						const event = parseDaemonEvent(JSON.parse(String(message.data)));
-						if (event.type.startsWith("provider.")) void loadProviders();
-					} catch {}
-				};
-				socket.onclose = () => {
-					// A daemon restart/update may have rotated the token; clear it
-					// so the reconnect re-provisions a fresh one instead of 401-ing
-					// forever with the stale cached token.
-					clearDaemonToken();
-					if (!disposed) reconnect = setTimeout(connectEvents, 2000);
-				};
-			})
-			.catch(() => {
-				if (!disposed) reconnect = setTimeout(connectEvents, 2000);
-			});
-	};
-	connectEvents();
-	return () => {
-		disposed = true;
-		window.clearInterval(timer);
-		if (reconnect) clearTimeout(reconnect);
-		socket?.close();
-	};
-});
-
-async function loadProviders() {
-	loading = true;
-	// Each request gets its own deadline so one stalled endpoint (the models
-	// catalog awaits OpenCode startup + full CLI discovery on cold start)
-	// cannot hold the whole page in "Loading providers..." forever. The fast
-	// calls render first; the catalog fills in when it is ready.
-	const withTimeout = <T>(promise: Promise<T>, ms: number) =>
-		Promise.race<T>([
-			promise,
-			new Promise<T>((_, reject) =>
-				window.setTimeout(
-					() => reject(new Error("Timed out waiting for the daemon")),
-					ms,
-				),
-			),
-		]);
-	const [listed, custom, updateSettings] = await Promise.allSettled([
-		withTimeout(daemon.listProviders(), 20_000),
-		withTimeout(daemon.listCustomProviders(), 20_000),
-		withTimeout(daemon.getProviderUpdateSettings(), 20_000),
-	]);
-	if (listed.status === "fulfilled") providers = listed.value;
-	if (custom.status === "fulfilled") customProviders = custom.value;
-	if (updateSettings.status === "fulfilled")
-		autoCheck = updateSettings.value.enabled;
-	if (
-		listed.status === "rejected" ||
-		custom.status === "rejected" ||
-		updateSettings.status === "rejected"
-	)
-		toast.error("Unable to load providers");
-	loading = false;
-	void withTimeout(daemon.listAvailableProviderModels(), 60_000)
-		.then((models) => {
-			providerModelCatalog = models;
-		})
-		.catch(() => {});
-	if (autoCheck && !lastChecked) void checkProviders();
-}
-
-const URL_PRESETS = [
-	{ label: "Ollama", name: "Ollama", url: "http://localhost:11434/v1" },
-	{ label: "LM Studio", name: "LM Studio", url: "http://localhost:1234/v1" },
-	{
-		label: "OpenRouter",
-		name: "OpenRouter",
-		url: "https://openrouter.ai/api/v1",
-	},
-	{ label: "LocalAI", name: "LocalAI", url: "http://localhost:8080/v1" },
-	{ label: "vLLM", name: "Local vLLM", url: "http://localhost:8000/v1" },
-];
-
-function applyPreset(preset: (typeof URL_PRESETS)[number]) {
-	customBaseUrl = preset.url;
-	if (!customName.trim()) {
-		customName = preset.name;
-	}
-	testStatus = "idle";
-	testErrorMessage = "";
-}
-
-const filteredDiscoveredModels = $derived(
-	discoveredModels.filter(
-		(model) =>
-			model.id.toLowerCase().includes(modelSearchQuery.toLowerCase()) ||
-			model.name.toLowerCase().includes(modelSearchQuery.toLowerCase()),
-	),
-);
-
-function formatContextWindow(ctx?: number) {
-	if (!ctx) return null;
-	if (ctx >= 1_000_000) return `${Math.round(ctx / 100_000) / 10}M ctx`;
-	if (ctx >= 1_000) return `${Math.round(ctx / 1000)}k ctx`;
-	return `${ctx} ctx`;
-}
-
-function toggleProviderModels(providerId: string) {
-	expandedModelsProviderId =
-		expandedModelsProviderId === providerId ? "" : providerId;
-	providerModelQuery = "";
-}
-
-function providerModelCheckKey(providerId: string, modelId: string) {
-	return `${providerId}:${modelId}`;
-}
-
-function modelsForProvider(
-	providerId: string,
-	fallback: ProviderModel[] = [],
-): ProviderModel[] {
-	const models = providerModelCatalog
-		.filter((model) => model.providerID === providerId)
-		.map((model) => ({
-			id: model.modelID,
-			name: model.name || model.modelID,
-			...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
-		}));
-	return models.length ? models : fallback;
-}
-
-function clearProviderModelChecks(providerId: string) {
-	providerModelChecks = Object.fromEntries(
-		Object.entries(providerModelChecks).filter(
-			([key]) => !key.startsWith(`${providerId}:`),
+	type Provider = Awaited<ReturnType<typeof daemon.listProviders>>[number];
+	let providers = $state<Provider[]>([]);
+	type CustomProvider = Awaited<
+		ReturnType<typeof daemon.listCustomProviders>
+	>[number];
+	let customProviders = $state<CustomProvider[]>([]);
+	type ProviderModel = { id: string; name: string; contextWindow?: number };
+	let providerModelCatalog = $state<
+		Awaited<ReturnType<typeof daemon.listAvailableProviderModels>>
+	>([]);
+	let loading = $state(true);
+	let checking = $state(false);
+	let customSaving = $state(false);
+	let customTesting = $state(false);
+	const customBusy = $derived(customSaving || customTesting);
+	let customDialogOpen = $state(false);
+	let customEditingId = $state<string | null>(null);
+	let customName = $state("");
+	let customBaseUrl = $state("");
+	let customApiKey = $state("");
+	let showApiKey = $state(false);
+	let testStatus = $state<"idle" | "testing" | "success" | "error">("idle");
+	let testErrorMessage = $state("");
+	let modelSearchQuery = $state("");
+	let discoveredModels = $state<
+		Array<{ id: string; name: string; contextWindow?: number }>
+	>([]);
+	let expandedModelsProviderId = $state("");
+	let providerModelQuery = $state("");
+	let providerModelChecks = $state<
+		Record<
+			string,
+			{ status: "testing" | "success" | "error"; message?: string }
+		>
+	>({});
+	let deleteFirstOpen = $state(false);
+	let deleteSecondOpen = $state(false);
+	let providerPendingDelete = $state<CustomProvider | null>(null);
+	let deletingProvider = $state(false);
+	let autoCheck = $state(false);
+	let lastChecked = $state<string | null>(null);
+	let search = $state("");
+	let providerSearch = $state("");
+	let updateChecks = $state<
+		Awaited<ReturnType<typeof daemon.checkProviderUpdates>>["updates"]
+	>([]);
+	const visibleUpdateChecks = $derived(
+		updateChecks.filter(
+			(item) =>
+				item.installed &&
+				(item.updateAvailable || item.error) &&
+				item.name.toLowerCase().includes(providerSearch.toLowerCase()),
 		),
 	);
-}
+	let updateDialogOpen = $state(false);
+	let selectedUpdate = $state<(typeof updateChecks)[number] | null>(null);
+	let updateState = $state<"idle" | "updating" | "success" | "error">("idle");
+	let updateMessage = $state("");
+	let updatingProviderId = $state<string | null>(null);
+	const filtered = $derived(
+		providers.filter(
+			(provider) =>
+				!provider.providerId.startsWith("loom_custom_") &&
+				provider.name.toLowerCase().includes(providerSearch.toLowerCase()),
+		),
+	);
+	const lastCheckedLabel = $derived(
+		checking
+			? "checking\u2026"
+			: lastChecked
+				? new Date(lastChecked).toLocaleTimeString()
+				: "never",
+	);
 
-async function testProviderModel(providerId: string, model: ProviderModel) {
-	const key = providerModelCheckKey(providerId, model.id);
-	providerModelChecks = {
-		...providerModelChecks,
-		[key]: { status: "testing" },
-	};
-	try {
-		await daemon.testProviderModel(providerId, model.id);
-		providerModelChecks = {
-			...providerModelChecks,
-			[key]: { status: "success", message: "Model responded successfully" },
-		};
-	} catch (reason) {
-		providerModelChecks = {
-			...providerModelChecks,
-			[key]: {
-				status: "error",
-				message:
-					reason instanceof Error ? reason.message : "Model connection failed",
-			},
-		};
-	}
-}
-
-function customProviderInput() {
-	return {
-		name: customName.trim(),
-		baseUrl: customBaseUrl.trim(),
-		apiKey: customApiKey,
-		...(customEditingId ? { providerId: customEditingId } : {}),
-	};
-}
-
-function resetCustomProviderForm() {
-	customEditingId = null;
-	customName = "";
-	customBaseUrl = "";
-	customApiKey = "";
-	discoveredModels = [];
-	showApiKey = false;
-	testStatus = "idle";
-	testErrorMessage = "";
-	modelSearchQuery = "";
-}
-
-function openAddCustomProvider() {
-	resetCustomProviderForm();
-	customDialogOpen = true;
-}
-
-function openEditCustomProvider(provider: CustomProvider) {
-	clearProviderModelChecks(provider.id);
-	customEditingId = provider.id;
-	customName = provider.name;
-	customBaseUrl = provider.baseUrl;
-	customApiKey = "";
-	discoveredModels = provider.models;
-	showApiKey = false;
-	testStatus = "idle";
-	testErrorMessage = "";
-	modelSearchQuery = "";
-	customDialogOpen = true;
-}
-
-function handleCustomDialogKeydown(event: KeyboardEvent) {
-	if (event.key === "Enter" && !event.shiftKey) {
-		event.preventDefault();
-		if (customBusy) return;
-		const canSave =
-			customName.trim() &&
-			customBaseUrl.trim() &&
-			(customEditingId || discoveredModels.length > 0);
-		if (canSave) {
-			void importCustomProvider();
-		} else if (customName.trim() && customBaseUrl.trim()) {
-			void testCustomProvider();
-		}
-	}
-}
-
-async function testCustomProvider() {
-	customTesting = true;
-	testStatus = "testing";
-	testErrorMessage = "";
-	try {
-		const result = await daemon.testCustomProvider(customProviderInput());
-		discoveredModels = result.models;
-		testStatus = "success";
-		toast.success(
-			`Connection successful · ${result.models.length} models found`,
-		);
-	} catch (reason) {
-		testStatus = "error";
-		testErrorMessage =
-			reason instanceof Error
-				? reason.message
-				: "Unable to test custom provider";
-		toast.error(testErrorMessage);
-	} finally {
-		customTesting = false;
-	}
-}
-
-async function importCustomProvider() {
-	customSaving = true;
-	const wasEditing = customEditingId !== null;
-	try {
-		const input = customProviderInput();
-		const result = customEditingId
-			? await daemon.updateCustomProvider(customEditingId, {
-					name: input.name,
-					baseUrl: input.baseUrl,
-					apiKey: input.apiKey,
+	onMount(() => {
+		const timer = window.setInterval(() => {
+			if (autoCheck) void checkProviders();
+		}, 30 * 60_000);
+		void loadProviders();
+		// Provider discovery runs server-side and can finish (or re-run after a
+		// daemon restart) after this page renders. Live provider events re-load the
+		// list so the page is current by default instead of waiting for "Check now".
+		let socket: WebSocket | undefined;
+		let reconnect: ReturnType<typeof setTimeout> | undefined;
+		let disposed = false;
+		const connectEvents = () => {
+			if (disposed) return;
+			provisionDaemonToken()
+				.then(() => {
+					if (disposed) return;
+					socket = new WebSocket(websocketUrl(), websocketProtocols());
+					socket.onmessage = (message) => {
+						try {
+							const event = parseDaemonEvent(JSON.parse(String(message.data)));
+							if (event.type.startsWith("provider.")) void loadProviders();
+						} catch {}
+					};
+					socket.onclose = () => {
+						// A daemon restart/update may have rotated the token; clear it
+						// so the reconnect re-provisions a fresh one instead of 401-ing
+						// forever with the stale cached token.
+						clearDaemonToken();
+						if (!disposed) reconnect = setTimeout(connectEvents, 2000);
+					};
 				})
-			: await daemon.createCustomProvider(input);
-		clearProviderModelChecks(result.provider.id);
-		await loadProviders();
-		window.dispatchEvent(new CustomEvent("loom:providers-changed"));
-		customDialogOpen = false;
-		resetCustomProviderForm();
-		toast.success(
-			`${result.provider.name} ${wasEditing ? "updated" : "added"} · ${result.models.length} models imported`,
-		);
-	} catch (reason) {
-		toast.error(
-			reason instanceof Error
-				? reason.message
-				: "Unable to import custom provider",
-		);
-	} finally {
-		customSaving = false;
-	}
-}
+				.catch(() => {
+					if (!disposed) reconnect = setTimeout(connectEvents, 2000);
+				});
+		};
+		connectEvents();
+		return () => {
+			disposed = true;
+			window.clearInterval(timer);
+			if (reconnect) clearTimeout(reconnect);
+			socket?.close();
+		};
+	});
 
-function requestDeleteProvider(provider: CustomProvider) {
-	providerPendingDelete = provider;
-	deleteFirstOpen = true;
-}
-
-async function continueDeleteProvider(event: MouseEvent) {
-	event.preventDefault();
-	deleteFirstOpen = false;
-	await tick();
-	deleteSecondOpen = true;
-}
-
-async function deleteProviderNow(event: MouseEvent) {
-	event.preventDefault();
-	if (!providerPendingDelete) return;
-	deletingProvider = true;
-	try {
-		await daemon.deleteCustomProvider(providerPendingDelete.id);
-		await loadProviders();
-		window.dispatchEvent(new CustomEvent("loom:providers-changed"));
-		toast.success(`${providerPendingDelete.name} deleted`);
-		deleteSecondOpen = false;
-		providerPendingDelete = null;
-	} catch (reason) {
-		toast.error(
-			reason instanceof Error ? reason.message : "Unable to delete provider",
-		);
-	} finally {
-		deletingProvider = false;
-	}
-}
-
-async function toggleAutoCheck() {
-	const next = !autoCheck;
-	autoCheck = next;
-	try {
-		await daemon.saveProviderUpdateSettings(next);
-		if (next && !lastChecked) await checkProviders();
-	} catch (reason) {
-		autoCheck = !next;
-		toast.error(
-			reason instanceof Error
-				? reason.message
-				: "Could not save update preference",
-		);
-	}
-}
-
-async function checkProviders() {
-	checking = true;
-	try {
-		providers = await daemon.refreshProviders();
-		const result = await daemon.checkProviderUpdates();
-		updateChecks = result.updates;
-		lastChecked = result.checkedAt;
-		const available = result.updates.filter(
-			(item) => item.updateAvailable,
-		).length;
-		const failed = result.updates.filter((item) => item.error).length;
-		if (failed)
-			toast.error(
-				`Checked ${result.updates.length - failed} providers; ${failed} update checks failed`,
-			);
-		else
-			toast.success(
-				available
-					? `${available} provider update${available === 1 ? "" : "s"} available`
-					: "Provider CLIs are up to date",
-			);
-	} catch (reason) {
-		toast.error(
-			reason instanceof Error
-				? reason.message
-				: "Unable to detect provider CLIs",
-		);
-	} finally {
-		loading = false;
-		checking = false;
-	}
-}
-
-function openUpdateDialog(update: (typeof updateChecks)[number]) {
-	selectedUpdate = update;
-	updateState = "idle";
-	updateMessage = "";
-	updateDialogOpen = true;
-}
-
-async function runProviderUpdate() {
-	if (!selectedUpdate || updatingProviderId) return;
-	const update = selectedUpdate;
-	if (!update.latestVersion) {
-		updateState = "error";
-		updateMessage =
-			"The latest version is unavailable. Check for updates again before continuing.";
-		return;
-	}
-	updatingProviderId = update.providerId;
-	updateState = "updating";
-	updateMessage = `Updating ${update.name} to ${update.latestVersion}. This may take a few minutes.`;
-	try {
-		const result = await daemon.updateProvider(update.providerId);
-		providers = await daemon.refreshProviders();
-		const refreshedChecks = await daemon.checkProviderUpdates();
-		updateChecks = refreshedChecks.updates;
-		lastChecked = refreshedChecks.checkedAt;
+	async function loadProviders() {
+		loading = true;
+		// Each request gets its own deadline so one stalled endpoint (the models
+		// catalog awaits OpenCode startup + full CLI discovery on cold start)
+		// cannot hold the whole page in "Loading providers..." forever. The fast
+		// calls render first; the catalog fills in when it is ready.
+		const withTimeout = <T,>(promise: Promise<T>, ms: number) =>
+			Promise.race<T>([
+				promise,
+				new Promise<T>((_, reject) =>
+					window.setTimeout(
+						() => reject(new Error("Timed out waiting for the daemon")),
+						ms,
+					),
+				),
+			]);
+		const [listed, custom, updateSettings] = await Promise.allSettled([
+			withTimeout(daemon.listProviders(), 20_000),
+			withTimeout(daemon.listCustomProviders(), 20_000),
+			withTimeout(daemon.getProviderUpdateSettings(), 20_000),
+		]);
+		if (listed.status === "fulfilled") providers = listed.value;
+		if (custom.status === "fulfilled") customProviders = custom.value;
+		if (updateSettings.status === "fulfilled")
+			autoCheck = updateSettings.value.enabled;
 		if (
-			!result.version ||
-			result.version.replace(/^v/, "") !==
-				update.latestVersion.replace(/^v/, "")
-		) {
-			updateState = "error";
-			updateMessage = result.version
-				? `Updater finished, but Loom detects ${result.version} instead of ${update.latestVersion}. Restart Loom or check the installation method.`
-				: "Updater finished, but Loom could not verify the installed version. Restart Loom and check the provider again.";
-			return;
-		}
-		updateState = "success";
-		updateMessage = `${update.name} updated to ${result.version ?? result.latestVersion}.`;
-	} catch (reason) {
-		updateState = "error";
-		updateMessage =
-			reason instanceof Error
-				? reason.message
-				: `Unable to update ${update.name}`;
-	} finally {
-		updatingProviderId = null;
+			listed.status === "rejected" ||
+			custom.status === "rejected" ||
+			updateSettings.status === "rejected"
+		)
+			toast.error("Unable to load providers");
+		loading = false;
+		void withTimeout(daemon.listAvailableProviderModels(), 60_000)
+			.then((models) => {
+				providerModelCatalog = models;
+			})
+			.catch(() => {});
+		if (autoCheck && !lastChecked) void checkProviders();
 	}
-}
 
-async function connect(provider: Provider) {
-	try {
-		const result = await daemon.connectProvider(provider.id);
-		await loadProviders();
-		if (result.connected) {
+	const URL_PRESETS = [
+		{ label: "Ollama", name: "Ollama", url: "http://localhost:11434/v1" },
+		{ label: "LM Studio", name: "LM Studio", url: "http://localhost:1234/v1" },
+		{
+			label: "OpenRouter",
+			name: "OpenRouter",
+			url: "https://openrouter.ai/api/v1",
+		},
+		{ label: "LocalAI", name: "LocalAI", url: "http://localhost:8080/v1" },
+		{ label: "vLLM", name: "Local vLLM", url: "http://localhost:8000/v1" },
+	];
+
+	function applyPreset(preset: (typeof URL_PRESETS)[number]) {
+		customBaseUrl = preset.url;
+		if (!customName.trim()) {
+			customName = preset.name;
+		}
+		testStatus = "idle";
+		testErrorMessage = "";
+	}
+
+	const filteredDiscoveredModels = $derived(
+		discoveredModels.filter(
+			(model) =>
+				model.id.toLowerCase().includes(modelSearchQuery.toLowerCase()) ||
+				model.name.toLowerCase().includes(modelSearchQuery.toLowerCase()),
+		),
+	);
+
+	function formatContextWindow(ctx?: number) {
+		if (!ctx) return null;
+		if (ctx >= 1_000_000) return `${Math.round(ctx / 100_000) / 10}M ctx`;
+		if (ctx >= 1_000) return `${Math.round(ctx / 1000)}k ctx`;
+		return `${ctx} ctx`;
+	}
+
+	function toggleProviderModels(providerId: string) {
+		expandedModelsProviderId =
+			expandedModelsProviderId === providerId ? "" : providerId;
+		providerModelQuery = "";
+	}
+
+	function providerModelCheckKey(providerId: string, modelId: string) {
+		return `${providerId}:${modelId}`;
+	}
+
+	function modelsForProvider(
+		providerId: string,
+		fallback: ProviderModel[] = [],
+	): ProviderModel[] {
+		const models = providerModelCatalog
+			.filter((model) => model.providerID === providerId)
+			.map((model) => ({
+				id: model.modelID,
+				name: model.name || model.modelID,
+				...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
+			}));
+		return models.length ? models : fallback;
+	}
+
+	function clearProviderModelChecks(providerId: string) {
+		providerModelChecks = Object.fromEntries(
+			Object.entries(providerModelChecks).filter(
+				([key]) => !key.startsWith(`${providerId}:`),
+			),
+		);
+	}
+
+	async function testProviderModel(providerId: string, model: ProviderModel) {
+		const key = providerModelCheckKey(providerId, model.id);
+		providerModelChecks = {
+			...providerModelChecks,
+			[key]: { status: "testing" },
+		};
+		try {
+			await daemon.testProviderModel(providerId, model.id);
+			providerModelChecks = {
+				...providerModelChecks,
+				[key]: { status: "success", message: "Model responded successfully" },
+			};
+		} catch (reason) {
+			providerModelChecks = {
+				...providerModelChecks,
+				[key]: {
+					status: "error",
+					message:
+						reason instanceof Error
+							? reason.message
+							: "Model connection failed",
+				},
+			};
+		}
+	}
+
+	function customProviderInput() {
+		return {
+			name: customName.trim(),
+			baseUrl: customBaseUrl.trim(),
+			apiKey: customApiKey,
+			...(customEditingId ? { providerId: customEditingId } : {}),
+		};
+	}
+
+	function resetCustomProviderForm() {
+		customEditingId = null;
+		customName = "";
+		customBaseUrl = "";
+		customApiKey = "";
+		discoveredModels = [];
+		showApiKey = false;
+		testStatus = "idle";
+		testErrorMessage = "";
+		modelSearchQuery = "";
+	}
+
+	function openAddCustomProvider() {
+		resetCustomProviderForm();
+		customDialogOpen = true;
+	}
+
+	function openEditCustomProvider(provider: CustomProvider) {
+		clearProviderModelChecks(provider.id);
+		customEditingId = provider.id;
+		customName = provider.name;
+		customBaseUrl = provider.baseUrl;
+		customApiKey = "";
+		discoveredModels = provider.models;
+		showApiKey = false;
+		testStatus = "idle";
+		testErrorMessage = "";
+		modelSearchQuery = "";
+		customDialogOpen = true;
+	}
+
+	function handleCustomDialogKeydown(event: KeyboardEvent) {
+		if (event.key === "Enter" && !event.shiftKey) {
+			event.preventDefault();
+			if (customBusy) return;
+			const canSave =
+				customName.trim() &&
+				customBaseUrl.trim() &&
+				(customEditingId || discoveredModels.length > 0);
+			if (canSave) {
+				void importCustomProvider();
+			} else if (customName.trim() && customBaseUrl.trim()) {
+				void testCustomProvider();
+			}
+		}
+	}
+
+	async function testCustomProvider() {
+		customTesting = true;
+		testStatus = "testing";
+		testErrorMessage = "";
+		try {
+			const result = await daemon.testCustomProvider(customProviderInput());
+			discoveredModels = result.models;
+			testStatus = "success";
 			toast.success(
-				result.configured === false
-					? `${provider.name} connected; add a model provider to continue`
-					: `${provider.name} is connected`,
+				`Connection successful · ${result.models.length} models found`,
 			);
-			return;
+		} catch (reason) {
+			testStatus = "error";
+			testErrorMessage =
+				reason instanceof Error
+					? reason.message
+					: "Unable to test custom provider";
+			toast.error(testErrorMessage);
+		} finally {
+			customTesting = false;
 		}
-		if (result.launched) {
-			toast.success(`${provider.name} connection started`);
-			return;
-		}
-		if (result.command) {
-			const command = Array.isArray(result.command)
-				? result.command.join(" ")
-				: result.command;
-			await copyCommand(command);
-			toast.info(`Run ${command} in a terminal`);
-			return;
-		}
-		toast.info(
-			provider.installed
-				? `${provider.name} is installed but not connected`
-				: `Install ${provider.name}, then return here and re-check`,
-		);
-	} catch (reason) {
-		toast.error(
-			reason instanceof Error
-				? reason.message
-				: `Unable to connect ${provider.name}`,
-		);
 	}
-}
 
-async function disconnect(provider: Provider) {
-	try {
-		await daemon.disconnectProvider(provider.id);
-		await loadProviders();
-		toast.success(`${provider.name} disconnected`);
-	} catch (reason) {
-		toast.error(
-			reason instanceof Error
-				? reason.message
-				: "Unable to disconnect provider",
-		);
+	async function importCustomProvider() {
+		customSaving = true;
+		const wasEditing = customEditingId !== null;
+		try {
+			const input = customProviderInput();
+			const result = customEditingId
+				? await daemon.updateCustomProvider(customEditingId, {
+						name: input.name,
+						baseUrl: input.baseUrl,
+						apiKey: input.apiKey,
+					})
+				: await daemon.createCustomProvider(input);
+			clearProviderModelChecks(result.provider.id);
+			await loadProviders();
+			window.dispatchEvent(new CustomEvent("loom:providers-changed"));
+			customDialogOpen = false;
+			resetCustomProviderForm();
+			toast.success(
+				`${result.provider.name} ${wasEditing ? "updated" : "added"} · ${result.models.length} models imported`,
+			);
+		} catch (reason) {
+			toast.error(
+				reason instanceof Error
+					? reason.message
+					: "Unable to import custom provider",
+			);
+		} finally {
+			customSaving = false;
+		}
 	}
-}
 
-async function copyCommand(command: string) {
-	await navigator.clipboard.writeText(command);
-	toast.success("Command copied");
-}
+	function requestDeleteProvider(provider: CustomProvider) {
+		providerPendingDelete = provider;
+		deleteFirstOpen = true;
+	}
+
+	async function continueDeleteProvider(event: MouseEvent) {
+		event.preventDefault();
+		deleteFirstOpen = false;
+		await tick();
+		deleteSecondOpen = true;
+	}
+
+	async function deleteProviderNow(event: MouseEvent) {
+		event.preventDefault();
+		if (!providerPendingDelete) return;
+		deletingProvider = true;
+		try {
+			await daemon.deleteCustomProvider(providerPendingDelete.id);
+			await loadProviders();
+			window.dispatchEvent(new CustomEvent("loom:providers-changed"));
+			toast.success(`${providerPendingDelete.name} deleted`);
+			deleteSecondOpen = false;
+			providerPendingDelete = null;
+		} catch (reason) {
+			toast.error(
+				reason instanceof Error ? reason.message : "Unable to delete provider",
+			);
+		} finally {
+			deletingProvider = false;
+		}
+	}
+
+	async function toggleAutoCheck() {
+		const next = !autoCheck;
+		autoCheck = next;
+		try {
+			await daemon.saveProviderUpdateSettings(next);
+			if (next && !lastChecked) await checkProviders();
+		} catch (reason) {
+			autoCheck = !next;
+			toast.error(
+				reason instanceof Error
+					? reason.message
+					: "Could not save update preference",
+			);
+		}
+	}
+
+	async function checkProviders() {
+		checking = true;
+		try {
+			providers = await daemon.refreshProviders();
+			const result = await daemon.checkProviderUpdates();
+			updateChecks = result.updates;
+			lastChecked = result.checkedAt;
+			const available = result.updates.filter(
+				(item) => item.updateAvailable,
+			).length;
+			const failed = result.updates.filter((item) => item.error).length;
+			if (failed)
+				toast.error(
+					`Checked ${result.updates.length - failed} providers; ${failed} update checks failed`,
+				);
+			else
+				toast.success(
+					available
+						? `${available} provider update${available === 1 ? "" : "s"} available`
+						: "Provider CLIs are up to date",
+				);
+		} catch (reason) {
+			toast.error(
+				reason instanceof Error
+					? reason.message
+					: "Unable to detect provider CLIs",
+			);
+		} finally {
+			loading = false;
+			checking = false;
+		}
+	}
+
+	function openUpdateDialog(update: (typeof updateChecks)[number]) {
+		selectedUpdate = update;
+		updateState = "idle";
+		updateMessage = "";
+		updateDialogOpen = true;
+	}
+
+	async function runProviderUpdate() {
+		if (!selectedUpdate || updatingProviderId) return;
+		const update = selectedUpdate;
+		if (!update.latestVersion) {
+			updateState = "error";
+			updateMessage =
+				"The latest version is unavailable. Check for updates again before continuing.";
+			return;
+		}
+		updatingProviderId = update.providerId;
+		updateState = "updating";
+		updateMessage = `Updating ${update.name} to ${update.latestVersion}. This may take a few minutes.`;
+		try {
+			const result = await daemon.updateProvider(update.providerId);
+			providers = await daemon.refreshProviders();
+			const refreshedChecks = await daemon.checkProviderUpdates();
+			updateChecks = refreshedChecks.updates;
+			lastChecked = refreshedChecks.checkedAt;
+			if (
+				!result.version ||
+				result.version.replace(/^v/, "") !==
+					update.latestVersion.replace(/^v/, "")
+			) {
+				updateState = "error";
+				updateMessage = result.version
+					? `Updater finished, but Loom detects ${result.version} instead of ${update.latestVersion}. Restart Loom or check the installation method.`
+					: "Updater finished, but Loom could not verify the installed version. Restart Loom and check the provider again.";
+				return;
+			}
+			updateState = "success";
+			updateMessage = `${update.name} updated to ${result.version ?? result.latestVersion}.`;
+		} catch (reason) {
+			updateState = "error";
+			updateMessage =
+				reason instanceof Error
+					? reason.message
+					: `Unable to update ${update.name}`;
+		} finally {
+			updatingProviderId = null;
+		}
+	}
+
+	async function connect(provider: Provider) {
+		try {
+			const result = await daemon.connectProvider(provider.id);
+			await loadProviders();
+			if (result.connected) {
+				toast.success(
+					result.configured === false
+						? `${provider.name} connected; add a model provider to continue`
+						: `${provider.name} is connected`,
+				);
+				return;
+			}
+			if (result.launched) {
+				toast.success(`${provider.name} connection started`);
+				return;
+			}
+			if (result.command) {
+				const command = Array.isArray(result.command)
+					? result.command.join(" ")
+					: result.command;
+				await copyCommand(command);
+				toast.info(`Run ${command} in a terminal`);
+				return;
+			}
+			toast.info(
+				provider.installed
+					? `${provider.name} is installed but not connected`
+					: `Install ${provider.name}, then return here and re-check`,
+			);
+		} catch (reason) {
+			toast.error(
+				reason instanceof Error
+					? reason.message
+					: `Unable to connect ${provider.name}`,
+			);
+		}
+	}
+
+	async function disconnect(provider: Provider) {
+		try {
+			await daemon.disconnectProvider(provider.id);
+			await loadProviders();
+			toast.success(`${provider.name} disconnected`);
+		} catch (reason) {
+			toast.error(
+				reason instanceof Error
+					? reason.message
+					: "Unable to disconnect provider",
+			);
+		}
+	}
+
+	async function copyCommand(command: string) {
+		await navigator.clipboard.writeText(command);
+		toast.success("Command copied");
+	}
 </script>
 
 <svelte:head><title>Providers · Loom</title></svelte:head>
@@ -767,9 +772,11 @@ async function copyCommand(command: string) {
 						</div>{:else}<div
 							class="overflow-hidden rounded-2xl border border-white/10 bg-white/[0.035]"
 						>
-							{#if visibleUpdateChecks.length === 0}<p class="p-5 text-sm text-neutral-500">
-								No provider updates available.
-							</p>{/if}
+							{#if visibleUpdateChecks.length === 0}<p
+									class="p-5 text-sm text-neutral-500"
+								>
+									No provider updates available.
+								</p>{/if}
 							{#each visibleUpdateChecks as update}<div
 									class="flex flex-wrap items-center gap-4 border-b border-white/[0.08] p-4 last:border-0"
 								>
@@ -809,7 +816,9 @@ async function copyCommand(command: string) {
 												><Copy class="size-4" /></Button
 											>
 										</div>{:else if update.updateAvailable && update.providerId === "agy"}<span
-											class="text-xs text-neutral-500">{update.currentVersion} → {update.latestVersion} · Antigravity updates in the background; relaunch Agy to apply.</span
+											class="text-xs text-neutral-500"
+											>{update.currentVersion} → {update.latestVersion} · Antigravity
+											updates in the background; relaunch Agy to apply.</span
 										>{/if}
 								</div>{/each}
 						</div>{/if}

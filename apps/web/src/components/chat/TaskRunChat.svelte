@@ -1,347 +1,350 @@
 <script lang="ts">
-import {
-	Activity,
-	Bot,
-	Check,
-	CircleAlert,
-	Clock3,
-	FileCode2,
-	LoaderCircle,
-	Search,
-	Terminal,
-} from "@lucide/svelte";
-import { Button } from "$lib/components/ui/button";
-import * as Trace from "$lib/components/ui/trace";
-import { daemon, type PermissionRequest, type Task } from "$lib/daemon";
+	import {
+		Activity,
+		Bot,
+		Check,
+		CircleAlert,
+		Clock3,
+		FileCode2,
+		LoaderCircle,
+		Search,
+		Terminal,
+	} from "@lucide/svelte";
+	import { Button } from "$lib/components/ui/button";
+	import * as Trace from "$lib/components/ui/trace";
+	import { daemon, type PermissionRequest, type Task } from "$lib/daemon";
 
-let {
-	task,
-	output: streamedOutput = "",
-	activities = [],
-	progress = [],
-	oncancel,
-	showTaskHeader = true,
-	showTaskBrief = true,
-	wide = false,
-	compact = false,
-	permissions = [],
-	onpermission,
-	onopenfile,
-}: {
-	task: Task;
-	output?: string;
-	activities?: Array<{
-		id: string;
-		tool: string;
-		status: "running" | "completed" | "error";
-		input?: Record<string, unknown>;
+	let {
+		task,
+		output: streamedOutput = "",
+		activities = [],
+		progress = [],
+		oncancel,
+		showTaskHeader = true,
+		showTaskBrief = true,
+		wide = false,
+		compact = false,
+		permissions = [],
+		onpermission,
+		onopenfile,
+	}: {
+		task: Task;
 		output?: string;
-		error?: string;
-		metadata?: Record<string, unknown>;
-	}>;
-	progress?: Array<{
-		id: string;
-		stage: string;
-		message: string;
-		timestamp: string;
-	}>;
-	oncancel?: (taskId: string) => unknown;
-	showTaskHeader?: boolean;
-	showTaskBrief?: boolean;
-	wide?: boolean;
-	compact?: boolean;
-	permissions?: PermissionRequest[];
-	onpermission?: (
-		requestId: string,
-		decision: "allow_once" | "allow" | "deny",
-	) => unknown;
-	onopenfile?: (path: string) => unknown;
-} = $props();
+		activities?: Array<{
+			id: string;
+			tool: string;
+			status: "running" | "completed" | "error";
+			input?: Record<string, unknown>;
+			output?: string;
+			error?: string;
+			metadata?: Record<string, unknown>;
+		}>;
+		progress?: Array<{
+			id: string;
+			stage: string;
+			message: string;
+			timestamp: string;
+		}>;
+		oncancel?: (taskId: string) => unknown;
+		showTaskHeader?: boolean;
+		showTaskBrief?: boolean;
+		wide?: boolean;
+		compact?: boolean;
+		permissions?: PermissionRequest[];
+		onpermission?: (
+			requestId: string,
+			decision: "allow_once" | "allow" | "deny",
+		) => unknown;
+		onopenfile?: (path: string) => unknown;
+	} = $props();
 
-let output = $state("");
-let outputError = $state("");
-let cancelling = $state(false);
-let replyingToPermission = $state("");
-let openActivities = $state<Record<string, boolean>>({});
-let now = $state(Date.now());
-const active = $derived(
-	task.status === "running" || task.status === "preparing",
-);
-const visiblePermissions = $derived(
-	permissions.filter((request) => request.taskId === task.id),
-);
-const permissionPending = $derived(
-	visiblePermissions.some((request) => request.status === "pending"),
-);
-const canCancel = $derived(
-	active || task.status === "queued" || task.status === "ready",
-);
-const statusLabel = $derived(
-	(task.status ?? "")
-		.replaceAll("_", " ")
-		.replace(/^./, (letter) => letter.toUpperCase()),
-);
-const executorLabel = $derived(
-	task.executor?.kind === "agent"
-		? task.executor.agentId
-		: task.executor
-			? `${task.executor.providerId}${task.executor.modelId ? ` · ${task.executor.modelId}` : ""}`
-			: "Default executor",
-);
-type ActivityItem = NonNullable<typeof activities>[number];
-let snapshotActivities = $state<ActivityItem[]>([]);
-const allActivities = $derived.by(() => {
-	const merged = new Map<string, ActivityItem>();
-	for (const item of snapshotActivities) merged.set(item.id, item);
-	for (const item of activities) merged.set(item.id, item);
-	return [...merged.values()];
-});
-function inputString(item: ActivityItem, keys: string[]) {
-	for (const key of keys) {
-		const value = item.input?.[key];
-		if (typeof value === "string" && value.trim()) return value.trim();
-	}
-	return "";
-}
-function filePath(item: ActivityItem) {
-	const direct = inputString(item, [
-		"filePath",
-		"fileName",
-		"file_name",
-		"TargetFile",
-		"targetFile",
-		"target_file",
-		"targetPath",
-		"target_path",
-		"file_path",
-		"absolute_path",
-		"AbsolutePath",
-		"DirectoryPath",
-		"path",
-		"file",
-		"filename",
-	]);
-	if (direct) return direct;
-	const metadata = item.metadata?.filediff;
-	if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
-		const diff = metadata as Record<string, unknown>;
-		for (const key of ["file", "filePath", "relativePath"]) {
-			if (typeof diff[key] === "string" && diff[key])
-				return diff[key] as string;
+	let output = $state("");
+	let outputError = $state("");
+	let cancelling = $state(false);
+	let replyingToPermission = $state("");
+	let openActivities = $state<Record<string, boolean>>({});
+	let now = $state(Date.now());
+	const active = $derived(
+		task.status === "running" || task.status === "preparing",
+	);
+	const visiblePermissions = $derived(
+		permissions.filter((request) => request.taskId === task.id),
+	);
+	const permissionPending = $derived(
+		visiblePermissions.some((request) => request.status === "pending"),
+	);
+	const canCancel = $derived(
+		active || task.status === "queued" || task.status === "ready",
+	);
+	const statusLabel = $derived(
+		(task.status ?? "")
+			.replaceAll("_", " ")
+			.replace(/^./, (letter) => letter.toUpperCase()),
+	);
+	const executorLabel = $derived(
+		task.executor?.kind === "agent"
+			? task.executor.agentId
+			: task.executor
+				? `${task.executor.providerId}${task.executor.modelId ? ` · ${task.executor.modelId}` : ""}`
+				: "Default executor",
+	);
+	type ActivityItem = NonNullable<typeof activities>[number];
+	let snapshotActivities = $state<ActivityItem[]>([]);
+	const allActivities = $derived.by(() => {
+		const merged = new Map<string, ActivityItem>();
+		for (const item of snapshotActivities) merged.set(item.id, item);
+		for (const item of activities) merged.set(item.id, item);
+		return [...merged.values()];
+	});
+	function inputString(item: ActivityItem, keys: string[]) {
+		for (const key of keys) {
+			const value = item.input?.[key];
+			if (typeof value === "string" && value.trim()) return value.trim();
 		}
+		return "";
 	}
-	return "";
-}
-function fileName(path: string) {
-	return path.replaceAll("\\", "/").split("/").filter(Boolean).at(-1) || path;
-}
-function activityKind(item: ActivityItem) {
-	const tool = item.tool.toLowerCase();
-	if (/shell|bash|command|exec|terminal/.test(tool)) return "command";
-	if (/search|grep|glob|find|list/.test(tool)) return "search";
-	if (
-		item.metadata?.filediff ||
-		/edit|write|patch|apply|file_change|create|delete|replace/.test(tool)
-	)
-		return "edit";
-	if (/read|view|open|cat/.test(tool)) return "read";
-	return "other";
-}
-function activityLabel(item: ActivityItem) {
-	const kind = activityKind(item);
-	const path = filePath(item);
-	if (kind === "command") return `Ran ${command(item) || "command"}`;
-	if (kind === "read") return `Read ${path ? fileName(path) : "file"}`;
-	if (kind === "edit") return `Edited ${path || "file"}`;
-	if (kind === "search") {
-		const query = inputString(item, [
-			"query",
-			"pattern",
-			"glob",
-			"directory",
+	function filePath(item: ActivityItem) {
+		const direct = inputString(item, [
+			"filePath",
+			"fileName",
+			"file_name",
+			"TargetFile",
+			"targetFile",
+			"target_file",
+			"targetPath",
+			"target_path",
+			"file_path",
+			"absolute_path",
+			"AbsolutePath",
 			"DirectoryPath",
 			"path",
+			"file",
+			"filename",
 		]);
-		const subject = query && query !== "." ? query : item.tool;
-		return `Searched ${subject}`;
-	}
-	return (item.tool ?? "Tool activity")
-		.replaceAll("_", " ")
-		.replace(/([a-z])([A-Z])/g, "$1 $2")
-		.replace(/^./, (letter) => letter.toUpperCase());
-}
-function activityIcon(item: ActivityItem) {
-	const kind = activityKind(item);
-	return kind === "command"
-		? Terminal
-		: kind === "search"
-			? Search
-			: kind === "read" || kind === "edit"
-				? FileCode2
-				: Activity;
-}
-function diffStats(item: ActivityItem) {
-	const raw = item.metadata?.filediff;
-	const files = Array.isArray(item.metadata?.files)
-		? item.metadata.files
-		: raw && typeof raw === "object" && !Array.isArray(raw)
-			? [raw]
-			: [];
-	let additions = 0;
-	let deletions = 0;
-	let found = false;
-	for (const file of files) {
-		if (!file || typeof file !== "object" || Array.isArray(file)) continue;
-		const value = file as Record<string, unknown>;
-		if (typeof value.additions === "number") {
-			additions += value.additions;
-			found = true;
+		if (direct) return direct;
+		const metadata = item.metadata?.filediff;
+		if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
+			const diff = metadata as Record<string, unknown>;
+			for (const key of ["file", "filePath", "relativePath"]) {
+				if (typeof diff[key] === "string" && diff[key])
+					return diff[key] as string;
+			}
 		}
-		if (typeof value.deletions === "number") {
-			deletions += value.deletions;
-			found = true;
-		}
+		return "";
 	}
-	return !found ? null : { additions, deletions };
-}
-function command(item: ActivityItem) {
-	const direct = inputString(item, ["command", "cmd", "script", "prompt"]);
-	if (direct) return direct;
-	const attrs = item.input?.attributes;
-	if (attrs && typeof attrs === "object" && !Array.isArray(attrs)) {
-		const attrText = inputString(
-			{ input: attrs as Record<string, unknown> } as ActivityItem,
-			["command", "cmd", "script"],
-		);
-		if (attrText) return attrText;
+	function fileName(path: string) {
+		return path.replaceAll("\\", "/").split("/").filter(Boolean).at(-1) || path;
 	}
-	const args = item.input?.args;
-	if (typeof args === "string" && args.trim()) return args.trim();
-	if (Array.isArray(args) && args.length)
-		return args.map((entry) => String(entry ?? "")).join(" ");
-	return "";
-}
-function patchText(item: ActivityItem, path: string) {
-	const raw = item.metadata?.filediff;
-	const files = Array.isArray(item.metadata?.files)
-		? item.metadata.files
-		: raw && typeof raw === "object" && !Array.isArray(raw)
-			? [raw]
-			: [];
-	for (const file of files) {
-		if (!file || typeof file !== "object" || Array.isArray(file)) continue;
-		const value = file as Record<string, unknown>;
-		const target = value.file ?? value.filePath ?? value.relativePath;
+	function activityKind(item: ActivityItem) {
+		const tool = item.tool.toLowerCase();
+		if (/shell|bash|command|exec|terminal/.test(tool)) return "command";
+		if (/search|grep|glob|find|list/.test(tool)) return "search";
 		if (
-			path &&
-			typeof target === "string" &&
-			target !== path &&
-			!path.endsWith(`/${target}`)
+			item.metadata?.filediff ||
+			/edit|write|patch|apply|file_change|create|delete|replace/.test(tool)
 		)
-			continue;
-		const patch = value.patch ?? value.diff;
-		if (typeof patch === "string" && patch) return patch;
+			return "edit";
+		if (/read|view|open|cat/.test(tool)) return "read";
+		return "other";
 	}
-	return "";
-}
+	function activityLabel(item: ActivityItem) {
+		const kind = activityKind(item);
+		const path = filePath(item);
+		if (kind === "command") return `Ran ${command(item) || "command"}`;
+		if (kind === "read") return `Read ${path ? fileName(path) : "file"}`;
+		if (kind === "edit") return `Edited ${path || "file"}`;
+		if (kind === "search") {
+			const query = inputString(item, [
+				"query",
+				"pattern",
+				"glob",
+				"directory",
+				"DirectoryPath",
+				"path",
+			]);
+			const subject = query && query !== "." ? query : item.tool;
+			return `Searched ${subject}`;
+		}
+		return (item.tool ?? "Tool activity")
+			.replaceAll("_", " ")
+			.replace(/([a-z])([A-Z])/g, "$1 $2")
+			.replace(/^./, (letter) => letter.toUpperCase());
+	}
+	function activityIcon(item: ActivityItem) {
+		const kind = activityKind(item);
+		return kind === "command"
+			? Terminal
+			: kind === "search"
+				? Search
+				: kind === "read" || kind === "edit"
+					? FileCode2
+					: Activity;
+	}
+	function diffStats(item: ActivityItem) {
+		const raw = item.metadata?.filediff;
+		const files = Array.isArray(item.metadata?.files)
+			? item.metadata.files
+			: raw && typeof raw === "object" && !Array.isArray(raw)
+				? [raw]
+				: [];
+		let additions = 0;
+		let deletions = 0;
+		let found = false;
+		for (const file of files) {
+			if (!file || typeof file !== "object" || Array.isArray(file)) continue;
+			const value = file as Record<string, unknown>;
+			if (typeof value.additions === "number") {
+				additions += value.additions;
+				found = true;
+			}
+			if (typeof value.deletions === "number") {
+				deletions += value.deletions;
+				found = true;
+			}
+		}
+		return !found ? null : { additions, deletions };
+	}
+	function command(item: ActivityItem) {
+		const direct = inputString(item, ["command", "cmd", "script", "prompt"]);
+		if (direct) return direct;
+		const attrs = item.input?.attributes;
+		if (attrs && typeof attrs === "object" && !Array.isArray(attrs)) {
+			const attrText = inputString(
+				{ input: attrs as Record<string, unknown> } as ActivityItem,
+				["command", "cmd", "script"],
+			);
+			if (attrText) return attrText;
+		}
+		const args = item.input?.args;
+		if (typeof args === "string" && args.trim()) return args.trim();
+		if (Array.isArray(args) && args.length)
+			return args.map((entry) => String(entry ?? "")).join(" ");
+		return "";
+	}
+	function patchText(item: ActivityItem, path: string) {
+		const raw = item.metadata?.filediff;
+		const files = Array.isArray(item.metadata?.files)
+			? item.metadata.files
+			: raw && typeof raw === "object" && !Array.isArray(raw)
+				? [raw]
+				: [];
+		for (const file of files) {
+			if (!file || typeof file !== "object" || Array.isArray(file)) continue;
+			const value = file as Record<string, unknown>;
+			const target = value.file ?? value.filePath ?? value.relativePath;
+			if (
+				path &&
+				typeof target === "string" &&
+				target !== path &&
+				!path.endsWith(`/${target}`)
+			)
+				continue;
+			const patch = value.patch ?? value.diff;
+			if (typeof patch === "string" && patch) return patch;
+		}
+		return "";
+	}
 
-function permissionAction(request: PermissionRequest) {
-	const raw = request.command.trim();
-	const separator = raw.indexOf(":");
-	const tool = separator > 0 ? raw.slice(0, separator).trim() : raw;
-	let args: Record<string, unknown> = {};
-	if (separator > 0) {
+	function permissionAction(request: PermissionRequest) {
+		const raw = request.command.trim();
+		const separator = raw.indexOf(":");
+		const tool = separator > 0 ? raw.slice(0, separator).trim() : raw;
+		let args: Record<string, unknown> = {};
+		if (separator > 0) {
+			try {
+				const parsed: unknown = JSON.parse(raw.slice(separator + 1).trim());
+				if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+					args = parsed as Record<string, unknown>;
+			} catch {
+				// Keep the provider tool name when its argument format is not JSON.
+			}
+		}
+		const path = [
+			args.path,
+			args.filePath,
+			args.file_path,
+			args.target_file,
+		].find(
+			(value): value is string => typeof value === "string" && !!value.trim(),
+		);
+		const normalizedTool = tool.toLowerCase();
+		const action = /read|view|open/.test(normalizedTool)
+			? "Read file"
+			: /edit|write|patch|create|delete|replace/.test(normalizedTool)
+				? "Edit file"
+				: /shell|bash|command|exec/.test(normalizedTool)
+					? "Run command"
+					: tool.replaceAll("_", " ");
+		return path ? `${action} · ${path}` : action;
+	}
+
+	async function decidePermission(
+		request: PermissionRequest,
+		decision: "allow_once" | "allow" | "deny",
+	) {
+		if (!onpermission || replyingToPermission) return;
+		replyingToPermission = request.id;
 		try {
-			const parsed: unknown = JSON.parse(raw.slice(separator + 1).trim());
-			if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
-				args = parsed as Record<string, unknown>;
-		} catch {
-			// Keep the provider tool name when its argument format is not JSON.
+			await onpermission(request.id, decision);
+		} finally {
+			replyingToPermission = "";
 		}
 	}
-	const path = [
-		args.path,
-		args.filePath,
-		args.file_path,
-		args.target_file,
-	].find(
-		(value): value is string => typeof value === "string" && !!value.trim(),
-	);
-	const normalizedTool = tool.toLowerCase();
-	const action = /read|view|open/.test(normalizedTool)
-		? "Read file"
-		: /edit|write|patch|create|delete|replace/.test(normalizedTool)
-			? "Edit file"
-			: /shell|bash|command|exec/.test(normalizedTool)
-				? "Run command"
-				: tool.replaceAll("_", " ");
-	return path ? `${action} · ${path}` : action;
-}
 
-async function decidePermission(
-	request: PermissionRequest,
-	decision: "allow_once" | "allow" | "deny",
-) {
-	if (!onpermission || replyingToPermission) return;
-	replyingToPermission = request.id;
-	try {
-		await onpermission(request.id, decision);
-	} finally {
-		replyingToPermission = "";
-	}
-}
+	$effect(() => {
+		if (streamedOutput.length >= output.length) output = streamedOutput;
+	});
 
-$effect(() => {
-	if (streamedOutput.length >= output.length) output = streamedOutput;
-});
+	$effect(() => {
+		const taskId = task.id;
+		void refreshOutput(taskId);
+		if (!active) return;
+		const timer = window.setInterval(() => void refreshOutput(taskId), 2500);
+		return () => window.clearInterval(timer);
+	});
 
-$effect(() => {
-	const taskId = task.id;
-	void refreshOutput(taskId);
-	if (!active) return;
-	const timer = window.setInterval(() => void refreshOutput(taskId), 2500);
-	return () => window.clearInterval(timer);
-});
+	$effect(() => {
+		if (!active) return;
+		const timer = window.setInterval(() => (now = Date.now()), 1000);
+		return () => window.clearInterval(timer);
+	});
 
-$effect(() => {
-	if (!active) return;
-	const timer = window.setInterval(() => (now = Date.now()), 1000);
-	return () => window.clearInterval(timer);
-});
+	const elapsed = $derived.by(() => {
+		if (!task.startedAt) return "Starting";
+		const started = Date.parse(task.startedAt);
+		if (!Number.isFinite(started)) return "Running";
+		const seconds = Math.max(0, Math.floor((now - started) / 1000));
+		return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
+	});
 
-const elapsed = $derived.by(() => {
-	if (!task.startedAt) return "Starting";
-	const started = Date.parse(task.startedAt);
-	if (!Number.isFinite(started)) return "Running";
-	const seconds = Math.max(0, Math.floor((now - started) / 1000));
-	return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
-});
-
-async function refreshOutput(taskId = task.id) {
-	try {
-		const result = await daemon.getOutput(taskId);
-		if (task.id !== taskId) return;
-		const outputText = typeof result?.output === "string" ? result.output : "";
-		if (outputText.length >= output.length) {
-			output = outputText.slice(-12000);
-			outputError = "";
+	async function refreshOutput(taskId = task.id) {
+		try {
+			const result = await daemon.getOutput(taskId);
+			if (task.id !== taskId) return;
+			const outputText =
+				typeof result?.output === "string" ? result.output : "";
+			if (outputText.length >= output.length) {
+				output = outputText.slice(-12000);
+				outputError = "";
+			}
+			if (result.activities?.length) snapshotActivities = result.activities;
+		} catch (reason) {
+			outputError =
+				reason instanceof Error
+					? reason.message
+					: "Output is not available yet.";
 		}
-		if (result.activities?.length) snapshotActivities = result.activities;
-	} catch (reason) {
-		outputError =
-			reason instanceof Error ? reason.message : "Output is not available yet.";
 	}
-}
 
-async function cancel() {
-	if (!canCancel || cancelling) return;
-	cancelling = true;
-	try {
-		await oncancel?.(task.id);
-	} finally {
-		cancelling = false;
+	async function cancel() {
+		if (!canCancel || cancelling) return;
+		cancelling = true;
+		try {
+			await oncancel?.(task.id);
+		} finally {
+			cancelling = false;
+		}
 	}
-}
 </script>
 
 <section

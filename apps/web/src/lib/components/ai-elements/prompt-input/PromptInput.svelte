@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { cn } from "$lib/shared/utils/shadcn";
 	import { watch } from "runed";
-	import { onMount } from "svelte";
+	import { onMount, untrack } from "svelte";
 	import {
 		AttachmentsContext,
 		setAttachmentsContext,
@@ -26,7 +26,12 @@
 			code: "max_files" | "max_file_size" | "accept";
 			message: string;
 		}) => void;
-		onSubmit: (message: PromptInputMessage, event: SubmitEvent) => void | Promise<void>;
+		onSubmit: (
+			message: PromptInputMessage,
+			event: SubmitEvent,
+		) => undefined | boolean | Promise<undefined | boolean>;
+		onFilesAdded?: (files: File[]) => void;
+		attachmentsContext?: AttachmentsContext;
 		children?: import("svelte").Snippet;
 	}
 
@@ -41,18 +46,26 @@
 		maxFileSize,
 		onError,
 		onSubmit,
+		onFilesAdded,
+		attachmentsContext: externalAttachmentsContext,
 		children,
 		...props
 	}: Props = $props();
 
 	let anchorRef = $state<HTMLSpanElement | null>(null);
 	let formRef = $state<HTMLFormElement | null>(null);
-	let attachmentsContext = new AttachmentsContext(
-		accept,
-		multiple,
-		maxFiles,
-		maxFileSize,
-		onError
+	let attachmentsContext = $state(
+		untrack(
+			() =>
+				externalAttachmentsContext ??
+				new AttachmentsContext(
+					accept,
+					multiple,
+					maxFiles,
+					maxFileSize,
+					onError,
+				),
+		),
 	);
 
 	// Find nearest form to scope drag & drop
@@ -80,7 +93,13 @@
 					e.preventDefault();
 				}
 				if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
-					attachmentsContext.add(e.dataTransfer.files);
+					attachmentsContext.accept = accept;
+					const addedFiles = attachmentsContext.add(e.dataTransfer.files);
+					onFilesAdded?.(
+						addedFiles.flatMap((file) =>
+							file.sourceFile ? [file.sourceFile] : [],
+						),
+					);
 				}
 			};
 
@@ -91,7 +110,7 @@
 				formRef?.removeEventListener("dragover", onDragOver);
 				formRef?.removeEventListener("drop", onDrop);
 			};
-		}
+		},
 	);
 
 	// Global drop handlers
@@ -107,11 +126,18 @@
 			};
 
 			let onDrop = (e: DragEvent) => {
+				if (formRef?.contains(e.target as Node)) return;
 				if (e.dataTransfer?.types?.includes("Files")) {
 					e.preventDefault();
 				}
 				if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
-					attachmentsContext.add(e.dataTransfer.files);
+					attachmentsContext.accept = accept;
+					const addedFiles = attachmentsContext.add(e.dataTransfer.files);
+					onFilesAdded?.(
+						addedFiles.flatMap((file) =>
+							file.sourceFile ? [file.sourceFile] : [],
+						),
+					);
 				}
 			};
 
@@ -122,7 +148,7 @@
 				document.removeEventListener("dragover", onDragOver);
 				document.removeEventListener("drop", onDrop);
 			};
-		}
+		},
 	);
 
 	// Note: File input cannot be programmatically set for security reasons
@@ -136,13 +162,20 @@
 					attachmentsContext.fileInputRef.value = "";
 				}
 			}
-		}
+		},
 	);
 
 	let handleChange = (event: Event) => {
 		let target = event.currentTarget as HTMLInputElement;
-		if (target.files) {
-			attachmentsContext.add(target.files);
+		if (target.files?.length) {
+			attachmentsContext.accept = accept;
+			const addedFiles = attachmentsContext.add(target.files);
+			onFilesAdded?.(
+				addedFiles.flatMap((file) =>
+					file.sourceFile ? [file.sourceFile] : [],
+				),
+			);
+			target.value = "";
 		}
 	};
 
@@ -166,26 +199,25 @@
 		let text = (formData.get("message") as string) || "";
 
 		// Convert blob URLs to data URLs asynchronously
-		let filesPromises = attachmentsContext.files.map(async ({ id, ...item }) => {
-			if (item.url && item.url.startsWith("blob:")) {
-				return {
-					...item,
-					url: await convertBlobUrlToDataUrl(item.url),
-				};
-			}
-			return item;
-		});
+		attachmentsContext.accept = accept;
+		let filesPromises = attachmentsContext.files.map(
+			async ({ id, sourceFile: _sourceFile, ...item }) => {
+				if (item.url?.startsWith("blob:")) {
+					return {
+						...item,
+						url: await convertBlobUrlToDataUrl(item.url),
+					};
+				}
+				return item;
+			},
+		);
 
 		try {
-			let files = await Promise.all(filesPromises);
-			let result = onSubmit({ text, files }, event);
+			const files = await Promise.all(filesPromises);
+			const result = await onSubmit({ text, files }, event);
+			if (result === false) return;
 
-			// Handle both sync and async onSubmit
-			if (result && typeof result === "object" && "then" in result) {
-				await result;
-			}
-
-			// Only clear if submission was successful
+			// Only clear form state when the host confirms submission succeeded.
 			if (clearOnSubmit) {
 				attachmentsContext.clear();
 				form.reset();
@@ -211,7 +243,7 @@
 <form
 	class={cn(
 		"bg-background w-full divide-y overflow-hidden rounded-xl border shadow-sm",
-		className
+		className,
 	)}
 	onsubmit={handleSubmit}
 	{...props}

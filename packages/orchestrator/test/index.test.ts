@@ -767,7 +767,5 @@ test("delivers follow-ups queued during a run as extra turns", async () => {
 	);
 	expect(session?.prompts[1]).toContain("Actually use TypeScript");
 	// The follow-up send is visible in progress history for the UI.
-	expect(
-		setup.events.map((event) => event.type),
-	).toContain("run.progress");
+	expect(setup.events.map((event) => event.type)).toContain("run.progress");
 });
