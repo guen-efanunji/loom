@@ -20,6 +20,8 @@
 	} from "@lucide/svelte";
 	import { onMount, tick } from "svelte";
 	import { toast } from "svelte-sonner";
+	// AI Elements (PromptInput) — prepared for gradual migration; not yet wired.
+	import * as PromptInput from "$lib/components/ai-elements/prompt-input";
 	import {
 		type Catalog,
 		type ChatAttachment,
