@@ -19,6 +19,7 @@
 		X,
 	} from "@lucide/svelte";
 	import { onMount, tick } from "svelte";
+	import { toast } from "svelte-sonner";
 	import {
 		type Catalog,
 		type ChatAttachment,
