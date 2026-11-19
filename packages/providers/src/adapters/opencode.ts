@@ -147,6 +147,10 @@ export class OpenCodeProviderAdapter implements CliProviderAdapter {
 						"text",
 						"coding",
 						...(model.capabilities?.tools ? ["tools" as const] : []),
+						...(Array.isArray(model.capabilities?.input) &&
+						model.capabilities.input.includes("image")
+							? ["image" as const]
+							: []),
 					],
 					isAvailable: true,
 					metadata: {
