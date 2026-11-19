@@ -34,6 +34,8 @@
 	import CodeBlock from "./CodeBlock.svelte";
 	import Markdown from "./Markdown.svelte";
 	import Reasoning from "$lib/components/ai-elements/Reasoning.svelte";
+	// AI Elements (prepared) — not yet wired.
+	import Tool from "$lib/components/ai-elements/Tool.svelte";
 
 	let {
 		messages,
