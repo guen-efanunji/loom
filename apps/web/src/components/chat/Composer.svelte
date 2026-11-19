@@ -1391,6 +1391,11 @@
 		class="max-h-56 min-h-[126px] resize-none border-0 bg-transparent px-4 py-4 text-sm text-white shadow-none placeholder:text-white/35 focus-visible:ring-0"
 		disabled={disabled || sending}
 	/>
+	{#if model && !selectedModel}
+		<p class="px-4 pb-2 text-xs text-amber-300">
+			Selected model is no longer available. Refresh providers and reselect a model.
+		</p>
+	{/if}
 	<div
 		class="flex flex-wrap items-center justify-between gap-2 border-t border-white/[0.07] px-3 py-2"
 	>
