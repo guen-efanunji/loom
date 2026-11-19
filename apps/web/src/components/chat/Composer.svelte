@@ -969,6 +969,7 @@
 			sending ||
 			(busy && !queueWhileBusy) ||
 			disabled ||
+			(!!model && !selectedModel) ||
 			(!draft.trim() &&
 				!files.length &&
 				!sessionRefs.length &&
