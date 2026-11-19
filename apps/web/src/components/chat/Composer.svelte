@@ -673,6 +673,11 @@
 		} else {
 			mentionStyle = "";
 		}
+		// Auto-grow the prompt input (Prompt Input pattern) up to its max height.
+		if (textarea) {
+			textarea.style.height = "auto";
+			textarea.style.height = `${Math.min(textarea.scrollHeight, 224)}px`;
+		}
 	}
 	async function openProjectPreview(path: string) {
 		const request = ++projectPreviewRequest;
