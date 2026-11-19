@@ -1661,10 +1661,13 @@
 					size="icon"
 					class="size-9 rounded-full bg-white/65 text-[#191b1e] transition hover:bg-white"
 					aria-label="Send message"
-					title="Send message"
+					title={model && !selectedModel
+						? "Selected model is no longer available"
+						: "Send message"}
 					disabled={disabled ||
 						sending ||
 						(busy && !queueWhileBusy && hideStop) ||
+						(!!model && !selectedModel) ||
 						(!draft.trim() &&
 							!files.length &&
 							!attachments.length &&
