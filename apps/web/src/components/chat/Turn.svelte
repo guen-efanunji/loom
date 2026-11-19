@@ -33,6 +33,7 @@
 	import { type DesignNode, daemon } from "$lib/daemon";
 	import CodeBlock from "./CodeBlock.svelte";
 	import Markdown from "./Markdown.svelte";
+	import Reasoning from "$lib/components/ai-elements/Reasoning.svelte";
 
 	let {
 		messages,
@@ -744,21 +745,7 @@
 				{#each message.parts as part (part.id)}
 					{#if part.type === "text" && part.text}<Markdown text={part.text} />
 					{:else if part.type === "reasoning" && part.text}
-						<Trace.Root class="my-2 gap-0">
-							<Trace.Collapsible>
-								<Trace.CollapsibleTrigger class="w-full text-left"
-									><Trace.Line class="w-full"
-										><Trace.Icon><Sparkles size={14} /></Trace.Icon><Trace.Title
-											>Thought</Trace.Title
-										></Trace.Line
-									></Trace.CollapsibleTrigger
-								>
-								<Trace.CollapsibleContent
-									class="whitespace-pre-wrap py-2 text-xs text-muted-foreground"
-									><Markdown text={part.text} /></Trace.CollapsibleContent
-								>
-							</Trace.Collapsible>
-						</Trace.Root>
+						<Reasoning content={part.text} />
 					{:else if part.type === "tool" && part.state}
 						{@const kind = kindOf(part)}
 						{@const file = fileOf(part)}
