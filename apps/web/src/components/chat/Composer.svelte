@@ -954,6 +954,12 @@
 		input();
 	}
 	async function send() {
+		if (model && !selectedModel) {
+			toast.error(
+				"Selected model is no longer available. Refresh providers and reselect a model.",
+			);
+			return;
+		}
 		if (
 			sending ||
 			(busy && !queueWhileBusy) ||
