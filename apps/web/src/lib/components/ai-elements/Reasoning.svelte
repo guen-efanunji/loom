@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Markdown from "../../../components/chat/Markdown.svelte";
 	let { content = "", open = $bindable(false) } = $props();
 </script>
 
@@ -13,8 +14,8 @@
 		<span class="text-neutral-500">{open ? "Hide" : "Show"}</span>
 	</button>
 	{#if open}
-		<div class="border-t border-white/[0.08] px-3 py-2 text-xs text-neutral-400 whitespace-pre-wrap">
-			{content}
+		<div class="border-t border-white/[0.08] px-3 py-2 text-xs text-neutral-400">
+			<Markdown text={content} />
 		</div>
 	{/if}
 </div>
