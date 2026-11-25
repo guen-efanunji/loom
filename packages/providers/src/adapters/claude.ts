@@ -2,7 +2,13 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentModel, AuthStatus } from "../core";
-import { CliProviderAdapter, modelFromId, promptPath, runCli } from "./cli";
+import {
+	CliProviderAdapter,
+	modelFromId,
+	promptPath,
+	runCli,
+	shouldUseStdinForPrompt,
+} from "./cli";
 import { claudeCodeDefinition } from "./definitions";
 
 export class ClaudeProviderAdapter extends CliProviderAdapter {
@@ -29,26 +35,30 @@ export class ClaudeProviderAdapter extends CliProviderAdapter {
 				thinkingMode,
 				permission,
 				customInstructions,
-			}) => ({
-				command: "claude",
-				env:
-					thinkingMode && thinkingMode !== "default"
-						? { CLAUDE_CODE_EFFORT_LEVEL: thinkingMode }
-						: undefined,
-				args: [
-					"--print",
-					"--permission-mode",
-					permission?.mode === "read-only" ? "plan" : "default",
-					"--output-format",
-					"stream-json",
-					"--verbose",
-					...(!customInstructions
-						? ["--append-system-prompt-file", promptPath("coding.md")]
-						: []),
-					...(model ? ["--model", model] : []),
-					prompt,
-				],
-			}),
+			}) => {
+				const useStdin = shouldUseStdinForPrompt(prompt);
+				return {
+					command: "claude",
+					...(useStdin ? { stdin: prompt } : {}),
+					env:
+						thinkingMode && thinkingMode !== "default"
+							? { CLAUDE_CODE_EFFORT_LEVEL: thinkingMode }
+							: undefined,
+					args: [
+						"--print",
+						"--permission-mode",
+						permission?.mode === "read-only" ? "plan" : "default",
+						"--output-format",
+						"stream-json",
+						"--verbose",
+						...(!customInstructions
+							? ["--append-system-prompt-file", promptPath("coding.md")]
+							: []),
+						...(model ? ["--model", model] : []),
+						...(useStdin ? [] : [prompt]),
+					],
+				};
+			},
 			getAuthStatus: claudeAuthStatus,
 			probeAuth: claudeAuthStatus,
 			listModels: knownModels,

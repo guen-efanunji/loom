@@ -7,7 +7,7 @@ Dokumen ini merinci tahapan perbaikan dan integrasi komponen **AI Elements** dar
 1. **Gunakan komponen asli shadcn-svelte** (`apps/web/src/lib/components/ai-elements/*`) sebagai sumber kebenaran. Jangan membuat implementasi paralel.
 2. **Integrasi, bukan duplikasi.** Komponen produk seperti `Turn.svelte`, `Composer.svelte`, `TaskChatView.svelte`, dan `TaskRunChat.svelte` harus memakai komponen AI Elements, bukan meniru perilakunya.
 3. **Bertahap.** Setiap tahap dapat diuji sendiri sebelum lanjut ke tahap berikutnya.
-4. **Konsisten dengan sumber pesan yang ada.** AI Elements hanya membaca *message parts*, jadi harus kompatibel dengan `@ai-sdk/svelte` maupun sumber pesan lain di Loom.
+4. **Konsisten dengan sumber pesan yang ada.** AI Elements hanya membaca _message parts_, jadi harus kompatibel dengan `@ai-sdk/svelte` maupun sumber pesan lain di Loom.
 
 ---
 
@@ -25,29 +25,29 @@ Dokumen ini merinci tahapan perbaikan dan integrasi komponen **AI Elements** dar
 
 > Catatan progres: setelah audit awal, Prompt Input lokal sudah disambungkan ke Composer pada Tahap 1. Status dan rekap Prompt Input di bawah diperbarui agar mencerminkan kondisi working tree saat ini; provenance tetap belum terverifikasi.
 
-| AI Element | Status di Loom | Temuan |
-|---|---|---|
-| Chain of Thought | Stub / belum terverifikasi | File lokal hanya menampilkan daftar langkah; tidak ditemukan pemakaian aplikasi. |
-| Chat | Stub / belum terverifikasi | File lokal berupa wrapper sederhana; tidak ditemukan pemakaian. Produk punya UI chat tersendiri. |
-| Checkpoint | Stub / belum terverifikasi | File lokal sederhana; tidak ditemukan pemakaian. Checkpoint produk yang ada adalah bagian alur kerja, bukan bukti bahwa pola UI AI Element ini terintegrasi. |
-| Confirmation | Stub / belum terverifikasi | File lokal sederhana; tidak ditemukan pemakaian. Produk memiliki alur persetujuan tool tersendiri. |
-| Context | Stub / belum terverifikasi | File lokal sederhana; tidak ditemukan pemakaian. Pengelolaan konteks produk bukan indikator pemakaian jendela konteks AI Element. |
-| File Tree | Stub / belum terverifikasi | File lokal menampilkan daftar file sederhana; tidak ditemukan pemakaian. Produk memiliki file/workspace explorer terpisah. |
-| Inline Citation | Stub / belum terverifikasi | File lokal hanya menampilkan teks; tidak ditemukan pemakaian. |
-| Message | Stub / belum terverifikasi | File lokal berupa blok teks dasar; tidak ditemukan pemakaian. Produk merender pesan melalui komponen chat lain. |
-| Model Selector | Stub / belum terverifikasi | File lokal menggunakan pilihan model sederhana; tidak ditemukan pemakaian. Produk punya pemilih model sendiri. |
-| Plan | Stub / belum terverifikasi | File lokal menampilkan daftar langkah; tidak ditemukan pemakaian. Produk memiliki PlanDialog tersendiri. |
-| Prompt Input | Terhubung ke Composer; provenance belum diverifikasi | Keluarga lokal `ai-elements/prompt-input/` digunakan oleh `Composer.svelte`. Pemakaian lokal tidak dengan sendirinya membuktikan bahwa sumbernya adalah registry resmi shadcn-svelte. |
-| Queue | Stub / belum terverifikasi | File lokal menampilkan daftar item; tidak ditemukan pemakaian. Produk punya antrean follow-up tersendiri. |
-| Reasoning | Terhubung, provenance belum terverifikasi | `Turn.svelte` mengimpor dan merendernya untuk reasoning part. Komponen lokal menampilkan Markdown yang dapat dibuka/tutup. |
-| Sources | Stub / belum terverifikasi | File lokal menampilkan daftar sumber sederhana; tidak ditemukan pemakaian. |
-| Stack Trace | Stub / belum terverifikasi | File lokal menampilkan teks dalam `<pre>`; tidak ditemukan pemakaian. |
-| Subagent | Stub / belum terverifikasi | File lokal menampilkan nama/status; tidak ditemukan pemakaian. Produk menampilkan sesi anak melalui UI lain. |
-| Suggestion | Stub / belum terverifikasi | File lokal berupa tombol teks; tidak ditemukan pemakaian. |
-| Task | Stub / belum terverifikasi | File lokal menampilkan judul/status; tidak ditemukan pemakaian. Produk memiliki sistem task/Kanban tersendiri. |
-| Terminal | Stub / belum terverifikasi | File lokal menampilkan output sederhana; tidak ditemukan pemakaian. Produk memiliki terminal terintegrasi terpisah. |
-| Test Results | Stub / belum terverifikasi | File lokal menampilkan daftar hasil sederhana; tidak ditemukan pemakaian. |
-| Tool | Diimpor, tetapi belum terhubung | `Turn.svelte` mengimpor komponen, tetapi tidak ditemukan elemen `<Tool>` yang dirender. |
+| AI Element       | Status di Loom                                       | Temuan                                                                                                                                                                                |
+| ---------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Chain of Thought | Stub / belum terverifikasi                           | File lokal hanya menampilkan daftar langkah; tidak ditemukan pemakaian aplikasi.                                                                                                      |
+| Chat             | Stub / belum terverifikasi                           | File lokal berupa wrapper sederhana; tidak ditemukan pemakaian. Produk punya UI chat tersendiri.                                                                                      |
+| Checkpoint       | Stub / belum terverifikasi                           | File lokal sederhana; tidak ditemukan pemakaian. Checkpoint produk yang ada adalah bagian alur kerja, bukan bukti bahwa pola UI AI Element ini terintegrasi.                          |
+| Confirmation     | Stub / belum terverifikasi                           | File lokal sederhana; tidak ditemukan pemakaian. Produk memiliki alur persetujuan tool tersendiri.                                                                                    |
+| Context          | Stub / belum terverifikasi                           | File lokal sederhana; tidak ditemukan pemakaian. Pengelolaan konteks produk bukan indikator pemakaian jendela konteks AI Element.                                                     |
+| File Tree        | Stub / belum terverifikasi                           | File lokal menampilkan daftar file sederhana; tidak ditemukan pemakaian. Produk memiliki file/workspace explorer terpisah.                                                            |
+| Inline Citation  | Stub / belum terverifikasi                           | File lokal hanya menampilkan teks; tidak ditemukan pemakaian.                                                                                                                         |
+| Message          | Stub / belum terverifikasi                           | File lokal berupa blok teks dasar; tidak ditemukan pemakaian. Produk merender pesan melalui komponen chat lain.                                                                       |
+| Model Selector   | Stub / belum terverifikasi                           | File lokal menggunakan pilihan model sederhana; tidak ditemukan pemakaian. Produk punya pemilih model sendiri.                                                                        |
+| Plan             | Stub / belum terverifikasi                           | File lokal menampilkan daftar langkah; tidak ditemukan pemakaian. Produk memiliki PlanDialog tersendiri.                                                                              |
+| Prompt Input     | Terhubung ke Composer; provenance belum diverifikasi | Keluarga lokal `ai-elements/prompt-input/` digunakan oleh `Composer.svelte`. Pemakaian lokal tidak dengan sendirinya membuktikan bahwa sumbernya adalah registry resmi shadcn-svelte. |
+| Queue            | Stub / belum terverifikasi                           | File lokal menampilkan daftar item; tidak ditemukan pemakaian. Produk punya antrean follow-up tersendiri.                                                                             |
+| Reasoning        | Terhubung, provenance belum terverifikasi            | `Turn.svelte` mengimpor dan merendernya untuk reasoning part. Komponen lokal menampilkan Markdown yang dapat dibuka/tutup.                                                            |
+| Sources          | Stub / belum terverifikasi                           | File lokal menampilkan daftar sumber sederhana; tidak ditemukan pemakaian.                                                                                                            |
+| Stack Trace      | Stub / belum terverifikasi                           | File lokal menampilkan teks dalam `<pre>`; tidak ditemukan pemakaian.                                                                                                                 |
+| Subagent         | Stub / belum terverifikasi                           | File lokal menampilkan nama/status; tidak ditemukan pemakaian. Produk menampilkan sesi anak melalui UI lain.                                                                          |
+| Suggestion       | Stub / belum terverifikasi                           | File lokal berupa tombol teks; tidak ditemukan pemakaian.                                                                                                                             |
+| Task             | Stub / belum terverifikasi                           | File lokal menampilkan judul/status; tidak ditemukan pemakaian. Produk memiliki sistem task/Kanban tersendiri.                                                                        |
+| Terminal         | Stub / belum terverifikasi                           | File lokal menampilkan output sederhana; tidak ditemukan pemakaian. Produk memiliki terminal terintegrasi terpisah.                                                                   |
+| Test Results     | Stub / belum terverifikasi                           | File lokal menampilkan daftar hasil sederhana; tidak ditemukan pemakaian.                                                                                                             |
+| Tool             | Diimpor, tetapi belum terhubung                      | `Turn.svelte` mengimpor komponen, tetapi tidak ditemukan elemen `<Tool>` yang dirender.                                                                                               |
 
 **Rekap:** 21 pola tercatat; 1 terhubung (Reasoning, provenance belum terverifikasi), 1 terhubung ke Composer (Prompt Input, provenance belum terverifikasi), 1 diimpor tetapi belum dipakai (Tool), dan 18 file lokal belum terhubung/terverifikasi. Tidak ada pola yang tidak memiliki file; namun keberadaan file bukan bukti implementasi resmi.
 
@@ -59,7 +59,7 @@ Dokumen ini merinci tahapan perbaikan dan integrasi komponen **AI Elements** dar
 
 ## Tahap 1 — Pondasi: Chat, Message, dan Prompt Input
 
-**Status:** Implementasi Prompt Input pada Composer selesai; audit provenance Chat/Message belum memenuhi gate integrasi. Review browser/visual dan tes perilaku belum dilakukan, sehingga tahap ini belum dinyatakan tervalidasi sepenuhnya.
+**Status:** Prompt Input tetap terhubung ke Composer (provenance belum diverifikasi). `Message.Root` dan `Message.Content` telah dipasang pada renderer user/assistant di `Turn.svelte`; Chat wrapper lokal tidak digunakan. Typecheck web lulus. E2E percakapan dan review visual/browser belum dijalankan, sehingga tahap ini belum dinyatakan tervalidasi sepenuhnya.
 
 **Tujuan:** Menyatukan tampilan percakapan utama dengan komponen AI Elements asli.
 
@@ -67,14 +67,26 @@ Dokumen ini merinci tahapan perbaikan dan integrasi komponen **AI Elements** dar
 
 1. Verifikasi dan, bila perlu, sinkronkan keluarga `prompt-input/` dengan implementasi resmi shadcn-svelte. Komponen sudah ada; jangan membuat ulang.
 2. Refactor `Composer.svelte` agar memakai komposisi `PromptInput.*` yang sesuai dokumentasi, sambil mempertahankan lampiran, pemilihan model, agent, antrean, dan mekanisme submit Loom.
-3. Audit `Chat.svelte` dan `Message.svelte` terhadap sumber resmi sebelum integrasi. Jika sesuai kebutuhan dan API Loom, refactor `SplitChatPane.svelte` agar memakai komponen tersebut; jangan mengganti renderer produk secara mekanis bila komposisi resmi tidak mendukung fitur Loom.
+3. Verifikasi API komposisi `Message.Root`, `Message.Content`, alignment, header/footer melalui dokumentasi resmi. Gunakan `Message` untuk membungkus konten user/assistant yang telah ada di `Turn.svelte`; pertahankan Markdown, lampiran, reasoning/tool, diff, aksi, dan state Loom. Jangan gunakan `Chat.svelte` lokal sebagai bukti implementasi resmi; wrapper tersebut tidak diperlukan untuk renderer saat ini.
 4. Pastikan peran user/assistant, Markdown, lampiran, status streaming, aksi pesan, aksesibilitas, dan error tetap terjaga.
 
-**Kriteria selesai:** Keluarga Prompt Input lokal terhubung ke alur pengiriman Loom; status provenance-nya tetap belum diverifikasi dan tidak diklaim sebagai integrasi resmi. `Chat.svelte` dan `Message.svelte` belum diintegrasikan karena provenance/API belum diverifikasi. Composer mempertahankan lampiran, mention, pemilihan model/agent, antrean, stop, dan submit. Validasi akhir menunggu tes perilaku dan review browser/visual.
+**Kriteria selesai:** Keluarga Prompt Input lokal terhubung ke alur pengiriman Loom; status provenance-nya tetap belum diverifikasi dan tidak diklaim sebagai integrasi resmi. `Message` dipakai untuk komposisi di `Turn.svelte` sesuai API yang didokumentasikan, tanpa mengklaim provenance file lokal. Composer mempertahankan lampiran, mention, pemilihan model/agent, antrean, stop, dan submit. Typecheck web lulus; validasi penuh menunggu tes perilaku dan review browser/visual.
 
 ---
 
 ## Tahap 2 — Langkah dan Aktivitas Agent (Reasoning, Tool, Plan, Task, Queue, Subagent, Terminal, Confirmation)
+
+**Status implementasi (19 Nov 2026): pola aktivitas telah diintegrasikan pada tampilan chat, task, plan, dan Kanban.** `Turn.svelte` memakai Reasoning, Tool, Terminal, Queue, dan Subagent; `TaskRunChat.svelte` memakai Task, Tool, Terminal, dan Confirmation; `SplitChatPane.svelte` memakai Queue dan Confirmation; `PlanDialog.svelte` memakai Plan; dan `KanbanBoard.svelte` memakai Task. Integrasi mempertahankan alur diff/editor Loom, pilihan izin, output terminal yang dapat dibuka/tutup, dan follow-up antrean. Ini tidak menyatakan bahwa file lokal merupakan salinan registry yang identik.
+
+**Hasil verifikasi (19 Nov 2026):**
+
+- `bun run check` dari `apps/web`: lulus, 0 error dan 0 warning.
+- `bun run test:e2e -- tests/chat-lifecycle.e2e.ts --workers 1`: lulus, 6/6, termasuk reasoning, output terminal/tool dan error, native queue, Confirmation, serta lifecycle split chat.
+- `bun run test:e2e -- tests/adaptive-chat.e2e.ts --workers 1`: lulus, 5/5, termasuk runtime todos dan fokus/kembali dari subagent.
+- `bun run test:e2e -- tests/live-login-task-evidence.e2e.ts --workers 1`: lulus, 4/4 untuk board, tab progress tugas fixture, dan panel agent.
+- `git diff --check`: lulus.
+
+**Batas verifikasi:** ini belum merupakan validasi penuh Tahap 2. E2E `tests/kanban-parallel.e2e.ts` masih gagal membuka detail task pada fixture (heading yang diharapkan tidak muncul; indikasi route/fixture task, bukan bukti render AI Element gagal). Dialog Plan belum diuji menyeluruh dari generate sampai review/konversi; Task AI Element belum memperoleh E2E komponen mandiri. Task live yang diperiksa hanya berstatus Queued dan tidak dijalankan. Review visual dark/light belum dilakukan. Karena itu status Tahap 2 adalah **implementasi selesai, verifikasi parsial**.
 
 **Tujuan:** Menampilkan aktivitas agent secara konsisten menggunakan komponen AI Elements.
 
@@ -95,6 +107,10 @@ Dokumen ini merinci tahapan perbaikan dan integrasi komponen **AI Elements** dar
 
 ## Tahap 3 — Konteks dan Navigasi (Context, Checkpoint, Model Selector)
 
+**Status implementasi (21 Nov 2026):** `ModelSelector.svelte` dipakai di Composer untuk memilih model dan thinking mode. Picker Browse yang menyajikan pencarian, favorit, dan recent tetap ada. Panel Context menggunakan `Context.svelte` dan membedakan estimasi Loom dari usage provider; tidak menampilkan persentase saat jendela model tidak diketahui. `Checkpoint.svelte` menandai turn assistant dan menyediakan restore percakapan melalui endpoint terpisah. Restore hanya menyembunyikan pesan percakapan di history tampilan/konteks melalui metadata append-only; tidak melakukan rollback file workspace atau Git.
+
+**Verifikasi:** `bun run check` (apps/web), `bun test apps/server/test/chat-provider.test.ts` (33/33), E2E `tests/chat-lifecycle.e2e.ts` + `tests/context-compaction.e2e.ts` (9/9), dan `git diff --check` lulus. E2E mencakup restore percakapan, pemilihan model katalog dan thinking mode, serta panel Context. Provenance file lokal belum diverifikasi terhadap registry resmi; review visual dark/light belum dilakukan.
+
 **Tujuan:** Menambahkan indikator konteks dan navigasi percakapan yang sesuai pola AI Elements.
 
 **Langkah:**
@@ -108,6 +124,8 @@ Dokumen ini merinci tahapan perbaikan dan integrasi komponen **AI Elements** dar
 ---
 
 ## Tahap 4 — Hasil dan Sumber (Sources, Inline Citation, File Tree, Test Results, Stack Trace, Chain of Thought)
+
+**Status implementasi (25 Nov 2026):** Keenam komponen disinkronkan ke pola resmi shadcn-svelte (komposisi `Trace`/`CodeBlock`/`HoverCard`/`Collapsible`/`Button`); `hover-card` ditambahkan via registry resmi. `Turn.svelte` menampilkan Chain of Thought (ringkasan turn riset), File Tree dari metadata edit tool, Sources (kondisional bila ada part `source-url`), dan Stack Trace (hanya bila error memuat frame). Test Results siap pakai menunggu data terstruktur dari provider. E2E `chat-lifecycle` 9/9 lulus, typecheck 0/0. Batas: Test Results/Sources menunggu data provider; Inline Citation belum dipakai (belum ada sumber); review visual belum.
 
 **Tujuan:** Menyajikan hasil kerja agent dan sumber secara terstruktur.
 
@@ -126,6 +144,8 @@ Dokumen ini merinci tahapan perbaikan dan integrasi komponen **AI Elements** dar
 
 ## Tahap 5 — Suggestion dan Polesan UX
 
+**Status implementasi (25 Nov 2026):** `Suggestion.svelte` disinkronkan ke pola resmi (baris `Button` horizontal dengan scroll) dan diintegrasikan ke `Turn.svelte` melalui prop opsional `suggestions`/`onsuggest` (hanya muncul bila ada sumber saran nyata). Stub `Chat.svelte` yang tidak dipakai dihapus. Typecheck web dan E2E percakapan lulus. Review visual dark/light belum dilakukan.
+
 **Tujuan:** Menambahkan saran prompt lanjutan dan menyempurnakan pengalaman.
 
 **Langkah:**
@@ -139,6 +159,8 @@ Dokumen ini merinci tahapan perbaikan dan integrasi komponen **AI Elements** dar
 ---
 
 ## Tahap 6 — Pengujian dan Validasi
+
+**Status (25 Nov 2026):** Lint (biome) 0 issue, typecheck web 0 error/0 warning, unit test suite 188 pass (0 fail), E2E 15 pass (chat-lifecycle, adaptive-chat, context-compaction), server chat-provider 33 pass, `git diff --check` bersih. Review visual dark/light belum dilakukan (memerlukan browser manual).
 
 **Tujuan:** Memastikan integrasi tidak merusak fungsionalitas yang ada.
 
@@ -155,15 +177,15 @@ Dokumen ini merinci tahapan perbaikan dan integrasi komponen **AI Elements** dar
 
 ## Ringkasan Tahapan
 
-| Tahap | Fokus | Komponen Utama |
-|-------|-------|----------------|
-| 0 | Audit & inventarisasi | Semua komponen ai-elements |
-| 1 | Pondasi percakapan | Chat, Message, PromptInput |
-| 2 | Aktivitas agent | Reasoning, Tool, Plan, Task, Queue, Subagent, Terminal, Confirmation |
-| 3 | Konteks & navigasi | Model Selector, Context, Checkpoint |
-| 4 | Hasil & sumber | Chain of Thought, Sources, Inline Citation, File Tree, Test Results, Stack Trace |
-| 5 | Suggestion & polesan | Suggestion |
-| 6 | Pengujian & validasi | Semua komponen |
+| Tahap | Fokus                 | Komponen Utama                                                                   |
+| ----- | --------------------- | -------------------------------------------------------------------------------- |
+| 0     | Audit & inventarisasi | Semua komponen ai-elements                                                       |
+| 1     | Pondasi percakapan    | Chat, Message, PromptInput                                                       |
+| 2     | Aktivitas agent       | Reasoning, Tool, Plan, Task, Queue, Subagent, Terminal, Confirmation             |
+| 3     | Konteks & navigasi    | Model Selector, Context, Checkpoint                                              |
+| 4     | Hasil & sumber        | Chain of Thought, Sources, Inline Citation, File Tree, Test Results, Stack Trace |
+| 5     | Suggestion & polesan  | Suggestion                                                                       |
+| 6     | Pengujian & validasi  | Semua komponen                                                                   |
 
 ---
 
@@ -171,5 +193,5 @@ Dokumen ini merinci tahapan perbaikan dan integrasi komponen **AI Elements** dar
 
 - **Jangan membuat komponen baru** yang meniru AI Elements. Gunakan yang dari shadcn-svelte.
 - **Jangan menghapus fitur yang ada** sebelum penggantinya siap; lakukan migrasi bertahap.
-- Komponen AI Elements hanya membaca *message parts*, sehingga harus kompatibel dengan sumber pesan yang digunakan Loom (termasuk `@ai-sdk/svelte`).
+- Komponen AI Elements hanya membaca _message parts_, sehingga harus kompatibel dengan sumber pesan yang digunakan Loom (termasuk `@ai-sdk/svelte`).
 - Setiap tahap sebaiknya diselesaikan dan diuji sebelum melanjutkan ke tahap berikutnya.

@@ -109,6 +109,8 @@ type ProviderMessage = {
 		cost?: number;
 		/** True when this turn was superseded by a regenerate/edit and hidden. */
 		hidden?: boolean;
+		/** Bookkeeping meta: ids of provider-native turns to restore from hidden state. */
+		restoreIds?: string[];
 		/** Bookkeeping meta: ids of provider-native turns to hide from the UI. */
 		hideIds?: string[];
 		tokens?: {
@@ -435,8 +437,16 @@ function permissionPatterns(
 ): string[] {
 	const candidates =
 		toolName.toLowerCase().replaceAll("_", "") === "runcommand"
-			? ["CommandLine", "command", "cmd", "script"]
-			: ["TargetFile", "file_path", "filePath", "path", "filename"];
+			? ["CommandLine", "commandLine", "command", "cmd", "script"]
+			: [
+					"Path",
+					"TargetFile",
+					"targetFile",
+					"file_path",
+					"filePath",
+					"path",
+					"filename",
+				];
 	for (const key of candidates) {
 		const value = args[key];
 		if (typeof value === "string" && value.trim()) {
@@ -789,12 +799,14 @@ export function createChatRoutes(options: {
 	function collectHiddenIds(messages: ProviderMessage[]): Set<string> {
 		const hide = new Set<string>();
 		for (const message of messages) {
-			if (
-				message.info.role === META_ROLE &&
-				Array.isArray(message.info.hideIds)
-			)
+			if (message.info.role !== META_ROLE) {
+				if (message.info.hidden) hide.add(message.info.id);
+				continue;
+			}
+			if (Array.isArray(message.info.restoreIds))
+				for (const restored of message.info.restoreIds) hide.delete(restored);
+			if (Array.isArray(message.info.hideIds))
 				for (const hidden of message.info.hideIds) hide.add(hidden);
-			if (message.info.hidden) hide.add(message.info.id);
 		}
 		return hide;
 	}
@@ -1097,6 +1109,71 @@ export function createChatRoutes(options: {
 			// Still show the clean title in the UI even if persistence failed.
 			return { ...session, title: derived };
 		}
+	}
+	async function restoreConversationCheckpoint(
+		sessionId: string,
+		messageId: string,
+	) {
+		const turn = providerSessions.get(sessionId);
+		const stored =
+			(await options.providerHistory?.get<ProviderMessage[]>(sessionId)) ??
+			turn?.messages ??
+			[];
+		const visible = visibleMessages(stored);
+		const checkpointIndex = visible.findIndex(
+			(message) => message.info.id === messageId,
+		);
+		if (checkpointIndex < 0)
+			throw new HTTPException(404, {
+				message: "Conversation checkpoint not found",
+			});
+		const latestRestore = stored.findLast(
+			(message) =>
+				message.info.role === META_ROLE &&
+				Array.isArray(message.info.restoreIds),
+		);
+		const latestRestoreIndex = latestRestore
+			? stored.indexOf(latestRestore)
+			: -1;
+		const storedCheckpointIndex = stored.findIndex(
+			(message) => message.info.id === messageId,
+		);
+		const removedMessages = stored.slice(
+			Math.max(storedCheckpointIndex, latestRestoreIndex) + 1,
+		);
+		const restoreIds = [
+			...new Set([
+				...(Array.isArray(latestRestore?.info.restoreIds)
+					? latestRestore.info.restoreIds
+					: []),
+				...visible
+					.slice(0, checkpointIndex + 1)
+					.map((message) => message.info.id),
+			]),
+		];
+		const hideIds = [
+			...new Set([
+				...visible.slice(checkpointIndex + 1).map((message) => message.info.id),
+				...removedMessages
+					.filter((message) => message.info.role === META_ROLE)
+					.map((message) => message.info.id),
+			]),
+		];
+		if (!hideIds.length && latestRestoreIndex < 0) return;
+		const meta: ProviderMessage = {
+			info: {
+				id: `${META_ROLE}-${randomUUID()}`,
+				role: META_ROLE,
+				hidden: true,
+				restoreIds,
+				hideIds,
+				time: { created: Date.now() },
+			},
+			parts: [],
+		};
+		const next = [...stored, meta];
+		await options.providerHistory?.save(sessionId, next);
+		if (turn) turn.messages = mergeMessages(turn.messages, [meta]);
 	}
 	async function supersedeTurn(sessionId: string, messageIds: string[]) {
 		if (!messageIds.length) return;
@@ -4020,6 +4097,15 @@ export function createChatRoutes(options: {
 		options.onEvent?.({ sessionId: current.id, status: "superseded" });
 		return c.json({ ok: true });
 	});
+	app.post("/sessions/:id/conversation-checkpoints/restore", async (c) => {
+		const current = await session(c.req.param("id"));
+		const input = z
+			.object({ messageId: z.string().min(1).max(500) })
+			.parse(await c.req.json());
+		await restoreConversationCheckpoint(current.id, input.messageId);
+		options.onEvent?.({ sessionId: current.id, status: "checkpoint_restored" });
+		return c.json({ ok: true });
+	});
 	// P1-7: a cheap poll target so long conversations don't re-ship every message
 	// body each refresh. The client fetches full state only when this signature
 	// (count/last id/last completion/status) changes.
@@ -4156,18 +4242,22 @@ export function createChatRoutes(options: {
 			for (const part of parts) {
 				if (
 					part.type !== "tool" ||
-					!/edit|write|patch|apply|file_change|create|delete|replace/i.test(
+					!/edit|write|patch|apply|file_change|create|delete|replace|sed_file/i.test(
 						part.tool ?? "",
 					)
 				)
 					continue;
 				const input = part.state?.input;
 				for (const key of [
+					"Path",
 					"filePath",
 					"TargetFile",
+					"targetFile",
 					"target_file",
 					"file_path",
 					"AbsolutePath",
+					"absolute_path",
+					"notebook_path",
 					"path",
 					"file",
 					"filename",
@@ -4261,8 +4351,9 @@ export function createChatRoutes(options: {
 					);
 				const candidatePaths = new Set<string>();
 				for (const candidate of messageFileCandidates) {
-					const absolute = resolve(root, candidate);
-					const file = relative(root, absolute);
+					const resolved = resolve(root, candidate);
+					const canonical = await realpath(resolved).catch(() => resolved);
+					const file = relative(root, canonical).replaceAll("\\", "/");
 					if (!file.startsWith("../") && file !== "..")
 						candidatePaths.add(file);
 				}
@@ -4275,7 +4366,7 @@ export function createChatRoutes(options: {
 					try {
 						const absolute = resolve(root, file);
 						const real = await realpath(absolute);
-						const relativeFile = relative(root, real);
+						const relativeFile = relative(root, real).replaceAll("\\", "/");
 						if (relativeFile.startsWith("../") || relativeFile === "..")
 							continue;
 						const content = await readFile(real);
@@ -4313,6 +4404,11 @@ export function createChatRoutes(options: {
 								deletions = patchLines.filter(
 									(line) => line.startsWith("-") && !line.startsWith("---"),
 								).length;
+							} else if (status.startsWith("A")) {
+								const lines = text ? text.split(/\r?\n/) : [];
+								if (text.endsWith("\n")) lines.pop();
+								additions = lines.length;
+								patch = `diff --git a/${file} b/${file}\nnew file mode 100644\n--- /dev/null\n+++ b/${file}\n@@ -0,0 +1,${additions} @@\n${lines.map((line) => `+${line}`).join("\n")}`;
 							} else {
 								continue;
 							}
@@ -4322,7 +4418,16 @@ export function createChatRoutes(options: {
 							additions = lines.length;
 							patch = `diff --git a/${file} b/${file}\nnew file mode 100644\n--- /dev/null\n+++ b/${file}\n@@ -0,0 +1,${additions} @@\n${lines.map((line) => `+${line}`).join("\n")}`;
 						}
-						if (!diffs.some((diff) => diff.file === file))
+						if (
+							!diffs.some(
+								(diff) =>
+									diff.file &&
+									relative(root, resolve(root, diff.file)).replaceAll(
+										"\\",
+										"/",
+									) === file,
+							)
+						)
 							diffs.push({ file, patch, additions, deletions });
 					} catch {
 						// A file may be removed or replaced while the preview is loading.

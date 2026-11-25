@@ -180,22 +180,24 @@ test("shows runtime todos and lets a user focus a child then return to its paren
 
 	await expect(screen.getByText("Todo progress")).toBeVisible();
 	await expect(screen.getByText("Reported by runtime")).toBeVisible();
-	await expect(screen.getByText("Inspect the relevant UI")).toBeVisible();
-	await expect(screen.getByText("completed")).toBeVisible();
+	await expect(screen.getByRole("button", "2 to do")).toBeVisible();
 	await expect(screen.getByText("Implement the feature")).toBeVisible();
-	await expect(screen.getByText("in progress")).toBeVisible();
-	await expect(screen.getByText("Explore child")).toBeVisible();
+	await expect(screen.getByText("Verify the result")).toBeVisible();
+	await expect(screen.getByRole("button", "1 completed")).toBeVisible();
+	const subagent = screen.getByRole("button", "Ran Explore child");
+	await expect(subagent).toBeVisible();
 	await app.screenshot("adaptive-todos-parent");
 	const composer = screen.getByRole("textbox", "Message agent");
 	await composer.fill("Keep this parent draft while I inspect the child");
-	await screen.getByRole("button", "Open").tap();
+	await subagent.tap();
+	await screen.getByRole("button", "Open subagent chat").tap();
 	await expect(screen.getByText("Focused child session")).toBeVisible();
 	await expect(screen.getByRole("button", "Back to parent chat")).toBeVisible();
 	await app.screenshot("adaptive-child-focused");
 
 	await screen.getByRole("button", "Back to parent chat").tap();
 	await expect(screen.getByText("Todo progress")).toBeVisible();
-	await expect(screen.getByRole("button", "Open")).toBeVisible();
+	await expect(screen.getByRole("button", "Ran Explore child")).toBeVisible();
 	await expect(composer).toHaveValue(
 		"Keep this parent draft while I inspect the child",
 	);
@@ -335,7 +337,7 @@ test("shows OpenCode as the adapter when the model reports its upstream Google v
 	await expect(screen.getByText("Google is working…")).not.toBeVisible();
 	await expect(
 		screen.getByRole(
-			"button",
+			"combobox",
 			"Selected model: GLM-5.3-Flash Free from OpenCode",
 		),
 	).toBeVisible();

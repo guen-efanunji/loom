@@ -6,7 +6,13 @@ const sessionId = "ses_e2e_chat_lifecycle";
 const projectDirectory = "/tmp/loom-e2e-chat-project";
 
 function conversation(
-	options: { busy?: boolean; text?: string; questions?: unknown[] } = {},
+	options: {
+		busy?: boolean;
+		text?: string;
+		questions?: unknown[];
+		tool?: boolean;
+		permissions?: Array<{ id: string; permission: string; patterns: string[] }>;
+	} = {},
 ) {
 	return {
 		session: {
@@ -31,13 +37,27 @@ function conversation(
 						type: "text",
 						text: options.text ?? "Initial response text.",
 					},
+					...(options.tool
+						? [
+								{
+									id: "assistant-lifecycle-shell",
+									type: "tool",
+									tool: "bash",
+									state: {
+										status: "completed",
+										input: { command: "printf loom-e2e" },
+										output: "loom-e2e-output",
+									},
+								},
+							]
+						: []),
 				],
 			},
 		],
 		status: options.busy
 			? { type: "busy", message: "Working" }
 			: { type: "idle" },
-		permissions: [],
+		permissions: options.permissions ?? [],
 		questions: options.questions ?? [],
 	};
 }
@@ -47,7 +67,9 @@ async function stubWorkspace(
 	hooks: {
 		state?: () => ReturnType<typeof conversation>;
 		workspace?: () => Record<string, unknown>;
+		diff?: () => unknown[];
 		questionReply?: (body: Record<string, unknown>) => void;
+		restoreCheckpoint?: (messageId: string) => void;
 	} = {},
 ) {
 	await browser.addInitScript(() => {
@@ -93,6 +115,12 @@ async function stubWorkspace(
 						name: "Fixture Model",
 						provider: "OpenCode",
 					},
+					{
+						providerID: "opencode",
+						modelID: "alternate-model",
+						name: "Alternate Model",
+						provider: "OpenCode",
+					},
 				],
 				defaults: {},
 				agents: [
@@ -120,6 +148,8 @@ async function stubWorkspace(
 			};
 		} else if (pathname === `/api/chat/sessions/${sessionId}`) {
 			body = hooks.state?.() ?? conversation();
+		} else if (pathname === `/api/chat/sessions/${sessionId}/diff`) {
+			body = hooks.diff?.() ?? [];
 		} else if (pathname === `/api/chat/sessions/${sessionId}/status`) {
 			const current = hooks.state?.() ?? conversation();
 			body = {
@@ -141,6 +171,16 @@ async function stubWorkspace(
 			body = { ok: true };
 		} else if (
 			pathname ===
+				`/api/chat/sessions/${sessionId}/conversation-checkpoints/restore` &&
+			request.method === "POST"
+		) {
+			const payload = JSON.parse(request.postData ?? "{}") as {
+				messageId: string;
+			};
+			hooks.restoreCheckpoint?.(payload.messageId);
+			body = { ok: true };
+		} else if (
+			pathname ===
 				`/api/chat/sessions/${sessionId}/question/fixture-question` &&
 			request.method === "POST"
 		) {
@@ -159,6 +199,89 @@ async function stubWorkspace(
 		});
 	});
 }
+
+test("restores a conversation checkpoint without invoking workspace actions", async ({
+	app,
+	browser,
+	screen,
+}) => {
+	let restoredMessageId = "";
+	const state = conversation();
+	state.messages.push({
+		info: {
+			id: "user-after-checkpoint",
+			role: "user",
+			time: { created: 1_800_000_000_200 },
+		},
+		parts: [
+			{
+				id: "user-after-checkpoint-text",
+				type: "text",
+				text: "Message after the checkpoint.",
+			},
+		],
+	});
+	await browser.addInitScript(() => {
+		window.confirm = () => true;
+	});
+	await stubWorkspace(browser, {
+		state: () => state,
+		restoreCheckpoint: (messageId) => {
+			restoredMessageId = messageId;
+			state.messages.splice(1);
+		},
+	});
+	await app.open(`/?project=${projectId}&session=${sessionId}`);
+	await expect(screen.getByText("Initial response text.")).toBeVisible();
+	await expect(screen.getByText("Message after the checkpoint.")).toBeVisible();
+
+	await screen
+		.getByRole("button", /Return conversation to/)
+		.first()
+		.tap();
+	await expect
+		.poll(() => restoredMessageId)
+		.toBe("assistant-lifecycle-fixture");
+	await expect(
+		screen.getByText("Message after the checkpoint."),
+	).not.toBeVisible();
+});
+
+test("selects a catalog model and thinking mode through the unified model selector", async ({
+	app,
+	browser,
+	screen,
+}) => {
+	await stubWorkspace(browser);
+	await app.open(`/?project=${projectId}&session=${sessionId}`);
+
+	const modelSelector = screen.getByRole(
+		"combobox",
+		"Selected model: Fixture Model from OpenCode",
+	);
+	await modelSelector.tap();
+	await screen.getByPlaceholder("Search models…").fill("Alternate Model");
+	await screen.getByRole("option", /Alternate Model/).tap();
+	await expect(
+		screen.getByRole(
+			"combobox",
+			"Selected model: Alternate Model from OpenCode",
+		),
+	).toBeVisible();
+
+	const thinkingSelector = screen.getByRole(
+		"combobox",
+		"Thinking mode: default",
+	);
+	await thinkingSelector.tap();
+	await screen.getByRole("option", "High").tap();
+	await expect(
+		screen.getByRole("combobox", "Thinking mode: high"),
+	).toBeVisible();
+	await expect(
+		screen.getByRole("button", "Browse models, favorites, and recent models"),
+	).not.toBeVisible();
+});
 
 test("hydrates the authoritative isolated workspace when opening split chat", async ({
 	app,
@@ -274,6 +397,208 @@ test("shows a visible one-slot follow-up queue and lets the user cancel it", asy
 	await expect.poll(() => sendCount).toBe(0);
 });
 
+test("renders reasoning, shell output, and native queue through the activity elements", async ({
+	app,
+	browser,
+	screen,
+}) => {
+	await stubWorkspace(browser, {
+		state: () => {
+			const state = conversation({ busy: true, tool: true });
+			state.messages[0]!.parts.push(
+				{
+					id: "assistant-lifecycle-reasoning",
+					type: "reasoning",
+					text: "Checking the fixture.",
+				},
+				{
+					id: "assistant-lifecycle-tool-error",
+					type: "tool",
+					tool: "custom_tool",
+					state: {
+						status: "error",
+						input: { query: "fixture query" },
+						output: "partial tool output",
+						error: "fixture tool failure",
+					},
+				},
+				{
+					id: "assistant-lifecycle-todos",
+					type: "tool",
+					tool: "writeTodos",
+					state: {
+						status: "completed",
+						input: {
+							todos: [
+								{
+									id: "todo-e2e",
+									content: "Verify output",
+									status: "in_progress",
+								},
+							],
+						},
+					},
+				},
+			);
+			return state;
+		},
+	});
+	await app.open(`/?project=${projectId}&session=${sessionId}`);
+	await screen.getByRole("button", "Open split chat").tap();
+	await expect(screen.getByText("Checking the fixture.")).toBeVisible();
+	await expect(screen.getByText("Ran printf loom-e2e")).toBeVisible();
+	await screen.getByText("Ran printf loom-e2e").tap();
+	await expect(screen.getByText("loom-e2e-output")).toBeVisible();
+	const toolActivity = screen.getByRole("button", "Failed custom_tool Failed");
+	await expect(toolActivity).toBeVisible();
+	await expect(screen.getByText("partial tool output")).toBeVisible();
+	await expect(screen.getByRole("alert")).toBeVisible();
+	await expect(screen.getByText("fixture tool failure")).toBeVisible();
+	await expect(screen.getByText("Verify output")).toBeVisible();
+});
+
+test("renders chain of thought, changed files, and stack frames from real tool data", async ({
+	app,
+	browser,
+	screen,
+}) => {
+	await stubWorkspace(browser, {
+		state: () => {
+			const state = conversation();
+			state.messages[0]!.parts.unshift(
+				{
+					id: "assistant-lifecycle-read-1",
+					type: "tool",
+					tool: "read",
+					state: {
+						status: "completed",
+						input: { path: "src/app/page.tsx" },
+					},
+				},
+				{
+					id: "assistant-lifecycle-search-1",
+					type: "tool",
+					tool: "grep",
+					state: {
+						status: "completed",
+						input: { pattern: "ThemeProvider" },
+					},
+				},
+				{
+					id: "assistant-lifecycle-edit-1",
+					type: "tool",
+					tool: "edit",
+					state: {
+						status: "completed",
+						input: { path: "src/app/page.tsx" },
+						metadata: {
+							filediff: {
+								file: "src/app/page.tsx",
+								patch:
+									'@@ -10,2 +10,3 @@\n-const title = "Old";\n+const title = "New";',
+								additions: 3,
+								deletions: 1,
+							},
+						},
+					},
+				},
+				{
+					id: "assistant-lifecycle-cli-edit-1",
+					type: "tool",
+					tool: "replace_file_content",
+					state: {
+						status: "completed",
+						input: {
+							TargetFile: "src/lib/banner.ts",
+							TargetContent: 'export const banner = "old";',
+							ReplacementContent:
+								'export const banner = "new";\nexport const subtitle = "ok";',
+						},
+					},
+				},
+				{
+					id: "assistant-lifecycle-stack-1",
+					type: "tool",
+					tool: "bash",
+					state: {
+						status: "error",
+						input: { command: "bun run seed" },
+						error: `TypeError: Cannot read properties of undefined (reading 'email')
+    at seedUsers (prisma/seed.ts:27:34)
+    at main (prisma/seed.ts:51:9)
+    at Module._compile (node:internal/modules/cjs/loader:1554:14)`,
+					},
+				},
+			);
+			return state;
+		},
+	});
+	await app.open(`/?project=${projectId}&session=${sessionId}`);
+
+	// Chain of Thought: two research steps fold under one summary.
+	await expect(screen.getByText(/Took 2 steps/)).toBeVisible();
+	await screen.getByText(/Took 2 steps/).tap();
+	// The CoT step repeats the read line below it, so take the first match.
+	await expect(screen.getByText("Read page.tsx").first()).toBeVisible();
+
+	// Edit tool: shows +3/-1 stats and expands into CodeBlock diff preview.
+	const editRow = screen.getByRole("button", /Edited src\/app\/page\.tsx/);
+	await expect(editRow.getByText("+3")).toBeVisible();
+	await expect(editRow.getByText("−1")).toBeVisible();
+	await editRow.tap();
+	await expect(screen.getByText('const title = "New";')).toBeVisible();
+
+	// CLI edit tool without explicit metadata still derives +2/-1 fallback stats & preview.
+	const cliEditRow = screen.getByRole("button", /Edited src\/lib\/banner\.ts/);
+	await expect(cliEditRow.getByText("+2")).toBeVisible();
+	await expect(cliEditRow.getByText("−1")).toBeVisible();
+	await cliEditRow.tap();
+	await expect(screen.getByText('export const subtitle = "ok";')).toBeVisible();
+
+	// Changed files: from real edit-tool metadata, as a folder tree.
+	await expect(screen.getByText("Changed files")).toBeVisible();
+	await expect(screen.getByText("page.tsx")).toBeVisible();
+
+	// Stack Trace: only because the error actually contains stack frames.
+	await expect(screen.getByText(/Failed: TypeError/)).toBeVisible();
+	await expect(
+		screen.getByText("seedUsers in prisma/seed.ts:27"),
+	).toBeVisible();
+	await expect(screen.getByText(/1 framework frame/)).toBeVisible();
+
+	// Sources: no source-url parts in the fixture, so nothing renders.
+	await expect(screen.getByText(/Used \d+ sources?/)).not.toBeVisible();
+});
+
+test("renders confirmation choices without replying until the user selects one", async ({
+	app,
+	browser,
+	screen,
+}) => {
+	await stubWorkspace(browser, {
+		state: () =>
+			conversation({
+				busy: true,
+				permissions: [
+					{
+						id: "permission-fixture",
+						permission: "shell",
+						patterns: ["bun test"],
+					},
+				],
+			}),
+	});
+	await app.open(`/?project=${projectId}&session=${sessionId}`);
+	await screen.getByRole("button", "Open split chat").tap();
+
+	await expect(
+		screen.getByRole("group", "Confirmation required"),
+	).toBeVisible();
+	await expect(screen.getByText(/Allow this action\?/)).toBeVisible();
+	await expect(screen.getByRole("button", "Accept once")).toBeVisible();
+	await expect(screen.getByRole("button", "Decline")).toBeVisible();
+});
+
 test("refreshes streamed assistant text in split chat while the message id stays the same", async ({
 	app,
 	browser,
@@ -289,4 +614,46 @@ test("refreshes streamed assistant text in split chat while the message id stays
 	streamedText = "Streaming response part two.";
 
 	await expect(screen.getByText("Streaming response part two.")).toBeVisible();
+});
+
+test("hydrates +N/-M stats and CodeBlock diff from session /diff for Agy Path-only edit_file tools", async ({
+	app,
+	browser,
+	screen,
+}) => {
+	const state = conversation();
+	state.messages[0].info.providerID = "agy";
+	state.messages[0].info.modelID = "gemini-4-hydrogen-high";
+	state.messages[0].parts.push({
+		id: "assistant-lifecycle-agy-path-edit",
+		type: "tool",
+		tool: "edit_file",
+		state: {
+			status: "completed",
+			input: { Path: `${projectDirectory}/src/app.css` },
+		},
+	});
+	await stubWorkspace(browser, {
+		state: () => state,
+		diff: () => [
+			{
+				file: "src/app.css",
+				patch:
+					"diff --git a/src/app.css b/src/app.css\n--- a/src/app.css\n+++ b/src/app.css\n@@ -1,2 +1,3 @@\n-font-size: 16px;\n+font-size: 17px;\n+line-height: 1.5;",
+				additions: 2,
+				deletions: 1,
+			},
+		],
+	});
+	await app.open(`/?project=${projectId}&session=${sessionId}`);
+
+	const agyEditRow = screen.getByRole(
+		"button",
+		new RegExp(`Edited ${projectDirectory}/src/app\\.css`),
+	);
+	await expect(agyEditRow.getByText("+2")).toBeVisible();
+	await expect(agyEditRow.getByText("−1")).toBeVisible();
+	await agyEditRow.tap();
+	await expect(screen.getByText("font-size: 17px;")).toBeVisible();
+	await app.screenshot("chat-lifecycle-agy-path-edit-diff");
 });

@@ -1,21 +1,44 @@
 <script lang="ts">
-	let { message = "", onConfirm, onCancel } = $props();
+	import { ShieldCheck } from "@lucide/svelte";
+	import { Button } from "$lib/components/ui/button";
+
+	let {
+		message = "Allow this action?",
+		description = "",
+		approveLabel = "Approve",
+		denyLabel = "Deny",
+		busy = false,
+		onConfirm,
+		onCancel,
+	} = $props<{
+		message?: string;
+		description?: string;
+		approveLabel?: string;
+		denyLabel?: string;
+		busy?: boolean;
+		onConfirm?: () => void;
+		onCancel?: () => void;
+	}>();
 </script>
 
 <div
-	class="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200"
+	class="flex items-start gap-3 rounded-lg border bg-card p-3"
+	role="group"
+	aria-label="Confirmation required"
 >
-	<p>{message}</p>
-	<div class="mt-2 flex gap-2">
-		<button
-			type="button"
-			class="rounded-md bg-amber-500/20 px-2 py-1"
-			onclick={onConfirm}>Confirm</button
-		>
-		<button
-			type="button"
-			class="rounded-md bg-white/10 px-2 py-1"
-			onclick={onCancel}>Cancel</button
-		>
+	<ShieldCheck class="mt-0.5 shrink-0 text-amber-400" size={17} />
+	<div class="min-w-0 flex-1">
+		<p class="text-sm font-medium">{message}</p>
+		{#if description}<p class="mt-1 text-xs text-muted-foreground">
+				{description}
+			</p>{/if}
+		<div class="mt-3 flex flex-wrap gap-2">
+			<Button size="sm" variant="outline" disabled={busy} onclick={onCancel}
+				>{denyLabel}</Button
+			>
+			<Button size="sm" disabled={busy} onclick={onConfirm}
+				>{approveLabel}</Button
+			>
+		</div>
 	</div>
 </div>

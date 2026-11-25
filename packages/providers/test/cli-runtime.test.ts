@@ -2,8 +2,19 @@ import { expect, test } from "bun:test";
 import { readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agyPermissionArgs, agyPromptText } from "../src/adapters/agy";
-import { CliProviderAdapter, parseCliOutput } from "../src/adapters/cli";
+import {
+	AgyProviderAdapter,
+	agyPermissionArgs,
+	agyPromptText,
+} from "../src/adapters/agy";
+import { ClaudeProviderAdapter } from "../src/adapters/claude";
+import {
+	CLI_ARG_PROMPT_LIMIT_BYTES,
+	CliProviderAdapter,
+	parseCliOutput,
+	shouldUseStdinForPrompt,
+} from "../src/adapters/cli";
+import { CodexProviderAdapter } from "../src/adapters/codex";
 
 // Captured from Agy: a denied command exits 0 and reports SUCCESS with no response.
 const deniedResult = JSON.stringify({
@@ -465,4 +476,178 @@ test("CliRuntime threads the permission env into the spawned process", async () 
 		await runtime.wait(session.id, { timeoutMs: 5000, pollIntervalMs: 10 }),
 	).toBe("completed");
 	expect((await runtime.readOutput?.(session.id))?.output).toBe("secret-token");
+});
+
+test("parseCliOutput derives filediff additions and deletions across Agy, Claude, and Codex", () => {
+	const parsed = parseCliOutput(
+		[
+			{
+				event: "step_update",
+				step_update: {
+					step_index: 1,
+					step_type: "tool",
+					state: "DONE",
+					tool_name: "replace_file_content",
+					tool_info: {
+						parameters: {
+							TargetFile: "src/app.ts",
+							TargetContent: "const a = 1;\nconst b = 2;",
+							ReplacementContent: "const a = 10;\nconst b = 2;\nconst c = 3;",
+						},
+					},
+				},
+			},
+			{
+				event: "step_update",
+				step_update: {
+					step_index: 2,
+					step_type: "tool",
+					state: "DONE",
+					tool_name: "edit_file",
+					tool_info: {
+						parameters: {
+							Path: "src/theme.css",
+							Target: "--bg: white;",
+							Replacement: "--bg: oklch(0.98 0 0);\n--fg: oklch(0.2 0 0);",
+						},
+					},
+				},
+			},
+			{
+				type: "assistant",
+				message: {
+					id: "msg-claude",
+					content: [
+						{
+							type: "tool_use",
+							id: "toolu_1",
+							name: "Edit",
+							input: {
+								file_path: "src/claude.ts",
+								old_string: "return false;",
+								new_string: "const ok = true;\nreturn ok;",
+							},
+						},
+					],
+				},
+			},
+			{
+				type: "user",
+				message: {
+					content: [
+						{
+							type: "tool_result",
+							tool_use_id: "toolu_1",
+							content: "Updated src/claude.ts",
+						},
+					],
+				},
+			},
+			{
+				type: "item.completed",
+				item: {
+					type: "file_change",
+					id: "fc-1",
+					changes: [
+						{
+							path: "src/codex.ts",
+							kind: "update",
+							diff: "@@ -1,2 +1,1 @@\n-oldOne\n-oldTwo\n+newOne",
+						},
+					],
+				},
+			},
+		]
+			.map((event) => JSON.stringify(event))
+			.join("\n"),
+	);
+
+	expect(parsed.activities).toHaveLength(4);
+	expect(parsed.activities[0]?.metadata?.filediff).toMatchObject({
+		file: "src/app.ts",
+		additions: 2,
+		deletions: 1,
+	});
+	expect(parsed.activities[1]?.metadata?.filediff).toMatchObject({
+		file: "src/theme.css",
+		additions: 2,
+		deletions: 1,
+	});
+	expect(parsed.activities[2]?.metadata?.filediff).toMatchObject({
+		file: "src/claude.ts",
+		additions: 2,
+		deletions: 1,
+	});
+	expect(parsed.activities[3]?.metadata?.filediff).toMatchObject({
+		file: "src/codex.ts",
+		additions: 1,
+		deletions: 2,
+	});
+});
+
+test("large prompts switch CLI adapters to stdin instead of hitting argv E2BIG limits", async () => {
+	const oversized = "x".repeat(CLI_ARG_PROMPT_LIMIT_BYTES + 1024);
+	expect(shouldUseStdinForPrompt("hello")).toBe(false);
+	expect(shouldUseStdinForPrompt(oversized)).toBe(true);
+
+	const agyAdapter = new AgyProviderAdapter();
+	const agyOptions = (
+		agyAdapter as unknown as {
+			options: {
+				buildPrompt: (input: {
+					prompt: string;
+					model?: string;
+					customInstructions?: boolean;
+				}) => Promise<{ command: string; args: string[]; stdin?: string }>;
+			};
+		}
+	).options;
+	const agyBuilt = await agyOptions.buildPrompt({
+		prompt: oversized,
+		model: "gemini-4-hydrogen-high",
+		customInstructions: true,
+	});
+	expect(agyBuilt.args).toContain("--input-format");
+	expect(agyBuilt.args).toContain("stream-json");
+	expect(agyBuilt.args.some((arg) => arg.startsWith("--print="))).toBe(false);
+	expect(JSON.parse(agyBuilt.stdin ?? "")).toEqual({
+		event: "user",
+		message: { content: oversized },
+	});
+
+	const claudeAdapter = new ClaudeProviderAdapter();
+	const claudeOptions = (
+		claudeAdapter as unknown as {
+			options: {
+				buildPrompt: (input: {
+					prompt: string;
+					customInstructions?: boolean;
+				}) => Promise<{ command: string; args: string[]; stdin?: string }>;
+			};
+		}
+	).options;
+	const claudeBuilt = await claudeOptions.buildPrompt({
+		prompt: oversized,
+		customInstructions: true,
+	});
+	expect(claudeBuilt.args).not.toContain(oversized);
+	expect(claudeBuilt.stdin).toBe(oversized);
+
+	const codexAdapter = new CodexProviderAdapter();
+	const codexOptions = (
+		codexAdapter as unknown as {
+			options: {
+				buildPrompt: (input: {
+					prompt: string;
+					customInstructions?: boolean;
+				}) => Promise<{ command: string; args: string[]; stdin?: string }>;
+			};
+		}
+	).options;
+	const codexBuilt = await codexOptions.buildPrompt({
+		prompt: oversized,
+		customInstructions: true,
+	});
+	expect(codexBuilt.args.at(-1)).toBe("-");
+	expect(codexBuilt.stdin).toBe(oversized);
 });

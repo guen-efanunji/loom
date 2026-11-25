@@ -1,319 +1,317 @@
 <script lang="ts">
-	import { untrack } from "svelte";
-	import { Activity, Bot, LoaderCircle } from "@lucide/svelte";
-	import { toast } from "svelte-sonner";
-	import { type Catalog, type ChatState, chat } from "$lib/chat";
-	import { groupTurns } from "$lib/chat-utils";
-	import { Button } from "$lib/components/ui/button";
-	import {
-		daemon,
-		diffStats,
-		type PermissionRequest,
-		type Task,
-	} from "$lib/daemon";
-	import TaskRunChat from "./TaskRunChat.svelte";
-	import Turn from "./Turn.svelte";
+import { Activity, Bot, LoaderCircle } from "@lucide/svelte";
+import { untrack } from "svelte";
+import { toast } from "svelte-sonner";
+import { type Catalog, type ChatState, chat } from "$lib/chat";
+import { groupTurns } from "$lib/chat-utils";
+import { Button } from "$lib/components/ui/button";
+import {
+	daemon,
+	diffStats,
+	type PermissionRequest,
+	type Task,
+} from "$lib/daemon";
+import TaskRunChat from "./TaskRunChat.svelte";
+import Turn from "./Turn.svelte";
 
-	/**
-	 * Renders a Kanban task like a normal chat: the run's provider session is
-	 * resolved through the same chat API (`/api/chat/sessions/:id` — the
-	 * orchestrator registers task sessions in the session scope), so messages
-	 * appear as regular bubbles with tool traces. Falls back to the legacy
-	 * activity/output view when the run used a CLI provider runtime that keeps
-	 * no gateway message list.
-	 */
-	let {
-		task,
-		output: streamedOutput = "",
-		activities = [],
-		progress = [],
-		permissions = [],
-		onpermission,
-		oncancel,
-		onopenfile,
-		onfile,
-	}: {
-		task: Task;
-		output?: string;
-		activities?: Array<{
-			id: string;
-			tool: string;
-			status: "running" | "completed" | "error";
-			input?: Record<string, unknown>;
-			metadata?: Record<string, unknown>;
-		}>;
-		progress?: Array<{
-			id: string;
-			stage: string;
-			message: string;
-			timestamp: string;
-		}>;
-		permissions?: PermissionRequest[];
-		onpermission?: (
-			requestId: string,
-			decision: "allow_once" | "allow" | "deny",
-		) => unknown;
-		oncancel?: (taskId: string) => unknown;
-		onopenfile?: (path: string) => unknown;
-		onfile?: (path: string) => unknown;
-	} = $props();
+/**
+ * Renders a Kanban task like a normal chat: the run's provider session is
+ * resolved through the same chat API (`/api/chat/sessions/:id` — the
+ * orchestrator registers task sessions in the session scope), so messages
+ * appear as regular bubbles with tool traces. Falls back to the legacy
+ * activity/output view when the run used a CLI provider runtime that keeps
+ * no gateway message list.
+ */
+let {
+	task,
+	output: streamedOutput = "",
+	activities = [],
+	progress = [],
+	permissions = [],
+	onpermission,
+	oncancel,
+	onopenfile,
+	onfile,
+}: {
+	task: Task;
+	output?: string;
+	activities?: Array<{
+		id: string;
+		tool: string;
+		status: "running" | "completed" | "error";
+		input?: Record<string, unknown>;
+		metadata?: Record<string, unknown>;
+	}>;
+	progress?: Array<{
+		id: string;
+		stage: string;
+		message: string;
+		timestamp: string;
+	}>;
+	permissions?: PermissionRequest[];
+	onpermission?: (
+		requestId: string,
+		decision: "allow_once" | "allow" | "deny",
+	) => unknown;
+	oncancel?: (taskId: string) => unknown;
+	onopenfile?: (path: string) => unknown;
+	onfile?: (path: string) => unknown;
+} = $props();
 
-	const emptyCatalog: Catalog = {
-		models: [],
-		defaults: {},
-		agents: [],
-		commands: [],
-	};
-	let catalog = $state<Catalog>(emptyCatalog);
-	let agents = $state<
-		Array<{ id: string; label: string; role: string; status: string }>
-	>([]);
-	let conversation = $state<ChatState | null>(null);
-	let conversationFailed = $state(false);
-	let conversationLoading = $state(true);
-	let disposed = false;
-	let followUpDraft = $state("");
-	let queueing = $state(false);
-	// Completion confirmation: manual (self-review diff) vs automatic
-	// (auto-picked registered agent reviews). Reset whenever the task changes.
-	let reviewChoice = $state<"manual" | "auto" | null>(null);
-	let reviewBusy = $state(false);
-	let reviewError = $state("");
-	let diffText = $state("");
-	let diffStatsText = $state("");
-	let manualPhase = $state<"checkpoint" | "inspect" | "approved" | "merged">(
-		"checkpoint",
-	);
-	let autoNote = $state("");
-	let autoApproved = $state(false);
-	let bannerTaskKey = untrack(() => task.id);
-	$effect(() => {
-		if (bannerTaskKey !== task.id) {
-			bannerTaskKey = task.id;
-			reviewChoice = null;
-			manualPhase = "checkpoint";
-			reviewError = "";
-			diffText = "";
-			diffStatsText = "";
-			autoNote = "";
-			autoApproved = false;
-		}
-	});
-	const showReviewBanner = $derived(
-		(task.status === "completed" || task.status === "ready_to_merge") &&
-			reviewChoice === null,
-	);
-	const showManualPanel = $derived(reviewChoice === "manual");
-	async function loadDiff(): Promise<boolean> {
-		try {
-			const result = await daemon.getDiff(task.id);
-			if (!result.diff.trim()) {
-				reviewError = "No changes are available to inspect for this task.";
-				return false;
-			}
-			diffText = result.diff;
-			const stats = diffStats(result.diff);
-			diffStatsText = `${stats.files.length} file(s) · +${stats.additions} −${stats.deletions}`;
-			return true;
-		} catch (reason) {
-			reviewError =
-				reason instanceof Error ? reason.message : "Unable to load diff";
-			return false;
-		}
-	}
-	async function runManualReview() {
-		reviewChoice = "manual";
+const emptyCatalog: Catalog = {
+	models: [],
+	defaults: {},
+	agents: [],
+	commands: [],
+};
+let catalog = $state<Catalog>(emptyCatalog);
+let agents = $state<
+	Array<{ id: string; label: string; role: string; status: string }>
+>([]);
+let conversation = $state<ChatState | null>(null);
+let conversationFailed = $state(false);
+let conversationLoading = $state(true);
+let disposed = false;
+let followUpDraft = $state("");
+let queueing = $state(false);
+// Completion confirmation: manual (self-review diff) vs automatic
+// (auto-picked registered agent reviews). Reset whenever the task changes.
+let reviewChoice = $state<"manual" | "auto" | null>(null);
+let reviewBusy = $state(false);
+let reviewError = $state("");
+let diffText = $state("");
+let diffStatsText = $state("");
+let manualPhase = $state<"checkpoint" | "inspect" | "approved" | "merged">(
+	"checkpoint",
+);
+let autoNote = $state("");
+let autoApproved = $state(false);
+let bannerTaskKey = untrack(() => task.id);
+$effect(() => {
+	if (bannerTaskKey !== task.id) {
+		bannerTaskKey = task.id;
+		reviewChoice = null;
 		manualPhase = "checkpoint";
-		reviewBusy = true;
 		reviewError = "";
-		try {
-			await daemon.checkpointTask(task.id);
-			if (await loadDiff()) manualPhase = "inspect";
-		} catch (reason) {
-			reviewError =
-				reason instanceof Error ? reason.message : "Checkpoint failed";
-		} finally {
-			reviewBusy = false;
-		}
-	}
-	async function runApprove() {
-		reviewBusy = true;
-		reviewError = "";
-		try {
-			await daemon.approveTaskReview(task.id);
-			manualPhase = "approved";
-			toast.success("Manual review approved. Merge when ready.");
-		} catch (reason) {
-			reviewError =
-				reason instanceof Error ? reason.message : "Approval failed";
-		} finally {
-			reviewBusy = false;
-		}
-	}
-	async function runAutoReview() {
-		reviewChoice = "auto";
-		reviewBusy = true;
-		reviewError = "";
+		diffText = "";
+		diffStatsText = "";
 		autoNote = "";
 		autoApproved = false;
-		try {
-			const result = await daemon.runTaskReviewAuto(task.id);
-			autoNote = `Reviewed by ${result.reviewer}${result.autoPicked ? " (auto-picked)" : ""}: ${result.review.status.replaceAll("_", " ")}`;
-			autoApproved = result.review.status === "approved";
-			if (autoApproved) toast.success("Automatic review approved the task.");
-			else toast.error(autoNote);
-		} catch (reason) {
-			reviewError =
-				reason instanceof Error ? reason.message : "Automatic review failed";
-		} finally {
-			reviewBusy = false;
-		}
 	}
-	async function runMerge() {
-		reviewBusy = true;
-		reviewError = "";
-		try {
-			const result = await daemon.mergeTask(task.id);
-			if (result.conflict)
-				reviewError = `Merge conflict in ${result.conflict.files.join(", ")}`;
-			else {
-				manualPhase = "merged";
-				toast.success("Merged into the project.");
-			}
-		} catch (reason) {
-			reviewError = reason instanceof Error ? reason.message : "Merge failed";
-		} finally {
-			reviewBusy = false;
+});
+const showReviewBanner = $derived(
+	(task.status === "completed" || task.status === "ready_to_merge") &&
+		reviewChoice === null,
+);
+const showManualPanel = $derived(reviewChoice === "manual");
+async function loadDiff(): Promise<boolean> {
+	try {
+		const result = await daemon.getDiff(task.id);
+		if (!result.diff.trim()) {
+			reviewError = "No changes are available to inspect for this task.";
+			return false;
 		}
+		diffText = result.diff;
+		const stats = diffStats(result.diff);
+		diffStatsText = `${stats.files.length} file(s) · +${stats.additions} −${stats.deletions}`;
+		return true;
+	} catch (reason) {
+		reviewError =
+			reason instanceof Error ? reason.message : "Unable to load diff";
+		return false;
 	}
-	const followUpVisible = $derived(
-		["queued", "ready", "preparing", "running"].includes(task.status),
-	);
-	const canQueueNow = $derived(followUpVisible);
-	async function sendFollowUp() {
-		const text = followUpDraft.trim();
-		if (!text || queueing || !canQueueNow) return;
-		queueing = true;
-		try {
-			const result = await daemon.queueTaskMessage(task.id, text);
-			followUpDraft = "";
-			toast.success(
-				result.position > 1
-					? `Follow-up queued (position ${result.position}).`
-					: "Follow-up queued. It will be sent to the running agent.",
-			);
-			await refreshConversation();
-		} catch (reason) {
-			toast.error(
-				reason instanceof Error ? reason.message : "Unable to queue follow-up",
-			);
-		} finally {
-			queueing = false;
+}
+async function runManualReview() {
+	reviewChoice = "manual";
+	manualPhase = "checkpoint";
+	reviewBusy = true;
+	reviewError = "";
+	try {
+		await daemon.checkpointTask(task.id);
+		if (await loadDiff()) manualPhase = "inspect";
+	} catch (reason) {
+		reviewError =
+			reason instanceof Error ? reason.message : "Checkpoint failed";
+	} finally {
+		reviewBusy = false;
+	}
+}
+async function runApprove() {
+	reviewBusy = true;
+	reviewError = "";
+	try {
+		await daemon.approveTaskReview(task.id);
+		manualPhase = "approved";
+		toast.success("Manual review approved. Merge when ready.");
+	} catch (reason) {
+		reviewError = reason instanceof Error ? reason.message : "Approval failed";
+	} finally {
+		reviewBusy = false;
+	}
+}
+async function runAutoReview() {
+	reviewChoice = "auto";
+	reviewBusy = true;
+	reviewError = "";
+	autoNote = "";
+	autoApproved = false;
+	try {
+		const result = await daemon.runTaskReviewAuto(task.id);
+		autoNote = `Reviewed by ${result.reviewer}${result.autoPicked ? " (auto-picked)" : ""}: ${result.review.status.replaceAll("_", " ")}`;
+		autoApproved = result.review.status === "approved";
+		if (autoApproved) toast.success("Automatic review approved the task.");
+		else toast.error(autoNote);
+	} catch (reason) {
+		reviewError =
+			reason instanceof Error ? reason.message : "Automatic review failed";
+	} finally {
+		reviewBusy = false;
+	}
+}
+async function runMerge() {
+	reviewBusy = true;
+	reviewError = "";
+	try {
+		const result = await daemon.mergeTask(task.id);
+		if (result.conflict)
+			reviewError = `Merge conflict in ${result.conflict.files.join(", ")}`;
+		else {
+			manualPhase = "merged";
+			toast.success("Merged into the project.");
 		}
+	} catch (reason) {
+		reviewError = reason instanceof Error ? reason.message : "Merge failed";
+	} finally {
+		reviewBusy = false;
 	}
+}
+const followUpVisible = $derived(
+	["queued", "ready", "preparing", "running"].includes(task.status),
+);
+const canQueueNow = $derived(followUpVisible);
+async function sendFollowUp() {
+	const text = followUpDraft.trim();
+	if (!text || queueing || !canQueueNow) return;
+	queueing = true;
+	try {
+		const result = await daemon.queueTaskMessage(task.id, text);
+		followUpDraft = "";
+		toast.success(
+			result.position > 1
+				? `Follow-up queued (position ${result.position}).`
+				: "Follow-up queued. It will be sent to the running agent.",
+		);
+		await refreshConversation();
+	} catch (reason) {
+		toast.error(
+			reason instanceof Error ? reason.message : "Unable to queue follow-up",
+		);
+	} finally {
+		queueing = false;
+	}
+}
 
-	const sessionId = $derived(task.sessionId ?? "");
-	const active = $derived(
-		task.status === "running" || task.status === "preparing",
-	);
-	// Chat-like rendering is only possible when the run's provider session
-	// actually exposed messages (OpenCode gateway). CLI providers fall back.
-	const hasConversation = $derived(
-		!!conversation &&
-			conversation.messages.some((message) =>
-				message.parts.some(
-					(part) =>
-						(part.type === "text" && part.text?.trim()) || part.type === "tool",
-				),
+const sessionId = $derived(task.sessionId ?? "");
+const active = $derived(
+	task.status === "running" || task.status === "preparing",
+);
+// Chat-like rendering is only possible when the run's provider session
+// actually exposed messages (OpenCode gateway). CLI providers fall back.
+const hasConversation = $derived(
+	!!conversation &&
+		conversation.messages.some((message) =>
+			message.parts.some(
+				(part) =>
+					(part.type === "text" && part.text?.trim()) || part.type === "tool",
 			),
-	);
-	const statusLabel = $derived(
-		(task.status ?? "")
-			.replaceAll("_", " ")
-			.replace(/^./, (letter) => letter.toUpperCase()),
-	);
-	const executorAgent = $derived.by(() => {
-		const executor = task.executor;
-		if (executor?.kind !== "agent") return undefined;
-		return agents.find((agent) => agent.id === executor.agentId);
-	});
-	const executorLabel = $derived(
-		executorAgent
-			? `${executorAgent.label}${executorAgent.role ? ` · ${executorAgent.role}` : ""}`
-			: task.executor?.kind === "agent"
-				? task.executor.agentId
-				: task.executor
-					? `${task.executor.providerId}${task.executor.modelId ? ` · ${task.executor.modelId}` : ""}`
-					: "Default executor",
-	);
-	const turns = $derived(
-		hasConversation && conversation ? groupTurns(conversation.messages) : [],
-	);
-	const turnBusy = $derived(
-		conversation?.status.type === "busy" ||
-			conversation?.status.type === "retry",
-	);
+		),
+);
+const statusLabel = $derived(
+	(task.status ?? "")
+		.replaceAll("_", " ")
+		.replace(/^./, (letter) => letter.toUpperCase()),
+);
+const executorAgent = $derived.by(() => {
+	const executor = task.executor;
+	if (executor?.kind !== "agent") return undefined;
+	return agents.find((agent) => agent.id === executor.agentId);
+});
+const executorLabel = $derived(
+	executorAgent
+		? `${executorAgent.label}${executorAgent.role ? ` · ${executorAgent.role}` : ""}`
+		: task.executor?.kind === "agent"
+			? task.executor.agentId
+			: task.executor
+				? `${task.executor.providerId}${task.executor.modelId ? ` · ${task.executor.modelId}` : ""}`
+				: "Default executor",
+);
+const turns = $derived(
+	hasConversation && conversation ? groupTurns(conversation.messages) : [],
+);
+const turnBusy = $derived(
+	conversation?.status.type === "busy" || conversation?.status.type === "retry",
+);
 
-	async function refreshConversation() {
-		if (!sessionId) {
-			conversationLoading = false;
-			return;
-		}
-		try {
-			const result = await chat.state(sessionId);
-			if (disposed) return;
-			conversation = result;
-			conversationFailed = false;
-		} catch {
-			if (!disposed) conversationFailed = true;
-		} finally {
-			if (!disposed) conversationLoading = false;
-		}
+async function refreshConversation() {
+	if (!sessionId) {
+		conversationLoading = false;
+		return;
 	}
-
-	$effect(() => {
-		const id = task.sessionId ?? "";
-		conversationLoading = true;
-		conversation = null;
+	try {
+		const result = await chat.state(sessionId);
+		if (disposed) return;
+		conversation = result;
 		conversationFailed = false;
-		void refreshConversation();
-		// Live poll mirrors the chat page cadence; cheap status-only once idle.
-		if (!id || !active) return;
-		const timer = window.setInterval(() => void refreshConversation(), 2_000);
-		return () => window.clearInterval(timer);
-	});
+	} catch {
+		if (!disposed) conversationFailed = true;
+	} finally {
+		if (!disposed) conversationLoading = false;
+	}
+}
 
-	$effect(() => {
-		const projectId = task.projectId;
-		if (!projectId) return;
-		void chat
-			.catalog(projectId)
-			.then((result) => {
-				if (!disposed) catalog = result;
-			})
-			.catch(() => {});
-		void daemon
-			.listCustomAgents(projectId)
-			.then((items) => {
-				if (!disposed)
-					agents = (items as typeof agents).filter(
-						(item) => item.status === "active",
-					);
-			})
-			.catch(() => {});
-	});
+$effect(() => {
+	const id = task.sessionId ?? "";
+	conversationLoading = true;
+	conversation = null;
+	conversationFailed = false;
+	void refreshConversation();
+	// Live poll mirrors the chat page cadence; cheap status-only once idle.
+	if (!id || !active) return;
+	const timer = window.setInterval(() => void refreshConversation(), 2_000);
+	return () => window.clearInterval(timer);
+});
 
-	// The fallback renderer (TaskRunChat) keeps its own output polling.
-	$effect(() => () => {
-		disposed = true;
-	});
+$effect(() => {
+	const projectId = task.projectId;
+	if (!projectId) return;
+	void chat
+		.catalog(projectId)
+		.then((result) => {
+			if (!disposed) catalog = result;
+		})
+		.catch(() => {});
+	void daemon
+		.listCustomAgents(projectId)
+		.then((items) => {
+			if (!disposed)
+				agents = (items as typeof agents).filter(
+					(item) => item.status === "active",
+				);
+		})
+		.catch(() => {});
+});
+
+// The fallback renderer (TaskRunChat) keeps its own output polling.
+$effect(() => () => {
+	disposed = true;
+});
 </script>
 
 <section
 	class="nice-scroll min-h-0 flex-1 overflow-y-auto"
 	aria-label={`Task: ${task.title}`}
 >
-	<div class="mx-auto flex min-h-full w-full max-w-[740px] flex-col px-5 py-8">
+	<div class="mx-auto flex min-h-full w-full max-w-5xl flex-col px-5 py-8">
 		<header class="mb-6 flex flex-wrap items-center gap-2">
 			<span
 				class="inline-flex items-center gap-1.5 rounded-full border border-violet-400/30 bg-violet-400/10 px-2.5 py-0.5 text-[11px] font-medium text-violet-200"

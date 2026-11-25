@@ -1,5 +1,11 @@
 import type { AgentModel, AuthStatus, RuntimePermission } from "../core";
-import { CliProviderAdapter, modelFromId, readPrompt, runCli } from "./cli";
+import {
+	CliProviderAdapter,
+	modelFromId,
+	readPrompt,
+	runCli,
+	shouldUseStdinForPrompt,
+} from "./cli";
 import { antigravityDefinition } from "./definitions";
 
 // Headless Agy denies native "ask" prompts before Loom can answer them. The
@@ -64,15 +70,32 @@ export class AgyProviderAdapter extends CliProviderAdapter {
 				const codingPrompt = customInstructions
 					? ""
 					: await readPrompt("coding.md");
+				const fullPrompt = agyPromptText(
+					prompt,
+					codingPrompt,
+					customInstructions,
+				);
+				const baseArgs = [
+					"--output-format",
+					"stream-json",
+					...permissionArgs,
+					...(model ? ["--model", model] : []),
+				];
+				// Linux enforces MAX_ARG_STRLEN (128 KiB) per argv string, so large
+				// handoff histories passed via `--print=...` fail posix_spawn with E2BIG.
+				if (shouldUseStdinForPrompt(fullPrompt)) {
+					return {
+						command: "agy",
+						args: [...baseArgs, "--input-format", "stream-json"],
+						stdin: `${JSON.stringify({
+							event: "user",
+							message: { content: fullPrompt },
+						})}\n`,
+					};
+				}
 				return {
 					command: "agy",
-					args: [
-						"--output-format",
-						"stream-json",
-						...permissionArgs,
-						...(model ? ["--model", model] : []),
-						`--print=${agyPromptText(prompt, codingPrompt, customInstructions)}`,
-					],
+					args: [...baseArgs, `--print=${fullPrompt}`],
 				};
 			},
 			getAuthStatus: agyAuthStatus,

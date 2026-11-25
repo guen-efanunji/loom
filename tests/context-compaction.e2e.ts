@@ -188,5 +188,12 @@ test("does not show the Loom context banner in the turn", async ({
 	await expect(screen.getByText("Svelte MCP")).toBeVisible();
 	await expect(screen.getByText("connected")).toBeVisible();
 	await expect(screen.getByText("Active tasks")).not.toBeVisible();
+
+	await screen.getByRole("button", "Context usage").tap();
+	await expect(screen.getByRole("region", "Context usage")).toBeVisible();
+	await expect(screen.getByText("9,420")).toBeVisible();
+	await expect(
+		screen.getByText(/Loom-estimated request size; tokenizer variance applies/),
+	).toBeVisible();
 	await app.screenshot("context-compaction-chat-status");
 });

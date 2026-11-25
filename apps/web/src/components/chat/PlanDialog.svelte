@@ -2,6 +2,7 @@
 	import { LoaderCircle, Plus, Trash2, X } from "@lucide/svelte";
 	import { onDestroy } from "svelte";
 	import { toast } from "svelte-sonner";
+	import Plan from "$lib/components/ai-elements/Plan.svelte";
 	import { Button } from "$lib/components/ui/button";
 	import { Input } from "$lib/components/ui/input";
 	import * as Select from "$lib/components/ui/select/index.js";
@@ -36,6 +37,13 @@
 	let summary = $state("");
 	let draft = $state<PlanTaskDraft[]>([]);
 	let error = $state("");
+	const planSteps = $derived(
+		draft.map((task, index) => ({
+			id: task.key,
+			title: task.title.trim() || `Task ${index + 1}`,
+			status: "pending" as const,
+		})),
+	);
 	let issues = $state<Array<{ code: string; message: string }>>([]);
 	let saving = $state(false);
 	let polling: ReturnType<typeof setInterval> | null = null;
@@ -267,7 +275,9 @@
 						<Textarea bind:value={summary} rows={2} />
 					</label>
 
-					<div class="space-y-4">
+					<Plan title={title || "Plan preview"} steps={planSteps} open={true} />
+
+					<div class="mt-4 space-y-4">
 						{#each draft as task, index (task.key)}
 							<div
 								class="rounded-lg border border-white/10 bg-white/[0.03] p-3"

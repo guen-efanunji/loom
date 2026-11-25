@@ -1,11 +1,31 @@
 <script lang="ts">
-	let { text = "", onclick } = $props();
+	import { Button } from "$lib/components/ui/button";
+
+	let {
+		suggestions = [],
+		onselect,
+	}: {
+		suggestions?: string[];
+		onselect?: (prompt: string) => void;
+	} = $props<{
+		suggestions?: string[];
+		onselect?: (prompt: string) => void;
+	}>();
 </script>
 
-<button
-	type="button"
-	class="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs text-neutral-300 hover:bg-white/[0.08]"
-	{onclick}
->
-	{text}
-</button>
+{#if suggestions.length}
+	<div
+		class="scrollbar-none flex scroll-fade-x gap-2 overflow-x-auto overscroll-x-contain py-1"
+	>
+		{#each suggestions as suggestion, index (index)}
+			<Button
+				variant="outline"
+				size="sm"
+				class="shrink-0"
+				onclick={() => onselect?.(suggestion)}
+			>
+				{suggestion}
+			</Button>
+		{/each}
+	</div>
+{/if}

@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 // Tools that mutate state or run arbitrary commands and therefore must be gated
 // when a project's auto-accept is off. Mirrors Agy's PreToolUse matcher list.
 const GATED_TOOLS =
-	"run_command|write_to_file|replace_file_content|multi_replace_file_content";
+	"run_command|write_to_file|replace_file_content|multi_replace_file_content|write_file|edit_file";
 const HOOK_NAME = "loom";
 // Match the daemon-side timeout (1_800_000ms) so the hook never expires before
 // the pending request is denied, keeping the two layers in agreement.

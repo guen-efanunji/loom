@@ -39,10 +39,13 @@ import {
 } from "./scheduler";
 
 const publicActivityInputKeys = [
+	"CommandLine",
+	"commandLine",
 	"command",
 	"cmd",
 	"script",
 	"cwd",
+	"Path",
 	"filePath",
 	"fileName",
 	"file_name",
@@ -55,6 +58,7 @@ const publicActivityInputKeys = [
 	"absolute_path",
 	"AbsolutePath",
 	"DirectoryPath",
+	"notebook_path",
 	"path",
 	"file",
 	"filename",

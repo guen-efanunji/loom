@@ -2,6 +2,7 @@
 	import { GripVertical, Pencil, Plus, Trash2 } from "@lucide/svelte";
 	import { onMount } from "svelte";
 	import { toast } from "svelte-sonner";
+	import TaskElement from "$lib/components/ai-elements/Task.svelte";
 	import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
 	import { Badge } from "$lib/components/ui/badge";
 	import { Button } from "$lib/components/ui/button";
@@ -889,9 +890,24 @@
 									title="Drag to reorder"
 									aria-hidden="true"><GripVertical size={14} /></span
 								>
-								<p class="min-w-0 flex-1 text-sm font-medium break-words">
-									{task.title}
-								</p>
+								<div class="min-w-0 flex-1">
+									<TaskElement
+										title={task.title}
+										status={["running", "preparing"].includes(task.status)
+											? "running"
+											: ["failed", "cancelled"].includes(task.status)
+												? "error"
+												: ["queued", "ready", "blocked"].includes(task.status)
+													? "pending"
+													: "completed"}
+										steps={[
+											{
+												id: task.id,
+												title: task.prompt || task.description || task.title,
+											},
+										]}
+									/>
+								</div>
 								<Button
 									variant="ghost"
 									size="icon"

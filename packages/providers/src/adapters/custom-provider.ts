@@ -1,5 +1,6 @@
-import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { constants } from "node:fs";
 import {
 	access,
 	mkdir,
@@ -9,11 +10,11 @@ import {
 	stat,
 	writeFile,
 } from "node:fs/promises";
-import { constants } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import {
 	type AgentEvent,
 	type AgentModel,
+	type AgentRunStatus,
 	type AgentRuntime,
 	type AgentSession,
 	type AuthResult,
@@ -24,13 +25,13 @@ import {
 	normalizeModel,
 	type ProviderDefinition,
 	type ProviderDetectionResult,
-	type RuntimeOutput,
-	type AgentRunStatus,
-	type RuntimeModel,
 	type RuntimeActivity,
+	type RuntimeModel,
+	type RuntimeOutput,
 	type RuntimeToolAuthorization,
 	type SendMessageInput,
 } from "../core";
+import { describeLineChanges } from "./diff";
 
 export type ImportedCustomModel = {
 	id: string;
@@ -553,101 +554,6 @@ async function executeWorkspaceTool(
 			);
 		});
 	});
-}
-
-/** Build the same file diff metadata consumed by CLI activities and chat previews. */
-function describeLineChanges(before: string, after: string) {
-	const lines = (value: string) => {
-		const result = value.replace(/\r\n/g, "\n").split("\n");
-		if (result.at(-1) === "") result.pop();
-		return result;
-	};
-	const oldLines = lines(before);
-	const newLines = lines(after);
-	let prefix = 0;
-	while (
-		prefix < oldLines.length &&
-		prefix < newLines.length &&
-		oldLines[prefix] === newLines[prefix]
-	)
-		prefix += 1;
-	let oldEnd = oldLines.length;
-	let newEnd = newLines.length;
-	while (
-		oldEnd > prefix &&
-		newEnd > prefix &&
-		oldLines[oldEnd - 1] === newLines[newEnd - 1]
-	) {
-		oldEnd -= 1;
-		newEnd -= 1;
-	}
-	const oldMiddle = oldLines.slice(prefix, oldEnd);
-	const newMiddle = newLines.slice(prefix, newEnd);
-	// Keep memory bounded for very large rewrites; prefix/suffix trimming above
-	// still gives an accurate count for the common single-region edit case.
-	const maxCells = 1_000_000;
-	let unchanged = 0;
-	let operations: string[] = [];
-	if (oldMiddle.length * newMiddle.length <= maxCells) {
-		const table = Array.from(
-			{ length: oldMiddle.length + 1 },
-			() => new Uint32Array(newMiddle.length + 1),
-		);
-		for (let i = oldMiddle.length - 1; i >= 0; i -= 1) {
-			const row = table[i]!;
-			const nextRow = table[i + 1]!;
-			for (let j = newMiddle.length - 1; j >= 0; j -= 1) {
-				row[j] =
-					oldMiddle[i] === newMiddle[j]
-						? nextRow[j + 1]! + 1
-						: Math.max(nextRow[j]!, row[j + 1]!);
-			}
-		}
-		unchanged = table[0]![0]!;
-		let oldIndex = 0;
-		let newIndex = 0;
-		while (oldIndex < oldMiddle.length || newIndex < newMiddle.length) {
-			if (
-				oldIndex < oldMiddle.length &&
-				newIndex < newMiddle.length &&
-				oldMiddle[oldIndex] === newMiddle[newIndex]
-			) {
-				operations.push(` ${oldMiddle[oldIndex]}`);
-				oldIndex += 1;
-				newIndex += 1;
-			} else if (
-				oldIndex < oldMiddle.length &&
-				(newIndex >= newMiddle.length ||
-					table[oldIndex + 1]![newIndex]! >= table[oldIndex]![newIndex + 1]!)
-			) {
-				operations.push(`-${oldMiddle[oldIndex]}`);
-				oldIndex += 1;
-			} else {
-				operations.push(`+${newMiddle[newIndex]}`);
-				newIndex += 1;
-			}
-		}
-	} else {
-		operations = [
-			...oldMiddle.map((line) => `-${line}`),
-			...newMiddle.map((line) => `+${line}`),
-		];
-	}
-	const additions = newMiddle.length - unchanged;
-	const deletions = oldMiddle.length - unchanged;
-	const oldStart = oldMiddle.length ? prefix + 1 : prefix;
-	const newStart = newMiddle.length ? prefix + 1 : prefix;
-	const header = `@@ -${oldStart},${oldMiddle.length} +${newStart},${newMiddle.length} @@`;
-	let patch =
-		additions || deletions ? `${header}\n${operations.join("\n")}` : "";
-	if (Buffer.byteLength(patch, "utf8") > 120_000) {
-		patch = `${patch.slice(0, 120_000)}\n[Diff preview truncated]`;
-	}
-	return {
-		additions,
-		deletions,
-		...(patch ? { patch } : {}),
-	};
 }
 
 export class CustomProviderAdapter implements CliProviderAdapter {

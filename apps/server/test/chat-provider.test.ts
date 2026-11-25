@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	type AgentRuntime,
 	ProviderManager,
@@ -31,6 +34,7 @@ type TestRuntimeOutput = {
 		id: string;
 		tool: string;
 		status: "completed";
+		input?: Record<string, unknown>;
 		metadata?: Record<string, unknown>;
 	}>;
 };
@@ -47,6 +51,7 @@ async function setup(
 		status: string;
 		html: string;
 	}> = [],
+	projectDir = "/tmp",
 ) {
 	let status: Awaited<ReturnType<AgentRuntime["status"]>> = "running";
 	let output = "";
@@ -121,8 +126,8 @@ async function setup(
 			},
 		},
 		projects: {
-			list: async () => [{ id: "project", path: "/tmp" }],
-			getById: async () => ({ path: "/tmp" }),
+			list: async () => [{ id: "project", path: projectDir }],
+			getById: async () => ({ path: projectDir }),
 		},
 		providerManager,
 		designs: { listNodes: async () => designNodes },
@@ -195,7 +200,7 @@ async function setup(
 			if (path === "/session/ses_test")
 				return {
 					id: "ses_test",
-					directory: "/tmp",
+					directory: projectDir,
 					title: "Chat",
 					time: { updated: 1 },
 				} as T;
@@ -255,6 +260,21 @@ async function setup(
 					: [],
 			);
 		},
+		finishWithActivities: (
+			activities: NonNullable<TestRuntimeOutput["activities"]>,
+			text = "Completed",
+		) => {
+			status = "completed";
+			output = text;
+			outputParts = [
+				...activities.map((activity) => ({
+					type: "activity" as const,
+					id: activity.id,
+				})),
+				{ type: "text", id: "summary", text },
+			];
+			outputActivities = activities;
+		},
 		finishWithFileDiff: () => {
 			status = "completed";
 			output = "Updated login.html";
@@ -299,12 +319,65 @@ async function setup(
 					sessionRefs,
 				}),
 			}),
+		restoreCheckpoint: (messageId: string) =>
+			app.request("/sessions/ses_test/conversation-checkpoints/restore", {
+				method: "POST",
+				body: JSON.stringify({ messageId }),
+			}),
 		state: async () =>
 			(await app.request("/sessions/ses_test")).json() as Promise<ChatState>,
 	};
 }
 
 describe("provider chat", () => {
+	test("restores a conversation checkpoint without deleting original provider history", async () => {
+		const originalHistory = [
+			"user-1",
+			"assistant-1",
+			"user-2",
+			"assistant-2",
+		].map((id, index) => ({
+			info: {
+				id,
+				role: index % 2 ? "assistant" : "user",
+				time: { created: index + 1 },
+			},
+			parts: [{ id: `part-${id}`, type: "text", text: id }],
+		}));
+		const stored = new Map<string, unknown[]>([
+			["ses_test", structuredClone(originalHistory)],
+		]);
+		const fixture = await setup("agy", stored);
+
+		const response = await fixture.restoreCheckpoint("assistant-1");
+		expect(response.status).toBe(200);
+		const state = await fixture.state();
+		expect(state.messages.map((message) => message.info.role)).toEqual([
+			"user",
+			"assistant",
+		]);
+		expect(state.messages.map((message) => message.parts[0]?.text)).toEqual([
+			"user-1",
+			"assistant-1",
+		]);
+		expect(stored.get("ses_test")?.slice(0, originalHistory.length)).toEqual(
+			originalHistory,
+		);
+
+		const restoreEarlier = await fixture.restoreCheckpoint("user-1");
+		expect(restoreEarlier.status).toBe(200);
+		const restoredAgain = await fixture.state();
+		expect(
+			restoredAgain.messages.map((message) => message.parts[0]?.text),
+		).toEqual(["user-1"]);
+	});
+
+	test("rejects a missing conversation checkpoint", async () => {
+		const fixture = await setup();
+		const response = await fixture.restoreCheckpoint("missing-message");
+		expect(response.status).toBe(404);
+	});
+
 	test("compacts old provider context at a completed-turn boundary and retains the original history", async () => {
 		const originalHistory = Array.from({ length: 10 }, (_, index) => ({
 			info: {
@@ -928,6 +1001,57 @@ describe("provider chat", () => {
 				patch: "@@ -0,0 +1 @@\n+<main>Login</main>",
 			},
 		]);
+	});
+	test("resolves git diffs for Agy write_file/edit_file Path inputs without metadata", async () => {
+		const repo = mkdtempSync(join(tmpdir(), "loom-chat-diff-"));
+		try {
+			const git = (...args: string[]) =>
+				Bun.spawnSync(["git", ...args], {
+					cwd: repo,
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+			writeFileSync(join(repo, "app.css"), "body { color: black; }\n");
+			git("init");
+			git("config", "user.email", "test@example.com");
+			git("config", "user.name", "Test");
+			git("add", "app.css");
+			git("commit", "-m", "init");
+			writeFileSync(
+				join(repo, "app.css"),
+				"body { color: white;\n  background: black; }\n",
+			);
+
+			const fixture = await setup("agy", new Map(), [], repo);
+			expect((await fixture.send("Update theme")).status).toBe(204);
+			fixture.finishWithActivities([
+				{
+					id: "agy-1",
+					tool: "edit_file",
+					status: "completed",
+					input: { Path: join(repo, "app.css") },
+				},
+			]);
+			await fixture.state();
+
+			const response = await fixture.app.request("/sessions/ses_test/diff");
+			expect(response.status).toBe(200);
+			const diffs = (await response.json()) as Array<{
+				file: string;
+				additions: number;
+				deletions: number;
+				patch?: string;
+			}>;
+			expect(diffs).toHaveLength(1);
+			expect(diffs[0]).toMatchObject({
+				file: "app.css",
+				additions: 2,
+				deletions: 1,
+			});
+			expect(diffs[0]?.patch).toContain("+body { color: white;");
+		} finally {
+			rmSync(repo, { recursive: true, force: true });
+		}
 	});
 	test("cancellation permits another turn", async () => {
 		const fixture = await setup();

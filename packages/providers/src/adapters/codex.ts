@@ -1,5 +1,11 @@
 import type { AgentModel, AuthStatus } from "../core";
-import { CliProviderAdapter, modelFromId, readPrompt, runCli } from "./cli";
+import {
+	CliProviderAdapter,
+	modelFromId,
+	readPrompt,
+	runCli,
+	shouldUseStdinForPrompt,
+} from "./cli";
 import { codexDefinition } from "./definitions";
 
 export class CodexProviderAdapter extends CliProviderAdapter {
@@ -25,34 +31,39 @@ export class CodexProviderAdapter extends CliProviderAdapter {
 				thinkingMode,
 				permission,
 				customInstructions,
-			}) => ({
-				command: "codex",
-				// codex exec may wait for more stdin in non-TTY environments even
-				// when the prompt is an argument. Send EOF explicitly to avoid that.
-				stdin: "",
-				args: [
-					// This is a top-level Codex option; placing it after `exec` makes
-					// current Codex CLI versions reject the invocation as an unknown flag.
-					"--ask-for-approval",
-					permission?.mode === "auto" ? "never" : "on-request",
-					"exec",
-					// Codex refuses to run outside a trusted Git worktree ("Not inside
-					// a trusted directory and --skip-git-repo-check was not specified").
-					// Loom sessions can live in worktrees that are not Git repos, and
-					// the connectivity probe runs from the daemon cwd, so allow it.
-					"--skip-git-repo-check",
-					"--json",
-					"--sandbox",
-					permission?.mode === "read-only" ? "read-only" : "workspace-write",
-					...(thinkingMode && thinkingMode !== "default"
-						? ["--config", `model_reasoning_effort=${thinkingMode}`]
-						: []),
-					...(model ? ["--model", codexModelSlug(model)] : []),
-					customInstructions
-						? prompt
-						: `${await readPrompt("coding.md")}\n\n${prompt}`,
-				],
-			}),
+			}) => {
+				const fullPrompt = customInstructions
+					? prompt
+					: `${await readPrompt("coding.md")}\n\n${prompt}`;
+				const useStdin = shouldUseStdinForPrompt(fullPrompt);
+				return {
+					command: "codex",
+					// codex exec may wait for more stdin in non-TTY environments even
+					// when the prompt is an argument. Send EOF explicitly, or pass large
+					// prompts over stdin so argv never hits E2BIG.
+					stdin: useStdin ? fullPrompt : "",
+					args: [
+						// This is a top-level Codex option; placing it after `exec` makes
+						// current Codex CLI versions reject the invocation as an unknown flag.
+						"--ask-for-approval",
+						permission?.mode === "auto" ? "never" : "on-request",
+						"exec",
+						// Codex refuses to run outside a trusted Git worktree ("Not inside
+						// a trusted directory and --skip-git-repo-check was not specified").
+						// Loom sessions can live in worktrees that are not Git repos, and
+						// the connectivity probe runs from the daemon cwd, so allow it.
+						"--skip-git-repo-check",
+						"--json",
+						"--sandbox",
+						permission?.mode === "read-only" ? "read-only" : "workspace-write",
+						...(thinkingMode && thinkingMode !== "default"
+							? ["--config", `model_reasoning_effort=${thinkingMode}`]
+							: []),
+						...(model ? ["--model", codexModelSlug(model)] : []),
+						useStdin ? "-" : fullPrompt,
+					],
+				};
+			},
 			getAuthStatus: codexAuthStatus,
 			probeAuth: codexAuthStatus,
 			listModels: knownModels,

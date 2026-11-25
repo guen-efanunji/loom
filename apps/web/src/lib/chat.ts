@@ -429,6 +429,11 @@ export const chat = {
 		post<{ ok: boolean }>(`/sessions/${encodeURIComponent(id)}/supersede`, {
 			messageIds,
 		}),
+	restoreConversationCheckpoint: (id: string, messageId: string) =>
+		post<{ ok: boolean }>(
+			`/sessions/${encodeURIComponent(id)}/conversation-checkpoints/restore`,
+			{ messageId },
+		),
 	status: (id: string) =>
 		request<{
 			status: { type: string; message?: string };

@@ -20,6 +20,19 @@ import type {
 	SendMessageInput,
 } from "../core";
 import { connectionId, normalizeModel, ProviderError } from "../core";
+import {
+	buildToolFileDiff,
+	describeLineChanges,
+	diffCountsFromPatch,
+	extractToolFilePath,
+} from "./diff";
+
+/** Stay well below Linux MAX_ARG_STRLEN (128 KiB) and Windows CreateProcess (32 KiB). */
+export const CLI_ARG_PROMPT_LIMIT_BYTES = 32_768;
+
+export function shouldUseStdinForPrompt(text: string): boolean {
+	return Buffer.byteLength(text, "utf8") > CLI_ARG_PROMPT_LIMIT_BYTES;
+}
 
 export type CliAdapterOptions = {
 	definition: ProviderDefinition;
@@ -255,8 +268,12 @@ class CliRuntime implements AgentRuntime {
 		});
 		if (command.stdin !== undefined) child.stdin?.end(command.stdin);
 		child.once("error", (error) => {
+			session.process = null;
 			session.status = "failed";
 			session.error = error.message;
+			session.resolveClose?.();
+			session.resolveClose = null;
+			session.closePromise = null;
 		});
 		child.once("close", (code, signal) => {
 			session.process = null;
@@ -760,8 +777,15 @@ export function parseCliOutput(output: string): {
 						: undefined;
 				const stepId = `agy-${step.step_index ?? activities.size}`;
 				const patch =
-					typeof toolInfo.diff === "string" ? toolInfo.diff : undefined;
-				const file = input?.TargetFile ?? input?.filePath ?? input?.path;
+					typeof toolInfo.diff === "string"
+						? toolInfo.diff
+						: typeof toolInfo.patch === "string"
+							? toolInfo.patch
+							: undefined;
+				const file = extractToolFilePath(input);
+				const computedFilediff = toolInfo.filediff
+					? undefined
+					: buildToolFileDiff(String(name), input, patch, file);
 				const activity: RuntimeActivity = {
 					id: stepId,
 					tool: String(name),
@@ -777,35 +801,16 @@ export function parseCliOutput(output: string): {
 					...(typeof toolInfo.error?.message === "string"
 						? { error: toolInfo.error.message }
 						: {}),
-					...(toolInfo.filediff || toolInfo.files || toolInfo.diff
+					...(toolInfo.filediff || computedFilediff || toolInfo.files || patch
 						? {
 								metadata: {
 									...(toolInfo.filediff
 										? { filediff: toolInfo.filediff }
-										: patch && file
-											? {
-													filediff: {
-														file,
-														patch,
-														additions: patch
-															.split("\n")
-															.filter(
-																(line: string) =>
-																	line.startsWith("+") &&
-																	!line.startsWith("+++"),
-															).length,
-														deletions: patch
-															.split("\n")
-															.filter(
-																(line: string) =>
-																	line.startsWith("-") &&
-																	!line.startsWith("---"),
-															).length,
-													},
-												}
+										: computedFilediff
+											? { filediff: computedFilediff }
 											: {}),
 									...(toolInfo.files ? { files: toolInfo.files } : {}),
-									...(toolInfo.diff ? { diff: toolInfo.diff } : {}),
+									...(patch ? { diff: patch } : {}),
 								},
 							}
 						: {}),
@@ -841,6 +846,33 @@ export function parseCliOutput(output: string): {
 						if (!change || typeof change !== "object") continue;
 						const file = change.path ?? change.filePath ?? change.file;
 						const changeId = `codex-${itemId}-${index}`;
+						const rawDiff =
+							typeof change.diff === "string"
+								? change.diff
+								: typeof change.patch === "string"
+									? change.patch
+									: undefined;
+						const filediff = rawDiff
+							? {
+									file,
+									patch: rawDiff,
+									...diffCountsFromPatch(rawDiff),
+								}
+							: typeof change.before === "string" ||
+									typeof change.after === "string" ||
+									typeof change.content === "string"
+								? {
+										file,
+										...describeLineChanges(
+											typeof change.before === "string" ? change.before : "",
+											typeof change.after === "string"
+												? change.after
+												: typeof change.content === "string"
+													? change.content
+													: "",
+										),
+									}
+								: undefined;
 						setActivity({
 							id: changeId,
 							tool: "file_change",
@@ -849,43 +881,59 @@ export function parseCliOutput(output: string): {
 								...(typeof file === "string" ? { path: file } : {}),
 								kind: change.kind,
 							},
-							...(typeof change.diff === "string"
-								? {
-										metadata: {
-											filediff: {
-												file,
-												patch: change.diff,
-												additions: change.diff
-													.split("\n")
-													.filter(
-														(line: string) =>
-															line.startsWith("+") && !line.startsWith("+++"),
-													).length,
-												deletions: change.diff
-													.split("\n")
-													.filter(
-														(line: string) =>
-															line.startsWith("-") && !line.startsWith("---"),
-													).length,
-											},
-										},
-									}
-								: {}),
+							...(filediff ? { metadata: { filediff } } : {}),
 						});
 					}
 				} else if (
 					["command_execution", "shell", "tool_call"].includes(itemType)
 				) {
+					let callInput: Record<string, unknown> | undefined;
+					if (itemType === "tool_call") {
+						const rawInput = item.input ?? item.arguments;
+						if (
+							rawInput &&
+							typeof rawInput === "object" &&
+							!Array.isArray(rawInput)
+						) {
+							callInput = rawInput as Record<string, unknown>;
+						} else if (typeof rawInput === "string") {
+							try {
+								const parsed = JSON.parse(rawInput);
+								if (
+									parsed &&
+									typeof parsed === "object" &&
+									!Array.isArray(parsed)
+								)
+									callInput = parsed as Record<string, unknown>;
+							} catch {}
+						}
+					}
+					const toolName =
+						typeof item.name === "string" && item.name.trim()
+							? item.name
+							: itemType;
+					const callFilediff =
+						itemType === "tool_call"
+							? buildToolFileDiff(
+									toolName,
+									callInput,
+									typeof item.diff === "string"
+										? item.diff
+										: typeof item.patch === "string"
+											? item.patch
+											: undefined,
+								)
+							: undefined;
 					const activity: RuntimeActivity = {
 						id: `codex-${itemId}`,
-						tool: itemType,
+						tool: toolName,
 						status:
 							event.type !== "item.completed"
 								? "running"
 								: item.exit_code && item.exit_code !== 0
 									? "error"
 									: "completed",
-						input: {
+						input: callInput ?? {
 							...(typeof item.command === "string"
 								? { command: item.command }
 								: {}),
@@ -893,7 +941,10 @@ export function parseCliOutput(output: string): {
 						},
 						...(typeof item.aggregated_output === "string"
 							? { output: item.aggregated_output }
-							: {}),
+							: typeof item.output === "string"
+								? { output: item.output }
+								: {}),
+						...(callFilediff ? { metadata: { filediff: callFilediff } } : {}),
 					};
 					setActivity(activity);
 				}
@@ -915,11 +966,13 @@ export function parseCliOutput(output: string): {
 								? (block.input as Record<string, unknown>)
 								: undefined;
 						const activityId = `claude-${block.id ?? activities.size}`;
+						const filediff = buildToolFileDiff(block.name, input);
 						setActivity({
 							id: activityId,
 							tool: block.name,
 							status: "running",
 							...(input ? { input } : {}),
+							...(filediff ? { metadata: { filediff } } : {}),
 						});
 					}
 				}
@@ -933,14 +986,96 @@ export function parseCliOutput(output: string): {
 						continue;
 					const activityId = `claude-${block.tool_use_id}`;
 					const activity = activities.get(activityId);
-					if (activity)
+					if (activity) {
+						const resultOutput =
+							typeof block.content === "string"
+								? block.content
+								: Array.isArray(block.content)
+									? block.content
+											.flatMap((entry: unknown) =>
+												entry &&
+												typeof entry === "object" &&
+												"text" in entry &&
+												typeof (entry as { text?: unknown }).text === "string"
+													? [(entry as { text: string }).text]
+													: [],
+											)
+											.join("\n")
+									: undefined;
+						const toolResult =
+							event.tool_use_result &&
+							typeof event.tool_use_result === "object" &&
+							!Array.isArray(event.tool_use_result)
+								? (event.tool_use_result as {
+										filePath?: unknown;
+										originalFile?: unknown;
+										content?: unknown;
+										structuredPatch?: Array<{
+											oldStart?: number;
+											oldLines?: number;
+											newStart?: number;
+											newLines?: number;
+											lines?: string[];
+										}>;
+									})
+								: undefined;
+						let resultFilediff = activity.metadata?.filediff;
+						if (
+							Array.isArray(toolResult?.structuredPatch) &&
+							toolResult.structuredPatch.length
+						) {
+							const patch = toolResult.structuredPatch
+								.filter(
+									(hunk) =>
+										typeof hunk?.oldStart === "number" &&
+										typeof hunk?.newStart === "number" &&
+										Array.isArray(hunk.lines),
+								)
+								.map(
+									(hunk) =>
+										`@@ -${hunk.oldStart},${hunk.oldLines ?? 0} +${hunk.newStart},${hunk.newLines ?? 0} @@\n${hunk.lines!.join("\n")}`,
+								)
+								.join("\n");
+							if (patch) {
+								resultFilediff = buildToolFileDiff(
+									activity.tool,
+									activity.input,
+									patch,
+									typeof toolResult.filePath === "string"
+										? toolResult.filePath
+										: undefined,
+								);
+							}
+						} else if (
+							typeof toolResult?.originalFile === "string" &&
+							typeof toolResult?.content === "string"
+						) {
+							const file =
+								(typeof toolResult.filePath === "string" &&
+									toolResult.filePath) ||
+								extractToolFilePath(activity.input);
+							resultFilediff = {
+								file: file || "Changes",
+								...describeLineChanges(
+									toolResult.originalFile,
+									toolResult.content,
+								),
+							};
+						}
 						setActivity({
 							...activity,
 							status: block.is_error ? "error" : "completed",
-							...(typeof block.content === "string"
-								? { output: block.content }
+							...(resultOutput !== undefined ? { output: resultOutput } : {}),
+							...(resultFilediff
+								? {
+										metadata: {
+											...activity.metadata,
+											filediff: resultFilediff,
+										},
+									}
 								: {}),
 						});
+					}
 				}
 			}
 			if (

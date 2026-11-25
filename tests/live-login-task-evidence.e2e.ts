@@ -48,6 +48,10 @@ async function stubLoginWorkspace(browser: Browser, runningTitle?: string) {
 		};
 	});
 	await browser.route("**/api/**", async (route) => {
+		if (new URL(route.request.url).pathname === "/api/events") {
+			await route.fulfill({ status: 204, body: "" });
+			return;
+		}
 		const request = route.request;
 		const url = new URL(request.url);
 		const path = url.pathname;
@@ -207,7 +211,7 @@ async function openTaskProgress(
 		.getByRole("button", "View live progress in chat");
 	await expect(progressLink).toBeVisible();
 	await progressLink.tap();
-	await expect(screen.getByRole("heading", title)).toBeVisible();
+	await expect(screen.getByRole("tab", title)).toBeVisible();
 	await expect(screen.getByText("Agent progress")).toBeVisible();
 	await app.screenshot(screenshotName);
 }

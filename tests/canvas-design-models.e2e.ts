@@ -148,11 +148,13 @@ test("Canvas design chat keeps provider and model faithful for builtin, Agy, and
 
 	// Builtin OpenCode gateway: catalog id keeps the legacy double prefix
 	// ("opencode/opencode/...") and must round-trip untouched.
-	await screen.getByRole("button", { name: "Select model" }).click();
+	await screen
+		.getByRole("combobox", { name: "Selected model: Default model" })
+		.click();
 	await screen.getByPlaceholder("Search models…").fill("GLM-5.3-Flash Free");
 	await screen.getByRole("option", { name: /GLM-5\.3-Flash Free/ }).click();
 	await expect(
-		screen.getByRole("button", {
+		screen.getByRole("combobox", {
 			name: /Selected model: GLM-5\.3-Flash Free/,
 		}),
 	).toBeVisible();
@@ -163,7 +165,7 @@ test("Canvas design chat keeps provider and model faithful for builtin, Agy, and
 
 	// Agy CLI model.
 	await screen
-		.getByRole("button", { name: /Selected model: GLM-5\.3-Flash Free/ })
+		.getByRole("combobox", { name: /Selected model: GLM-5\.3-Flash Free/ })
 		.click();
 	await screen.getByPlaceholder("Search models…").fill("Gemini");
 	await screen.getByRole("option", { name: /Gemini 3\.8 Flash/ }).click();
@@ -173,7 +175,7 @@ test("Canvas design chat keeps provider and model faithful for builtin, Agy, and
 
 	// Custom connection model (loom_custom_*).
 	await screen
-		.getByRole("button", { name: /Selected model: Gemini 3\.8 Flash/ })
+		.getByRole("combobox", { name: /Selected model: Gemini 3\.8 Flash/ })
 		.click();
 	await screen.getByPlaceholder("Search models…").fill("BACKEND");
 	await screen.getByRole("option", { name: /BACKEND/ }).click();

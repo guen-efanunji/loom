@@ -1,350 +1,442 @@
 <script lang="ts">
-	import {
-		Activity,
-		Bot,
-		Check,
-		CircleAlert,
-		Clock3,
-		FileCode2,
-		LoaderCircle,
-		Search,
-		Terminal,
-	} from "@lucide/svelte";
-	import { Button } from "$lib/components/ui/button";
-	import * as Trace from "$lib/components/ui/trace";
-	import { daemon, type PermissionRequest, type Task } from "$lib/daemon";
+import {
+	Activity,
+	Bot,
+	Check,
+	CircleAlert,
+	Clock3,
+	LoaderCircle,
+} from "@lucide/svelte";
+import Confirmation from "$lib/components/ai-elements/Confirmation.svelte";
+import TerminalActivity from "$lib/components/ai-elements/Terminal.svelte";
+import Tool from "$lib/components/ai-elements/Tool.svelte";
+import { Button } from "$lib/components/ui/button";
+import * as Trace from "$lib/components/ui/trace";
+import { daemon, type PermissionRequest, type Task } from "$lib/daemon";
 
-	let {
-		task,
-		output: streamedOutput = "",
-		activities = [],
-		progress = [],
-		oncancel,
-		showTaskHeader = true,
-		showTaskBrief = true,
-		wide = false,
-		compact = false,
-		permissions = [],
-		onpermission,
-		onopenfile,
-	}: {
-		task: Task;
+let {
+	task,
+	output: streamedOutput = "",
+	activities = [],
+	progress = [],
+	oncancel,
+	showTaskHeader = true,
+	showTaskBrief = true,
+	wide = false,
+	compact = false,
+	permissions = [],
+	onpermission,
+	onopenfile,
+}: {
+	task: Task;
+	output?: string;
+	activities?: Array<{
+		id: string;
+		tool: string;
+		status: "running" | "completed" | "error";
+		input?: Record<string, unknown>;
 		output?: string;
-		activities?: Array<{
-			id: string;
-			tool: string;
-			status: "running" | "completed" | "error";
-			input?: Record<string, unknown>;
-			output?: string;
-			error?: string;
-			metadata?: Record<string, unknown>;
-		}>;
-		progress?: Array<{
-			id: string;
-			stage: string;
-			message: string;
-			timestamp: string;
-		}>;
-		oncancel?: (taskId: string) => unknown;
-		showTaskHeader?: boolean;
-		showTaskBrief?: boolean;
-		wide?: boolean;
-		compact?: boolean;
-		permissions?: PermissionRequest[];
-		onpermission?: (
-			requestId: string,
-			decision: "allow_once" | "allow" | "deny",
-		) => unknown;
-		onopenfile?: (path: string) => unknown;
-	} = $props();
+		error?: string;
+		metadata?: Record<string, unknown>;
+	}>;
+	progress?: Array<{
+		id: string;
+		stage: string;
+		message: string;
+		timestamp: string;
+	}>;
+	oncancel?: (taskId: string) => unknown;
+	showTaskHeader?: boolean;
+	showTaskBrief?: boolean;
+	wide?: boolean;
+	compact?: boolean;
+	permissions?: PermissionRequest[];
+	onpermission?: (
+		requestId: string,
+		decision: "allow_once" | "allow" | "deny",
+	) => unknown;
+	onopenfile?: (path: string) => unknown;
+} = $props();
 
-	let output = $state("");
-	let outputError = $state("");
-	let cancelling = $state(false);
-	let replyingToPermission = $state("");
-	let openActivities = $state<Record<string, boolean>>({});
-	let now = $state(Date.now());
-	const active = $derived(
-		task.status === "running" || task.status === "preparing",
-	);
-	const visiblePermissions = $derived(
-		permissions.filter((request) => request.taskId === task.id),
-	);
-	const permissionPending = $derived(
-		visiblePermissions.some((request) => request.status === "pending"),
-	);
-	const canCancel = $derived(
-		active || task.status === "queued" || task.status === "ready",
-	);
-	const statusLabel = $derived(
-		(task.status ?? "")
-			.replaceAll("_", " ")
-			.replace(/^./, (letter) => letter.toUpperCase()),
-	);
-	const executorLabel = $derived(
-		task.executor?.kind === "agent"
-			? task.executor.agentId
-			: task.executor
-				? `${task.executor.providerId}${task.executor.modelId ? ` · ${task.executor.modelId}` : ""}`
-				: "Default executor",
-	);
-	type ActivityItem = NonNullable<typeof activities>[number];
-	let snapshotActivities = $state<ActivityItem[]>([]);
-	const allActivities = $derived.by(() => {
-		const merged = new Map<string, ActivityItem>();
-		for (const item of snapshotActivities) merged.set(item.id, item);
-		for (const item of activities) merged.set(item.id, item);
-		return [...merged.values()];
-	});
-	function inputString(item: ActivityItem, keys: string[]) {
-		for (const key of keys) {
-			const value = item.input?.[key];
-			if (typeof value === "string" && value.trim()) return value.trim();
-		}
-		return "";
+let output = $state("");
+let outputError = $state("");
+let cancelling = $state(false);
+let replyingToPermission = $state("");
+let now = $state(Date.now());
+const active = $derived(
+	task.status === "running" || task.status === "preparing",
+);
+const visiblePermissions = $derived(
+	permissions.filter((request) => request.taskId === task.id),
+);
+const permissionPending = $derived(
+	visiblePermissions.some((request) => request.status === "pending"),
+);
+const canCancel = $derived(
+	active || task.status === "queued" || task.status === "ready",
+);
+const statusLabel = $derived(
+	(task.status ?? "")
+		.replaceAll("_", " ")
+		.replace(/^./, (letter) => letter.toUpperCase()),
+);
+const executorLabel = $derived(
+	task.executor?.kind === "agent"
+		? task.executor.agentId
+		: task.executor
+			? `${task.executor.providerId}${task.executor.modelId ? ` · ${task.executor.modelId}` : ""}`
+			: "Default executor",
+);
+type ActivityItem = NonNullable<typeof activities>[number];
+let snapshotActivities = $state<ActivityItem[]>([]);
+const allActivities = $derived.by(() => {
+	const merged = new Map<string, ActivityItem>();
+	for (const item of snapshotActivities) merged.set(item.id, item);
+	for (const item of activities) merged.set(item.id, item);
+	return [...merged.values()];
+});
+function inputString(item: ActivityItem, keys: string[]) {
+	for (const key of keys) {
+		const value = item.input?.[key];
+		if (typeof value === "string" && value.trim()) return value.trim();
 	}
-	function filePath(item: ActivityItem) {
-		const direct = inputString(item, [
-			"filePath",
-			"fileName",
-			"file_name",
-			"TargetFile",
-			"targetFile",
-			"target_file",
-			"targetPath",
-			"target_path",
-			"file_path",
-			"absolute_path",
-			"AbsolutePath",
+	return "";
+}
+function filePath(item: ActivityItem) {
+	const direct = inputString(item, [
+		"Path",
+		"filePath",
+		"fileName",
+		"file_name",
+		"TargetFile",
+		"targetFile",
+		"target_file",
+		"targetPath",
+		"target_path",
+		"file_path",
+		"absolute_path",
+		"AbsolutePath",
+		"DirectoryPath",
+		"notebook_path",
+		"path",
+		"file",
+		"filename",
+	]);
+	if (direct) return direct;
+	const metadata = item.metadata?.filediff;
+	if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
+		const diff = metadata as Record<string, unknown>;
+		for (const key of ["file", "filePath", "relativePath"]) {
+			if (typeof diff[key] === "string" && diff[key])
+				return diff[key] as string;
+		}
+	}
+	return "";
+}
+function fileName(path: string) {
+	return path.replaceAll("\\", "/").split("/").filter(Boolean).at(-1) || path;
+}
+function activityKind(item: ActivityItem) {
+	const tool = item.tool.toLowerCase();
+	if (/shell|bash|command|exec|terminal/.test(tool)) return "command";
+	if (/search|grep|glob|find|list/.test(tool)) return "search";
+	if (
+		item.metadata?.filediff ||
+		/edit|write|patch|apply|file_change|create|delete|replace|sed_file/.test(
+			tool,
+		)
+	)
+		return "edit";
+	if (/read|view|open|cat/.test(tool)) return "read";
+	return "other";
+}
+function activityLabel(item: ActivityItem) {
+	const kind = activityKind(item);
+	const path = filePath(item);
+	if (kind === "command") return `Ran ${command(item) || "command"}`;
+	if (kind === "read") return `Read ${path ? fileName(path) : "file"}`;
+	if (kind === "edit") return `Edited ${path || "file"}`;
+	if (kind === "search") {
+		const query = inputString(item, [
+			"query",
+			"pattern",
+			"glob",
+			"directory",
 			"DirectoryPath",
 			"path",
-			"file",
-			"filename",
 		]);
-		if (direct) return direct;
-		const metadata = item.metadata?.filediff;
-		if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
-			const diff = metadata as Record<string, unknown>;
-			for (const key of ["file", "filePath", "relativePath"]) {
-				if (typeof diff[key] === "string" && diff[key])
-					return diff[key] as string;
-			}
+		const subject = query && query !== "." ? query : item.tool;
+		return `Searched ${subject}`;
+	}
+	return (item.tool ?? "Tool activity")
+		.replaceAll("_", " ")
+		.replace(/([a-z])([A-Z])/g, "$1 $2")
+		.replace(/^./, (letter) => letter.toUpperCase());
+}
+function diffStats(item: ActivityItem) {
+	const raw = item.metadata?.filediff;
+	const files = Array.isArray(item.metadata?.files)
+		? item.metadata.files
+		: raw && typeof raw === "object" && !Array.isArray(raw)
+			? [raw]
+			: [];
+	let additions = 0;
+	let deletions = 0;
+	let found = false;
+	for (const file of files) {
+		if (!file || typeof file !== "object" || Array.isArray(file)) continue;
+		const value = file as Record<string, unknown>;
+		if (typeof value.additions === "number") {
+			additions += value.additions;
+			found = true;
 		}
-		return "";
-	}
-	function fileName(path: string) {
-		return path.replaceAll("\\", "/").split("/").filter(Boolean).at(-1) || path;
-	}
-	function activityKind(item: ActivityItem) {
-		const tool = item.tool.toLowerCase();
-		if (/shell|bash|command|exec|terminal/.test(tool)) return "command";
-		if (/search|grep|glob|find|list/.test(tool)) return "search";
-		if (
-			item.metadata?.filediff ||
-			/edit|write|patch|apply|file_change|create|delete|replace/.test(tool)
-		)
-			return "edit";
-		if (/read|view|open|cat/.test(tool)) return "read";
-		return "other";
-	}
-	function activityLabel(item: ActivityItem) {
-		const kind = activityKind(item);
-		const path = filePath(item);
-		if (kind === "command") return `Ran ${command(item) || "command"}`;
-		if (kind === "read") return `Read ${path ? fileName(path) : "file"}`;
-		if (kind === "edit") return `Edited ${path || "file"}`;
-		if (kind === "search") {
-			const query = inputString(item, [
-				"query",
-				"pattern",
-				"glob",
-				"directory",
-				"DirectoryPath",
-				"path",
-			]);
-			const subject = query && query !== "." ? query : item.tool;
-			return `Searched ${subject}`;
+		if (typeof value.deletions === "number") {
+			deletions += value.deletions;
+			found = true;
 		}
-		return (item.tool ?? "Tool activity")
-			.replaceAll("_", " ")
-			.replace(/([a-z])([A-Z])/g, "$1 $2")
-			.replace(/^./, (letter) => letter.toUpperCase());
 	}
-	function activityIcon(item: ActivityItem) {
-		const kind = activityKind(item);
-		return kind === "command"
-			? Terminal
-			: kind === "search"
-				? Search
-				: kind === "read" || kind === "edit"
-					? FileCode2
-					: Activity;
-	}
-	function diffStats(item: ActivityItem) {
-		const raw = item.metadata?.filediff;
-		const files = Array.isArray(item.metadata?.files)
-			? item.metadata.files
-			: raw && typeof raw === "object" && !Array.isArray(raw)
-				? [raw]
-				: [];
-		let additions = 0;
-		let deletions = 0;
-		let found = false;
-		for (const file of files) {
-			if (!file || typeof file !== "object" || Array.isArray(file)) continue;
-			const value = file as Record<string, unknown>;
-			if (typeof value.additions === "number") {
-				additions += value.additions;
-				found = true;
-			}
-			if (typeof value.deletions === "number") {
-				deletions += value.deletions;
-				found = true;
-			}
-		}
-		return !found ? null : { additions, deletions };
-	}
-	function command(item: ActivityItem) {
-		const direct = inputString(item, ["command", "cmd", "script", "prompt"]);
-		if (direct) return direct;
-		const attrs = item.input?.attributes;
-		if (attrs && typeof attrs === "object" && !Array.isArray(attrs)) {
-			const attrText = inputString(
-				{ input: attrs as Record<string, unknown> } as ActivityItem,
-				["command", "cmd", "script"],
-			);
-			if (attrText) return attrText;
-		}
-		const args = item.input?.args;
-		if (typeof args === "string" && args.trim()) return args.trim();
-		if (Array.isArray(args) && args.length)
-			return args.map((entry) => String(entry ?? "")).join(" ");
-		return "";
-	}
-	function patchText(item: ActivityItem, path: string) {
-		const raw = item.metadata?.filediff;
-		const files = Array.isArray(item.metadata?.files)
-			? item.metadata.files
-			: raw && typeof raw === "object" && !Array.isArray(raw)
-				? [raw]
-				: [];
-		for (const file of files) {
-			if (!file || typeof file !== "object" || Array.isArray(file)) continue;
-			const value = file as Record<string, unknown>;
-			const target = value.file ?? value.filePath ?? value.relativePath;
-			if (
-				path &&
-				typeof target === "string" &&
-				target !== path &&
-				!path.endsWith(`/${target}`)
-			)
-				continue;
-			const patch = value.patch ?? value.diff;
-			if (typeof patch === "string" && patch) return patch;
-		}
-		return "";
-	}
-
-	function permissionAction(request: PermissionRequest) {
-		const raw = request.command.trim();
-		const separator = raw.indexOf(":");
-		const tool = separator > 0 ? raw.slice(0, separator).trim() : raw;
-		let args: Record<string, unknown> = {};
-		if (separator > 0) {
-			try {
-				const parsed: unknown = JSON.parse(raw.slice(separator + 1).trim());
-				if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
-					args = parsed as Record<string, unknown>;
-			} catch {
-				// Keep the provider tool name when its argument format is not JSON.
-			}
-		}
-		const path = [
-			args.path,
-			args.filePath,
-			args.file_path,
-			args.target_file,
-		].find(
-			(value): value is string => typeof value === "string" && !!value.trim(),
+	return !found ? null : { additions, deletions };
+}
+function command(item: ActivityItem) {
+	const direct = inputString(item, [
+		"CommandLine",
+		"commandLine",
+		"command",
+		"cmd",
+		"script",
+		"prompt",
+	]);
+	if (direct) return direct;
+	const attrs = item.input?.attributes;
+	if (attrs && typeof attrs === "object" && !Array.isArray(attrs)) {
+		const attrText = inputString(
+			{ input: attrs as Record<string, unknown> } as ActivityItem,
+			["CommandLine", "commandLine", "command", "cmd", "script"],
 		);
-		const normalizedTool = tool.toLowerCase();
-		const action = /read|view|open/.test(normalizedTool)
-			? "Read file"
-			: /edit|write|patch|create|delete|replace/.test(normalizedTool)
-				? "Edit file"
-				: /shell|bash|command|exec/.test(normalizedTool)
-					? "Run command"
-					: tool.replaceAll("_", " ");
-		return path ? `${action} · ${path}` : action;
+		if (attrText) return attrText;
 	}
-
-	async function decidePermission(
-		request: PermissionRequest,
-		decision: "allow_once" | "allow" | "deny",
-	) {
-		if (!onpermission || replyingToPermission) return;
-		replyingToPermission = request.id;
-		try {
-			await onpermission(request.id, decision);
-		} finally {
-			replyingToPermission = "";
-		}
+	const args = item.input?.args;
+	if (typeof args === "string" && args.trim()) return args.trim();
+	if (Array.isArray(args) && args.length)
+		return args.map((entry) => String(entry ?? "")).join(" ");
+	return "";
+}
+function patchText(item: ActivityItem, path: string) {
+	const raw = item.metadata?.filediff;
+	const files = Array.isArray(item.metadata?.files)
+		? item.metadata.files
+		: raw && typeof raw === "object" && !Array.isArray(raw)
+			? [raw]
+			: [];
+	for (const file of files) {
+		if (!file || typeof file !== "object" || Array.isArray(file)) continue;
+		const value = file as Record<string, unknown>;
+		const target = value.file ?? value.filePath ?? value.relativePath;
+		if (
+			path &&
+			typeof target === "string" &&
+			target !== path &&
+			!path.endsWith(`/${target}`)
+		)
+			continue;
+		const patch = value.patch ?? value.diff;
+		if (typeof patch === "string" && patch) return patch;
 	}
-
-	$effect(() => {
-		if (streamedOutput.length >= output.length) output = streamedOutput;
-	});
-
-	$effect(() => {
-		const taskId = task.id;
-		void refreshOutput(taskId);
-		if (!active) return;
-		const timer = window.setInterval(() => void refreshOutput(taskId), 2500);
-		return () => window.clearInterval(timer);
-	});
-
-	$effect(() => {
-		if (!active) return;
-		const timer = window.setInterval(() => (now = Date.now()), 1000);
-		return () => window.clearInterval(timer);
-	});
-
-	const elapsed = $derived.by(() => {
-		if (!task.startedAt) return "Starting";
-		const started = Date.parse(task.startedAt);
-		if (!Number.isFinite(started)) return "Running";
-		const seconds = Math.max(0, Math.floor((now - started) / 1000));
-		return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
-	});
-
-	async function refreshOutput(taskId = task.id) {
-		try {
-			const result = await daemon.getOutput(taskId);
-			if (task.id !== taskId) return;
-			const outputText =
-				typeof result?.output === "string" ? result.output : "";
-			if (outputText.length >= output.length) {
-				output = outputText.slice(-12000);
-				outputError = "";
+	return "";
+}
+function patchStats(
+	patch: string,
+): { additions: number; deletions: number } | null {
+	if (!patch.trim()) return null;
+	let additions = 0;
+	let deletions = 0;
+	for (const line of patch.replace(/\r\n/g, "\n").split("\n")) {
+		if (line.startsWith("+") && !line.startsWith("+++")) additions += 1;
+		else if (line.startsWith("-") && !line.startsWith("---")) deletions += 1;
+	}
+	return additions || deletions ? { additions, deletions } : null;
+}
+function fallbackToolDiff(item: ActivityItem): string {
+	const input = item.input;
+	if (!input) return "";
+	const patch = [input.patch, input.diff].find(
+		(value): value is string => typeof value === "string" && !!value.trim(),
+	);
+	if (patch) return patch;
+	const chunkLists = [input.edits, input.ReplacementChunks].filter(
+		Array.isArray,
+	);
+	for (const list of chunkLists) {
+		const sections: string[] = [];
+		for (const entry of list) {
+			if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+			const record = entry as Record<string, unknown>;
+			const before = [
+				record.old_string,
+				record.oldString,
+				record.oldText,
+				record.TargetContent,
+				record.Target,
+			].find((value): value is string => typeof value === "string");
+			const after = [
+				record.new_string,
+				record.newString,
+				record.newText,
+				record.ReplacementContent,
+				record.Replacement,
+			].find((value): value is string => typeof value === "string");
+			if (before !== undefined || after !== undefined) {
+				const removed = (before ?? "").split("\n").map((line) => `-${line}`);
+				const added = (after ?? "").split("\n").map((line) => `+${line}`);
+				sections.push(
+					[
+						...(before ? removed : []),
+						...(after !== undefined ? added : []),
+					].join("\n"),
+				);
 			}
-			if (result.activities?.length) snapshotActivities = result.activities;
-		} catch (reason) {
-			outputError =
-				reason instanceof Error
-					? reason.message
-					: "Output is not available yet.";
 		}
+		if (sections.length) return sections.join("\n");
 	}
+	const before = [
+		input.old_string,
+		input.oldString,
+		input.oldText,
+		input.TargetContent,
+		input.Target,
+	].find((value): value is string => typeof value === "string");
+	const after = [
+		input.new_string,
+		input.newString,
+		input.newText,
+		input.ReplacementContent,
+		input.Replacement,
+	].find((value): value is string => typeof value === "string");
+	if (before !== undefined || after !== undefined) {
+		const removed = (before ?? "").split("\n").map((line) => `-${line}`);
+		const added = (after ?? "").split("\n").map((line) => `+${line}`);
+		return [
+			...(before ? removed : []),
+			...(after !== undefined ? added : []),
+		].join("\n");
+	}
+	const content = [
+		input.content,
+		input.Content,
+		input.CodeContent,
+		input.new_source,
+	].find(
+		(value): value is string => typeof value === "string" && !!value.trim(),
+	);
+	if (content !== undefined) {
+		const lines = content.split("\n");
+		const preview = lines.slice(0, 120).map((line) => `+${line}`);
+		if (lines.length > 120) preview.push(` ${lines.length - 120} more lines…`);
+		return preview.join("\n");
+	}
+	return "";
+}
 
-	async function cancel() {
-		if (!canCancel || cancelling) return;
-		cancelling = true;
+function permissionAction(request: PermissionRequest) {
+	const raw = request.command.trim();
+	const separator = raw.indexOf(":");
+	const tool = separator > 0 ? raw.slice(0, separator).trim() : raw;
+	let args: Record<string, unknown> = {};
+	if (separator > 0) {
 		try {
-			await oncancel?.(task.id);
-		} finally {
-			cancelling = false;
+			const parsed: unknown = JSON.parse(raw.slice(separator + 1).trim());
+			if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+				args = parsed as Record<string, unknown>;
+		} catch {
+			// Keep the provider tool name when its argument format is not JSON.
 		}
 	}
+	const path = [
+		args.Path,
+		args.path,
+		args.TargetFile,
+		args.filePath,
+		args.file_path,
+		args.target_file,
+		args.notebook_path,
+	].find(
+		(value): value is string => typeof value === "string" && !!value.trim(),
+	);
+	const normalizedTool = tool.toLowerCase();
+	const action = /read|view|open/.test(normalizedTool)
+		? "Read file"
+		: /edit|write|patch|create|delete|replace/.test(normalizedTool)
+			? "Edit file"
+			: /shell|bash|command|exec/.test(normalizedTool)
+				? "Run command"
+				: tool.replaceAll("_", " ");
+	return path ? `${action} · ${path}` : action;
+}
+
+async function decidePermission(
+	request: PermissionRequest,
+	decision: "allow_once" | "allow" | "deny",
+) {
+	if (!onpermission || replyingToPermission) return;
+	replyingToPermission = request.id;
+	try {
+		await onpermission(request.id, decision);
+	} finally {
+		replyingToPermission = "";
+	}
+}
+
+$effect(() => {
+	if (streamedOutput.length >= output.length) output = streamedOutput;
+});
+
+$effect(() => {
+	const taskId = task.id;
+	void refreshOutput(taskId);
+	if (!active) return;
+	const timer = window.setInterval(() => void refreshOutput(taskId), 2500);
+	return () => window.clearInterval(timer);
+});
+
+$effect(() => {
+	if (!active) return;
+	const timer = window.setInterval(() => (now = Date.now()), 1000);
+	return () => window.clearInterval(timer);
+});
+
+const elapsed = $derived.by(() => {
+	if (!task.startedAt) return "Starting";
+	const started = Date.parse(task.startedAt);
+	if (!Number.isFinite(started)) return "Running";
+	const seconds = Math.max(0, Math.floor((now - started) / 1000));
+	return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
+});
+
+async function refreshOutput(taskId = task.id) {
+	try {
+		const result = await daemon.getOutput(taskId);
+		if (task.id !== taskId) return;
+		const outputText = typeof result?.output === "string" ? result.output : "";
+		if (outputText.length >= output.length) {
+			output = outputText.slice(-12000);
+			outputError = "";
+		}
+		if (result.activities?.length) snapshotActivities = result.activities;
+	} catch (reason) {
+		outputError =
+			reason instanceof Error ? reason.message : "Output is not available yet.";
+	}
+}
+
+async function cancel() {
+	if (!canCancel || cancelling) return;
+	cancelling = true;
+	try {
+		await oncancel?.(task.id);
+	} finally {
+		cancelling = false;
+	}
+}
 </script>
 
 <section
@@ -352,7 +444,7 @@
 	aria-label={`Task run: ${task.title}`}
 >
 	<div
-		class={`mx-auto flex min-h-full w-full flex-col ${compact ? "gap-3 px-0 py-0" : "gap-6 px-5 py-8"} ${wide ? "max-w-full" : "max-w-3xl"}`}
+		class={`mx-auto flex min-h-full w-full flex-col ${compact ? "gap-3 px-0 py-0" : "gap-6 px-5 py-8"} ${wide ? "max-w-full" : "max-w-5xl"}`}
 	>
 		{#if showTaskHeader}<header
 				class="flex flex-wrap items-start gap-3 rounded-xl border bg-card/60 p-4"
@@ -435,59 +527,33 @@
 			{#if visiblePermissions.some((request) => request.status === "pending")}
 				<section class="space-y-2" aria-label="Task permission requests">
 					{#each visiblePermissions.filter((request) => request.status === "pending") as request (request.id)}
-						<div
-							class="rounded-xl border border-amber-400/30 bg-amber-400/[0.06] p-4"
-						>
-							<div class="flex items-start gap-3">
-								<CircleAlert size={17} class="mt-0.5 shrink-0 text-amber-300" />
-								<div class="min-w-0 flex-1">
-									<p class="font-medium">Permission needed to continue</p>
-									<p class="mt-2 break-words font-mono text-xs text-amber-100">
-										{permissionAction(request)}
-									</p>
-									<p class="mt-1 text-xs leading-5 text-muted-foreground">
-										{request.reason}
-									</p>
-									<p class="mt-2 text-[11px] text-muted-foreground">
-										Working directory: <code class="break-all"
-											>{request.cwd}</code
-										>
-									</p>
-									<details class="mt-2">
-										<summary
-											class="cursor-pointer text-[11px] text-muted-foreground"
-											>Show exact request</summary
-										>
-										<pre
-											class="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md border bg-background/70 p-2 font-mono text-xs">{request.command}</pre>
-									</details>
-									<div class="mt-3 flex flex-wrap gap-2">
-										<Button
-											size="sm"
-											disabled={replyingToPermission === request.id}
-											onclick={() =>
-												void decidePermission(request, "allow_once")}
-											>{replyingToPermission === request.id
-												? "Saving…"
-												: "Allow once"}</Button
-										>
-										<Button
-											variant="outline"
-											size="sm"
-											disabled={replyingToPermission === request.id}
-											onclick={() => void decidePermission(request, "allow")}
-											>Always allow</Button
-										>
-										<Button
-											variant="destructive"
-											size="sm"
-											disabled={replyingToPermission === request.id}
-											onclick={() => void decidePermission(request, "deny")}
-											>Deny</Button
-										>
-									</div>
-								</div>
-							</div>
+						<div class="space-y-2">
+							<Confirmation
+								message={`Permission needed to continue · ${permissionAction(request)}`}
+								description={`${request.reason} Working directory: ${request.cwd}`}
+								busy={replyingToPermission === request.id}
+								approveLabel={replyingToPermission === request.id
+									? "Saving…"
+									: "Allow once"}
+								denyLabel="Deny"
+								onConfirm={() => void decidePermission(request, "allow_once")}
+								onCancel={() => void decidePermission(request, "deny")}
+							/>
+							<details>
+								<summary
+									class="cursor-pointer text-[11px] text-muted-foreground"
+									>Show exact request</summary
+								>
+								<pre
+									class="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md border bg-background/70 p-2 font-mono text-xs">{request.command}</pre>
+							</details>
+							<Button
+								variant="outline"
+								size="sm"
+								disabled={replyingToPermission === request.id}
+								onclick={() => void decidePermission(request, "allow")}
+								>Always allow</Button
+							>
 						</div>
 					{/each}
 				</section>
@@ -500,106 +566,56 @@
 				</h3>
 				<ol class="space-y-1" aria-label="Agent tool activity">
 					{#each allActivities as item (item.id)}
-						{@const ActivityIcon = activityIcon(item)}
 						{@const path = filePath(item)}
-						{@const stats = diffStats(item)}
+						{@const kind = activityKind(item)}
+						{@const patch =
+							kind === "edit"
+								? patchText(item, path) || fallbackToolDiff(item)
+								: patchText(item, path)}
+						{@const stats =
+							diffStats(item) ?? (kind === "edit" ? patchStats(patch) : null)}
 						{@const cmd = command(item)}
-						{@const patch = patchText(item, path)}
-						{@const traceStatus =
-							item.status === "running"
-								? "running"
-								: item.status === "error"
-									? "error"
-									: undefined}
 						<li class="min-w-0">
 							<Trace.Root class="gap-0">
-								{#if activityKind(item) === "read" && path}
-									<button
-										type="button"
-										class="w-full text-left"
-										onclick={() => onopenfile?.(path)}
-										title={`Open ${path} in the project editor`}
-									>
-										<Trace.Line status={traceStatus} class="w-full">
-											<Trace.Icon><ActivityIcon size={14} /></Trace.Icon>
-											<Trace.Title class="min-w-0 flex-1 truncate" title={path}
-												>{activityLabel(item)}</Trace.Title
-											>
-											<Trace.Description class="shrink-0"
-												>Open file</Trace.Description
-											>
-										</Trace.Line>
-									</button>
+								{#if kind === "read" && path}
+									<Tool
+										name={activityLabel(item)}
+										status={item.status}
+										input={item.input}
+										output={item.output ?? ""}
+										error={item.error ?? ""}
+										openFile={path}
+										onopenfile={onopenfile
+											? (target) => void onopenfile(target)
+											: undefined}
+									/>
+								{:else if kind === "command"}
+									<TerminalActivity
+										command={cmd || activityLabel(item)}
+										output={item.output ?? ""}
+										status={item.status}
+										error={item.error ??
+											(item.metadata?.error ? String(item.metadata.error) : "")}
+									/>
 								{:else}
-									<Trace.Collapsible
-										open={openActivities[item.id] ??
-											(item.status === "running" || item.status === "error")}
-										onOpenChange={(open) => (openActivities[item.id] = open)}
-									>
-										<Trace.CollapsibleTrigger class="w-full text-left">
-											<Trace.Line status={traceStatus} class="w-full">
-												<Trace.Icon><ActivityIcon size={14} /></Trace.Icon>
-												<Trace.Title
-													class="min-w-0 flex-1 truncate"
-													title={path || cmd || activityLabel(item)}
-													>{activityLabel(item)}</Trace.Title
-												>
-												{#if stats}<Trace.Description
-														class="shrink-0 font-mono text-[11px]"
-														><span class="text-emerald-400"
-															>+{stats.additions}</span
-														>
-														<span class="text-red-400">−{stats.deletions}</span
-														></Trace.Description
-													>{/if}
-												<Trace.Description class="shrink-0"
-													>{item.status === "completed"
-														? "Done"
-														: item.status === "error"
-															? "Failed"
-															: "Running"}</Trace.Description
-												>
-											</Trace.Line>
-										</Trace.CollapsibleTrigger>
-										<Trace.CollapsibleContent class="space-y-2 pt-2">
-											{#if activityKind(item) === "command" && cmd}<pre
-													class="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md border bg-background/70 p-2 font-mono text-xs">{cmd}</pre>{/if}
-											{#if item.input && activityKind(item) !== "command"}<pre
-													class="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md border bg-background/70 p-2 font-mono text-[11px]">{JSON.stringify(
-														item.input,
-														null,
-														2,
-													)}</pre>{/if}
-											{#if patch}<pre
-													class="max-h-72 overflow-auto rounded-md border bg-background/70 py-1 font-mono text-[11px] leading-5">{#each patch.split("\n") as line}<div
-															class={`min-h-5 px-3 ${line.startsWith("+") ? "bg-emerald-500/10 text-emerald-300" : line.startsWith("-") ? "bg-red-500/10 text-red-300" : line.startsWith("@@") ? "bg-blue-500/10 text-blue-300" : "text-muted-foreground"}`}>{line ||
-																" "}</div>{/each}</pre>{/if}
-											{#if item.output}<pre
-													class="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-md border bg-background/70 p-2 font-mono text-[11px]">{item.output}</pre>{/if}
-											{#if item.metadata?.output && typeof item.metadata.output === "string" && item.output !== item.metadata.output}<pre
-													class="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-md border bg-background/70 p-2 font-mono text-[11px]">{item
-														.metadata.output}</pre>{/if}
-											{#if item.error}<p
-													class="text-xs text-destructive"
-													role="alert"
-												>
-													{item.error}
-												</p>{/if}
-											{#if item.metadata?.error}<p
-													class="text-xs text-destructive"
-													role="alert"
-												>
-													{String(item.metadata.error)}
-												</p>{/if}
-											{#if activityKind(item) === "edit" && path}<Button
-													variant="ghost"
-													size="sm"
-													class="h-7 px-2 text-xs text-muted-foreground"
-													onclick={() => onopenfile?.(path)}
-													><FileCode2 size={13} />Open in editor</Button
-												>{/if}
-										</Trace.CollapsibleContent>
-									</Trace.Collapsible>
+									<Tool
+										name={activityLabel(item)}
+										status={item.status}
+										input={item.input}
+										output={item.output ??
+											(typeof item.metadata?.output === "string"
+												? item.metadata.output
+												: "")}
+										error={item.error ??
+											(item.metadata?.error ? String(item.metadata.error) : "")}
+										diff={patch}
+										diffFile={path}
+										additions={stats?.additions}
+										deletions={stats?.deletions}
+										onopenfile={onopenfile
+											? (target) => void onopenfile(target)
+											: undefined}
+									/>
 								{/if}
 							</Trace.Root>
 						</li>

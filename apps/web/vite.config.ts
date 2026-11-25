@@ -4,10 +4,10 @@ import { defineConfig, loadEnv, type ProxyOptions } from "vite";
 
 export default defineConfig(({ mode }) => {
 	const env = loadEnv(mode, process.cwd(), "");
-	const serverUrl =
-		env.PUBLIC_SERVER_URL ||
-		env.SERVER_URL ||
-		`http://127.0.0.1:${env.LOOM_PORT || process.env.LOOM_PORT || "4318"}`;
+	const explicitPort = env.LOOM_PORT || process.env.LOOM_PORT;
+	const serverUrl = explicitPort
+		? `http://127.0.0.1:${explicitPort}`
+		: env.PUBLIC_SERVER_URL || env.SERVER_URL || "http://127.0.0.1:4318";
 	const proxy: ProxyOptions = {
 		target: serverUrl,
 		changeOrigin: true,
