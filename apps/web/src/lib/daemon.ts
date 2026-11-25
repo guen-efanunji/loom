@@ -347,6 +347,11 @@ export type AutomationPlanDetail = {
 		failed: number;
 		percent: number;
 	};
+	activity?: {
+		phase: "context" | "generating" | "repairing" | "validating";
+		model?: { providerID: string; modelID: string };
+		startedAt: number;
+	} | null;
 };
 
 export type Task = {

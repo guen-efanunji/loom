@@ -1136,6 +1136,9 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		repos,
 		orchestrator,
 		options.plannerRuntime ?? agentRuntime,
+		(providerId) =>
+			options.plannerRuntime ??
+			providerManager.registry.get(providerId)?.getRuntime?.(),
 	);
 	orchestrator.setLifecycle(combineHooks(automation.hooks()));
 	await orchestrator.reconcile();
@@ -3556,12 +3559,82 @@ export async function createApp(options: DaemonAppOptions = {}) {
 		summary: z.string().trim().max(5000).optional(),
 		tasks: z.array(automationPlanTaskSchema).min(1).max(30),
 	});
+	const resolvePlannerModel = async (requested?: {
+		providerID: string;
+		modelID: string;
+	}) => {
+		if (requested) {
+			const hasManagedAdapter =
+				!!providerManager.registry.get(requested.providerID) ||
+				providerManager.registry
+					.list()
+					.some(
+						(item) => `conn:${item.definition.id}` === requested.providerID,
+					);
+			const providerID = hasManagedAdapter
+				? providerManager.normalizeProviderId(requested.providerID)
+				: requested.providerID;
+			if (!options.plannerRuntime && !options.agentRuntime) {
+				const requiredProvider = hasManagedAdapter ? providerID : "opencode";
+				if (providerManager.get(requiredProvider)?.status !== "connected") {
+					await providerManager
+						.refresh(requiredProvider, { refreshModels: false })
+						.catch(() => {});
+				}
+				if (providerManager.get(requiredProvider)?.status !== "connected") {
+					throw new ProjectValidationError(
+						`Selected provider is unavailable: ${requiredProvider}. Connect it or choose another model.`,
+					);
+				}
+			}
+			return {
+				providerID,
+				modelID: requested.modelID,
+			};
+		}
+		if (options.plannerRuntime || options.agentRuntime) return undefined;
+		if (providerManager.get("opencode")?.status === "connected")
+			return undefined;
+		const fallback = providerManager.catalog
+			.listAvailable()
+			.find(
+				(item) => providerManager.get(item.providerId)?.status === "connected",
+			);
+		if (fallback) {
+			const normalizedProviderId = providerManager.normalizeProviderId(
+				fallback.providerId,
+			);
+			return runtimeModelRef(
+				normalizedProviderId,
+				String(fallback.metadata?.modelId ?? fallback.name ?? fallback.id),
+			);
+		}
+		const connectedProvider = providerManager.registry
+			.list()
+			.find(
+				(adapter) =>
+					providerManager.get(adapter.definition.id)?.status === "connected",
+			);
+		if (connectedProvider) {
+			return {
+				providerID: providerManager.normalizeProviderId(
+					connectedProvider.definition.id,
+				),
+				modelID: "",
+			};
+		}
+		throw new ProjectValidationError(
+			"No AI provider is connected. Connect a provider or select a model before adding tasks to Kanban.",
+		);
+	};
 	app.post("/api/plans", async (c) => {
 		try {
 			const input = planInputSchema.parse(await jsonBody(c));
+			const model = await resolvePlannerModel(input.model);
 			const settings = await readSettings();
 			const { planId, status } = await automation.createPlan({
 				...input,
+				model,
 				automationMode:
 					input.mode === "build" && settings.automationMode === "review"
 						? "auto-create"
@@ -3652,7 +3725,10 @@ export async function createApp(options: DaemonAppOptions = {}) {
 						.optional(),
 				})
 				.parse(await jsonBody(c).catch(() => ({})));
-			await automation.retryPlan(c.req.param("id"), input.model);
+			const model = input.model
+				? await resolvePlannerModel(input.model)
+				: undefined;
+			await automation.retryPlan(c.req.param("id"), model);
 			return c.json({ accepted: true }, 202);
 		} catch (error) {
 			return errorResponse(c, error);

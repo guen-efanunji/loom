@@ -46,7 +46,9 @@ export class CodexProviderAdapter extends CliProviderAdapter {
 						// This is a top-level Codex option; placing it after `exec` makes
 						// current Codex CLI versions reject the invocation as an unknown flag.
 						"--ask-for-approval",
-						permission?.mode === "auto" ? "never" : "on-request",
+						permission?.mode === "auto" || permission?.mode === "read-only"
+							? "never"
+							: "on-request",
 						"exec",
 						// Codex refuses to run outside a trusted Git worktree ("Not inside
 						// a trusted directory and --skip-git-repo-check was not specified").

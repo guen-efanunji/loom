@@ -1,202 +1,330 @@
 <script lang="ts">
-	import { LoaderCircle, Plus, Trash2, X } from "@lucide/svelte";
-	import { onDestroy } from "svelte";
-	import { toast } from "svelte-sonner";
-	import Plan from "$lib/components/ai-elements/Plan.svelte";
-	import { Button } from "$lib/components/ui/button";
-	import { Input } from "$lib/components/ui/input";
-	import * as Select from "$lib/components/ui/select/index.js";
-	import { Textarea } from "$lib/components/ui/textarea";
-	import { daemon, type PlanTaskDraft } from "$lib/daemon";
+import { LoaderCircle, Plus, Trash2, X } from "@lucide/svelte";
+import { onDestroy, untrack } from "svelte";
+import { toast } from "svelte-sonner";
+import type { Model } from "$lib/chat";
+import Plan from "$lib/components/ai-elements/Plan.svelte";
+import { Button } from "$lib/components/ui/button";
+import { Input } from "$lib/components/ui/input";
+import * as Select from "$lib/components/ui/select/index.js";
+import { Textarea } from "$lib/components/ui/textarea";
+import { daemon, type PlanTaskDraft } from "$lib/daemon";
 
-	let {
-		open,
-		projectId,
-		sessionId,
-		messageId,
-		messageText,
-		role = "user",
-		onconverted,
-		onclose,
-	}: {
-		open: boolean;
-		projectId: string;
-		sessionId?: string;
-		messageId: string;
-		messageText: string;
-		role?: string;
-		onconverted?: () => void;
-		onclose?: () => void;
-	} = $props();
+let {
+	open,
+	projectId,
+	sessionId,
+	messageId,
+	messageText,
+	role = "user",
+	model,
+	models = [],
+	onconverted,
+	onclose,
+}: {
+	open: boolean;
+	projectId: string;
+	sessionId?: string;
+	messageId: string;
+	messageText: string;
+	role?: string;
+	model?: { providerID: string; modelID: string };
+	models?: Model[];
+	onconverted?: () => void;
+	onclose?: () => void;
+} = $props();
 
-	type Stage = "generating" | "review" | "done" | "failed";
+type Stage = "generating" | "review" | "done" | "failed";
+type Phase = "context" | "generating" | "validating" | "repairing";
 
-	let stage = $state<Stage>("generating");
-	let planId = $state<string | null>(null);
-	let title = $state("");
-	let summary = $state("");
-	let draft = $state<PlanTaskDraft[]>([]);
-	let error = $state("");
-	const planSteps = $derived(
-		draft.map((task, index) => ({
-			id: task.key,
-			title: task.title.trim() || `Task ${index + 1}`,
-			status: "pending" as const,
-		})),
+let stage = $state<Stage>("generating");
+let phase = $state<Phase>("context");
+let planId = $state<string | null>(null);
+let title = $state("");
+let summary = $state("");
+let draft = $state<PlanTaskDraft[]>([]);
+let error = $state("");
+let selectedModelKey = $state("");
+let elapsedSeconds = $state(0);
+const planSteps = $derived(
+	draft.map((task, index) => ({
+		id: task.key,
+		title: task.title.trim() || `Task ${index + 1}`,
+		status: "pending" as const,
+	})),
+);
+let issues = $state<Array<{ code: string; message: string }>>([]);
+let saving = $state(false);
+let initialPollTimer: ReturnType<typeof setTimeout> | null = null;
+let polling: ReturnType<typeof setInterval> | null = null;
+let elapsedTimer: ReturnType<typeof setInterval> | null = null;
+let runToken = 0;
+
+function modelRefFromKey(
+	key: string,
+): { providerID: string; modelID: string } | undefined {
+	const slash = key.indexOf("/");
+	if (slash <= 0 || slash === key.length - 1) return undefined;
+	return {
+		providerID: key.slice(0, slash),
+		modelID: key.slice(slash + 1),
+	};
+}
+
+function initialModelKey(): string {
+	if (model?.providerID && model?.modelID)
+		return `${model.providerID}/${model.modelID}`;
+	const first = models[0];
+	return first ? `${first.providerID}/${first.modelID}` : "";
+}
+
+const activeModelRef = $derived(
+	modelRefFromKey(selectedModelKey) ?? model ?? undefined,
+);
+const activeModelDisplay = $derived.by(() => {
+	const ref = activeModelRef;
+	if (!ref) return "Default model";
+	const match = models.find(
+		(item) =>
+			item.providerID === ref.providerID && item.modelID === ref.modelID,
 	);
-	let issues = $state<Array<{ code: string; message: string }>>([]);
-	let saving = $state(false);
-	let polling: ReturnType<typeof setInterval> | null = null;
-
-	function stopPolling() {
-		if (polling) {
-			clearInterval(polling);
-			polling = null;
-		}
+	return match
+		? `${match.name} (${match.provider})`
+		: `${ref.modelID} (${ref.providerID})`;
+});
+const phaseLabel = $derived.by(() => {
+	switch (phase) {
+		case "context":
+			return "Reading project context…";
+		case "validating":
+			return "Validating task dependencies…";
+		case "repairing":
+			return "Repairing plan output…";
+		default:
+			return "Generating structured tasks…";
 	}
+});
 
-	onDestroy(stopPolling);
+function stopTimers() {
+	if (initialPollTimer) {
+		clearTimeout(initialPollTimer);
+		initialPollTimer = null;
+	}
+	if (polling) {
+		clearInterval(polling);
+		polling = null;
+	}
+	if (elapsedTimer) {
+		clearInterval(elapsedTimer);
+		elapsedTimer = null;
+	}
+}
 
-	$effect(() => {
-		if (!open) {
-			stopPolling();
-			return;
-		}
-		// Fresh dialog per message: (re)generate its plan.
+onDestroy(stopTimers);
+
+$effect(() => {
+	const isOpen = open;
+	const currentMessageId = messageId;
+	if (!isOpen || !currentMessageId) {
+		untrack(() => {
+			runToken += 1;
+			stopTimers();
+		});
+		return;
+	}
+	// Fresh dialog per message: (re)generate its plan without tracking
+	// background model/catalog updates inside this effect.
+	untrack(() => {
+		selectedModelKey = initialModelKey();
 		stage = "generating";
+		phase = "context";
 		planId = null;
 		draft = [];
 		error = "";
 		issues = [];
-		void generate();
+		void generate(false);
 	});
+});
 
-	async function generate() {
-		stopPolling();
-		let id: string;
-		try {
+async function generate(reuseFailedPlan = false) {
+	const token = ++runToken;
+	stopTimers();
+	stage = "generating";
+	phase = "context";
+	error = "";
+	elapsedSeconds = 0;
+	elapsedTimer = setInterval(() => {
+		if (token === runToken && stage === "generating") elapsedSeconds += 1;
+	}, 1000);
+
+	const targetModel = activeModelRef;
+	let id = reuseFailedPlan ? planId : null;
+	try {
+		if (id) {
+			try {
+				await daemon.retryPlan(id, { model: targetModel });
+			} catch {
+				id = null;
+			}
+		}
+		if (!id) {
 			const created = await daemon.createPlan({
 				projectId,
 				sourceMessageId: messageId,
 				message: messageText,
 				mode: "plan",
 				sourceSessionId: sessionId,
+				model: targetModel,
 			});
 			id = created.planId;
-			planId = id;
-		} catch (reason) {
-			error =
-				reason instanceof Error ? reason.message : "Unable to create plan";
-			stage = "failed";
+		}
+		if (token !== runToken || !open) {
+			void daemon.cancelPlan(id).catch(() => {});
 			return;
 		}
-		let attempts = 0;
-		polling = setInterval(() => {
-			void (async () => {
-				attempts += 1;
-				try {
-					const detail = await daemon.getPlanDetail(id);
-					if (!open) return;
-					if (detail.plan.convertedAt) {
-						stopPolling();
-						stage = "done";
-						toast.success(
-							`Added ${detail.tasks.length} task(s) to the Kanban board.`,
-						);
-						onconverted?.();
-						return;
-					}
-					if (detail.plan.status === "failed") {
-						stopPolling();
-						error = detail.plan.errorMessage ?? "Plan generation failed";
-						stage = "failed";
-						return;
-					}
-					if (detail.plan.status === "validated" && detail.draft.length) {
-						stopPolling();
-						title = detail.plan.title;
-						summary = detail.plan.summary;
-						draft = detail.draft.map(
-							({ id: _id, planId: _p, ...task }) => task,
-						);
-						stage = "review";
-						return;
-					}
-					if (attempts > 90) {
-						stopPolling();
-						error = "Plan generation is taking too long. Try again.";
-						stage = "failed";
-					}
-				} catch {
-					// Keep polling through transient failures.
-				}
-			})();
-		}, 2000);
+		planId = id;
+	} catch (reason) {
+		if (token !== runToken) return;
+		stopTimers();
+		error = reason instanceof Error ? reason.message : "Unable to create plan";
+		stage = "failed";
+		return;
 	}
 
-	function moveKey(index: number) {
-		return index;
-	}
-
-	async function saveEdits() {
-		if (!planId) return;
-		saving = true;
-		error = "";
-		issues = [];
+	let attempts = 0;
+	let consecutiveErrors = 0;
+	let pollInFlight = false;
+	const pollOnce = async () => {
+		if (pollInFlight || token !== runToken || !open) return;
+		pollInFlight = true;
+		attempts += 1;
 		try {
-			await daemon.savePlan(planId, {
-				title,
-				summary,
-				tasks: draft.map((task) => ({
-					...task,
-					title: task.title.trim() || "Untitled task",
-					description: task.description.trim(),
-					acceptanceCriteria: task.acceptanceCriteria.filter(Boolean),
-				})),
-			});
-			const validation = await daemon.validatePlan(planId);
-			if (!validation.ok) {
-				issues = validation.issues;
-				toast.error("Fix the highlighted issues before adding to the board.");
+			const detail = await daemon.getPlanDetail(id);
+			if (token !== runToken || !open) return;
+			consecutiveErrors = 0;
+			if (detail.activity?.phase) phase = detail.activity.phase;
+			if (detail.plan.convertedAt) {
+				stopTimers();
+				stage = "done";
+				toast.success(
+					`Added ${detail.tasks.length} task(s) to the Kanban board.`,
+				);
+				onconverted?.();
 				return;
 			}
-			// Approved for the board: convert immediately.
-			await daemon.approvePlan(planId);
-			const converted = await daemon.convertPlan(planId);
-			stage = "done";
-			toast.success(
-				`Added ${converted.taskIds.length} task(s) to the Kanban board.`,
-			);
-			onconverted?.();
+			if (detail.plan.cancelledAt || detail.plan.status === "failed") {
+				stopTimers();
+				error = detail.plan.errorMessage ?? "Plan generation failed";
+				stage = "failed";
+				return;
+			}
+			if (detail.plan.status === "validated") {
+				stopTimers();
+				if (!detail.draft.length) {
+					error = "Planner produced no tasks. Try again or pick another model.";
+					stage = "failed";
+					return;
+				}
+				title = detail.plan.title;
+				summary = detail.plan.summary;
+				draft = detail.draft.map(({ id: _id, planId: _p, ...task }) => task);
+				stage = "review";
+				return;
+			}
+			if (attempts > 135) {
+				stopTimers();
+				void daemon.cancelPlan(id).catch(() => {});
+				error = "Plan generation timed out. Try a faster model or retry.";
+				stage = "failed";
+			}
 		} catch (reason) {
-			error = reason instanceof Error ? reason.message : "Unable to save plan";
+			if (token !== runToken || !open) return;
+			consecutiveErrors += 1;
+			if (consecutiveErrors >= 5) {
+				stopTimers();
+				error =
+					reason instanceof Error
+						? reason.message
+						: "Lost connection while checking plan status";
+				stage = "failed";
+			}
 		} finally {
-			saving = false;
+			pollInFlight = false;
 		}
-	}
+	};
 
-	function addTask() {
-		draft = [
-			...draft,
-			{
-				key: `draft-${draft.length + 1}-${Date.now()}`,
-				title: "",
-				description: "",
-				priority: "medium",
-				dependencies: [],
-				acceptanceCriteria: [],
-				suggestedFiles: [],
-			},
-		];
-	}
+	initialPollTimer = setTimeout(() => void pollOnce(), 300);
+	polling = setInterval(() => void pollOnce(), 900);
+}
 
-	function removeTask(index: number) {
-		draft = draft.filter((_, i) => i !== index);
-	}
+function moveKey(index: number) {
+	return index;
+}
 
-	function close() {
-		onclose?.();
+async function saveEdits() {
+	if (!planId) return;
+	saving = true;
+	error = "";
+	issues = [];
+	try {
+		await daemon.savePlan(planId, {
+			title,
+			summary,
+			tasks: draft.map((task) => ({
+				...task,
+				title: task.title.trim() || "Untitled task",
+				description: task.description.trim(),
+				acceptanceCriteria: task.acceptanceCriteria.filter(Boolean),
+			})),
+		});
+		const validation = await daemon.validatePlan(planId);
+		if (!validation.ok) {
+			issues = validation.issues;
+			toast.error("Fix the highlighted issues before adding to the board.");
+			return;
+		}
+		// Approved for the board: convert immediately.
+		await daemon.approvePlan(planId);
+		const converted = await daemon.convertPlan(planId);
+		stage = "done";
+		toast.success(
+			`Added ${converted.taskIds.length} task(s) to the Kanban board.`,
+		);
+		onconverted?.();
+	} catch (reason) {
+		error = reason instanceof Error ? reason.message : "Unable to save plan";
+	} finally {
+		saving = false;
 	}
+}
+
+function addTask() {
+	draft = [
+		...draft,
+		{
+			key: `draft-${draft.length + 1}-${Date.now()}`,
+			title: "",
+			description: "",
+			priority: "medium",
+			dependencies: [],
+			acceptanceCriteria: [],
+			suggestedFiles: [],
+		},
+	];
+}
+
+function removeTask(index: number) {
+	draft = draft.filter((_, i) => i !== index);
+}
+
+function close() {
+	runToken += 1;
+	stopTimers();
+	if (stage === "generating" && planId) {
+		void daemon.cancelPlan(planId).catch(() => {});
+	}
+	onclose?.();
+}
 </script>
 
 {#if open}
@@ -239,16 +367,64 @@
 
 			<div class="min-h-0 flex-1 overflow-y-auto px-5 py-4">
 				{#if stage === "generating"}
-					<div class="flex items-center gap-3 py-10 text-sm text-white/60">
-						<LoaderCircle size={16} class="animate-spin" />
-						Planning tasks from this message…
+					<div class="space-y-4 py-8">
+						<div class="flex items-center justify-between gap-3">
+							<div class="flex items-center gap-3 text-sm text-white/80">
+								<LoaderCircle size={16} class="shrink-0 animate-spin" />
+								<span>{phaseLabel}</span>
+							</div>
+							<span class="text-xs tabular-nums text-white/40">
+								{elapsedSeconds}s
+							</span>
+						</div>
+						<p class="text-xs text-white/50">
+							Using <span class="text-white/75">{activeModelDisplay}</span>
+						</p>
+						<div class="flex items-center gap-2 pt-2">
+							<Button variant="outline" size="sm" onclick={close}>
+								Cancel
+							</Button>
+						</div>
 					</div>
 				{:else if stage === "failed"}
-					<div class="py-6">
+					<div class="space-y-4 py-6">
 						<p class="text-sm text-red-300">{error}</p>
-						<Button size="sm" class="mt-4" onclick={() => void generate()}>
-							Try again
-						</Button>
+						{#if models.length}
+							<label class="block max-w-sm">
+								<span class="mb-1 block text-xs font-medium text-white/60">
+									Planner model
+								</span>
+								<Select.Root
+									type="single"
+									value={selectedModelKey}
+									onValueChange={(value) => {
+										if (value) selectedModelKey = value;
+									}}
+								>
+									<Select.Trigger class="w-full">
+										{activeModelDisplay}
+									</Select.Trigger>
+									<Select.Content>
+										{#each models as item (`${item.providerID}/${item.modelID}`)}
+											<Select.Item
+												value={`${item.providerID}/${item.modelID}`}
+												label={`${item.name} (${item.provider})`}
+											>
+												{item.name} ({item.provider})
+											</Select.Item>
+										{/each}
+									</Select.Content>
+								</Select.Root>
+							</label>
+						{/if}
+						<div class="flex items-center gap-2">
+							<Button size="sm" onclick={() => void generate(true)}>
+								Try again
+							</Button>
+							<Button variant="ghost" size="sm" onclick={close}>
+								Cancel
+							</Button>
+						</div>
 					</div>
 				{:else if stage === "done"}
 					<div class="py-10 text-center">

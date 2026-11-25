@@ -199,6 +199,34 @@ test("rejects invalid edits, premature actions, and failed dependencies stay blo
 	expect((await store.get(planId))?.status).toBe("approved");
 });
 
+test("routes plan generation to the requested provider runtime", async () => {
+	const harness = await createHarness();
+	const defaultRuntime = new PlannerRuntime();
+	const agyRuntime = new PlannerRuntime();
+	let agyPrompts = 0;
+	const originalPrompt = agyRuntime.prompt.bind(agyRuntime);
+	agyRuntime.prompt = async (input) => {
+		agyPrompts += 1;
+		await originalPrompt(input);
+	};
+	const routed = new AutomationService(
+		harness.store,
+		harness.repos,
+		harness.tasks,
+		defaultRuntime,
+		new Map([["agy", agyRuntime]]),
+	);
+	const created = await routed.createPlan({
+		projectId: harness.project.id,
+		sourceMessageId: "msg-agy",
+		message: "Build the widget",
+		model: { providerID: "agy", modelID: "gemini-3.8-flash-high" },
+	});
+	await routed.idle(created.planId);
+	expect(agyPrompts).toBe(1);
+	expect((await harness.store.get(created.planId))?.status).toBe("validated");
+});
+
 test("cancels unexecuted plans and combines hooks", async () => {
 	const harness = await createHarness();
 	const { automation, store } = harness;

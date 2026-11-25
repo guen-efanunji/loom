@@ -209,3 +209,47 @@ test("planner repairs invalid output once, then fails", async () => {
 		}),
 	).rejects.toThrow("after repair");
 });
+
+test("planner uses read-only permission, extracts fenced JSON with prose, and surfaces runtime lastError", async () => {
+	const seen: Array<{
+		system?: string;
+		permission?: { mode: string };
+	}> = [];
+	const proseWrapped = `Here is the structured plan:\n\`\`\`json\n${JSON.stringify(plan([task()]))}\n\`\`\``;
+	const runtime = fakeRuntime([proseWrapped]);
+	const originalPrompt = runtime.prompt.bind(runtime);
+	runtime.prompt = async (input: {
+		sessionId: string;
+		prompt: string;
+		system?: string;
+		permission?: { mode: string };
+	}) => {
+		seen.push({ system: input.system, permission: input.permission });
+		await originalPrompt(input);
+	};
+	const result = await new RuntimePlanner(runtime, "/tmp/aroma").createPlan({
+		projectId: "project-1",
+		message: "Build it",
+		context,
+	});
+	expect(result.tasks).toHaveLength(1);
+	expect(seen[0]?.permission).toEqual({ mode: "read-only" });
+	expect(seen[0]?.system).toContain("Do not call tools");
+
+	const failingRuntime = {
+		...fakeRuntime([]),
+		async wait() {
+			return "failed" as const;
+		},
+		async lastError() {
+			return "Agy is not authenticated";
+		},
+	};
+	await expect(
+		new RuntimePlanner(failingRuntime, "/tmp/aroma").createPlan({
+			projectId: "project-1",
+			message: "Build it",
+			context,
+		}),
+	).rejects.toThrow("Agy is not authenticated");
+});

@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import {
 	buildAutomationContext,
 	convertPlanTasks,
+	type PlannerPhase,
+	type ProjectContext,
 	RuntimePlanner,
 	validateAutomationPlan,
 } from "@loom/automation";
@@ -49,15 +51,52 @@ function parseList(value: string | null | undefined): string[] {
 	}
 }
 
+export type PlanActivity = {
+	phase: "context" | PlannerPhase;
+	model?: RuntimeModel;
+	startedAt: number;
+};
+
 export class AutomationService {
 	private busy = new Map<string, Promise<unknown>>();
-	private sessions = new Map<string, string>();
+	private sessions = new Map<
+		string,
+		{ sessionId: string; runtime: AgentRuntime }
+	>();
+	private activity = new Map<string, PlanActivity>();
+	private planModels = new Map<string, RuntimeModel>();
+	private contextCache = new Map<
+		string,
+		{ value: ProjectContext; cachedAt: number }
+	>();
 	constructor(
 		private readonly store: PlanRepository,
 		private readonly repos: Repos,
 		private readonly tasks: TaskOrchestrator,
 		private readonly runtime: AgentRuntime,
+		private readonly providerRuntimes:
+			| Map<string, AgentRuntime>
+			| ((providerId: string) => AgentRuntime | undefined) = new Map(),
 	) {}
+
+	private runtimeFor(model?: RuntimeModel): AgentRuntime {
+		if (!model) return this.runtime;
+		const resolved =
+			typeof this.providerRuntimes === "function"
+				? this.providerRuntimes(model.providerID)
+				: this.providerRuntimes.get(model.providerID);
+		return resolved ?? this.runtime;
+	}
+
+	private async projectContext(
+		project: ProjectRecord,
+	): Promise<ProjectContext> {
+		const cached = this.contextCache.get(project.path);
+		if (cached && Date.now() - cached.cachedAt < 30_000) return cached.value;
+		const value = await buildAutomationContext(project.path, project.name);
+		this.contextCache.set(project.path, { value, cachedAt: Date.now() });
+		return value;
+	}
 
 	private launch(id: string, work: () => Promise<unknown>) {
 		if (this.busy.has(id)) throw new Error("Plan operation is already active");
@@ -79,6 +118,7 @@ export class AutomationService {
 			.finally(() => {
 				this.busy.delete(id);
 				this.sessions.delete(id);
+				this.activity.delete(id);
 			});
 		this.busy.set(id, job);
 	}
@@ -99,6 +139,7 @@ export class AutomationService {
 		const message = input.message.trim();
 		if (!message) throw new Error("Plan message is required");
 		const id = randomUUID();
+		if (input.model) this.planModels.set(id, input.model);
 		await this.store.create({
 			id,
 			projectId: project.id,
@@ -120,13 +161,27 @@ export class AutomationService {
 		message: string,
 		model?: RuntimeModel,
 	) {
-		const context = await buildAutomationContext(project.path, project.name);
+		const selectedModel = model ?? this.planModels.get(planId);
+		const runtime = this.runtimeFor(selectedModel);
+		const startedAt = Date.now();
+		this.activity.set(planId, {
+			phase: "context",
+			model: selectedModel,
+			startedAt,
+		});
+		const context = await this.projectContext(project);
+		if ((await this.requirePlan(planId)).cancelledAt) return;
+		this.activity.set(planId, {
+			phase: "generating",
+			model: selectedModel,
+			startedAt,
+		});
 		const planner = new RuntimePlanner(
-			this.runtime,
+			runtime,
 			project.path,
 			"Loom planner",
 			async (sessionId) => {
-				this.sessions.set(planId, sessionId);
+				this.sessions.set(planId, { sessionId, runtime });
 				if ((await this.requirePlan(planId)).cancelledAt)
 					throw new Error("Plan cancelled");
 			},
@@ -135,7 +190,14 @@ export class AutomationService {
 			projectId: project.id,
 			message,
 			context,
-			model,
+			model: selectedModel,
+			onPhase: (phase) => {
+				this.activity.set(planId, {
+					phase,
+					model: selectedModel,
+					startedAt,
+				});
+			},
 		});
 		if ((await this.requirePlan(planId)).cancelledAt) return;
 		await this.store.replaceTasks(planId, convertPlanTasks(result.tasks));
@@ -340,8 +402,9 @@ export class AutomationService {
 			cancelledAt: new Date(),
 			errorMessage: "Cancelled by user",
 		});
-		const sessionId = this.sessions.get(planId);
-		if (sessionId) await this.runtime.abort(sessionId);
+		this.activity.delete(planId);
+		const session = this.sessions.get(planId);
+		if (session) await session.runtime.abort(session.sessionId).catch(() => {});
 		for (const row of (await projectTasks(this.repos, plan.projectId)).filter(
 			(t) => t.planId === planId,
 		))
@@ -364,8 +427,9 @@ export class AutomationService {
 			throw new Error(
 				"This plan created Kanban tasks; delete those tasks first",
 			);
-		const sessionId = this.sessions.get(planId);
-		if (sessionId) await this.runtime.abort(sessionId).catch(() => {});
+		const session = this.sessions.get(planId);
+		if (session) await session.runtime.abort(session.sessionId).catch(() => {});
+		this.planModels.delete(planId);
 		await this.store.delete(planId);
 	}
 
@@ -378,13 +442,15 @@ export class AutomationService {
 		if (this.busy.has(planId))
 			throw new Error("Plan operation is already active");
 		const project = await this.requireProject(plan.projectId);
+		const selectedModel = model ?? this.planModels.get(planId);
+		if (selectedModel) this.planModels.set(planId, selectedModel);
 		await this.store.update(planId, {
 			status: "draft",
 			cancelledAt: null,
 			errorMessage: null,
 		});
 		this.launch(planId, () =>
-			this.generate(planId, project, plan.sourceMessage, model),
+			this.generate(planId, project, plan.sourceMessage, selectedModel),
 		);
 	}
 
@@ -412,6 +478,7 @@ export class AutomationService {
 			tasks,
 			validation: await this.validatePlan(planId),
 			progress: this.progress(rows),
+			activity: this.activity.get(planId) ?? null,
 		};
 	}
 

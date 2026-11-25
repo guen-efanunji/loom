@@ -21,15 +21,14 @@ Rules:
 - Final QA tasks should depend on implementation tasks.
 - Do not include deployment unless requested.
 - Do not include documentation unless needed by the request.
+- Do not call tools, run shell commands, or read or edit project files; rely strictly on the provided request and project context.
 - Return only structured output matching the provided schema.`;
 
-export function buildPlannerPrompt(input: {
+export function buildPlannerRequest(input: {
 	message: string;
 	context: ProjectContext;
 }): string {
 	const lines = [
-		PLANNER_SYSTEM_PROMPT,
-		"",
 		"## Development request",
 		"",
 		input.message.trim(),
@@ -56,6 +55,13 @@ export function buildPlannerPrompt(input: {
 		lines.push("", "Project conventions:", input.context.conventions);
 	lines.push("", OUTPUT_SHAPE);
 	return lines.join("\n");
+}
+
+export function buildPlannerPrompt(input: {
+	message: string;
+	context: ProjectContext;
+}): string {
+	return [PLANNER_SYSTEM_PROMPT, "", buildPlannerRequest(input)].join("\n");
 }
 
 export const PLANNER_REPAIR_PROMPT = `Your previous output was rejected. Fix ONLY the reported problems and return the complete corrected plan in the same structured shape. Do not change valid tasks, and do not add explanation outside the structured output.

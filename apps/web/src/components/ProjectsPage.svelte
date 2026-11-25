@@ -6107,6 +6107,8 @@ async function answer(requestId: string, answers: string[][]) {
 		messageId={planDialog.messageId}
 		messageText={planDialog.text}
 		role={planDialog.role}
+		model={selectedModelRef()}
+		models={catalog.models}
 		onconverted={refreshBoard}
 		onclose={() => (planDialog = null)}
 	/>

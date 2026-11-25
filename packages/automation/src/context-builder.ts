@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
-import { readdir, open, realpath, stat } from "node:fs/promises";
-import { join, sep, relative, isAbsolute } from "node:path";
+import { open, readdir, realpath, stat } from "node:fs/promises";
+import { isAbsolute, join, relative, sep } from "node:path";
 
 export type ProjectContext = {
 	projectName: string;
@@ -272,8 +272,5 @@ export async function buildAutomationContext(
 	if (packageManager) context.packageManager = packageManager;
 	if (conventions) context.conventions = conventions;
 	if (currentBranch) context.currentBranch = currentBranch;
-	const theme = await collectTheme(projectPath, files, readFiles);
-	context.readFiles = [...readFiles];
-	if (theme) context.theme = theme;
 	return context;
 }

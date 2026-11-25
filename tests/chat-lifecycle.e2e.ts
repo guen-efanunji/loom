@@ -70,6 +70,11 @@ async function stubWorkspace(
 		diff?: () => unknown[];
 		questionReply?: (body: Record<string, unknown>) => void;
 		restoreCheckpoint?: (messageId: string) => void;
+		onRoute?: (
+			pathname: string,
+			method: string,
+			postData: string | null,
+		) => { status?: number; body: unknown } | undefined;
 	} = {},
 ) {
 	await browser.addInitScript(() => {
@@ -86,7 +91,15 @@ async function stubWorkspace(
 		let body: unknown = [];
 		let status = 200;
 
-		if (pathname === "/api/projects") {
+		const overridden = hooks.onRoute?.(
+			pathname,
+			request.method,
+			request.postData ?? null,
+		);
+		if (overridden) {
+			status = overridden.status ?? 200;
+			body = overridden.body;
+		} else if (pathname === "/api/projects") {
 			body = [
 				{
 					id: projectId,
@@ -656,4 +669,141 @@ test("hydrates +N/-M stats and CodeBlock diff from session /diff for Agy Path-on
 	await agyEditRow.tap();
 	await expect(screen.getByText("font-size: 17px;")).toBeVisible();
 	await app.screenshot("chat-lifecycle-agy-path-edit-diff");
+});
+
+test("PlanDialog sends active model, shows live progress, supports cancel, and converts validated tasks", async ({
+	app,
+	browser,
+	screen,
+}) => {
+	const createdPayloads: Array<Record<string, unknown>> = [];
+	const cancelledIds: string[] = [];
+	let detailPolls = 0;
+	let currentPlanId = "plan-1";
+	let planStage: "draft" | "validated" | "converted" = "draft";
+
+	await stubWorkspace(browser, {
+		onRoute(pathname, method, postData) {
+			if (pathname === "/api/plans" && method === "POST") {
+				createdPayloads.push(JSON.parse(postData ?? "{}"));
+				currentPlanId = `plan-${createdPayloads.length}`;
+				detailPolls = 0;
+				planStage = "draft";
+				return {
+					status: 202,
+					body: { planId: currentPlanId, status: "draft" },
+				};
+			}
+			if (
+				pathname === `/api/plans/${currentPlanId}/cancel` &&
+				method === "POST"
+			) {
+				cancelledIds.push(currentPlanId);
+				return { body: { cancelled: true } };
+			}
+			if (pathname === `/api/plans/${currentPlanId}` && method === "GET") {
+				detailPolls += 1;
+				if (createdPayloads.length === 2 && detailPolls >= 2) {
+					planStage = "validated";
+				}
+				return {
+					body: {
+						plan: {
+							id: currentPlanId,
+							projectId,
+							sourceMessageId: "assistant-lifecycle-fixture",
+							sourceMessage: "Initial response text.",
+							sourceSessionId: sessionId,
+							startedAt: null,
+							cancelledAt: null,
+							title: "Implement feature",
+							summary: "Structured tasks from answer.",
+							status: planStage === "draft" ? "draft" : "validated",
+							convertedAt:
+								planStage === "converted" ? "2026-11-25T10:00:00Z" : null,
+							approvedAt: null,
+							errorMessage: null,
+							createdAt: "2026-11-25T10:00:00Z",
+						},
+						draft:
+							planStage === "draft"
+								? []
+								: [
+										{
+											id: "pt-1",
+											planId: currentPlanId,
+											key: "step-1",
+											title: "Wire plan runtime",
+											description: "Route planner by selected model.",
+											priority: "high",
+											dependencies: [],
+											acceptanceCriteria: ["Planner uses active provider"],
+											suggestedFiles: ["apps/server/src/index.ts"],
+										},
+									],
+						tasks: [],
+						validation: { ok: true, issues: [] },
+						progress: {
+							total: 0,
+							done: 0,
+							running: 0,
+							ready: 0,
+							blocked: 0,
+							failed: 0,
+							percent: 0,
+						},
+						activity:
+							planStage === "draft"
+								? { phase: "generating", startedAt: Date.now() }
+								: null,
+					},
+				};
+			}
+			if (pathname === `/api/plans/${currentPlanId}` && method === "PATCH") {
+				return { body: { saved: true } };
+			}
+			if (
+				pathname === `/api/plans/${currentPlanId}/validate` &&
+				method === "POST"
+			) {
+				return { body: { ok: true, issues: [] } };
+			}
+			if (
+				pathname === `/api/plans/${currentPlanId}/approve` &&
+				method === "POST"
+			) {
+				return { body: { approved: true } };
+			}
+			if (
+				pathname === `/api/plans/${currentPlanId}/tasks` &&
+				method === "POST"
+			) {
+				planStage = "converted";
+				return { status: 201, body: { taskIds: ["task-1"], converted: true } };
+			}
+			return undefined;
+		},
+	});
+
+	await app.open(`/?project=${projectId}&session=${sessionId}`);
+	await expect(screen.getByText("Initial response text.")).toBeVisible();
+
+	// 1. Open dialog, verify active model + live status, then cancel mid-generation.
+	await screen.getByRole("button", "Add to Kanban").tap();
+	await expect(screen.getByText("Add to Kanban board")).toBeVisible();
+	await expect(screen.getByText("Fixture Model (OpenCode)")).toBeVisible();
+	await expect
+		.poll(
+			() => createdPayloads[0]?.model as Record<string, unknown> | undefined,
+		)
+		.toEqual({ providerID: "opencode", modelID: "fixture-model" });
+	await expect(screen.getByText("Generating structured tasks…")).toBeVisible();
+	await screen.getByRole("button", "Cancel").tap();
+	await expect.poll(() => cancelledIds).toEqual(["plan-1"]);
+
+	// 2. Re-open dialog and let it validate and convert to Kanban tasks.
+	await screen.getByRole("button", "Add to Kanban").tap();
+	await expect(screen.getByText("Plan title")).toBeVisible();
+	await screen.getByRole("button", "Add to board").tap();
+	await expect(screen.getByText("Tasks added to the board")).toBeVisible();
 });
