@@ -264,6 +264,12 @@ const attachmentsContext = new AttachmentsContext(undefined, true, 10);
 const sessionMention = $derived(
 	query === "session" || query?.startsWith("session:") === true,
 );
+const taskMention = $derived(
+	query === "task" ||
+		query === "tasks" ||
+		query?.startsWith("task:") === true ||
+		query?.startsWith("tasks:") === true,
+);
 const sessionSearch = $derived(
 	query?.startsWith("session:") ? query.slice("session:".length) : "",
 );
@@ -337,7 +343,8 @@ const choices: Array<{
 				.filter(
 					(task) =>
 						!taskRefs.includes(task.id) &&
-						task.title.toLowerCase().includes((query ?? "").toLowerCase()),
+						(taskMention ||
+							task.title.toLowerCase().includes((query ?? "").toLowerCase())),
 				)
 				.slice(0, 8)
 				.map((task) => ({
@@ -1179,7 +1186,11 @@ function keydown(event: KeyboardEvent) {
 				class="flex items-center justify-between border-b px-3 py-2 text-xs text-muted-foreground"
 			>
 				<span
-					>{sessionMention ? "Project sessions" : "Files & agents"} · {choices.length}
+					>{sessionMention
+						? "Project sessions"
+						: taskMention
+							? "Tasks"
+							: "Files & agents"} · {choices.length}
 					results</span
 				><span>↑ ↓ select · Enter attach · Esc close</span>
 			</div>
@@ -1192,7 +1203,9 @@ function keydown(event: KeyboardEvent) {
 				{#if searching}<p class="p-3 text-xs text-muted-foreground">
 						{sessionMention
 							? "Loading project sessions…"
-							: "Searching project files and folders…"}
+							: taskMention
+								? "Loading tasks…"
+								: "Searching project files and folders…"}
 					</p>{:else if searchError}<p
 						role="alert"
 						class="p-3 text-xs text-destructive"
@@ -1203,7 +1216,9 @@ function keydown(event: KeyboardEvent) {
 					>
 						{sessionMention
 							? "No matching sessions."
-							: "No matching files, folders, or agents."}
+							: taskMention
+								? "No matching tasks."
+								: "No matching files, folders, or agents."}
 					</p>{/if}
 				{#each choices as item, index}
 					<Button
@@ -1221,6 +1236,8 @@ function keydown(event: KeyboardEvent) {
 								size={15}
 							/>{:else if item.type === "session"}<PanelsTopLeft
 								size={15}
+							/>{:else if item.type === "task"}<KanbanSquare
+								size={15}
 							/>{:else if item.value.endsWith("/")}<Folder
 								size={15}
 							/>{:else}<FileIcon size={15} />{/if}<span class="min-w-0 truncate"
@@ -1232,6 +1249,8 @@ function keydown(event: KeyboardEvent) {
 									? "agent"
 									: item.type === "session"
 										? "session"
+										: item.type === "task"
+											? "task"
 										: item.type === "ssh"
 											? item.detail
 											: item.value.endsWith("/")
