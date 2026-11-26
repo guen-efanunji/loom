@@ -1203,7 +1203,7 @@ $effect(() => {
 	}
 });
 $effect(() => {
-	if (viewMode !== "chat" && ready) void refreshBoard();
+	if (ready) void refreshBoard();
 });
 function syncViewParam(mode: ViewMode) {
 	// Only called from user interaction (tab switch), when the router is ready.
@@ -3583,8 +3583,8 @@ async function answer(requestId: string, answers: string[][]) {
 							><a
 								href={`/project/${selectedProject.id}/video`}
 								class="inline-flex h-9 items-center gap-1.5 sm:gap-2 rounded-lg px-2 sm:px-3 text-xs font-medium text-white/50 transition hover:text-white/80"
-								aria-label="Video studio"
-								><Film size={14} /><span class="hidden sm:inline">Video</span
+								aria-label="Pipeline"
+								><Film size={14} /><span class="hidden sm:inline">Pipeline</span
 								></a
 							>{/if}</Tabs.List
 					></Tabs.Root

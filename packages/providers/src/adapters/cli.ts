@@ -34,26 +34,36 @@ export function shouldUseStdinForPrompt(text: string): boolean {
 	return Buffer.byteLength(text, "utf8") > CLI_ARG_PROMPT_LIMIT_BYTES;
 }
 
+type CliPromptBuilder = (input: {
+	prompt: string;
+	model?: string;
+	thinkingMode?: string;
+	permission?: RuntimePermission;
+	customInstructions?: boolean;
+}) => Promise<{
+	command: string;
+	args: string[];
+	/** Optional stdin payload. Supplying an empty string sends EOF immediately. */
+	stdin?: string;
+	env?: Record<string, string>;
+}>;
+
 export type CliAdapterOptions = {
 	definition: ProviderDefinition;
 	codingPrompt?: string;
-	buildPrompt: (input: {
-		prompt: string;
-		model?: string;
-		thinkingMode?: string;
-		permission?: RuntimePermission;
-		customInstructions?: boolean;
-	}) => Promise<{
-		command: string;
-		args: string[];
-		/** Optional stdin payload. Supplying an empty string sends EOF immediately. */
-		stdin?: string;
-		env?: Record<string, string>;
-	}>;
 	getAuthStatus: () => Promise<AuthStatus>;
 	listModels?: () => Promise<AgentModel[]>;
 	probeAuth?: () => Promise<AuthStatus>;
-};
+} & (
+	| {
+			runtime: AgentRuntime;
+			buildPrompt?: CliPromptBuilder;
+	  }
+	| {
+			runtime?: undefined;
+			buildPrompt: CliPromptBuilder;
+	  }
+);
 
 type SessionState = {
 	id: string;
@@ -70,20 +80,21 @@ type SessionState = {
 		| "cancelled";
 	closePromise: Promise<void> | null;
 	resolveClose: (() => void) | null;
-	output: string;
+	parser: CliOutputParser;
 	error: string | null;
 	permission?: RuntimePermission;
+	waiters: Set<() => void>;
 };
 
 export class CliProviderAdapter implements CliProviderAdapterContract {
 	readonly definition: ProviderDefinition;
-	readonly runtime: CliRuntime;
+	readonly runtime: AgentRuntime;
 	private readonly options: CliAdapterOptions;
 
 	constructor(options: CliAdapterOptions) {
 		this.options = options;
 		this.definition = options.definition;
-		this.runtime = new CliRuntime(options);
+		this.runtime = options.runtime ?? new CliRuntime(options);
 	}
 
 	async detect(): Promise<ProviderDetectionResult> {
@@ -119,7 +130,9 @@ export class CliProviderAdapter implements CliProviderAdapterContract {
 		};
 	}
 
-	async disconnect(): Promise<void> {}
+	async disconnect(): Promise<void> {
+		await this.runtime.dispose?.();
+	}
 
 	async listModels(): Promise<AgentModel[]> {
 		return (await this.options.listModels?.()) ?? [];
@@ -151,11 +164,11 @@ export class CliProviderAdapter implements CliProviderAdapterContract {
 			if (status !== "completed")
 				throw new ProviderError(
 					"PROCESS_FAILED",
-					(await this.runtime.lastError(input.sessionId)) ??
+					(await this.runtime.lastError?.(input.sessionId)) ??
 						`${this.definition.name} failed`,
 					{ providerId: this.definition.id },
 				);
-			const output = await this.runtime.readOutput(input.sessionId);
+			const output = await this.runtime.readOutput?.(input.sessionId);
 			if (output?.output) yield { type: "message.delta", text: output.output };
 			yield { type: "message.completed" };
 			yield { type: "session.completed" };
@@ -200,8 +213,9 @@ class CliRuntime implements AgentRuntime {
 			status: "queued",
 			closePromise: null,
 			resolveClose: null,
-			output: "",
+			parser: new CliOutputParser(),
 			error: null,
+			waiters: new Set(),
 		});
 		return { id };
 	}
@@ -224,6 +238,12 @@ class CliRuntime implements AgentRuntime {
 		const promptText = input.images?.length
 			? `${input.prompt}\n\n${await this.persistAndReferenceImages(session.id, input.images)}`
 			: input.prompt;
+		if (!this.options.buildPrompt)
+			throw new ProviderError(
+				"PROCESS_FAILED",
+				`${this.options.definition.name} CLI prompt builder is not configured`,
+				{ providerId: this.options.definition.id },
+			);
 		if (input.permission) session.permission = input.permission;
 		const command = await this.options.buildPrompt({
 			prompt: input.system
@@ -258,10 +278,10 @@ class CliRuntime implements AgentRuntime {
 		session.closePromise = new Promise<void>((resolve) => {
 			session.resolveClose = resolve;
 		});
-		session.output = "";
+		session.parser = new CliOutputParser();
 		session.error = null;
 		child.stdout?.on("data", (chunk: Buffer) => {
-			session.output += chunk.toString();
+			session.parser.push(chunk.toString());
 		});
 		child.stderr?.on("data", (chunk: Buffer) => {
 			session.error = `${session.error ?? ""}${chunk.toString()}`.trim();
@@ -274,24 +294,25 @@ class CliRuntime implements AgentRuntime {
 			session.resolveClose?.();
 			session.resolveClose = null;
 			session.closePromise = null;
+			this.notifyWaiters(session);
 		});
 		child.once("close", (code, signal) => {
 			session.process = null;
 			session.resolveClose?.();
 			session.resolveClose = null;
 			session.closePromise = null;
-			if (session.status === "cancelled" || session.status === "stopping")
+			session.parser.finish();
+			if (session.status === "cancelled" || session.status === "stopping") {
+				this.notifyWaiters(session);
 				return;
+			}
 			// Codex prints this informational notice while consuming non-TTY stdin.
 			// It is not a failure reason and should not become the chat error message.
 			session.error =
 				session.error
 					?.replace(/Reading additional input from stdin\.\.\.\s*/g, "")
 					.trim() || null;
-			const result =
-				this.options.definition.id === "claude"
-					? { output: session.output.trim(), error: undefined }
-					: parseCliOutput(session.output);
+			const result = session.parser.snapshot();
 			const emptyResponse = code === 0 && !result.output.trim();
 			session.status =
 				code === 0 && !result.error && !emptyResponse ? "completed" : "failed";
@@ -300,6 +321,7 @@ class CliRuntime implements AgentRuntime {
 				session.error = `${this.options.definition.name} finished without a text response. Check the provider's permissions and authentication, then retry.`;
 			if (code !== 0 && !session.error)
 				session.error = `${this.options.definition.name} exited with ${signal ?? `code ${code}`}`;
+			this.notifyWaiters(session);
 		});
 	}
 
@@ -318,7 +340,7 @@ class CliRuntime implements AgentRuntime {
 
 	async readOutput(sessionId: string) {
 		const session = this.requireSession(sessionId);
-		return parseCliOutput(session.output);
+		return session.parser.snapshot();
 	}
 
 	/**
@@ -366,24 +388,57 @@ class CliRuntime implements AgentRuntime {
 
 	async wait(
 		sessionId: string,
-		options: { timeoutMs?: number; pollIntervalMs?: number } = {},
+		options: {
+			timeoutMs?: number;
+			pollIntervalMs?: number;
+			onStatus?: (
+				status: "queued" | "running" | "completed" | "failed" | "cancelled",
+			) => void | Promise<void>;
+		} = {},
 	): Promise<"completed" | "failed" | "cancelled" | "interrupted"> {
+		const session = this.requireSession(sessionId);
 		const deadline = Date.now() + (options.timeoutMs ?? 300_000);
-		while (Date.now() <= deadline) {
-			const status = await this.status(sessionId);
+		let lastObserved:
+			| "queued"
+			| "running"
+			| "completed"
+			| "failed"
+			| "cancelled"
+			| null = null;
+		while (true) {
+			const current = await this.status(sessionId);
+			if (options.onStatus && current !== lastObserved) {
+				lastObserved = current;
+				await options.onStatus(current);
+			}
 			if (
-				status === "completed" ||
-				status === "failed" ||
-				status === "cancelled"
+				current === "completed" ||
+				current === "failed" ||
+				current === "cancelled"
 			)
-				return status;
-			await new Promise((resolve) =>
-				setTimeout(resolve, options.pollIntervalMs ?? 100),
-			);
+				return current;
+			const remaining = deadline - Date.now();
+			if (remaining <= 0) break;
+			await new Promise<void>((resolve) => {
+				let settled = false;
+				const wake = () => {
+					if (settled) return;
+					settled = true;
+					clearTimeout(timer);
+					session.waiters.delete(wake);
+					resolve();
+				};
+				const timer = setTimeout(wake, remaining);
+				session.waiters.add(wake);
+			});
 		}
-		const status = await this.status(sessionId);
-		if (status === "completed" || status === "failed" || status === "cancelled")
-			return status;
+		const current = await this.status(sessionId);
+		if (
+			current === "completed" ||
+			current === "failed" ||
+			current === "cancelled"
+		)
+			return current;
 		await this.abort(sessionId);
 		this.requireSession(sessionId).error =
 			`${this.options.definition.name} timed out`;
@@ -400,8 +455,10 @@ class CliRuntime implements AgentRuntime {
 		const session = this.requireSession(sessionId);
 		const child = session.process;
 		if (!child) {
-			if (session.status === "running" || session.status === "stopping")
+			if (session.status === "running" || session.status === "stopping") {
 				session.status = "failed";
+				this.notifyWaiters(session);
+			}
 			return;
 		}
 		if (session.status === "cancelled") {
@@ -472,10 +529,30 @@ class CliRuntime implements AgentRuntime {
 				{ providerId: this.options.definition.id },
 			);
 		session.status = "cancelled";
+		this.notifyWaiters(session);
+	}
+
+	private notifyWaiters(session: SessionState): void {
+		for (const wake of session.waiters) wake();
 	}
 
 	async getDiff(): Promise<unknown> {
 		return [];
+	}
+
+	async deleteSession(sessionId: string): Promise<void> {
+		const session = this.sessions.get(sessionId);
+		if (!session) return;
+		if (session.status === "running" || session.status === "stopping") {
+			await this.abort(sessionId);
+		}
+		this.sessions.delete(sessionId);
+	}
+
+	async dispose(): Promise<void> {
+		for (const sessionId of [...this.sessions.keys()]) {
+			await this.deleteSession(sessionId).catch(() => {});
+		}
 	}
 
 	private requireSession(id: string): SessionState {
@@ -591,48 +668,122 @@ export function normalizeCliOutput(output: string): string {
 	return parseCliOutput(output).output;
 }
 
-export function parseCliOutput(output: string): {
+export type ParsedCliOutput = {
 	output: string;
 	error?: string;
 	tokens?: NonNullable<RuntimeOutput["tokens"]>;
 	cost?: number;
 	activities: RuntimeActivity[];
 	parts: NonNullable<RuntimeOutput["parts"]>;
-} {
-	const text: string[] = [];
-	const agySteps = new Map<number, number>();
-	const activities = new Map<string, RuntimeActivity>();
-	const orderedParts: Array<
+};
+
+export class CliOutputParser {
+	private lineBuffer = "";
+	private readonly text: string[] = [];
+	private readonly agySteps = new Map<number, number>();
+	private readonly activities = new Map<string, RuntimeActivity>();
+	private readonly orderedParts: Array<
 		{ type: "text"; id: string } | { type: "activity"; id: string }
 	> = [];
-	const orderedText = new Map<string, string>();
-	const orderedActivityIds = new Set<string>();
-	const completedCodexMessages = new Set<string>();
-	function setActivity(activity: RuntimeActivity) {
-		activities.set(activity.id, activity);
-		if (!orderedActivityIds.has(activity.id)) {
-			orderedActivityIds.add(activity.id);
-			orderedParts.push({ type: "activity", id: activity.id });
+	private readonly orderedText = new Map<string, string>();
+	private readonly orderedActivityIds = new Set<string>();
+	private readonly completedCodexMessages = new Set<string>();
+	private error: string | undefined;
+	private finalResponse: string | undefined;
+	private tokens: NonNullable<RuntimeOutput["tokens"]> | undefined;
+	private cost: number | undefined;
+
+	push(chunk: string): void {
+		this.lineBuffer += chunk;
+		for (
+			let idx = this.lineBuffer.indexOf("\n");
+			idx >= 0;
+			idx = this.lineBuffer.indexOf("\n")
+		) {
+			const line = this.lineBuffer.slice(0, idx);
+			this.lineBuffer = this.lineBuffer.slice(idx + 1);
+			if (line) this.processLine(line);
 		}
 	}
-	function setText(id: string, value: string, append = false) {
-		if (!orderedText.has(id)) orderedParts.push({ type: "text", id });
-		orderedText.set(
+
+	finish(): void {
+		if (this.lineBuffer) {
+			const line = this.lineBuffer;
+			this.lineBuffer = "";
+			this.processLine(line);
+		}
+	}
+
+	snapshot(): ParsedCliOutput {
+		const trailing =
+			this.lineBuffer && !this.lineBuffer.trimStart().startsWith("{")
+				? this.lineBuffer
+				: undefined;
+		const parts: NonNullable<RuntimeOutput["parts"]> = [];
+		for (const part of this.orderedParts) {
+			if (part.type === "text") {
+				const value = this.orderedText.get(part.id) ?? "";
+				if (value.trim()) parts.push({ ...part, text: value });
+			} else {
+				parts.push(part);
+			}
+		}
+		if (!this.orderedText.size && this.finalResponse?.trim()) {
+			parts.push({
+				type: "text",
+				id: "final-response",
+				text: this.finalResponse,
+			});
+		}
+		if (trailing?.trim()) {
+			parts.push({
+				type: "text",
+				id: `plain-${this.orderedParts.length}`,
+				text: trailing,
+			});
+		}
+		const outputText =
+			this.finalResponse ??
+			(trailing ? [...this.text, trailing] : this.text).join("\n");
+		return {
+			output: outputText.trim(),
+			error: this.error,
+			...(this.tokens ? { tokens: this.tokens } : {}),
+			...(this.cost !== undefined ? { cost: this.cost } : {}),
+			activities: [...this.activities.values()],
+			parts,
+		};
+	}
+
+	private setActivity(activity: RuntimeActivity): void {
+		this.activities.set(activity.id, activity);
+		if (!this.orderedActivityIds.has(activity.id)) {
+			this.orderedActivityIds.add(activity.id);
+			this.orderedParts.push({ type: "activity", id: activity.id });
+		}
+	}
+
+	private setText(id: string, value: string, append = false): void {
+		if (!this.orderedText.has(id)) this.orderedParts.push({ type: "text", id });
+		this.orderedText.set(
 			id,
-			append ? `${orderedText.get(id) ?? ""}${value}` : value,
+			append ? `${this.orderedText.get(id) ?? ""}${value}` : value,
 		);
 	}
-	let error: string | undefined;
-	let finalResponse: string | undefined;
-	let tokens: NonNullable<RuntimeOutput["tokens"]> | undefined;
-	let cost: number | undefined;
-	for (const line of output.split("\n").filter(Boolean)) {
+
+	private processLine(line: string): void {
+		const { text, agySteps, activities, orderedParts, completedCodexMessages } =
+			this;
+		const setActivity = (activity: RuntimeActivity) =>
+			this.setActivity(activity);
+		const setText = (id: string, value: string, append = false) =>
+			this.setText(id, value, append);
 		try {
 			const event = JSON.parse(line);
 			if (!event || typeof event !== "object") {
 				text.push(line);
 				setText(`plain-${orderedParts.length}`, line);
-				continue;
+				return;
 			}
 			if (event.event === "result" && event.result) {
 				const denied = event.result.denied_actions;
@@ -640,14 +791,30 @@ export function parseCliOutput(output: string): {
 					const actions = denied
 						.map((action) => action.display_name || action.action)
 						.filter((action) => typeof action === "string");
-					error = `Agy could not complete the request because tool permission was denied${actions.length ? `: ${actions.join(", ")}` : ""}. Noninteractive mode cannot ask for approval. Configure a specific allow-rule in Agy settings or run the task interactively, then retry.`;
+					this.error = `Agy could not complete the request because tool permission was denied${actions.length ? `: ${actions.join(", ")}` : ""}. Noninteractive mode cannot ask for approval. Configure a specific allow-rule in Agy settings or run the task interactively, then retry.`;
 				} else if (event.result.status && event.result.status !== "SUCCESS") {
-					error =
+					this.error =
 						typeof event.result.error === "string"
 							? event.result.error
 							: event.result.error?.message ||
 								`Agy finished with status ${event.result.status}`;
 				}
+			}
+			if (event.type === "result" && event.is_error === true) {
+				const message =
+					typeof event.result === "string"
+						? event.result
+						: Array.isArray(event.errors)
+							? event.errors
+									.filter((item: unknown) => typeof item === "string")
+									.join("; ")
+							: typeof event.error === "string"
+								? event.error
+								: event.error?.message;
+				this.error =
+					typeof message === "string" && message.trim()
+						? message.trim()
+						: (this.error ?? "Provider returned an error result");
 			}
 			if (event.type === "error" || event.type === "turn.failed") {
 				const message =
@@ -655,7 +822,7 @@ export function parseCliOutput(output: string): {
 						? event.error
 						: (event.error?.message ?? event.message);
 				if (typeof message === "string" && message.trim())
-					error = message.trim();
+					this.error = message.trim();
 			}
 			// CLI providers place usage in different envelopes: Codex turn.completed,
 			// Claude result.usage, and Agy result.usage. Normalize the known field
@@ -754,9 +921,10 @@ export function parseCliOutput(output: string): {
 							}
 						: {}),
 				};
-				if (Object.keys(normalizedTokens).length) tokens = normalizedTokens;
+				if (Object.keys(normalizedTokens).length)
+					this.tokens = normalizedTokens;
 			}
-			cost ??= numeric(
+			this.cost ??= numeric(
 				event.total_cost_usd ??
 					event.totalCostUsd ??
 					event.cost_usd ??
@@ -1080,14 +1248,20 @@ export function parseCliOutput(output: string): {
 			}
 			if (
 				event.type === "result" &&
+				!event.is_error &&
 				typeof event.result === "object" &&
 				typeof event.result?.response === "string"
 			)
-				finalResponse = event.result.response;
-			if (typeof event.result?.response === "string") {
-				if (event.result.response.trim()) finalResponse = event.result.response;
-			} else if (event.type === "result" && typeof event.result === "string")
-				finalResponse = event.result;
+				this.finalResponse = event.result.response;
+			if (!event.is_error && typeof event.result?.response === "string") {
+				if (event.result.response.trim())
+					this.finalResponse = event.result.response;
+			} else if (
+				event.type === "result" &&
+				!event.is_error &&
+				typeof event.result === "string"
+			)
+				this.finalResponse = event.result;
 			else if (
 				event.step_update?.step_type === "agent_response" &&
 				typeof event.step_update.text_delta === "string"
@@ -1117,25 +1291,13 @@ export function parseCliOutput(output: string): {
 			}
 		}
 	}
-	if (!orderedText.size && finalResponse?.trim())
-		setText("final-response", finalResponse);
-	const parts: NonNullable<RuntimeOutput["parts"]> = [];
-	for (const part of orderedParts) {
-		if (part.type === "text") {
-			const value = orderedText.get(part.id) ?? "";
-			if (value.trim()) parts.push({ ...part, text: value });
-		} else {
-			parts.push(part);
-		}
-	}
-	return {
-		output: (finalResponse ?? text.join("\n")).trim(),
-		error,
-		...(tokens ? { tokens } : {}),
-		...(cost !== undefined ? { cost } : {}),
-		activities: [...activities.values()],
-		parts,
-	};
+}
+
+export function parseCliOutput(output: string): ParsedCliOutput {
+	const parser = new CliOutputParser();
+	parser.push(output);
+	parser.finish();
+	return parser.snapshot();
 }
 
 export type CliModelMetadata = {

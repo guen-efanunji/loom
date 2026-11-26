@@ -495,6 +495,80 @@ function errorResponse(
 	);
 }
 
+export function supportsTaskToolAuthorization(adapter: {
+	definition: { id: string; capabilities: readonly string[] };
+}): boolean {
+	return (
+		adapter.definition.capabilities.includes("custom-model") ||
+		adapter.definition.id === "codex"
+	);
+}
+
+export function createTaskToolAuthorizer(input: {
+	taskId: string;
+	orchestrator: Pick<
+		TaskOrchestrator,
+		"listRuns" | "requestPermission" | "decidePermission"
+	>;
+	repos: Pick<
+		ReturnType<typeof repositories>,
+		"permissionRequests" | "agentRuns"
+	>;
+	pollIntervalMs?: number;
+	timeoutMs?: number;
+}): RuntimeToolAuthorization {
+	const alwaysAllowedRuns = new Set<string>();
+	const pollIntervalMs = input.pollIntervalMs ?? 250;
+	const timeoutMs = input.timeoutMs ?? 120_000;
+	return async ({ toolName, args, reason, cwd }) => {
+		const runs = await input.orchestrator.listRuns(input.taskId);
+		const activeRun = runs.find((run) =>
+			["running", "waiting_permission"].includes(run.status),
+		);
+		if (!activeRun) return false;
+		if (alwaysAllowedRuns.has(activeRun.id)) return true;
+		const request = await input.orchestrator.requestPermission({
+			taskId: input.taskId,
+			runId: activeRun.id,
+			command: `${toolName}: ${JSON.stringify(args)}`.slice(0, 20_000),
+			cwd: cwd ?? "",
+			reason,
+		});
+		const deadline = Date.now() + timeoutMs;
+		while (Date.now() < deadline) {
+			const current = await input.repos.permissionRequests.getById(request.id);
+			if (current?.status !== "pending") {
+				await input.repos.agentRuns.update(activeRun.id, {
+					status: "running",
+				});
+				if (current?.status === "allow") alwaysAllowedRuns.add(activeRun.id);
+				return current?.status === "allow" || current?.status === "allow_once";
+			}
+			const runStillActive = (
+				await input.orchestrator.listRuns(input.taskId)
+			).some(
+				(run) =>
+					run.id === activeRun.id &&
+					["running", "waiting_permission"].includes(run.status),
+			);
+			if (!runStillActive) {
+				await input.orchestrator
+					.decidePermission(request.id, "deny")
+					.catch(() => {});
+				return false;
+			}
+			await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+		}
+		await input.orchestrator
+			.decidePermission(request.id, "deny")
+			.catch(() => {});
+		await input.repos.agentRuns
+			.update(activeRun.id, { status: "running" })
+			.catch(() => {});
+		return false;
+	};
+}
+
 export type DaemonAppOptions = {
 	update?: (
 		channel?: string,
@@ -505,6 +579,7 @@ export type DaemonAppOptions = {
 	database?: Database;
 	orchestrator?: TaskOrchestrator;
 	openCodeManager?: OpenCodeManager;
+	providerManager?: ProviderManager;
 	startOpenCode?: boolean;
 	agentRuntime?: AgentRuntime;
 	projectValidation?: ReturnType<typeof createProjectValidationService>;
@@ -684,51 +759,53 @@ export async function createApp(options: DaemonAppOptions = {}) {
 	);
 	for (const provider of customProviderConfigs)
 		providerRegistry.register(new CustomProviderAdapter(provider));
-	const providerManager = new ProviderManager({
-		registry: providerRegistry,
-		onEvent: (event) => {
-			// Model catalogs can contain hundreds of entries. Logging the complete
-			// payload on every refresh blocks startup on stdout and produces huge logs.
-			if (event.type === "provider.modelsUpdated") {
-				log("provider", event.type, {
-					providerId: event.providerId,
-					modelCount: event.models.length,
-				});
-				persistProviderModelCache();
-				eventPublisher.publish({
-					type: event.type,
-					providerId: event.providerId,
-					models: event.models,
-				});
-			} else if (
-				event.type === "provider.detected" ||
-				event.type === "provider.connected"
-			) {
-				log("provider", event.type, event);
-				eventPublisher.publish({
-					type: event.type,
-					providerId: event.providerId,
-					connection: event.connection,
-				});
-			} else if (
-				event.type === "provider.disconnected" ||
-				event.type === "provider.authRequired"
-			) {
-				log("provider", event.type, event);
-				eventPublisher.publish({
-					type: event.type,
-					providerId: event.providerId,
-				});
-			} else {
-				log("provider", event.type, event);
-				eventPublisher.publish({
-					type: event.type,
-					providerId: event.providerId,
-					message: event.message,
-				});
-			}
-		},
-	});
+	const providerManager =
+		options.providerManager ??
+		new ProviderManager({
+			registry: providerRegistry,
+			onEvent: (event) => {
+				// Model catalogs can contain hundreds of entries. Logging the complete
+				// payload on every refresh blocks startup on stdout and produces huge logs.
+				if (event.type === "provider.modelsUpdated") {
+					log("provider", event.type, {
+						providerId: event.providerId,
+						modelCount: event.models.length,
+					});
+					persistProviderModelCache();
+					eventPublisher.publish({
+						type: event.type,
+						providerId: event.providerId,
+						models: event.models,
+					});
+				} else if (
+					event.type === "provider.detected" ||
+					event.type === "provider.connected"
+				) {
+					log("provider", event.type, event);
+					eventPublisher.publish({
+						type: event.type,
+						providerId: event.providerId,
+						connection: event.connection,
+					});
+				} else if (
+					event.type === "provider.disconnected" ||
+					event.type === "provider.authRequired"
+				) {
+					log("provider", event.type, event);
+					eventPublisher.publish({
+						type: event.type,
+						providerId: event.providerId,
+					});
+				} else {
+					log("provider", event.type, event);
+					eventPublisher.publish({
+						type: event.type,
+						providerId: event.providerId,
+						message: event.message,
+					});
+				}
+			},
+		});
 	// Reuse the last known catalog while CLI/provider discovery runs in the
 	// background. The connection check will refresh availability shortly after.
 	try {
@@ -1009,47 +1086,13 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			timeoutMs: agent ? agent.maxRunDurationMinutes * 60_000 : undefined,
 			system,
 			permission: { mode: permissionMode as RuntimePermission["mode"] },
-			...(isCustomProvider
+			...(supportsTaskToolAuthorization(adapter)
 				? {
-						authorizeTool: async ({
-							toolName,
-							args,
-							reason,
-							cwd,
-						}: Parameters<RuntimeToolAuthorization>[0]) => {
-							const runs = await orchestrator.listRuns(task.id);
-							const activeRun = runs.find((run) =>
-								["running", "waiting_permission"].includes(run.status),
-							);
-							if (!activeRun) return false;
-							const request = await orchestrator.requestPermission({
-								taskId: task.id,
-								runId: activeRun.id,
-								command: `${toolName}: ${JSON.stringify(args)}`.slice(
-									0,
-									20_000,
-								),
-								cwd: cwd ?? "",
-								reason,
-							});
-							const deadline = Date.now() + 120_000;
-							while (Date.now() < deadline) {
-								const current = await repos.permissionRequests.getById(
-									request.id,
-								);
-								if (current?.status !== "pending") {
-									await repos.agentRuns.update(activeRun.id, {
-										status: "running",
-									});
-									return (
-										current?.status === "allow" ||
-										current?.status === "allow_once"
-									);
-								}
-								await new Promise((resolve) => setTimeout(resolve, 250));
-							}
-							return false;
-						},
+						authorizeTool: createTaskToolAuthorizer({
+							taskId: task.id,
+							orchestrator,
+							repos,
+						}),
 					}
 				: {}),
 			...(adapter.definition.id === "agy"
@@ -1107,7 +1150,7 @@ export async function createApp(options: DaemonAppOptions = {}) {
 			},
 		};
 	};
-	const orchestrator =
+	const orchestrator: TaskOrchestrator =
 		options.orchestrator ??
 		new TaskOrchestrator({
 			...repos,

@@ -1,11 +1,6 @@
 import type { AgentModel, AuthStatus } from "../core";
-import {
-	CliProviderAdapter,
-	modelFromId,
-	readPrompt,
-	runCli,
-	shouldUseStdinForPrompt,
-} from "./cli";
+import { CliProviderAdapter, modelFromId, runCli } from "./cli";
+import { CodexAppServerRuntime } from "./codex-app-server";
 import { codexDefinition } from "./definitions";
 
 export class CodexProviderAdapter extends CliProviderAdapter {
@@ -25,58 +20,12 @@ export class CodexProviderAdapter extends CliProviderAdapter {
 					"reasoning-effort",
 				],
 			},
-			buildPrompt: async ({
-				prompt,
-				model,
-				thinkingMode,
-				permission,
-				customInstructions,
-			}) => {
-				const fullPrompt = customInstructions
-					? prompt
-					: `${await readPrompt("coding.md")}\n\n${prompt}`;
-				const useStdin = shouldUseStdinForPrompt(fullPrompt);
-				return {
-					command: "codex",
-					// codex exec may wait for more stdin in non-TTY environments even
-					// when the prompt is an argument. Send EOF explicitly, or pass large
-					// prompts over stdin so argv never hits E2BIG.
-					stdin: useStdin ? fullPrompt : "",
-					args: [
-						// This is a top-level Codex option; placing it after `exec` makes
-						// current Codex CLI versions reject the invocation as an unknown flag.
-						"--ask-for-approval",
-						permission?.mode === "auto" || permission?.mode === "read-only"
-							? "never"
-							: "on-request",
-						"exec",
-						// Codex refuses to run outside a trusted Git worktree ("Not inside
-						// a trusted directory and --skip-git-repo-check was not specified").
-						// Loom sessions can live in worktrees that are not Git repos, and
-						// the connectivity probe runs from the daemon cwd, so allow it.
-						"--skip-git-repo-check",
-						"--json",
-						"--sandbox",
-						permission?.mode === "read-only" ? "read-only" : "workspace-write",
-						...(thinkingMode && thinkingMode !== "default"
-							? ["--config", `model_reasoning_effort=${thinkingMode}`]
-							: []),
-						...(model ? ["--model", codexModelSlug(model)] : []),
-						useStdin ? "-" : fullPrompt,
-					],
-				};
-			},
+			runtime: new CodexAppServerRuntime({ codingPrompt: "coding.md" }),
 			getAuthStatus: codexAuthStatus,
 			probeAuth: codexAuthStatus,
 			listModels: knownModels,
 		});
 	}
-}
-
-function codexModelSlug(model: string): string {
-	// The UI/catalog can expose a display label such as "GPT-5.6-Sol", while
-	// `codex exec --model` expects the CLI slug (`gpt-5.6-sol`).
-	return model.trim().toLowerCase().replace(/\s+/g, "-");
 }
 
 async function knownModels(): Promise<AgentModel[]> {

@@ -860,7 +860,7 @@ async function choose(item: { value: string; type: string; id?: string }) {
 	}
 	if (item.type === "task") {
 		taskRefs = [...new Set([...taskRefs, item.id ?? ""])].filter(Boolean);
-		await insertMention(`@${item.value} `, mentionStart, cursor);
+		await insertMention(item.value, mentionStart, cursor);
 		return;
 	}
 	if (item.type === "custom-agent") customAgentId = item.id ?? "";
@@ -1546,7 +1546,7 @@ function keydown(event: KeyboardEvent) {
 							: "Default model"}
 					badgeLabel={selectedModel ? modelLabel(selectedModel) : ""}
 					badgeTone={selectedModel ? providerTone(selectedModel.providerID) : "default"}
-					modelDisabled={Boolean(selectedCustomAgent)}
+					modelDisabled={false}
 				>
 					{#snippet pickerContent()}
 						<Command.Root

@@ -10,11 +10,13 @@ import {
 import { ClaudeProviderAdapter } from "../src/adapters/claude";
 import {
 	CLI_ARG_PROMPT_LIMIT_BYTES,
+	CliOutputParser,
 	CliProviderAdapter,
 	parseCliOutput,
 	shouldUseStdinForPrompt,
 } from "../src/adapters/cli";
 import { CodexProviderAdapter } from "../src/adapters/codex";
+import { CodexAppServerRuntime } from "../src/adapters/codex-app-server";
 
 // Captured from Agy: a denied command exits 0 and reports SUCCESS with no response.
 const deniedResult = JSON.stringify({
@@ -634,20 +636,44 @@ test("large prompts switch CLI adapters to stdin instead of hitting argv E2BIG l
 	expect(claudeBuilt.stdin).toBe(oversized);
 
 	const codexAdapter = new CodexProviderAdapter();
-	const codexOptions = (
-		codexAdapter as unknown as {
-			options: {
-				buildPrompt: (input: {
-					prompt: string;
-					customInstructions?: boolean;
-				}) => Promise<{ command: string; args: string[]; stdin?: string }>;
-			};
-		}
-	).options;
-	const codexBuilt = await codexOptions.buildPrompt({
-		prompt: oversized,
-		customInstructions: true,
-	});
-	expect(codexBuilt.args.at(-1)).toBe("-");
-	expect(codexBuilt.stdin).toBe(oversized);
+	expect(codexAdapter.runtime).toBeInstanceOf(CodexAppServerRuntime);
+});
+
+test("CliOutputParser handles chunked JSON lines without leaking partial JSON", () => {
+	const parser = new CliOutputParser();
+	parser.push('{"type":"item.completed","item":{"type":"agent_mess');
+	expect(parser.snapshot().output).toBe("");
+	parser.push('age","id":"m1","text":"Hello chunk"}}\n');
+	expect(parser.snapshot().output).toBe("Hello chunk");
+	parser.finish();
+	expect(parser.snapshot().output).toBe("Hello chunk");
+});
+
+test("Claude exit code 0 with JSON is_error result fails instead of completing", async () => {
+	const runtime = new CliProviderAdapter({
+		definition: {
+			id: "claude",
+			name: "Claude Code",
+			executable: process.execPath,
+			capabilities: ["chat"],
+			install: { supported: false },
+			authStrategy: "none",
+		},
+		getAuthStatus: async () => ({ authenticated: true, strategy: "none" }),
+		buildPrompt: async () => ({
+			command: process.execPath,
+			args: [
+				"-e",
+				`process.stdout.write(JSON.stringify({type:"result",subtype:"error_during_execution",is_error:true,result:"API rate limit reached"})+"\\n")`,
+			],
+		}),
+	}).getRuntime();
+	const session = await runtime.createSession({ cwd: "/tmp", title: "Claude" });
+	await runtime.prompt({ sessionId: session.id, prompt: "Test" });
+	expect(await runtime.wait(session.id, { timeoutMs: 5000 })).toBe("failed");
+	expect(await runtime.lastError?.(session.id)).toBe("API rate limit reached");
+	await runtime.deleteSession?.(session.id);
+	await expect(runtime.readOutput?.(session.id)).rejects.toThrow(
+		"Session not found",
+	);
 });

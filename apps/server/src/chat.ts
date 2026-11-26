@@ -154,6 +154,7 @@ type ProviderTurn = {
 	messages: ProviderMessage[];
 	assistant: ProviderMessage;
 	finished: boolean;
+	runtimeCleanedUp?: boolean;
 	openCodeActive?: boolean;
 	/** Last status type broadcast to the UI, used to suppress duplicate events. */
 	emittedStatus?: string;
@@ -429,14 +430,15 @@ function mergeMessages(
 	].sort((a, b) => a.info.time.created - b.info.time.created);
 }
 
-// Extract the command/path an Agy tool wants to run so the permission card can
-// show what is being approved, mirroring the OpenCode permission `patterns` field.
+// Extract the command/path an Agy or Codex tool wants to run so the permission card
+// can show what is being approved, mirroring the OpenCode permission `patterns` field.
 function permissionPatterns(
 	toolName: string,
 	args: Record<string, unknown>,
 ): string[] {
+	const normalizedTool = toolName.toLowerCase().replaceAll("_", "");
 	const candidates =
-		toolName.toLowerCase().replaceAll("_", "") === "runcommand"
+		normalizedTool === "runcommand" || normalizedTool === "commandexecution"
 			? ["CommandLine", "commandLine", "command", "cmd", "script"]
 			: [
 					"Path",
@@ -446,20 +448,35 @@ function permissionPatterns(
 					"filePath",
 					"path",
 					"filename",
+					"grantRoot",
 				];
+	const description = args.Description ?? args.description ?? args.reason;
+	const detail =
+		typeof description === "string" && description.trim()
+			? description.trim()
+			: undefined;
 	for (const key of candidates) {
 		const value = args[key];
-		if (typeof value === "string" && value.trim()) {
-			const description = args.Description ?? args.description;
-			return typeof description === "string" && description.trim()
-				? [value, description]
-				: [value];
-		}
+		const text =
+			typeof value === "string"
+				? value.trim()
+				: Array.isArray(value) &&
+						value.every((entry) => typeof entry === "string")
+					? value.join(" ").trim()
+					: "";
+		if (text) return detail && detail !== text ? [text, detail] : [text];
 	}
-	const description = args.Description ?? args.description;
-	return typeof description === "string" && description.trim()
-		? [description]
-		: [];
+	if (
+		args.fileChanges &&
+		typeof args.fileChanges === "object" &&
+		!Array.isArray(args.fileChanges)
+	) {
+		const files = Object.keys(
+			args.fileChanges as Record<string, unknown>,
+		).filter(Boolean);
+		if (files.length) return detail ? [...files, detail] : files;
+	}
+	return detail ? [detail] : [];
 }
 
 export type ChatRequestOptions = {
@@ -1328,6 +1345,12 @@ export function createChatRoutes(options: {
 			await options.providerHistory?.save(turn.loomSessionId, turn.messages);
 			turn.persistedMessages = serialized;
 		}
+		if (turn.finished) await cleanupTurnRuntime(turn);
+	}
+	async function cleanupTurnRuntime(turn: ProviderTurn) {
+		if (turn.runtimeCleanedUp) return;
+		turn.runtimeCleanedUp = true;
+		await turn.runtime.deleteSession?.(turn.id).catch(() => {});
 	}
 	let cachedCatalog: Awaited<ReturnType<typeof buildCatalog>> | null = null;
 	let catalogPromise: Promise<Awaited<ReturnType<typeof buildCatalog>>> | null =
@@ -3342,9 +3365,11 @@ export function createChatRoutes(options: {
 			turn.persistedMessages = JSON.stringify(turn.messages);
 			await options.providerHistory?.save(current.id, turn.messages);
 			const isAgy = providerId === "agy" || providerId === "antigravity";
+			const isCodex = providerId === "codex";
+			const supportsAuthorizeTool = isCustomProvider || isCodex;
 			const permissionToken =
 				((isAgy && agyEnabled) ||
-					(isCustomProvider && !!options.permissions)) &&
+					(supportsAuthorizeTool && !!options.permissions)) &&
 				(!customAgent || customAgentCanWriteFiles)
 					? randomBytes(24).toString("hex")
 					: undefined;
@@ -3388,6 +3413,7 @@ export function createChatRoutes(options: {
 					message:
 						"A workspace operation is in progress. Wait for it to finish before starting another response.",
 				});
+			if (existing) await cleanupTurnRuntime(existing);
 			providerSessions.set(current.id, turn);
 			// CLI runtimes start a new process each turn; carry forward the conversation.
 			const prompt = [
@@ -3416,7 +3442,7 @@ export function createChatRoutes(options: {
 									mode: customAgentCanWriteFiles
 										? ("ask" as const)
 										: ("read-only" as const),
-									...(permissionToken && options.agyPermissionUrl
+									...(isAgy && permissionToken && options.agyPermissionUrl
 										? {
 												env: {
 													LOOM_PERMISSION_URL: options.agyPermissionUrl,
@@ -3426,7 +3452,7 @@ export function createChatRoutes(options: {
 										: {}),
 								},
 							}
-						: permissionToken && options.agyPermissionUrl
+						: isAgy && permissionToken && options.agyPermissionUrl
 							? {
 									permission: {
 										mode: autoAccept ? ("auto" as const) : ("ask" as const),
@@ -3436,20 +3462,17 @@ export function createChatRoutes(options: {
 										},
 									},
 								}
-							: isCustomProvider
+							: supportsAuthorizeTool
 								? {
 										permission: {
-											mode: customAgent
-												? customAgentCanWriteFiles
+											mode:
+												options.permissions && !autoAccept
 													? ("ask" as const)
-													: ("read-only" as const)
-												: autoAccept
-													? ("auto" as const)
-													: ("ask" as const),
+													: ("auto" as const),
 										},
 									}
 								: {}),
-					...(isCustomProvider && authorizeTool ? { authorizeTool } : {}),
+					...(supportsAuthorizeTool && authorizeTool ? { authorizeTool } : {}),
 					...(input.attachments.length
 						? {
 								images: input.attachments.map((attachment) => ({
@@ -3466,6 +3489,7 @@ export function createChatRoutes(options: {
 				turn.finished = true;
 				turn.permissionToken = undefined;
 				turn.status = { type: "error", message };
+				await cleanupTurnRuntime(turn);
 				if (turn.agentRunId && options.agentRunStore)
 					await options.agentRunStore.finish({
 						id: turn.agentRunId,
@@ -4033,6 +4057,7 @@ export function createChatRoutes(options: {
 				}
 			}
 			await request(`/session/${current.id}`, current.directory, {}, "DELETE");
+			if (providerSession) await cleanupTurnRuntime(providerSession);
 			providerSessions.delete(current.id);
 			await options.providerHistory?.delete(current.id);
 			await options.chatSessionProjects?.delete(current.id).catch(() => {});

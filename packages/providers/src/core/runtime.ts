@@ -104,5 +104,6 @@ export type AgentRuntime = {
 	>;
 	abort(sessionId: string): Promise<void>;
 	deleteSession?(sessionId: string): Promise<void>;
+	dispose?(): Promise<void>;
 	getDiff(sessionId: string): Promise<unknown>;
 };

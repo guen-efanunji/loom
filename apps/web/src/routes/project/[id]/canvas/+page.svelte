@@ -90,7 +90,7 @@
 				<a
 					href={`/project/${project.id}/video`}
 					class="inline-flex h-9 items-center gap-2 rounded-lg px-3 text-xs font-medium text-white/50 transition hover:text-white/80"
-					><Film size={14} />Video</a
+					><Film size={14} />Pipeline</a
 				>
 			</nav>
 		</header>

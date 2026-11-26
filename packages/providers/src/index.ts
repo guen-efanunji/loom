@@ -1,6 +1,5 @@
 export * from "./adapters/agy";
 export * from "./adapters/claude";
-export * from "./adapters/custom-provider";
 export type { CliAdapterOptions, CliModelMetadata } from "./adapters/cli";
 export {
 	CliProviderAdapter as GenericCliProviderAdapter,
@@ -12,6 +11,8 @@ export {
 	runCli,
 } from "./adapters/cli";
 export * from "./adapters/codex";
+export * from "./adapters/codex-app-server";
+export * from "./adapters/custom-provider";
 export * from "./adapters/definitions";
 export * from "./adapters/opencode";
 export * from "./adapters/unsupported";

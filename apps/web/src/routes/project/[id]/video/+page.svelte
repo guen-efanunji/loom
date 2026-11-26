@@ -2,19 +2,10 @@
 	import { Columns3, Film, MessageSquare, Sparkles } from "@lucide/svelte";
 	import { onMount } from "svelte";
 	import { page } from "$app/state";
-	import VideoStudio from "$lib/../components/VideoStudio.svelte";
-	import type { Catalog } from "$lib/chat";
-	import { chat } from "$lib/chat";
 	import { Button } from "$lib/components/ui/button";
 	import { daemon, type Project } from "$lib/daemon";
 
 	let project = $state<Project | null>(null);
-	let catalog = $state<Catalog>({
-		models: [],
-		defaults: {},
-		agents: [],
-		commands: [],
-	});
 	let loading = $state(true);
 	let error = $state("");
 	const id = $derived(page.params.id ?? "");
@@ -26,13 +17,10 @@
 	async function load() {
 		loading = true;
 		try {
-			[project, catalog] = await Promise.all([
-				daemon.getProject(id),
-				chat.catalog(id),
-			]);
+			project = await daemon.getProject(id);
 			error = "";
 		} catch (reason) {
-			error = reason instanceof Error ? reason.message : "Unable to load video";
+			error = reason instanceof Error ? reason.message : "Unable to load";
 		} finally {
 			loading = false;
 		}
@@ -41,7 +29,7 @@
 
 <svelte:head
 	><title
-		>{project ? `${project.name} · Video · Loom` : "Video studio · Loom"}</title
+		>{project ? `${project.name} · Pipeline · Loom` : "Pipeline · Loom"}</title
 	></svelte:head
 >
 
@@ -49,7 +37,7 @@
 	<main
 		class="flex min-h-svh items-center justify-center text-sm text-muted-foreground"
 	>
-		Loading video studio…
+		Loading…
 	</main>
 {:else if project}
 	<div class="flex h-svh flex-col bg-background text-foreground">
@@ -87,7 +75,7 @@
 				<span
 					aria-current="page"
 					class="inline-flex h-9 items-center gap-2 rounded-lg bg-white/[0.12] px-3 text-xs font-medium text-white shadow-sm"
-					><Film size={14} />Video</span
+					><Film size={14} />Pipeline</span
 				>
 			</nav>
 		</header>
@@ -97,12 +85,10 @@
 			>
 				{error}
 			</p>{/if}
-		<div class="min-h-0 flex-1">
-			<VideoStudio
-				projectId={project.id}
-				projectName={project.name}
-				{catalog}
-			/>
+		<div class="flex min-h-0 flex-1 items-center justify-center">
+			<p class="text-2xl font-semibold tracking-wide text-white/70">
+				COMING SOON
+			</p>
 		</div>
 	</div>
 {:else}

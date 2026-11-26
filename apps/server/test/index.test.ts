@@ -7,7 +7,11 @@ import type { AgentRunStatus, AgentRuntime } from "@loom/opencode";
 import { TaskOrchestrator } from "@loom/orchestrator";
 import { WorktreeManager } from "@loom/worktree";
 import type { DaemonConfig } from "../src/config";
-import { createApp } from "../src/index";
+import {
+	createApp,
+	createTaskToolAuthorizer,
+	supportsTaskToolAuthorization,
+} from "../src/index";
 
 const config: DaemonConfig = {
 	port: 4317,
@@ -221,6 +225,7 @@ async function createTestSetup(options: { allowAutoMerge?: boolean } = {}) {
 		root,
 		project,
 		repos,
+		orchestrator,
 		runtime,
 		reviewerRuntime,
 	};
@@ -959,6 +964,133 @@ describe("server API", () => {
 						item.event.task?.title === "Replay cursor task",
 				),
 			).toBe(true);
+		} finally {
+			await setup.daemon.close();
+			await rm(setup.root, { recursive: true, force: true });
+		}
+	});
+
+	test("enables task tool authorization for codex and respects allow/allow_once/cancel", async () => {
+		expect(
+			supportsTaskToolAuthorization({
+				definition: { id: "codex", capabilities: ["chat", "permissions"] },
+			}),
+		).toBe(true);
+		expect(
+			supportsTaskToolAuthorization({
+				definition: { id: "custom-1", capabilities: ["custom-model"] },
+			}),
+		).toBe(true);
+		expect(
+			supportsTaskToolAuthorization({
+				definition: { id: "claude", capabilities: ["chat", "permissions"] },
+			}),
+		).toBe(false);
+
+		const setup = await createTestSetup();
+		try {
+			const headers = {
+				Authorization: "Bearer test-token",
+				"Content-Type": "application/json",
+			};
+			const task = await setup.repos.tasks.create({
+				id: "task-perm-codex",
+				projectId: setup.project.id,
+				title: "Codex permission task",
+				prompt: "Test approval",
+				acceptanceCriteria: "[]",
+				targetBranch: "main",
+				source: "manual",
+			});
+			const run = await setup.repos.agentRuns.create({
+				id: "run-perm-codex",
+				taskId: task.id,
+				effectiveProvider: "codex",
+				effectiveModel: "gpt-5",
+				status: "running",
+			});
+			const authorizeTool = createTaskToolAuthorizer({
+				taskId: task.id,
+				orchestrator: setup.orchestrator,
+				repos: setup.repos,
+				pollIntervalMs: 10,
+				timeoutMs: 2_000,
+			});
+
+			// allow_once approves one request and leaves subsequent tools asking again.
+			const first = authorizeTool({
+				toolName: "command_execution",
+				args: { command: "bun test" },
+				reason: "Run tests",
+				cwd: setup.root,
+			});
+			await Bun.sleep(20);
+			const pending1 = (await (
+				await setup.daemon.app.request("/api/permissions", { headers })
+			).json()) as Array<{ id: string }>;
+			expect(pending1).toHaveLength(1);
+			await setup.daemon.app.request(
+				`/api/permissions/${pending1[0]!.id}/decision`,
+				{
+					method: "POST",
+					headers,
+					body: JSON.stringify({ decision: "allow_once" }),
+				},
+			);
+			expect(await first).toBe(true);
+
+			// allow ("Always allow") approves both this and subsequent calls for the run.
+			const second = authorizeTool({
+				toolName: "file_change",
+				args: { grantRoot: setup.root },
+				reason: "Edit file",
+				cwd: setup.root,
+			});
+			await Bun.sleep(20);
+			const pending2 = (await (
+				await setup.daemon.app.request("/api/permissions", { headers })
+			).json()) as Array<{ id: string }>;
+			expect(pending2).toHaveLength(1);
+			await setup.daemon.app.request(
+				`/api/permissions/${pending2[0]!.id}/decision`,
+				{
+					method: "POST",
+					headers,
+					body: JSON.stringify({ decision: "allow" }),
+				},
+			);
+			expect(await second).toBe(true);
+			expect(
+				await authorizeTool({
+					toolName: "command_execution",
+					args: { command: "ls" },
+					reason: "Follow up",
+					cwd: setup.root,
+				}),
+			).toBe(true);
+
+			// If the run is cancelled while awaiting approval, the poll exits and denies the pending request.
+			const authorizeCancel = createTaskToolAuthorizer({
+				taskId: task.id,
+				orchestrator: setup.orchestrator,
+				repos: setup.repos,
+				pollIntervalMs: 10,
+				timeoutMs: 2_000,
+			});
+			const third = authorizeCancel({
+				toolName: "command_execution",
+				args: { command: "sleep 10" },
+				reason: "Wait",
+				cwd: setup.root,
+			});
+			await Bun.sleep(20);
+			await setup.repos.agentRuns.update(run.id, { status: "cancelled" });
+			expect(await third).toBe(false);
+			expect(
+				await (
+					await setup.daemon.app.request("/api/permissions", { headers })
+				).json(),
+			).toHaveLength(0);
 		} finally {
 			await setup.daemon.close();
 			await rm(setup.root, { recursive: true, force: true });

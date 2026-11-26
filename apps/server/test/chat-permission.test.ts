@@ -8,12 +8,16 @@ import { createAgyPermissionStore } from "../src/permissions";
 // a per-run secret, the PreToolUse hook store surfaces pending tool requests on
 // the session poll, and the existing reply endpoint resolves allow/deny. The
 // runtime is faked so only the permission wiring is under test.
-async function setup(options: { autoAccept?: boolean } = {}) {
+async function setup(
+	options: { autoAccept?: boolean; providerId?: string } = {},
+) {
+	const providerId = options.providerId ?? "agy";
 	let status: Awaited<ReturnType<AgentRuntime["status"]>> = "running";
 	let output = "";
+	const deletedSessions: string[] = [];
 	const prompts: Parameters<AgentRuntime["prompt"]>[0][] = [];
 	const runtime: AgentRuntime = {
-		createSession: async () => ({ id: "agy-session" }),
+		createSession: async () => ({ id: `${providerId}-session` }),
 		prompt: async (input) => {
 			prompts.push(input);
 			status = "running";
@@ -27,21 +31,24 @@ async function setup(options: { autoAccept?: boolean } = {}) {
 		},
 		wait: async () => "completed",
 		getDiff: async () => [],
+		deleteSession: async (sessionId) => {
+			deletedSessions.push(sessionId);
+		},
 	};
 	const adapter = new CliProviderAdapter({
 		definition: {
-			id: "agy",
-			name: "Agy",
-			executable: "agy",
+			id: providerId,
+			name: providerId,
+			executable: providerId,
 			capabilities: ["chat"],
 			install: { supported: false },
 			authStrategy: "none",
 		},
-		buildPrompt: async () => ({ command: "agy", args: [] }),
+		buildPrompt: async () => ({ command: providerId, args: [] }),
 		getAuthStatus: async () => ({ authenticated: true, strategy: "none" }),
 	});
 	adapter.detect = async () => ({ installed: true });
-	const providerManager = providerManagerWith(adapter);
+	const providerManager = providerManagerWith(adapter, providerId);
 	const permissions = createAgyPermissionStore();
 	const app = createChatRoutes({
 		projects: {
@@ -55,7 +62,7 @@ async function setup(options: { autoAccept?: boolean } = {}) {
 		permissions,
 		agyPermissionUrl: "http://127.0.0.1:0/api/agy/permission",
 		sessionScope: async () => ({ directory: "/tmp", projectId: "project" }),
-		runtimes: new Map([["agy", runtime]]),
+		runtimes: new Map([[providerId, runtime]]),
 		request: async <T>(path: string) => {
 			if (path === "/session/ses_test")
 				return {
@@ -72,13 +79,18 @@ async function setup(options: { autoAccept?: boolean } = {}) {
 			method: "POST",
 			body: JSON.stringify({
 				text: "Run a command",
-				model: { providerID: "agy", modelID: "gpt" },
+				model: { providerID: providerId, modelID: "gpt" },
 			}),
 		});
 	return {
 		app,
 		permissions,
 		prompts,
+		deletedSessions,
+		setCompleted: (text: string) => {
+			output = text;
+			status = "completed";
+		},
 		send,
 		state: async () =>
 			(await app.request("/sessions/ses_test")).json() as Promise<{
@@ -92,10 +104,10 @@ async function setup(options: { autoAccept?: boolean } = {}) {
 	};
 }
 
-function providerManagerWith(adapter: CliProviderAdapter) {
+function providerManagerWith(adapter: CliProviderAdapter, providerId = "agy") {
 	// Minimal ProviderManager substitute exposing only what chat.ts reads.
 	const registry = {
-		get: (id: string) => (id === "agy" ? adapter : undefined),
+		get: (id: string) => (id === providerId ? adapter : undefined),
 	};
 	return {
 		registry,
@@ -221,6 +233,65 @@ describe("agy chat permissions", () => {
 			5000,
 		);
 		expect(submitted.status).toBe("auto");
+		expect((await fixture.state()).permissions).toHaveLength(0);
+	});
+});
+
+describe("codex chat permissions and cleanup", () => {
+	test("ask mode wires authorizeTool, surfaces Codex command/file patterns, and cleans up session on completion", async () => {
+		const fixture = await setup({ providerId: "codex" });
+		expect((await fixture.send()).status).toBe(204);
+		const prompt = fixture.prompts[0];
+		expect(prompt?.permission?.mode).toBe("ask");
+		expect(typeof prompt?.authorizeTool).toBe("function");
+
+		const cmdAuth = prompt!.authorizeTool!({
+			toolName: "command_execution",
+			args: { command: "bun test", cwd: "/tmp" },
+			reason: "Run tests",
+		});
+		const fileAuth = prompt!.authorizeTool!({
+			toolName: "file_change",
+			args: { grantRoot: "/tmp/src" },
+			reason: "Write file",
+		});
+
+		const running = await fixture.state();
+		expect(running.status.message).toBe("Waiting for permission");
+		expect(running.permissions).toHaveLength(2);
+		expect(running.permissions[0]?.patterns).toEqual(["bun test", "Run tests"]);
+		expect(running.permissions[1]?.patterns).toEqual([
+			"/tmp/src",
+			"Write file",
+		]);
+
+		await fixture.app.request(
+			`/sessions/ses_test/permission/${running.permissions[0]!.id}`,
+			{ method: "POST", body: JSON.stringify({ reply: "once" }) },
+		);
+		await fixture.app.request(
+			`/sessions/ses_test/permission/${running.permissions[1]!.id}`,
+			{ method: "POST", body: JSON.stringify({ reply: "reject" }) },
+		);
+		expect(await cmdAuth).toBe(true);
+		expect(await fileAuth).toBe(false);
+
+		fixture.setCompleted("All done");
+		await fixture.state();
+		expect(fixture.deletedSessions).toEqual(["codex-session"]);
+	});
+
+	test("autoAccept passes auto mode for codex", async () => {
+		const fixture = await setup({ providerId: "codex", autoAccept: true });
+		expect((await fixture.send()).status).toBe(204);
+		expect(fixture.prompts[0]?.permission?.mode).toBe("auto");
+		expect(
+			await fixture.prompts[0]!.authorizeTool!({
+				toolName: "command_execution",
+				args: { command: "ls" },
+				reason: "Inspect files",
+			}),
+		).toBe(true);
 		expect((await fixture.state()).permissions).toHaveLength(0);
 	});
 });
